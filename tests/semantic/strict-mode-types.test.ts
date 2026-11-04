@@ -382,3 +382,78 @@ END_PROGRAM
     expect(lax(src).errors).toEqual([]);
   });
 });
+
+describe("strict mode: untyped constant expressions adapt like literals", () => {
+  const head = `FUNCTION H : SINT
+  VAR_INPUT a : SINT; END_VAR
+  H := a;
+END_FUNCTION
+FUNCTION F : SINT
+  VAR_INPUT a : SINT; END_VAR
+  F := -1;
+END_FUNCTION
+FUNCTION_BLOCK MYFB
+  VAR_INPUT a : SINT; END_VAR
+  a := a;
+END_FUNCTION_BLOCK
+`;
+  /** The body goes on line 18. */
+  const p = (body: string, decls = "") =>
+    head +
+    `PROGRAM main
+  VAR
+    s : SINT; u : USINT; ui : UINT; b : BOOL; i : INT; fb1 : MYFB;
+    arr : ARRAY[0..3] OF SINT; ${decls}
+  END_VAR
+  ${body}
+END_PROGRAM
+`;
+  it("accepts every constant form matiec accepts (non-strict too)", () => {
+    const cases: Array<[string, string?]> = [
+      ["s := -1;"],
+      ["s := s;", "s2 : SINT := -1;"],
+      ["arr[0] := -1;"],
+      ["s := F(a := 1);"],
+      ["s := H(-1);"],
+      ["s := H(a := -1);"],
+      ["fb1(a := -5);"],
+      ["s := s * -1;"],
+      ["s := s - (-1);"],
+      ["s := 1 + 2;"],
+      ["u := 1 + 1;"],
+      ["ui := 10 * 10;"],
+      ["s := -(1);"],
+      ["s := MAX(-1, s);"],
+      ["s := MAX(0, s);"],
+      ["u := MAX(1 + 1, u);"],
+      ["s := MAX(-1, 0);"],
+      ["s := ABS(-1);"],
+      ["b := NOT 1;"],
+      ["b := NOT (0);"],
+      ["b := (1);"],
+    ];
+    for (const [body, decls] of cases) {
+      const src = p(body, decls);
+      expect(laxMsgs(src), `non-strict: ${body}`).toEqual([]);
+      expect(msgs(src), `strict: ${body}`).toEqual([]);
+    }
+  });
+  it("still rejects an INT variable times a constant into a SINT", () => {
+    const src = p("s := i * -1;");
+    expect(laxMsgs(src)).toEqual([]);
+    expect(msgs(src)).toEqual([`18: ${conv("INT", "SINT")}`]);
+  });
+  it("still rejects integer constants other than 0 and 1 into a BOOL", () => {
+    for (const body of ["b := 2;", "b := NOT 2;", "b := 1 + 0;", "b := -1;"]) {
+      const src = p(body);
+      expect(laxMsgs(src), `non-strict: ${body}`).toEqual([]);
+      expect(msgs(src), `strict: ${body}`).toEqual([
+        `18: ${conv("INT", "BOOL")}`,
+      ]);
+    }
+  });
+  it("still rejects a mixed INT/REAL constant into a SINT", () => {
+    const src = p("s := 1.5 + 1;");
+    expect(msgs(src)).toEqual([`18: ${conv("REAL", "SINT")}`]);
+  });
+});

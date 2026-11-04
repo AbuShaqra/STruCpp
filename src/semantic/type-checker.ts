@@ -186,6 +186,17 @@ const STRICT_BIT_STRINGS: ReadonlySet<string> = new Set([
 ]);
 
 type StrictKind = "int" | "real" | "bool";
+/** The literal kind of an untyped constant expression. */
+type StrictConstKind = "INT" | "REAL" | "BOOL";
+/** Generic constraints: a parameter or result of this kind takes its type from the call. */
+const STRICT_GENERIC: ReadonlySet<string> = new Set([
+  "ANY",
+  "ANY_NUM",
+  "ANY_INT",
+  "ANY_REAL",
+  "ANY_BIT",
+  "ANY_ELEMENTARY",
+]);
 
 /** Strict classification of an elementary type; undefined for all other types. */
 function strictKind(name: string): StrictKind | undefined {
@@ -1842,9 +1853,118 @@ export class TypeChecker {
   }
 
   /**
-   * The type an expression has for strict conversion checks. An untyped literal
-   * adapts to the other operand (`u + 1` with u USINT is a USINT), so it never
-   * forces a conversion by itself; everything else keeps its resolved type.
+   * The kind of an untyped constant expression, else undefined: an untyped
+   * literal, or unary +/-, NOT, parentheses, + - * / MOD and generic standard
+   * function calls over untyped constants only. Mixed INT/REAL is not one.
+   */
+  private untypedConstantKind(expr: Expression): StrictConstKind | undefined {
+    switch (expr.kind) {
+      case "LiteralExpression":
+        if (expr.typePrefix) return undefined;
+        return expr.literalType === "INT" ||
+          expr.literalType === "REAL" ||
+          expr.literalType === "BOOL"
+          ? expr.literalType
+          : undefined;
+      case "ParenthesizedExpression":
+        return this.untypedConstantKind(expr.expression);
+      case "UnaryExpression": {
+        const k = this.untypedConstantKind(expr.operand);
+        if (expr.operator === "NOT") return k === "REAL" ? undefined : k;
+        return k === "BOOL" ? undefined : k;
+      }
+      case "BinaryExpression": {
+        if (!STRICT_ARITHMETIC_OPS.has(expr.operator)) return undefined;
+        const l = this.untypedConstantKind(expr.left);
+        const r = this.untypedConstantKind(expr.right);
+        return l === r && l !== "BOOL" ? l : undefined;
+      }
+      case "FunctionCallExpression": {
+        const args = this.strictGenericArgs(expr);
+        if (!args || args.length === 0) return undefined;
+        const kinds = new Set(args.map((a) => this.untypedConstantKind(a)));
+        if (kinds.size !== 1 || kinds.has(undefined)) return undefined;
+        return [...kinds][0];
+      }
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * The argument values a generic (ANY_*) standard function takes its type
+   * from (SEL's G and MUX's K excluded). Undefined for any other call.
+   */
+  private strictGenericArgs(
+    expr: FunctionCallExpression,
+  ): Expression[] | undefined {
+    if (!this.stdRegistry || this.findUserFunction(expr.functionName)) {
+      return undefined;
+    }
+    const desc = this.stdRegistry.lookup(expr.functionName.toUpperCase());
+    if (!desc || !STRICT_GENERIC.has(desc.returnConstraint)) return undefined;
+    const params = desc.params;
+    const out: Expression[] = [];
+    stripEnEno([...expr.arguments]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const upper = arg.name?.toUpperCase();
+      const param =
+        upper === undefined
+          ? (params[i] ?? (desc.isVariadic ? params.at(-1) : undefined))
+          : (params.find((q) => q.name === upper) ??
+            (desc.isVariadic ? params.at(-1) : undefined));
+      if (param && STRICT_GENERIC.has(param.constraint)) out.push(arg.value);
+    });
+    return out;
+  }
+
+  /** `0`, `1`, a parenthesised one or NOT of one: matiec takes these as BOOL. */
+  private isStrictBoolConstant(expr: Expression): boolean {
+    switch (expr.kind) {
+      case "LiteralExpression":
+        return (
+          !expr.typePrefix &&
+          expr.literalType === "INT" &&
+          (Number(expr.value) === 0 || Number(expr.value) === 1)
+        );
+      case "ParenthesizedExpression":
+        return this.isStrictBoolConstant(expr.expression);
+      case "UnaryExpression":
+        return (
+          expr.operator === "NOT" && this.isStrictBoolConstant(expr.operand)
+        );
+      case "FunctionCallExpression": {
+        // `NOT (0)` parses as a call of the NOT function.
+        const args = stripEnEno([...expr.arguments]);
+        return (
+          expr.functionName.toUpperCase() === "NOT" &&
+          !this.findUserFunction(expr.functionName) &&
+          args.length === 1 &&
+          !args[0]!.isOutput &&
+          this.isStrictBoolConstant(args[0]!.value)
+        );
+      }
+      default:
+        return false;
+    }
+  }
+
+  /** Whether an untyped constant of kind `k` takes the type of kind `kind`. */
+  private static constantAdapts(
+    k: StrictConstKind,
+    kind: StrictKind | undefined,
+  ): boolean {
+    return k === "INT"
+      ? kind === "int" || kind === "real"
+      : k === "REAL"
+        ? kind === "real"
+        : kind === "bool";
+  }
+
+  /**
+   * The type an expression has for strict conversion checks. An untyped
+   * constant adapts to the other operand (`u + 1` with u USINT is a USINT), so it
+   * never forces a conversion by itself; everything else keeps its resolved type.
    */
   private strictExprType(expr: Expression): IECType | undefined {
     switch (expr.kind) {
@@ -1856,17 +1976,40 @@ export class TypeChecker {
           : this.strictExprType(expr.operand);
       case "BinaryExpression": {
         if (!STRICT_ARITHMETIC_OPS.has(expr.operator)) return expr.resolvedType;
-        const leftLit = this.isUntypedNumericLiteral(expr.left);
-        const rightLit = this.isUntypedNumericLiteral(expr.right);
-        if (leftLit === rightLit) return expr.resolvedType;
-        const other = this.strictExprType(leftLit ? expr.right : expr.left);
-        const lit = (leftLit ? expr.left : expr.right) as LiteralExpression;
+        const leftK = this.untypedConstantKind(expr.left);
+        const rightK = this.untypedConstantKind(expr.right);
+        if ((leftK === undefined) === (rightK === undefined)) {
+          return expr.resolvedType;
+        }
+        const other = this.strictExprType(leftK ? expr.right : expr.left);
         if (other?.typeKind !== "elementary") return expr.resolvedType;
         const kind = strictKind((other as ElementaryType).name);
-        const adapts =
-          lit.literalType === "INT"
-            ? kind === "int" || kind === "real"
-            : lit.literalType === "REAL" && kind === "real";
+        return TypeChecker.constantAdapts((leftK ?? rightK)!, kind)
+          ? other
+          : expr.resolvedType;
+      }
+      case "FunctionCallExpression": {
+        // MAX(-1, s) takes its type from s, not from the literal. A still-generic
+        // result (LIMIT, SEL, MUX) stays unchecked: this wave adds no rejections.
+        if (
+          expr.resolvedType?.typeKind !== "elementary" ||
+          isGenericGroupType(expr.resolvedType)
+        ) {
+          return expr.resolvedType;
+        }
+        const args = this.strictGenericArgs(expr);
+        if (!args) return expr.resolvedType;
+        const typed = args.filter(
+          (a) => this.untypedConstantKind(a) === undefined,
+        );
+        if (typed.length === 0) return expr.resolvedType;
+        const other = this.strictExprType(typed[0]!);
+        if (other?.typeKind !== "elementary") return expr.resolvedType;
+        const kind = strictKind((other as ElementaryType).name);
+        const adapts = args.every((a) => {
+          const k = this.untypedConstantKind(a);
+          return k === undefined || TypeChecker.constantAdapts(k, kind);
+        });
         return adapts ? other : expr.resolvedType;
       }
       default:
@@ -1902,23 +2045,11 @@ export class TypeChecker {
     }
     if (tKind === undefined || vKind === undefined) return false;
 
-    // An untyped integer literal keeps its exact value in any integer or REAL.
-    if (this.isUntypedNumericLiteral(value)) {
-      const lit = value as LiteralExpression;
-      if (lit.literalType === "INT" && (tKind === "int" || tKind === "real")) {
-        return false;
-      }
-      if (lit.literalType === "REAL" && tKind === "real") return false;
-      if (lit.literalType === "BOOL" && tKind === "bool") return false;
-      // matiec accepts 0 and 1 for a BOOL (and rejects any other integer).
-      if (
-        lit.literalType === "INT" &&
-        tKind === "bool" &&
-        (Number(lit.value) === 0 || Number(lit.value) === 1)
-      ) {
-        return false;
-      }
-    }
+    // An untyped constant (`1`, `-1`, `1 + 2`) keeps its value in any integer or REAL.
+    const constKind = this.untypedConstantKind(value);
+    if (constKind && TypeChecker.constantAdapts(constKind, tKind)) return false;
+    // matiec accepts 0, 1 and NOT 0/1 for a BOOL (and rejects any other integer).
+    if (tKind === "bool" && this.isStrictBoolConstant(value)) return false;
     if (strictIsExactWidening(v, t)) return true;
     this.addStrictError(strictConversionMessage(v, t), value);
     return true;
