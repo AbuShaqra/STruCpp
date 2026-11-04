@@ -1052,6 +1052,7 @@ export class TypeChecker {
           }
           this.checkStatements(c.statements, scope);
         }
+        if (this.strict) this.checkStrictDuplicateLabels(stmt, scope);
         this.checkStatements(stmt.elseStatements, scope);
         break;
       }
@@ -1656,6 +1657,85 @@ export class TypeChecker {
 
   /** The function or method whose body is being checked (strict return values). */
   private currentReturn: { name: string; type: TypeReference } | undefined;
+
+  /**
+   * `--strict`: a CASE label value may appear once, ranges expanded. The C++
+   * switch would otherwise fail with "duplicate case value". Labels that are
+   * not integer literals or enum values are not compared.
+   */
+  private checkStrictDuplicateLabels(
+    stmt: Extract<Statement, { kind: "CaseStatement" }>,
+    scope: Scope,
+  ): void {
+    const seen = new Set<string>();
+    const maxExpanded = 65536;
+    for (const c of stmt.cases) {
+      for (const label of c.labels) {
+        const lo = this.caseLabelValue(label.start, scope);
+        const hi = label.end ? this.caseLabelValue(label.end, scope) : lo;
+        if (lo === undefined || hi === undefined) continue;
+        const keys: Array<{ key: string; text: string }> = [];
+        if (typeof lo === "string" || typeof hi === "string") {
+          if (typeof lo === "string" && lo === hi) {
+            keys.push({ key: `E:${lo}`, text: lo });
+          }
+        } else if (hi >= lo && hi - lo < maxExpanded) {
+          for (let v = lo; v <= hi; v++) {
+            keys.push({ key: `I:${v}`, text: String(v) });
+          }
+        }
+        const fresh = new Set<string>();
+        for (const { key, text } of keys) {
+          if (seen.has(key)) {
+            this.addStrictErrorAt(
+              `Duplicate CASE label ${text}`,
+              label.sourceSpan,
+            );
+          }
+          fresh.add(key);
+        }
+        for (const k of fresh) seen.add(k);
+      }
+    }
+  }
+
+  /** An integer (number) or an enum value (its upper-case name), else undefined. */
+  private caseLabelValue(
+    expr: Expression,
+    scope: Scope,
+  ): number | string | undefined {
+    switch (expr.kind) {
+      case "ParenthesizedExpression":
+        return this.caseLabelValue(expr.expression, scope);
+      case "LiteralExpression":
+        return expr.literalType === "INT" && typeof expr.value === "number"
+          ? expr.value
+          : undefined;
+      case "UnaryExpression": {
+        const v = this.caseLabelValue(expr.operand, scope);
+        if (typeof v !== "number") return undefined;
+        return expr.operator === "-"
+          ? -v
+          : expr.operator === "+"
+            ? v
+            : undefined;
+      }
+      case "VariableExpression": {
+        if (expr.subscripts.length > 0 || expr.isDereference) return undefined;
+        if (expr.fieldAccess.length === 0) {
+          return scope.lookup(expr.name)?.kind === "enumValue"
+            ? expr.name.toUpperCase()
+            : undefined;
+        }
+        return expr.fieldAccess.length === 1 &&
+          this.symbolTables.globalScope.lookup(expr.name)?.kind === "type"
+          ? expr.fieldAccess[0]!.toUpperCase()
+          : undefined;
+      }
+      default:
+        return undefined;
+    }
+  }
 
   /** `--strict`: END_IF, END_CASE, END_FOR, END_WHILE and END_REPEAT need a `;`. */
   private checkStrictTerminator(stmt: {

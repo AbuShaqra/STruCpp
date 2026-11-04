@@ -5,8 +5,6 @@
  *
  * The lexer upper-cases identifiers, so names appear upper-case in messages.
  *
- * Duplicate CASE labels (row l) are deliberately not rejected: matiec only
- * warns about them (see the "duplicate CASE labels" test below).
  */
 import { describe, it, expect } from "vitest";
 import { resolve } from "path";
@@ -243,9 +241,56 @@ describe("strict mode: row k, FB call parameters", () => {
 });
 
 describe("strict mode: row l, duplicate CASE labels", () => {
-  it("does not reject them: matiec accepts, with a warning only", () => {
-    const src = prog("k : INT;", "CASE k OF 1: k := 2; 1: k := 3; END_CASE;");
+  // matiec only warns about these, but the C++ build fails with
+  // "duplicate case value", so strict mode reports them at their ST line.
+  it("rejects a repeated integer label at the repeat's line", () => {
+    pin(
+      prog(
+        "k : INT;",
+        "CASE k OF\n    1: k := 2;\n    1: k := 3;\n  END_CASE;",
+      ),
+      ["7: Duplicate CASE label 1"],
+    );
+  });
+  it("expands ranges", () => {
+    pin(prog("k : INT;", "CASE k OF 1, 1..3: k := 2; END_CASE;"), [
+      "5: Duplicate CASE label 1",
+    ]);
+    pin(prog("k : INT;", "CASE k OF 1..3: k := 2;\n 2..4: k := 3; END_CASE;"), [
+      "6: Duplicate CASE label 2",
+      "6: Duplicate CASE label 3",
+    ]);
+  });
+  it("rejects a repeated negative label", () => {
+    pin(prog("k : INT;", "CASE k OF -1: k := 2; -1: k := 3; END_CASE;"), [
+      "5: Duplicate CASE label -1",
+    ]);
+  });
+  it("rejects a repeated enum label, bare or qualified", () => {
+    const pre = "TYPE Col : (AA, BB); END_TYPE\n";
+    pin(
+      prog("c : Col;", "CASE c OF AA: c := BB;\n AA: c := BB; END_CASE;", pre),
+      ["7: Duplicate CASE label AA"],
+    );
+    pin(
+      prog(
+        "c : Col;",
+        "CASE c OF AA: c := BB;\n Col.AA: c := BB; END_CASE;",
+        pre,
+      ),
+      ["7: Duplicate CASE label AA"],
+    );
+  });
+  it("accepts distinct labels, disjoint ranges and an ELSE", () => {
+    const src = prog(
+      "k : INT;",
+      "CASE k OF 1: k := 2; 2..4: k := 3; 5, 7: k := 1; ELSE k := 0; END_CASE;",
+    );
     expect(strict(src).errors).toEqual([]);
+    expect(laxMsgs(src)).toEqual([]);
+  });
+  it("non-strict is unchanged (the duplicate only fails in the C++ build)", () => {
+    const src = prog("k : INT;", "CASE k OF 1: k := 2; 1: k := 3; END_CASE;");
     expect(laxMsgs(src)).toEqual([]);
   });
 });
