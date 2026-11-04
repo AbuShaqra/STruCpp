@@ -13,6 +13,13 @@ export interface CompileOptions {
   /** Enable debug mode with additional output */
   debug: boolean;
 
+  /**
+   * Strict mode (default false): reject implicit narrowing and integer/real/BOOL
+   * conversions, arithmetic on BOOL or bit strings, and an integer used as TIME.
+   * Exact widenings (SINT->INT, INT->REAL, REAL->LREAL, ...) stay allowed.
+   */
+  strict?: boolean;
+
   /** Generate line mapping between ST and C++ */
   lineMapping: boolean;
 

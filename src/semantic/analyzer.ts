@@ -335,9 +335,13 @@ export class SemanticAnalyzer {
   /** Track all located variables for duplicate detection */
   private locatedVars: LocatedVarInfo[] = [];
 
-  constructor() {
+  constructor(private readonly options: { strict?: boolean } = {}) {
     this.symbolTables = new SymbolTables();
-    this.typeChecker = new TypeChecker(this.symbolTables, this.stdRegistry);
+    this.typeChecker = new TypeChecker(
+      this.symbolTables,
+      this.stdRegistry,
+      this.options.strict === true,
+    );
   }
 
   /**
@@ -356,7 +360,11 @@ export class SemanticAnalyzer {
     // Use provided symbol tables (with library symbols pre-registered) or create new ones
     if (existingSymbolTables) {
       this.symbolTables = existingSymbolTables;
-      this.typeChecker = new TypeChecker(this.symbolTables, this.stdRegistry);
+      this.typeChecker = new TypeChecker(
+        this.symbolTables,
+        this.stdRegistry,
+        this.options.strict === true,
+      );
     }
 
     // Pass 1: Build symbol tables

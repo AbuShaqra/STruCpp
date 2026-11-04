@@ -639,7 +639,9 @@ function runPipeline(
   }
 
   try {
-    const analyzer = new SemanticAnalyzer();
+    const analyzer = new SemanticAnalyzer({
+      strict: mergedOptions.strict === true,
+    });
     const semanticResult = analyzer.analyze(ast, semanticSymbolTables);
     symbolTables = semanticResult.symbolTables;
     for (const err of semanticResult.errors) {

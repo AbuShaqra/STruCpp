@@ -18,6 +18,8 @@ import type {
   VariableExpression,
   FunctionCallExpression,
   MethodCallExpression,
+  Argument,
+  TypeReference,
   IECType,
   ElementaryType,
   ReferenceType,
@@ -164,6 +166,66 @@ function referenceShapeOf(
   return { chain, base: type.name };
 }
 
+// =============================================================================
+// Strict mode helpers
+// =============================================================================
+
+const STRICT_ARITHMETIC_OPS: ReadonlySet<string> = new Set([
+  "+",
+  "-",
+  "*",
+  "/",
+  "MOD",
+]);
+const STRICT_BIT_STRINGS: ReadonlySet<string> = new Set([
+  "BYTE",
+  "WORD",
+  "DWORD",
+  "LWORD",
+]);
+
+type StrictKind = "int" | "real" | "bool";
+
+/** Strict classification of an elementary type; undefined for all other types. */
+function strictKind(name: string): StrictKind | undefined {
+  const n = name.toUpperCase();
+  if (n === "BOOL") return "bool";
+  if (n === "REAL" || n === "LREAL") return "real";
+  if (/^U?(SINT|INT|DINT|LINT)$/.test(n)) return "int";
+  return undefined;
+}
+
+function strictConversionMessage(from: string, to: string): string {
+  return `Implicit conversion from ${from} to ${to} is not allowed; use ${from}_TO_${to}`;
+}
+
+/**
+ * Whether converting `from` to `to` loses nothing: integer to a wider integer
+ * (unsigned to a wider signed too, never signed to unsigned), SINT/INT/USINT/UINT
+ * to REAL, any integer up to 32 bits to LREAL, and REAL to LREAL.
+ */
+function strictIsExactWidening(from: string, to: string): boolean {
+  const fromKind = strictKind(from);
+  const toKind = strictKind(to);
+  const fromBits = ELEMENTARY_TYPES[from]?.sizeBits;
+  const toBits = ELEMENTARY_TYPES[to]?.sizeBits;
+  if (fromKind === undefined || toKind === undefined) return false;
+  if (fromBits === undefined || toBits === undefined) return false;
+  const fromUnsigned = from.startsWith("U");
+  const toUnsigned = to.startsWith("U");
+  if (fromKind === "int" && toKind === "int") {
+    if (!fromUnsigned && toUnsigned) return false;
+    return toBits > fromBits;
+  }
+  if (fromKind === "int" && toKind === "real") {
+    return fromBits <= (to === "REAL" ? 16 : 32);
+  }
+  if (fromKind === "real" && toKind === "real") {
+    return from === "REAL" && to === "LREAL";
+  }
+  return false;
+}
+
 export class TypeChecker {
   private errors: CompileError[] = [];
   private warnings: CompileError[] = [];
@@ -172,6 +234,7 @@ export class TypeChecker {
   constructor(
     private symbolTables: SymbolTables,
     private stdRegistry?: StdFunctionRegistry,
+    private strict = false,
   ) {}
 
   /**
@@ -184,6 +247,7 @@ export class TypeChecker {
   } {
     this.errors = [];
     this.warnings = [];
+    this.strictReported.clear();
     this.ast = ast;
 
     // Walk all programs
@@ -200,7 +264,9 @@ export class TypeChecker {
       const scope = this.symbolTables.getFunctionScope(func.name);
       if (scope) {
         this.checkVarBlocks(func.varBlocks, scope);
+        this.currentReturn = { name: func.name, type: func.returnType };
         this.checkStatements(func.body, scope);
+        this.currentReturn = undefined;
       }
     }
 
@@ -219,7 +285,14 @@ export class TypeChecker {
             method.name,
           );
           this.checkVarBlocks(method.varBlocks, methodScope ?? scope);
+          if (method.returnType) {
+            this.currentReturn = {
+              name: method.name,
+              type: method.returnType,
+            };
+          }
           this.checkStatements(method.body, methodScope ?? scope);
+          this.currentReturn = undefined;
         }
 
         // Property getter/setter bodies
@@ -574,6 +647,10 @@ export class TypeChecker {
       return undefined;
     }
 
+    if (this.strict && STRICT_ARITHMETIC_OPS.has(expr.operator)) {
+      this.checkStrictArithmetic(expr, leftType, rightType);
+    }
+
     let type: IECType | undefined;
 
     // Comparison operators always return BOOL
@@ -650,6 +727,14 @@ export class TypeChecker {
       this.resolveExprType(arg.value, scope);
     }
     this.validateReferenceArguments(expr, scope);
+    if (this.strict) {
+      this.checkStrictArguments(
+        this.callInputs(expr, scope) ??
+          this.dottedMethodInputs(expr.functionName, scope),
+        expr.arguments,
+        scope,
+      );
+    }
 
     const nameUpper = expr.functionName.toUpperCase();
 
@@ -749,6 +834,14 @@ export class TypeChecker {
     // Resolve argument expressions
     for (const arg of expr.arguments) {
       this.resolveExprType(arg.value, scope);
+    }
+
+    if (this.strict) {
+      this.checkStrictArguments(
+        this.methodInputs(objType, expr, scope),
+        expr.arguments,
+        scope,
+      );
     }
 
     if (!objType || !this.ast) return undefined;
@@ -871,8 +964,22 @@ export class TypeChecker {
   private checkStatement(stmt: Statement, scope: Scope): void {
     switch (stmt.kind) {
       case "AssignmentStatement": {
-        const targetType = this.resolveExprType(stmt.target, scope);
+        let targetType = this.resolveExprType(stmt.target, scope);
         const valueType = this.resolveExprType(stmt.value, scope);
+        if (
+          this.strict &&
+          targetType === undefined &&
+          this.currentReturn !== undefined &&
+          stmt.target.kind === "VariableExpression" &&
+          stmt.target.fieldAccess.length === 0 &&
+          stmt.target.subscripts.length === 0 &&
+          stmt.target.name.toUpperCase() ===
+            this.currentReturn.name.toUpperCase()
+        ) {
+          // Assigning the return value: `Fn := x;` is checked against the declared type.
+          targetType =
+            ELEMENTARY_TYPES[this.currentReturn.type.name.toUpperCase()];
+        }
         const errorsBefore = this.errors.length;
         this.validateAssignment(targetType, valueType, stmt.target, stmt.value);
         // One error per mistake: the REF_TO check only adds what the general one missed.
@@ -1065,6 +1172,8 @@ export class TypeChecker {
     value: Expression,
   ): void {
     if (!targetType || !valueType) return;
+
+    if (this.strict && this.checkStrictConversion(targetType, value)) return;
 
     // Integer/real/bool literals without explicit type prefix are polymorphic:
     // they can be assigned to any compatible numeric or bit type.
@@ -1447,6 +1556,13 @@ export class TypeChecker {
           if (specType && !_isAssignable(specType, argType)) {
             // Check if it's a narrowing (warning) vs truly incompatible (error)
             if (specType && isNarrowingConversion(specUpper, argTypeName)) {
+              if (this.strict) {
+                this.addStrictError(
+                  strictConversionMessage(argTypeName, specUpper),
+                  arg.value,
+                );
+                continue;
+              }
               this.addWarning(
                 `Argument '${param.name}' of '${nameUpper}' expects ${param.specificType}, got ${argTypeName} (narrowing)`,
                 arg.value.sourceSpan.startLine,
@@ -1519,6 +1635,202 @@ export class TypeChecker {
       return _isTypeInCategory(elemType, "ANY_INT");
     }
     return false;
+  }
+
+  // ===========================================================================
+  // Strict mode (--strict)
+  // ===========================================================================
+
+  /** The function or method whose body is being checked (strict return values). */
+  private currentReturn: { name: string; type: TypeReference } | undefined;
+
+  /** Strict diagnostics already reported, so an expression visited twice reports once. */
+  private strictReported = new Set<string>();
+
+  private addStrictError(message: string, at: Expression): void {
+    const { startLine, startCol, file } = at.sourceSpan;
+    const key = `${startLine}:${startCol}:${file ?? ""}:${message}`;
+    if (this.strictReported.has(key)) return;
+    this.strictReported.add(key);
+    this.addError(message, startLine, startCol, file);
+  }
+
+  /**
+   * The type an expression has for strict conversion checks. An untyped literal
+   * adapts to the other operand (`u + 1` with u USINT is a USINT), so it never
+   * forces a conversion by itself; everything else keeps its resolved type.
+   */
+  private strictExprType(expr: Expression): IECType | undefined {
+    switch (expr.kind) {
+      case "ParenthesizedExpression":
+        return this.strictExprType(expr.expression);
+      case "UnaryExpression":
+        return expr.operator === "NOT"
+          ? expr.resolvedType
+          : this.strictExprType(expr.operand);
+      case "BinaryExpression": {
+        if (!STRICT_ARITHMETIC_OPS.has(expr.operator)) return expr.resolvedType;
+        const leftLit = this.isUntypedNumericLiteral(expr.left);
+        const rightLit = this.isUntypedNumericLiteral(expr.right);
+        if (leftLit === rightLit) return expr.resolvedType;
+        const other = this.strictExprType(leftLit ? expr.right : expr.left);
+        const lit = (leftLit ? expr.left : expr.right) as LiteralExpression;
+        if (other?.typeKind !== "elementary") return expr.resolvedType;
+        const kind = strictKind((other as ElementaryType).name);
+        const adapts =
+          lit.literalType === "INT"
+            ? kind === "int" || kind === "real"
+            : lit.literalType === "REAL" && kind === "real";
+        return adapts ? other : expr.resolvedType;
+      }
+      default:
+        return expr.resolvedType;
+    }
+  }
+
+  /**
+   * Strict rows a, b, c and f for `value` going into something of `targetType`.
+   * Returns true when the value is settled (accepted or reported), false when the
+   * ordinary rules should decide.
+   */
+  private checkStrictConversion(
+    targetType: IECType,
+    value: Expression,
+  ): boolean {
+    if (targetType.typeKind !== "elementary") return false;
+    const valueType = this.strictExprType(value);
+    if (valueType?.typeKind !== "elementary") return false;
+    const t = (targetType as ElementaryType).name.toUpperCase();
+    const v = (valueType as ElementaryType).name.toUpperCase();
+    if (t === v) return false;
+    const tKind = strictKind(t);
+    const vKind = strictKind(v);
+
+    // Row f: an integer where a duration is expected.
+    if ((t === "TIME" || t === "LTIME") && vKind === "int") {
+      this.addStrictError(
+        `An integer cannot be used as ${t}; write a TIME literal such as T#100ms`,
+        value,
+      );
+      return true;
+    }
+    if (tKind === undefined || vKind === undefined) return false;
+
+    // An untyped integer literal keeps its exact value in any integer or REAL.
+    if (this.isUntypedNumericLiteral(value)) {
+      const lit = value as LiteralExpression;
+      if (lit.literalType === "INT" && (tKind === "int" || tKind === "real")) {
+        return false;
+      }
+      if (lit.literalType === "REAL" && tKind === "real") return false;
+      if (lit.literalType === "BOOL" && tKind === "bool") return false;
+    }
+    if (strictIsExactWidening(v, t)) return true;
+    this.addStrictError(strictConversionMessage(v, t), value);
+    return true;
+  }
+
+  /** Strict arithmetic: rows d and e. One diagnostic per operation. */
+  private checkStrictArithmetic(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): void {
+    for (const type of [leftType, rightType]) {
+      if (type.typeKind !== "elementary") continue;
+      const name = (type as ElementaryType).name.toUpperCase();
+      if (name === "BOOL") {
+        this.addStrictError("Arithmetic on BOOL is not allowed", expr);
+        return;
+      }
+      if (STRICT_BIT_STRINGS.has(name)) {
+        this.addStrictError(
+          `Arithmetic on ${name} is not allowed; convert it to an integer type first`,
+          expr,
+        );
+        return;
+      }
+    }
+  }
+
+  /** Strict conversion check for each input argument of a call. */
+  private checkStrictArguments(
+    inputs: Array<{ name: string; type: AccessType }> | undefined,
+    args: readonly Argument[],
+    _scope: Scope,
+  ): void {
+    if (!inputs) return;
+    stripEnEno([...args]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (!input) return;
+      const refKind = input.type.referenceKind;
+      if (refKind !== undefined && refKind !== "none") return;
+      if (input.type.arrayDimensions !== undefined) return;
+      const declared = ELEMENTARY_TYPES[input.type.name.toUpperCase()];
+      if (declared) this.checkStrictConversion(declared, arg.value);
+    });
+  }
+
+  /** The input parameters of the method a method-call expression names. */
+  private methodInputs(
+    objType: IECType | undefined,
+    expr: MethodCallExpression,
+    scope: Scope,
+  ): Array<{ name: string; type: AccessType }> | undefined {
+    let typeName: string | undefined;
+    if (objType?.typeKind === "elementary") {
+      typeName = (objType as ElementaryType).name;
+    } else if (expr.object.kind === "VariableExpression") {
+      const sym = scope.lookup(expr.object.name);
+      if (sym?.kind === "variable") typeName = sym.declaration?.type?.name;
+    }
+    return this.methodInputsOf(typeName, expr.methodName);
+  }
+
+  /** Inputs of `instance.Method(...)`, written as one dotted call name. */
+  private dottedMethodInputs(
+    functionName: string,
+    scope: Scope,
+  ): Array<{ name: string; type: AccessType }> | undefined {
+    const parts = functionName.split(".");
+    if (parts.length !== 2) return undefined;
+    const sym = scope.lookup(parts[0]!);
+    if (sym?.kind !== "variable") return undefined;
+    return this.methodInputsOf(sym.declaration?.type?.name, parts[1]!);
+  }
+
+  /** The VAR_INPUT / VAR_IN_OUT declarations of a method of an FB (or a base FB). */
+  private methodInputsOf(
+    fbTypeName: string | undefined,
+    methodName: string,
+  ): Array<{ name: string; type: AccessType }> | undefined {
+    if (!this.ast) return undefined;
+    let current = fbTypeName?.toUpperCase();
+    for (let depth = 0; current !== undefined && depth < 32; depth++) {
+      const name: string = current;
+      const fb = this.ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name,
+      );
+      if (!fb) return undefined;
+      const method = fb.methods.find(
+        (m) => m.name.toUpperCase() === methodName.toUpperCase(),
+      );
+      if (method) {
+        return method.varBlocks
+          .filter(
+            (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
+          )
+          .flatMap((b) => b.declarations)
+          .flatMap((d) => d.names.map((n) => ({ name: n, type: d.type })));
+      }
+      current = fb.extends?.toUpperCase();
+    }
+    return undefined;
   }
 
   // ===========================================================================
