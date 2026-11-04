@@ -152,6 +152,20 @@ Format is auto-detected. Extracts ST source from the binary/ZIP format, compiles
 | `--cxx-flags <flags>` | Extra flags passed to g++ (supports quoted paths)             |
 | `-D NAME=VALUE`       | Define global constant (repeatable, emits `constexpr size_t`) |
 | `-d, --debug`         | Enable debug output                                           |
+| `--strict`            | Reject code that strict IEC compilers (matiec) reject; below  |
+
+`--strict` applies in every mode that compiles ST (compile, build, `--test`, `--compile-lib`,
+`--import-lib`) and reports each problem at its ST line. It rejects:
+
+- implicit conversions other than exact widenings (narrowing, signed to unsigned, lossy
+  integer/REAL conversions, BOOL to or from a number); untyped constants such as `-1` or
+  `1 + 2` take the type they are assigned to, and `0`, `1` and `NOT 1` fit a BOOL;
+- arithmetic on BOOL or on BYTE/WORD/DWORD/LWORD, and an integer used as TIME;
+- the reserved names ON, STEP and MOVE for a variable, POU, method, type, field, enum value,
+  configuration, resource, task or program instance (a FUNCTION may still be named MOVE);
+- an empty FOR body, a function result that is discarded, a missing `;` after END_IF,
+  END_CASE, END_FOR, END_WHILE or END_REPEAT, an FB call naming a parameter the FB lacks,
+  and a duplicate or overlapping CASE label.
 
 ### Info
 

@@ -320,6 +320,10 @@ interface UndeclaredVarContext {
   fbName?: string;
   methodName?: string;
   propertyName?: string;
+  /** Test bodies only (the type checker never sees them): report a CONTINUE outside a loop. */
+  checkContinue?: boolean;
+  /** Loops enclosing the statements being walked. */
+  loopDepth?: number;
 }
 
 export class SemanticAnalyzer {
@@ -335,9 +339,13 @@ export class SemanticAnalyzer {
   /** Track all located variables for duplicate detection */
   private locatedVars: LocatedVarInfo[] = [];
 
-  constructor() {
+  constructor(private readonly options: { strict?: boolean } = {}) {
     this.symbolTables = new SymbolTables();
-    this.typeChecker = new TypeChecker(this.symbolTables, this.stdRegistry);
+    this.typeChecker = new TypeChecker(
+      this.symbolTables,
+      this.stdRegistry,
+      this.options.strict === true,
+    );
   }
 
   /**
@@ -356,7 +364,11 @@ export class SemanticAnalyzer {
     // Use provided symbol tables (with library symbols pre-registered) or create new ones
     if (existingSymbolTables) {
       this.symbolTables = existingSymbolTables;
-      this.typeChecker = new TypeChecker(this.symbolTables, this.stdRegistry);
+      this.typeChecker = new TypeChecker(
+        this.symbolTables,
+        this.stdRegistry,
+        this.options.strict === true,
+      );
     }
 
     // Pass 1: Build symbol tables
@@ -367,6 +379,8 @@ export class SemanticAnalyzer {
     const errorsBeforeTypeReferences = this.errors.length;
     this.validateTypeReferences(ast);
     const typeReferenceErrors = this.errors.length - errorsBeforeTypeReferences;
+
+    if (this.options.strict === true) this.validateReservedNames(ast);
 
     // Pass 2: Type checking
     if (this.errors.length - typeReferenceErrors === 0) {
@@ -386,6 +400,73 @@ export class SemanticAnalyzer {
       errors: this.errors,
       warnings: this.warnings,
     };
+  }
+
+  /**
+   * `--strict`: ON, STEP and MOVE are keywords of matiec's SFC grammar, so it
+   * rejected them as the name of anything. The one exception it makes is a
+   * FUNCTION named MOVE, which it accepts.
+   */
+  private validateReservedNames(ast: CompilationUnit): void {
+    const reserved = new Set(["ON", "STEP", "MOVE"]);
+    const check = (
+      name: string,
+      span: { startLine: number; startCol: number; file?: string },
+    ): void => {
+      if (!reserved.has(name.toUpperCase())) return;
+      this.addError(
+        `${name} is a reserved name`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    };
+    const checkBlocks = (blocks: readonly VarBlock[]): void => {
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          for (const n of decl.names) check(n, decl.sourceSpan);
+        }
+      }
+    };
+    for (const prog of ast.programs) {
+      check(prog.name, prog.sourceSpan);
+      checkBlocks(prog.varBlocks);
+    }
+    for (const fn of ast.functions) {
+      if (fn.name.toUpperCase() !== "MOVE") check(fn.name, fn.sourceSpan);
+      checkBlocks(fn.varBlocks);
+    }
+    for (const fb of ast.functionBlocks) {
+      check(fb.name, fb.sourceSpan);
+      checkBlocks(fb.varBlocks);
+      for (const method of fb.methods) {
+        check(method.name, method.sourceSpan);
+        checkBlocks(method.varBlocks);
+      }
+    }
+    for (const type of ast.types) {
+      check(type.name, type.sourceSpan);
+      const def = type.definition;
+      if (def.kind === "EnumDefinition") {
+        for (const m of def.members) check(m.name, m.sourceSpan);
+      } else if (def.kind === "StructDefinition") {
+        for (const field of def.fields) {
+          for (const n of field.names) check(n, field.sourceSpan);
+        }
+      }
+    }
+    checkBlocks(ast.globalVarBlocks);
+    for (const cfg of ast.configurations) {
+      check(cfg.name, cfg.sourceSpan);
+      checkBlocks(cfg.varBlocks);
+      for (const res of cfg.resources) {
+        check(res.name, res.sourceSpan);
+        for (const task of res.tasks) check(task.name, task.sourceSpan);
+        for (const inst of res.programInstances) {
+          check(inst.instanceName, inst.sourceSpan);
+        }
+      }
+    }
   }
 
   /**
@@ -3375,8 +3456,22 @@ export class SemanticAnalyzer {
     scope: Scope,
     ctx: UndeclaredVarContext,
   ): void {
+    const inLoop: UndeclaredVarContext = {
+      ...ctx,
+      loopDepth: (ctx.loopDepth ?? 0) + 1,
+    };
     for (const stmt of stmts) {
       switch (stmt.kind) {
+        case "ContinueStatement":
+          if (ctx.checkContinue === true && (ctx.loopDepth ?? 0) === 0) {
+            this.addError(
+              "CONTINUE must be inside a FOR, WHILE or REPEAT loop",
+              stmt.sourceSpan.startLine,
+              stmt.sourceSpan.startCol,
+              stmt.sourceSpan.file,
+            );
+          }
+          break;
         case "AssignmentStatement":
           this.checkExpressionForUndeclaredVars(stmt.target, scope, ctx);
           this.checkExpressionForUndeclaredVars(stmt.value, scope, ctx);
@@ -3403,7 +3498,7 @@ export class SemanticAnalyzer {
           if (stmt.step) {
             this.checkExpressionForUndeclaredVars(stmt.step, scope, ctx);
           }
-          this.walkStatementsForUndeclaredVars(stmt.body, scope, ctx);
+          this.walkStatementsForUndeclaredVars(stmt.body, scope, inLoop);
           break;
         case "IfStatement":
           this.checkExpressionForUndeclaredVars(stmt.condition, scope, ctx);
@@ -3416,10 +3511,10 @@ export class SemanticAnalyzer {
           break;
         case "WhileStatement":
           this.checkExpressionForUndeclaredVars(stmt.condition, scope, ctx);
-          this.walkStatementsForUndeclaredVars(stmt.body, scope, ctx);
+          this.walkStatementsForUndeclaredVars(stmt.body, scope, inLoop);
           break;
         case "RepeatStatement":
-          this.walkStatementsForUndeclaredVars(stmt.body, scope, ctx);
+          this.walkStatementsForUndeclaredVars(stmt.body, scope, inLoop);
           this.checkExpressionForUndeclaredVars(stmt.condition, scope, ctx);
           break;
         case "CaseStatement":
@@ -3828,7 +3923,7 @@ export class SemanticAnalyzer {
     stmts: TestStatement[],
     scope: Scope,
   ): void {
-    const ctx: UndeclaredVarContext = {};
+    const ctx: UndeclaredVarContext = { checkContinue: true };
     for (const stmt of stmts) {
       switch (stmt.kind) {
         case "AssertCall":

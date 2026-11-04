@@ -339,6 +339,10 @@ export const END_REPEAT = createToken({
   pattern: /END_REPEAT/i,
 });
 export const EXIT = createToken({ name: "EXIT", pattern: /EXIT/i });
+export const CONTINUE = createToken({
+  name: "CONTINUE",
+  pattern: /CONTINUE/i,
+});
 export const RETURN = createToken({ name: "RETURN", pattern: /RETURN/i });
 
 // Boolean literals
@@ -716,6 +720,7 @@ const keywordTokens = [
   UNTIL,
   END_REPEAT,
   EXIT,
+  CONTINUE,
   RETURN,
   TRUE,
   FALSE,
@@ -846,6 +851,7 @@ export const allTokens = [
   REPEAT,
   UNTIL,
   EXIT,
+  CONTINUE,
   RETURN,
   TRUE,
   FALSE,

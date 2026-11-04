@@ -114,6 +114,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | REPEAT / UNTIL / END_REPEAT | Supported | |
 | CASE / OF / END_CASE | Supported | Integer, bit, and enum selectors |
 | EXIT | Supported | Break from loop |
+| CONTINUE | Supported | Next loop iteration; contextual, so `Continue` stays usable as a name |
 | RETURN | Supported | Early return from POU |
 
 ## OOP Extensions

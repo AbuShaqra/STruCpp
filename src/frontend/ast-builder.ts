@@ -53,6 +53,7 @@ import type {
   FunctionCallStatement,
   Argument,
   IfStatement,
+  UnterminatedEnd,
   ElsifClause,
   ForStatement,
   WhileStatement,
@@ -61,6 +62,7 @@ import type {
   CaseElement,
   CaseLabel,
   ExitStatement,
+  ContinueStatement,
   ReturnStatement,
   ExternalCodePragma,
   BinaryOperator,
@@ -259,6 +261,7 @@ function getIdentifierOrKeywordImage(node: CstNode): string {
     "OVERRIDE",
     "ABSTRACT",
     "FINAL",
+    "CONTINUE",
     "AND",
     "OR",
     "XOR",
@@ -1845,6 +1848,11 @@ export class ASTBuilder {
     if (children.exitStatement) {
       return this.buildExitStatement(getFirstNode(children.exitStatement)!);
     }
+    if (children.continueStatement) {
+      return this.buildContinueStatement(
+        getFirstNode(children.continueStatement)!,
+      );
+    }
     if (children.returnStatement) {
       return this.buildReturnStatement(getFirstNode(children.returnStatement)!);
     }
@@ -1961,6 +1969,20 @@ export class ASTBuilder {
   }
 
   /**
+   * The `END_x` keyword of a structured statement that has no `;` after it.
+   */
+  private unterminatedEnd(
+    children: CstChildren,
+    keyword: string,
+  ): { unterminated: UnterminatedEnd } | Record<string, never> {
+    if (children.Semicolon !== undefined) return {};
+    const token = getAllTokens(children[keyword])[0];
+    return token
+      ? { unterminated: { keyword, sourceSpan: tokenToSourceSpan(token) } }
+      : {};
+  }
+
+  /**
    * Build an IfStatement from a CST node.
    */
   buildIfStatement(node: CstNode): IfStatement {
@@ -2009,6 +2031,7 @@ export class ASTBuilder {
       thenStatements,
       elsifClauses,
       elseStatements,
+      ...this.unterminatedEnd(children, "END_IF"),
     };
   }
 
@@ -2043,6 +2066,7 @@ export class ASTBuilder {
       end: endExpr ?? this.createDummyLiteral(node),
       body,
       ...(stepExpr !== undefined ? { step: stepExpr } : {}),
+      ...this.unterminatedEnd(children, "END_FOR"),
     };
   }
 
@@ -2064,6 +2088,7 @@ export class ASTBuilder {
       sourceSpan: nodeToSourceSpan(node),
       condition: condition!,
       body,
+      ...this.unterminatedEnd(children, "END_WHILE"),
     };
   }
 
@@ -2085,6 +2110,7 @@ export class ASTBuilder {
       sourceSpan: nodeToSourceSpan(node),
       body,
       condition: condition!,
+      ...this.unterminatedEnd(children, "END_REPEAT"),
     };
   }
 
@@ -2118,6 +2144,7 @@ export class ASTBuilder {
       selector: selector!,
       cases,
       elseStatements,
+      ...this.unterminatedEnd(children, "END_CASE"),
     };
   }
 
@@ -2174,6 +2201,16 @@ export class ASTBuilder {
   buildExitStatement(node: CstNode): ExitStatement {
     return {
       kind: "ExitStatement",
+      sourceSpan: nodeToSourceSpan(node),
+    };
+  }
+
+  /**
+   * Build a ContinueStatement from a CST node.
+   */
+  buildContinueStatement(node: CstNode): ContinueStatement {
+    return {
+      kind: "ContinueStatement",
       sourceSpan: nodeToSourceSpan(node),
     };
   }

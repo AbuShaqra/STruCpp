@@ -461,6 +461,8 @@ export function compileLibrary(
     dependencies?: StlibArchive[];
     /** Global constants available during compilation (e.g., STRING_LENGTH) */
     globalConstants?: Record<string, number>;
+    /** Check the ST sources with --strict rules */
+    strict?: boolean;
   },
 ): LibraryCompileResult {
   const catByName = buildCategoryByPouName(sources);
@@ -538,6 +540,7 @@ export function compileLibrary(
     // chunk-aware alike) see clean output.
     emitChunkMarkers: true,
   };
+  if (options.strict === true) compileOpts.strict = true;
   if (options.dependencies) {
     compileOpts.libraries = options.dependencies;
   }
@@ -781,6 +784,8 @@ export function compileStlib(
     dependencies?: StlibArchive[];
     /** Global constants available during compilation (e.g., STRING_LENGTH) */
     globalConstants?: Record<string, number>;
+    /** Check the ST sources with --strict rules */
+    strict?: boolean;
   },
 ): StlibCompileResult {
   const libResult = compileLibrary(sources, options);

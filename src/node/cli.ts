@@ -11,6 +11,7 @@
  * Options:
  *   -o, --output <file>       Output file path or directory
  *   -d, --debug               Enable debug mode
+ *   --strict                  Reject code that strict IEC compilers (matiec) reject
  *   --no-line-mapping         Disable line mapping
  *   --line-directives         Include #line directives
  *   --source-comments         Include ST source as comments
@@ -69,6 +70,7 @@ interface CLIOptions {
   inputs: string[];
   output?: string;
   debug: boolean;
+  strict: boolean;
   lineMapping: boolean;
   lineDirectives: boolean;
   sourceComments: boolean;
@@ -139,6 +141,7 @@ function parseArgs(args: string[]): CLIOptions {
   const options: CLIOptions = {
     inputs: [],
     debug: false,
+    strict: false,
     lineMapping: true,
     lineDirectives: false,
     sourceComments: false,
@@ -169,6 +172,8 @@ function parseArgs(args: string[]): CLIOptions {
       options.showVersion = true;
     } else if (arg === "-d" || arg === "--debug") {
       options.debug = true;
+    } else if (arg === "--strict") {
+      options.strict = true;
     } else if (arg === "--no-line-mapping") {
       options.lineMapping = false;
     } else if (arg === "--line-directives") {
@@ -303,6 +308,9 @@ Usage:
 Options:
   -o, --output <file>       Output file path (default: <input>.cpp)
   -d, --debug               Enable debug mode
+  --strict                  Reject code that strict IEC compilers (matiec)
+                            reject: implicit conversions, BOOL/bit-string
+                            arithmetic, reserved names, duplicate CASE labels...
   --no-line-mapping         Disable line mapping
   --line-directives         Include #line directives in output
   --source-comments         Include ST source as comments
@@ -566,6 +574,7 @@ function compileLibraryMode(options: CLIOptions): void {
     namespace: libNamespace,
     noSource: options.noSource,
     builtin: options.builtin,
+    strict: options.strict,
   };
   if (dependencies.length > 0) {
     stlibOpts.dependencies = dependencies;
@@ -630,6 +639,7 @@ function runTestMode(options: CLIOptions): void {
     headerFileName: "generated.hpp",
     fileName: basename(inputPath),
     isTestBuild: true,
+    strict: options.strict,
   };
   if (additionalSources.length > 0) {
     compileOptions.additionalSources = additionalSources;
@@ -925,6 +935,7 @@ async function importLibMode(options: CLIOptions): Promise<void> {
     version: options.libVersion,
     namespace: libNamespace,
     noSource: options.noSource,
+    strict: options.strict,
   };
   if (dependencies.length > 0) {
     stlibOpts.dependencies = dependencies;
@@ -1035,6 +1046,7 @@ async function main(): Promise<void> {
   const effectiveLibPaths = getEffectiveLibraryPaths(options);
   const compileOptions: Partial<CompileOptions> = {
     debug: options.debug,
+    strict: options.strict,
     lineMapping: options.lineMapping,
     lineDirectives: options.lineDirectives,
     sourceComments: options.sourceComments,

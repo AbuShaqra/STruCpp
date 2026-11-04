@@ -13,6 +13,12 @@ export interface CompileOptions {
   /** Enable debug mode with additional output */
   debug: boolean;
 
+  /**
+   * Strict mode (default false): reject code that strict IEC compilers (matiec)
+   * reject, with the error at the ST line. See docs/CLI.md for the list.
+   */
+  strict?: boolean;
+
   /** Generate line mapping between ST and C++ */
   lineMapping: boolean;
 
