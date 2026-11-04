@@ -1856,7 +1856,7 @@ export class TypeChecker {
   private untypedConstantKind(expr: Expression): StrictConstKind | undefined {
     switch (expr.kind) {
       case "LiteralExpression":
-        if (expr.typePrefix) return undefined;
+        if ((expr.typePrefix ?? "") !== "") return undefined;
         return expr.literalType === "INT" ||
           expr.literalType === "REAL" ||
           expr.literalType === "BOOL"
@@ -1919,7 +1919,7 @@ export class TypeChecker {
     switch (expr.kind) {
       case "LiteralExpression":
         return (
-          !expr.typePrefix &&
+          (expr.typePrefix ?? "") === "" &&
           expr.literalType === "INT" &&
           (Number(expr.value) === 0 || Number(expr.value) === 1)
         );

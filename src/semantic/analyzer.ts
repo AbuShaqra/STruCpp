@@ -3463,7 +3463,7 @@ export class SemanticAnalyzer {
     for (const stmt of stmts) {
       switch (stmt.kind) {
         case "ContinueStatement":
-          if (ctx.checkContinue && !ctx.loopDepth) {
+          if (ctx.checkContinue === true && (ctx.loopDepth ?? 0) === 0) {
             this.addError(
               "CONTINUE must be inside a FOR, WHILE or REPEAT loop",
               stmt.sourceSpan.startLine,

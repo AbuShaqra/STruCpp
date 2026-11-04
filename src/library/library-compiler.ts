@@ -540,7 +540,7 @@ export function compileLibrary(
     // chunk-aware alike) see clean output.
     emitChunkMarkers: true,
   };
-  if (options.strict) compileOpts.strict = true;
+  if (options.strict === true) compileOpts.strict = true;
   if (options.dependencies) {
     compileOpts.libraries = options.dependencies;
   }
