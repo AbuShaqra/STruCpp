@@ -452,6 +452,17 @@ export class SemanticAnalyzer {
       }
     }
     checkBlocks(ast.globalVarBlocks);
+    for (const cfg of ast.configurations) {
+      check(cfg.name, cfg.sourceSpan);
+      checkBlocks(cfg.varBlocks);
+      for (const res of cfg.resources) {
+        check(res.name, res.sourceSpan);
+        for (const task of res.tasks) check(task.name, task.sourceSpan);
+        for (const inst of res.programInstances) {
+          check(inst.instanceName, inst.sourceSpan);
+        }
+      }
+    }
   }
 
   /**

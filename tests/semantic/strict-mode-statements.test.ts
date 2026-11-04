@@ -122,6 +122,52 @@ END_FUNCTION_BLOCK
   });
 });
 
+describe("strict mode: row g, configuration level", () => {
+  const P = "PROGRAM main\n  VAR x : INT; END_VAR\n  x := 1;\nEND_PROGRAM\n";
+  const cfg = (
+    name = "cfg",
+    vars = "",
+    res = "res",
+    task = "tk",
+    inst = "inst",
+  ) =>
+    `${P}CONFIGURATION ${name}
+  ${vars}
+  RESOURCE ${res} ON PLC
+    TASK ${task}(INTERVAL := T#20ms, PRIORITY := 1);
+    PROGRAM ${inst} WITH ${task} : main;
+  END_RESOURCE
+END_CONFIGURATION
+`;
+  it("accepts a clean configuration", () => {
+    expect(strict(cfg()).errors).toEqual([]);
+    expect(laxMsgs(cfg())).toEqual([]);
+  });
+  it("rejects a configuration-level VAR_GLOBAL named step", () => {
+    pin(cfg("cfg", "VAR_GLOBAL step : BOOL; END_VAR"), [
+      "6: STEP is a reserved name",
+    ]);
+  });
+  it("rejects a configuration, resource, task and program instance named like that", () => {
+    pin(cfg("step"), ["5: STEP is a reserved name"]);
+    pin(cfg("cfg", "", "move"), ["7: MOVE is a reserved name"]);
+    pin(cfg("cfg", "", "res", "step"), ["8: STEP is a reserved name"]);
+    pin(cfg("cfg", "", "res", "tk", "move"), ["9: MOVE is a reserved name"]);
+  });
+  it("has no resource-level VAR_GLOBAL: a syntax error in both modes", () => {
+    const src = `${P}CONFIGURATION cfg
+  RESOURCE res ON PLC
+    VAR_GLOBAL step : BOOL; END_VAR
+    TASK tk(INTERVAL := T#20ms, PRIORITY := 1);
+    PROGRAM inst WITH tk : main;
+  END_RESOURCE
+END_CONFIGURATION
+`;
+    expect(msgs(src).length).toBeGreaterThan(0);
+    expect(laxMsgs(src)).toEqual(msgs(src));
+  });
+});
+
 describe("strict mode: row h, FOR body", () => {
   it("rejects a FOR loop with no statement, and one with only ';'", () => {
     pin(prog("k : INT;", "FOR k := 1 TO 3 DO\n  END_FOR;"), [
@@ -208,7 +254,7 @@ describe("strict mode: row k, FB call parameters", () => {
       "5: R_TRIG has no input or output named IN",
     ]);
   });
-  it("rejects an unknown parameter of TON and a unknown output", () => {
+  it("rejects an unknown parameter of TON and an unknown output", () => {
     pin(prog("t : TON; y : BOOL;", "t(IN := TRUE, PT := T#1s, FOO := 1);"), [
       "5: TON has no input or output named FOO",
     ]);
