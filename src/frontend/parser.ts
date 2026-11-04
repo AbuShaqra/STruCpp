@@ -380,6 +380,8 @@ export class STParser extends CstParser {
         { ALT: () => this.CONSUME(tokens.OVERRIDE) },
         { ALT: () => this.CONSUME(tokens.ABSTRACT) },
         { ALT: () => this.CONSUME(tokens.FINAL) },
+        // CONTINUE is a statement only where a statement starts (see continueStatement)
+        { ALT: () => this.CONSUME(tokens.CONTINUE) },
         // IEC 61131-3 operator keywords that can also be called as functions
         // (e.g. AND(a, b, c), OR(x, y), NOT(z), MOD(a, b), XOR(a, b))
         { ALT: () => this.CONSUME(tokens.AND) },
@@ -1012,7 +1014,7 @@ export class STParser extends CstParser {
         },
         {
           ALT: () => this.SUBRULE(this.continueStatement),
-          GATE: () => this.LA(1).tokenType === tokens.CONTINUE,
+          GATE: () => this.isContinueStatementAhead(),
         },
         {
           ALT: () => this.SUBRULE(this.returnStatement),
@@ -1105,6 +1107,7 @@ export class STParser extends CstParser {
     tokens.OVERRIDE,
     tokens.ABSTRACT,
     tokens.FINAL,
+    tokens.CONTINUE,
     // IEC 61131-3 operator keywords usable as function names
     tokens.AND,
     tokens.OR,
@@ -1192,6 +1195,24 @@ export class STParser extends CstParser {
       }
     }
     return false;
+  }
+
+  /**
+   * CONTINUE starts the statement unless the next token makes it a name
+   * (`Continue := x`, `Continue.a`, `Continue[0]`, `Continue(...)`, `Continue^`),
+   * so a variable or member named Continue keeps compiling.
+   */
+  private isContinueStatementAhead(): boolean {
+    if (this.LA(1).tokenType !== tokens.CONTINUE) return false;
+    const next = this.LA(2).tokenType;
+    return (
+      next !== tokens.Assign &&
+      next !== tokens.RefAssign &&
+      next !== tokens.Dot &&
+      next !== tokens.LBracket &&
+      next !== tokens.LParen &&
+      next !== tokens.Caret
+    );
   }
 
   private isMethodCallAhead(): boolean {

@@ -67,4 +67,13 @@ describeIfGpp("CONTINUE end to end", () => {
       ),
     ).toBe("12");
   });
+
+  it("a variable named Continue next to the statement (n = 12)", () => {
+    expect(
+      run(
+        "VAR_TEMP Continue : BOOL; END_VAR\nContinue := TRUE; FOR i := 1 TO 5 DO IF i = 3 AND Continue THEN CONTINUE; END_IF; n := n + i; END_FOR;",
+        "continue_name",
+      ),
+    ).toBe("12");
+  });
 });

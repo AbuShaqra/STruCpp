@@ -95,12 +95,35 @@ describe("CONTINUE statement", () => {
     ).toBe(true);
   });
 
-  it("continue_as_identifier_gives_a_line_error", () => {
-    const result = compile(
-      prog("continue := 1;", "VAR continue : INT; END_VAR"),
+  it("keeps Continue usable as a variable, member and FB input name", () => {
+    const src = `TYPE SC : STRUCT Continue : BOOL; END_STRUCT; END_TYPE
+FUNCTION_BLOCK FBC
+  VAR_INPUT Continue : BOOL; END_VAR
+  VAR_OUTPUT q : BOOL; END_VAR
+  q := Continue;
+END_FUNCTION_BLOCK
+PROGRAM Main
+  VAR Continue : BOOL; i : INT; n : INT; st : SC; fbc : FBC; END_VAR
+  Continue := TRUE;
+  st.Continue := NOT Continue;
+  fbc(Continue := Continue);
+  FOR i := 1 TO 5 DO
+    IF Continue THEN CONTINUE; END_IF;
+    n := n + 1;
+  END_FOR;
+END_PROGRAM
+`;
+    expect(compile(src).errors.map((e) => e.message)).toEqual([]);
+    expect(compile(src, { strict: true }).errors.map((e) => e.message)).toEqual(
+      [],
     );
-    expect(result.success).toBe(false);
-    expect(result.errors.length).toBeGreaterThan(0);
-    expect(result.errors[0]!.line).toBe(2);
+  });
+
+  it("still parses CONTINUE; as the statement where a statement starts", () => {
+    const body = bodyOf(
+      prog("FOR i := 1 TO 5 DO continue; END_FOR;", "VAR i : INT; END_VAR"),
+    );
+    const loop = body[0] as { body: Statement[] };
+    expect(loop.body.map((s) => s.kind)).toEqual(["ContinueStatement"]);
   });
 });
