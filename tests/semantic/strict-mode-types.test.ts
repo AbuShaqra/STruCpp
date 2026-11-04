@@ -34,6 +34,14 @@ function msgs(source: string): string[] {
   return strict(source).errors.map((e) => `${e.line}: ${e.message}`);
 }
 
+/** Non-strict errors as "line: message". */
+function laxMsgs(source: string): string[] {
+  return lax(source).errors.map((e) => `${e.line}: ${e.message}`);
+}
+function laxWarnings(source: string): string[] {
+  return lax(source).warnings.map((e) => `${e.line}: ${e.message}`);
+}
+
 const conv = (v: string, t: string) =>
   `Implicit conversion from ${v} to ${t} is not allowed; use ${v}_TO_${t}`;
 
@@ -44,28 +52,36 @@ describe("strict mode: row a, narrowing", () => {
       `6: ${conv("DINT", "INT")}`,
       `7: ${conv("LINT", "DINT")}`,
     ]);
-    const n = lax(src);
-    expect(n.errors).toEqual([]);
-    expect(n.warnings.some((w) => /narrowing/i.test(w.message))).toBe(true);
+    expect(laxMsgs(src)).toEqual([]);
+    expect(laxWarnings(src)).toEqual([
+      "6: Implicit narrowing conversion from DINT to INT",
+      "7: Implicit narrowing conversion from LINT to DINT",
+    ]);
   });
   it("rejects signed -> unsigned of any width", () => {
     expect(msgs(prog(DECLS, "ui := i;"))).toEqual([
       `6: ${conv("INT", "UINT")}`,
     ]);
-    expect(lax(prog(DECLS, "ui := i;")).errors).toEqual([]);
+    expect(laxMsgs(prog(DECLS, "ui := i;"))).toEqual([]);
   });
-  it("rejects a narrowing function argument and an initial value", () => {
+  it("rejects a narrowing function argument", () => {
     const src = `FUNCTION f : INT
   VAR_INPUT p : INT; END_VAR
   f := p;
 END_FUNCTION
 PROGRAM main
-  VAR d : DINT; k : INT := 5; n : INT; END_VAR
+  VAR d : DINT; n : INT; END_VAR
   n := f(p := d);
 END_PROGRAM
 `;
     expect(msgs(src)).toEqual([`7: ${conv("DINT", "INT")}`]);
-    expect(lax(src).errors).toEqual([]);
+    expect(laxMsgs(src)).toEqual([]);
+    expect(laxWarnings(src)).toEqual([]);
+  });
+  it("accepts an integer literal initial value", () => {
+    const src = prog("k : INT := 5;", "k := 1;");
+    expect(strict(src).errors).toEqual([]);
+    expect(laxMsgs(src)).toEqual([]);
   });
   it("rejects a narrowing RETURN value", () => {
     const src = `FUNCTION f : INT
@@ -74,58 +90,83 @@ END_PROGRAM
 END_FUNCTION
 `;
     expect(msgs(src)).toEqual([`3: ${conv("DINT", "INT")}`]);
-    expect(lax(src).errors).toEqual([]);
+    expect(laxMsgs(src)).toEqual([]);
+    expect(laxWarnings(src)).toEqual([]);
   });
   it("rejects a narrowing initial value", () => {
     const src = `PROGRAM main
-  VAR c : DINT := 5; n : INT := c; END_VAR
+  VAR n : INT := DINT#5; END_VAR
 END_PROGRAM
 `;
-    const s = strict(src);
-    // c is not constant, so the initial value may be rejected for another reason too
-    expect(s.errors.some((e) => e.message === conv("DINT", "INT"))).toBe(true);
+    expect(msgs(src)).toEqual([`2: ${conv("DINT", "INT")}`]);
+    expect(laxMsgs(src)).toEqual([]);
+    expect(laxWarnings(src)).toEqual([
+      "2: Implicit narrowing conversion from DINT to INT",
+    ]);
   });
 });
 
+/** Body statement `stmt` on line 6 of the DECLS program: [non-strict errors, non-strict warnings, strict errors]. */
+function pin(
+  src: string,
+  laxErrors: string[],
+  laxWarns: string[],
+  strictErrors: string[],
+  label = src,
+): void {
+  expect(laxMsgs(src), `non-strict errors: ${label}`).toEqual(laxErrors);
+  expect(laxWarnings(src), `non-strict warnings: ${label}`).toEqual(laxWarns);
+  expect(msgs(src), `strict errors: ${label}`).toEqual(strictErrors);
+}
+const nar = (v: string, t: string) =>
+  `6: Implicit narrowing conversion from ${v} to ${t}`;
+const TIME_MSG =
+  "An integer cannot be used as TIME; write a TIME literal such as T#100ms";
+
 describe("strict mode: row b, integer <-> real", () => {
-  it("accepts the exact widenings", () => {
-    for (const [v, t] of [
-      ["i", "r"],
-      ["ui", "d"],
-      ["d", "lr"],
-      ["r", "lr"],
-      ["us", "i"],
-      ["ud", "l"],
-    ] as const) {
-      const src = prog(DECLS, `${t} := ${v};`);
-      expect(strict(src).errors, `${v} -> ${t}`).toEqual([]);
+  it("accepts the exact widenings (non-strict still rejects the unsigned ones)", () => {
+    const cases: Array<[string, string, string[]]> = [
+      ["i", "r", []],
+      ["ui", "d", ["6: Cannot assign UINT to DINT"]],
+      ["d", "lr", []],
+      ["r", "lr", []],
+      ["us", "i", ["6: Cannot assign USINT to INT"]],
+      ["ud", "l", ["6: Cannot assign UDINT to LINT"]],
+    ];
+    for (const [v, t, laxErrors] of cases) {
+      pin(prog(DECLS, `${t} := ${v};`), laxErrors, [], [], `${v} -> ${t}`);
     }
   });
   it("rejects lossy integer -> REAL/LREAL", () => {
-    expect(msgs(prog(DECLS, "r := d;"))).toEqual([
-      `6: ${conv("DINT", "REAL")}`,
-    ]);
-    expect(msgs(prog(DECLS, "lr := l;"))).toEqual([
-      `6: ${conv("LINT", "LREAL")}`,
-    ]);
-    expect(msgs(prog(DECLS, "r := ud;"))).toEqual([
-      `6: ${conv("UDINT", "REAL")}`,
-    ]);
-    expect(msgs(prog(DECLS, "r := ul;"))).toEqual([
-      `6: ${conv("ULINT", "REAL")}`,
-    ]);
-    expect(lax(prog(DECLS, "r := d;")).errors).toEqual([]);
-    expect(lax(prog(DECLS, "lr := l;")).errors).toEqual([]);
+    pin(prog(DECLS, "r := d;"), [], [], [`6: ${conv("DINT", "REAL")}`]);
+    pin(prog(DECLS, "lr := l;"), [], [], [`6: ${conv("LINT", "LREAL")}`]);
+    pin(prog(DECLS, "r := ud;"), [], [], [`6: ${conv("UDINT", "REAL")}`]);
+    pin(
+      prog(DECLS, "r := ul;"),
+      [],
+      [nar("ULINT", "REAL")],
+      [`6: ${conv("ULINT", "REAL")}`],
+    );
   });
   it("rejects REAL/LREAL -> any integer and LREAL -> REAL", () => {
-    expect(msgs(prog(DECLS, "i := r;"))).toEqual([`6: ${conv("REAL", "INT")}`]);
-    expect(msgs(prog(DECLS, "l := lr;"))).toEqual([
-      `6: ${conv("LREAL", "LINT")}`,
-    ]);
-    expect(msgs(prog(DECLS, "r := lr;"))).toEqual([
-      `6: ${conv("LREAL", "REAL")}`,
-    ]);
-    expect(lax(prog(DECLS, "i := r;")).errors).toEqual([]);
+    pin(
+      prog(DECLS, "i := r;"),
+      [],
+      [nar("REAL", "INT")],
+      [`6: ${conv("REAL", "INT")}`],
+    );
+    pin(
+      prog(DECLS, "l := lr;"),
+      [],
+      [nar("LREAL", "LINT")],
+      [`6: ${conv("LREAL", "LINT")}`],
+    );
+    pin(
+      prog(DECLS, "r := lr;"),
+      [],
+      [nar("LREAL", "REAL")],
+      [`6: ${conv("LREAL", "REAL")}`],
+    );
   });
   it("rejects a lossy argument to a REAL parameter", () => {
     const src = `FUNCTION f : REAL
@@ -137,93 +178,142 @@ PROGRAM main
   r := f(p := d);
 END_PROGRAM
 `;
-    expect(msgs(src)).toEqual([`7: ${conv("DINT", "REAL")}`]);
-    expect(lax(src).errors).toEqual([]);
+    pin(src, [], [], [`7: ${conv("DINT", "REAL")}`]);
   });
   it("keeps accepting integer literals where a REAL is expected", () => {
-    expect(
-      strict(prog(DECLS, "r := 0; lr := 5;\nIF r > 100 THEN i := 1; END_IF;"))
-        .errors,
-    ).toEqual([]);
+    pin(
+      prog(DECLS, "r := 0; lr := 5;\nIF r > 100 THEN i := 1; END_IF;"),
+      [],
+      [],
+      [],
+    );
   });
 });
 
 describe("strict mode: row c, BOOL <-> numbers", () => {
   it("rejects both directions", () => {
-    expect(msgs(prog(DECLS, "b := i;"))).toEqual([`6: ${conv("INT", "BOOL")}`]);
-    expect(msgs(prog(DECLS, "i := b;"))).toEqual([`6: ${conv("BOOL", "INT")}`]);
-    expect(msgs(prog(DECLS, "r := b;"))).toEqual([
-      `6: ${conv("BOOL", "REAL")}`,
-    ]);
-    expect(msgs(prog(DECLS, "b := r;"))).toEqual([
-      `6: ${conv("REAL", "BOOL")}`,
-    ]);
-    expect(msgs(prog(DECLS, "b := 1;"))).toEqual([`6: ${conv("INT", "BOOL")}`]);
-    expect(msgs(prog(DECLS, "i := TRUE;"))).toEqual([
-      `6: ${conv("BOOL", "INT")}`,
-    ]);
+    pin(
+      prog(DECLS, "b := i;"),
+      [],
+      [nar("INT", "BOOL")],
+      [`6: ${conv("INT", "BOOL")}`],
+    );
+    pin(prog(DECLS, "i := b;"), [], [], [`6: ${conv("BOOL", "INT")}`]);
+    pin(prog(DECLS, "r := b;"), [], [], [`6: ${conv("BOOL", "REAL")}`]);
+    pin(
+      prog(DECLS, "b := r;"),
+      [],
+      [nar("REAL", "BOOL")],
+      [`6: ${conv("REAL", "BOOL")}`],
+    );
+    pin(prog(DECLS, "i := TRUE;"), [], [], [`6: ${conv("BOOL", "INT")}`]);
   });
-  it("is unchanged without strict", () => {
-    expect(lax(prog(DECLS, "b := i;")).errors).toEqual([]);
+  it("accepts the literals 0 and 1 for a BOOL, as matiec does", () => {
+    pin(prog(DECLS, "b := 1;"), [], [], []);
+    pin(prog(DECLS, "b := 0;"), [], [], []);
+    pin(prog("b0 : BOOL := 1; b1 : BOOL := 0;", "b0 := TRUE;"), [], [], []);
   });
-  it("rejects a BOOL argument to an INT parameter", () => {
+  it("rejects any other integer literal for a BOOL", () => {
+    pin(prog(DECLS, "b := 2;"), [], [], [`6: ${conv("INT", "BOOL")}`]);
+    pin(
+      prog("b0 : BOOL := 2;", "b0 := TRUE;"),
+      [],
+      [],
+      [`3: ${conv("INT", "BOOL")}`],
+    );
+  });
+  it("rejects a BOOL argument to an INT parameter, and a 2 to a BOOL one", () => {
     const src = `FUNCTION f : INT
   VAR_INPUT p : INT; END_VAR
   f := p;
 END_FUNCTION
+FUNCTION g : INT
+  VAR_INPUT q : BOOL; END_VAR
+  g := 0;
+END_FUNCTION
 PROGRAM main
   VAR b : BOOL; n : INT; END_VAR
   n := f(b);
+  n := g(q := 1);
+  n := g(q := 2);
 END_PROGRAM
 `;
-    expect(msgs(src)).toEqual([`7: ${conv("BOOL", "INT")}`]);
-    expect(lax(src).errors).toEqual([]);
+    pin(
+      src,
+      [],
+      [],
+      [`11: ${conv("BOOL", "INT")}`, `13: ${conv("INT", "BOOL")}`],
+    );
   });
 });
 
 describe("strict mode: rows d and e, arithmetic", () => {
   it("rejects arithmetic with a BOOL operand", () => {
     for (const op of ["+", "-", "*", "/", "MOD"]) {
-      const src = prog(DECLS, `i := i ${op} b;`);
-      const m = msgs(src);
-      expect(m, op).toContain("6: Arithmetic on BOOL is not allowed");
-      expect(
-        lax(src).errors.filter((e) => /Arithmetic on/.test(e.message)),
-      ).toEqual([]);
+      pin(
+        prog(DECLS, `i := i ${op} b;`),
+        [],
+        [],
+        ["6: Arithmetic on BOOL is not allowed"],
+        op,
+      );
     }
   });
   it("rejects arithmetic with a bit-string operand", () => {
-    expect(msgs(prog(DECLS, "w := w + 1;"))).toContain(
-      "6: Arithmetic on WORD is not allowed; convert it to an integer type first",
+    pin(
+      prog(DECLS, "w := w + 1;"),
+      [],
+      [],
+      [
+        "6: Arithmetic on WORD is not allowed; convert it to an integer type first",
+      ],
     );
-    expect(msgs(prog(DECLS, "i := i * bt;"))).toContain(
-      "6: Arithmetic on BYTE is not allowed; convert it to an integer type first",
+    pin(
+      prog(DECLS, "i := i * bt;"),
+      [],
+      [],
+      [
+        "6: Arithmetic on BYTE is not allowed; convert it to an integer type first",
+      ],
     );
-    expect(lax(prog(DECLS, "w := w + 1;")).errors).toEqual([]);
   });
   it("does not touch comparison, AND/OR or integer arithmetic", () => {
-    expect(
-      strict(prog(DECLS, "b := b AND (i > 3);\nw := w AND 16#FF;\ni := i + 1;"))
-        .errors,
-    ).toEqual([]);
+    pin(
+      prog(DECLS, "b := b AND (i > 3);\nw := w AND 16#FF;\ni := i + 1;"),
+      [],
+      [],
+      [],
+    );
   });
 });
 
 describe("strict mode: row f, integer as TIME", () => {
-  it("rejects an integer assigned to TIME/LTIME", () => {
-    const m = (t: string) =>
-      `6: An integer cannot be used as ${t}; write a TIME literal such as T#100ms`;
-    expect(msgs(prog(DECLS, "t := 100;"))).toEqual([m("TIME")]);
-    expect(
-      lax(prog(DECLS, "t := 100;")).errors.map((e) => e.message),
-    ).not.toContain(m("TIME"));
+  it("rejects an integer literal assigned to TIME", () => {
+    pin(
+      prog(DECLS, "t := 100;"),
+      ["6: Cannot assign INT to TIME"],
+      [],
+      [`6: ${TIME_MSG}`],
+    );
+  });
+  it("rejects an integer variable assigned to TIME", () => {
+    pin(
+      prog(DECLS, "t := d;"),
+      ["6: Cannot assign DINT to TIME"],
+      [],
+      [`6: ${TIME_MSG}`],
+    );
+  });
+  it("rejects an integer initial value for a TIME", () => {
+    pin(
+      prog("t0 : TIME := 100;", "t0 := T#1s;"),
+      ["3: Cannot assign INT to TIME"],
+      [],
+      [`3: ${TIME_MSG}`],
+    );
   });
   it("rejects an integer passed to a TIME input", () => {
-    const src = prog(DECLS, "tm(IN := b, PT := 100);");
-    expect(msgs(src)).toEqual([
-      "6: An integer cannot be used as TIME; write a TIME literal such as T#100ms",
-    ]);
-    expect(lax(src).errors).toEqual([]);
+    pin(prog(DECLS, "tm(IN := b, PT := 100);"), [], [], [`6: ${TIME_MSG}`]);
   });
 });
 
@@ -249,7 +339,8 @@ END_PROGRAM
       `10: ${conv("DINT", "INT")}`,
       `11: ${conv("DINT", "INT")}`,
     ]);
-    expect(lax(src).errors).toEqual([]);
+    expect(laxMsgs(src)).toEqual([]);
+    expect(laxWarnings(src)).toEqual([]);
   });
 });
 

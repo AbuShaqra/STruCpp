@@ -1724,6 +1724,14 @@ export class TypeChecker {
       }
       if (lit.literalType === "REAL" && tKind === "real") return false;
       if (lit.literalType === "BOOL" && tKind === "bool") return false;
+      // matiec accepts 0 and 1 for a BOOL (and rejects any other integer).
+      if (
+        lit.literalType === "INT" &&
+        tKind === "bool" &&
+        (Number(lit.value) === 0 || Number(lit.value) === 1)
+      ) {
+        return false;
+      }
     }
     if (strictIsExactWidening(v, t)) return true;
     this.addStrictError(strictConversionMessage(v, t), value);
