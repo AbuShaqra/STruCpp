@@ -491,6 +491,7 @@ export type Statement =
   | WhileStatement
   | RepeatStatement
   | ExitStatement
+  | ContinueStatement
   | ReturnStatement
   | FunctionCallStatement
   | ExternalCodePragma
@@ -598,6 +599,13 @@ export interface RepeatStatement extends ASTNode {
  */
 export interface ExitStatement extends ASTNode {
   kind: "ExitStatement";
+}
+
+/**
+ * CONTINUE statement
+ */
+export interface ContinueStatement extends ASTNode {
+  kind: "ContinueStatement";
 }
 
 /**

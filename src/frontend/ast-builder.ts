@@ -61,6 +61,7 @@ import type {
   CaseElement,
   CaseLabel,
   ExitStatement,
+  ContinueStatement,
   ReturnStatement,
   ExternalCodePragma,
   BinaryOperator,
@@ -1845,6 +1846,11 @@ export class ASTBuilder {
     if (children.exitStatement) {
       return this.buildExitStatement(getFirstNode(children.exitStatement)!);
     }
+    if (children.continueStatement) {
+      return this.buildContinueStatement(
+        getFirstNode(children.continueStatement)!,
+      );
+    }
     if (children.returnStatement) {
       return this.buildReturnStatement(getFirstNode(children.returnStatement)!);
     }
@@ -2174,6 +2180,16 @@ export class ASTBuilder {
   buildExitStatement(node: CstNode): ExitStatement {
     return {
       kind: "ExitStatement",
+      sourceSpan: nodeToSourceSpan(node),
+    };
+  }
+
+  /**
+   * Build a ContinueStatement from a CST node.
+   */
+  buildContinueStatement(node: CstNode): ContinueStatement {
+    return {
+      kind: "ContinueStatement",
       sourceSpan: nodeToSourceSpan(node),
     };
   }

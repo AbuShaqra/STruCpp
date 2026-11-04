@@ -3101,6 +3101,12 @@ export class CodeGenerator {
         }
         break;
       }
+      case "ContinueStatement":
+        // FOR is a C++ `for` with the step in its header, REPEAT a do-while
+        // (continue re-tests the condition) and CASE a switch (continue
+        // reaches the enclosing loop), so a plain `continue;` is correct.
+        this.emit(`${indent}continue;`);
+        break;
       case "ReturnStatement":
         this.generateReturnStatement(indent);
         break;

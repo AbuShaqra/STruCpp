@@ -856,6 +856,18 @@ export class TypeChecker {
     }
   }
 
+  /** Nesting depth of FOR/WHILE/REPEAT bodies (for CONTINUE). */
+  private loopDepth = 0;
+
+  private checkLoopBody(stmts: Statement[], scope: Scope): void {
+    this.loopDepth++;
+    try {
+      this.checkStatements(stmts, scope);
+    } finally {
+      this.loopDepth--;
+    }
+  }
+
   private checkStatement(stmt: Statement, scope: Scope): void {
     switch (stmt.kind) {
       case "AssignmentStatement": {
@@ -989,19 +1001,19 @@ export class TypeChecker {
             }
           }
         }
-        this.checkStatements(stmt.body, scope);
+        this.checkLoopBody(stmt.body, scope);
         break;
       }
 
       case "WhileStatement": {
         const condType = this.resolveExprType(stmt.condition, scope);
         this.validateCondition(condType, stmt.condition);
-        this.checkStatements(stmt.body, scope);
+        this.checkLoopBody(stmt.body, scope);
         break;
       }
 
       case "RepeatStatement": {
-        this.checkStatements(stmt.body, scope);
+        this.checkLoopBody(stmt.body, scope);
         const condType = this.resolveExprType(stmt.condition, scope);
         this.validateCondition(condType, stmt.condition);
         break;
@@ -1012,6 +1024,17 @@ export class TypeChecker {
         this.resolveExprType(stmt.call, scope);
         break;
       }
+
+      case "ContinueStatement":
+        if (this.loopDepth === 0) {
+          this.addError(
+            "CONTINUE must be inside a FOR, WHILE or REPEAT loop",
+            stmt.sourceSpan.startLine,
+            stmt.sourceSpan.startCol,
+            stmt.sourceSpan.file,
+          );
+        }
+        break;
 
       case "ReturnStatement":
       case "ExitStatement":
