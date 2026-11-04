@@ -376,6 +376,8 @@ export class SemanticAnalyzer {
     this.validateTypeReferences(ast);
     const typeReferenceErrors = this.errors.length - errorsBeforeTypeReferences;
 
+    if (this.options.strict === true) this.validateReservedNames(ast);
+
     // Pass 2: Type checking
     if (this.errors.length - typeReferenceErrors === 0) {
       const typeResult = this.typeChecker.check(ast);
@@ -394,6 +396,62 @@ export class SemanticAnalyzer {
       errors: this.errors,
       warnings: this.warnings,
     };
+  }
+
+  /**
+   * `--strict`: ON, STEP and MOVE are keywords of matiec's SFC grammar, so it
+   * rejected them as the name of anything. The one exception it makes is a
+   * FUNCTION named MOVE, which it accepts.
+   */
+  private validateReservedNames(ast: CompilationUnit): void {
+    const reserved = new Set(["ON", "STEP", "MOVE"]);
+    const check = (
+      name: string,
+      span: { startLine: number; startCol: number; file?: string },
+    ): void => {
+      if (!reserved.has(name.toUpperCase())) return;
+      this.addError(
+        `${name} is a reserved name`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    };
+    const checkBlocks = (blocks: readonly VarBlock[]): void => {
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          for (const n of decl.names) check(n, decl.sourceSpan);
+        }
+      }
+    };
+    for (const prog of ast.programs) {
+      check(prog.name, prog.sourceSpan);
+      checkBlocks(prog.varBlocks);
+    }
+    for (const fn of ast.functions) {
+      if (fn.name.toUpperCase() !== "MOVE") check(fn.name, fn.sourceSpan);
+      checkBlocks(fn.varBlocks);
+    }
+    for (const fb of ast.functionBlocks) {
+      check(fb.name, fb.sourceSpan);
+      checkBlocks(fb.varBlocks);
+      for (const method of fb.methods) {
+        check(method.name, method.sourceSpan);
+        checkBlocks(method.varBlocks);
+      }
+    }
+    for (const type of ast.types) {
+      check(type.name, type.sourceSpan);
+      const def = type.definition;
+      if (def.kind === "EnumDefinition") {
+        for (const m of def.members) check(m.name, m.sourceSpan);
+      } else if (def.kind === "StructDefinition") {
+        for (const field of def.fields) {
+          for (const n of field.names) check(n, field.sourceSpan);
+        }
+      }
+    }
+    checkBlocks(ast.globalVarBlocks);
   }
 
   /**

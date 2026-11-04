@@ -517,10 +517,22 @@ export interface RefAssignStatement extends ASTNode {
 }
 
 /**
+ * Set on a structured statement whose `END_x` keyword is not followed by `;`.
+ * The grammar accepts that; `--strict` rejects it, as matiec did.
+ */
+export interface UnterminatedEnd {
+  /** The keyword, e.g. "END_IF". */
+  keyword: string;
+  /** Where the keyword is. */
+  sourceSpan: SourceSpan;
+}
+
+/**
  * IF statement
  */
 export interface IfStatement extends ASTNode {
   kind: "IfStatement";
+  unterminated?: UnterminatedEnd;
   condition: Expression;
   thenStatements: Statement[];
   elsifClauses: ElsifClause[];
@@ -541,6 +553,7 @@ export interface ElsifClause extends ASTNode {
  */
 export interface CaseStatement extends ASTNode {
   kind: "CaseStatement";
+  unterminated?: UnterminatedEnd;
   selector: Expression;
   cases: CaseElement[];
   elseStatements: Statement[];
@@ -569,6 +582,7 @@ export interface CaseLabel extends ASTNode {
  */
 export interface ForStatement extends ASTNode {
   kind: "ForStatement";
+  unterminated?: UnterminatedEnd;
   controlVariable: string;
   start: Expression;
   end: Expression;
@@ -581,6 +595,7 @@ export interface ForStatement extends ASTNode {
  */
 export interface WhileStatement extends ASTNode {
   kind: "WhileStatement";
+  unterminated?: UnterminatedEnd;
   condition: Expression;
   body: Statement[];
 }
@@ -590,6 +605,7 @@ export interface WhileStatement extends ASTNode {
  */
 export interface RepeatStatement extends ASTNode {
   kind: "RepeatStatement";
+  unterminated?: UnterminatedEnd;
   body: Statement[];
   condition: Expression;
 }

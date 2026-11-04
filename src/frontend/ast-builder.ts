@@ -53,6 +53,7 @@ import type {
   FunctionCallStatement,
   Argument,
   IfStatement,
+  UnterminatedEnd,
   ElsifClause,
   ForStatement,
   WhileStatement,
@@ -1967,6 +1968,20 @@ export class ASTBuilder {
   }
 
   /**
+   * The `END_x` keyword of a structured statement that has no `;` after it.
+   */
+  private unterminatedEnd(
+    children: CstChildren,
+    keyword: string,
+  ): { unterminated: UnterminatedEnd } | Record<string, never> {
+    if (children.Semicolon !== undefined) return {};
+    const token = getAllTokens(children[keyword])[0];
+    return token
+      ? { unterminated: { keyword, sourceSpan: tokenToSourceSpan(token) } }
+      : {};
+  }
+
+  /**
    * Build an IfStatement from a CST node.
    */
   buildIfStatement(node: CstNode): IfStatement {
@@ -2015,6 +2030,7 @@ export class ASTBuilder {
       thenStatements,
       elsifClauses,
       elseStatements,
+      ...this.unterminatedEnd(children, "END_IF"),
     };
   }
 
@@ -2049,6 +2065,7 @@ export class ASTBuilder {
       end: endExpr ?? this.createDummyLiteral(node),
       body,
       ...(stepExpr !== undefined ? { step: stepExpr } : {}),
+      ...this.unterminatedEnd(children, "END_FOR"),
     };
   }
 
@@ -2070,6 +2087,7 @@ export class ASTBuilder {
       sourceSpan: nodeToSourceSpan(node),
       condition: condition!,
       body,
+      ...this.unterminatedEnd(children, "END_WHILE"),
     };
   }
 
@@ -2091,6 +2109,7 @@ export class ASTBuilder {
       sourceSpan: nodeToSourceSpan(node),
       body,
       condition: condition!,
+      ...this.unterminatedEnd(children, "END_REPEAT"),
     };
   }
 
@@ -2124,6 +2143,7 @@ export class ASTBuilder {
       selector: selector!,
       cases,
       elseStatements,
+      ...this.unterminatedEnd(children, "END_CASE"),
     };
   }
 

@@ -29,11 +29,12 @@ import type {
   FunctionDeclaration,
   Statement,
   VarBlock,
+  UnterminatedEnd,
   VarDeclaration,
 } from "../frontend/ast.js";
 import type { SymbolTables, Scope } from "./symbol-table.js";
 import type { StdFunctionRegistry } from "./std-function-registry.js";
-import type { CompileError } from "../types.js";
+import type { CompileError, SourceSpan } from "../types.js";
 import {
   ELEMENTARY_TYPES,
   isTypeInCategory as _isTypeInCategory,
@@ -1025,6 +1026,7 @@ export class TypeChecker {
       }
 
       case "IfStatement": {
+        this.checkStrictTerminator(stmt);
         const condType = this.resolveExprType(stmt.condition, scope);
         this.validateCondition(condType, stmt.condition);
         this.checkStatements(stmt.thenStatements, scope);
@@ -1038,6 +1040,7 @@ export class TypeChecker {
       }
 
       case "CaseStatement": {
+        this.checkStrictTerminator(stmt);
         const selectorType = this.resolveExprType(stmt.selector, scope);
         if (selectorType) {
           this.validateCaseSelector(selectorType, stmt.selector);
@@ -1054,6 +1057,10 @@ export class TypeChecker {
       }
 
       case "ForStatement": {
+        this.checkStrictTerminator(stmt);
+        if (this.strict && stmt.body.length === 0) {
+          this.addStrictErrorAt("A FOR loop must have a body", stmt.sourceSpan);
+        }
         const startType = this.resolveExprType(stmt.start, scope);
         const endType = this.resolveExprType(stmt.end, scope);
         if (stmt.step) this.resolveExprType(stmt.step, scope);
@@ -1113,6 +1120,7 @@ export class TypeChecker {
       }
 
       case "WhileStatement": {
+        this.checkStrictTerminator(stmt);
         const condType = this.resolveExprType(stmt.condition, scope);
         this.validateCondition(condType, stmt.condition);
         this.checkLoopBody(stmt.body, scope);
@@ -1120,6 +1128,7 @@ export class TypeChecker {
       }
 
       case "RepeatStatement": {
+        this.checkStrictTerminator(stmt);
         this.checkLoopBody(stmt.body, scope);
         const condType = this.resolveExprType(stmt.condition, scope);
         this.validateCondition(condType, stmt.condition);
@@ -1129,6 +1138,10 @@ export class TypeChecker {
       case "FunctionCallStatement": {
         // resolveExprType already validates function call args
         this.resolveExprType(stmt.call, scope);
+        if (this.strict && stmt.call.kind === "FunctionCallExpression") {
+          this.checkStrictDiscardedResult(stmt.call, scope);
+          this.checkStrictFbParameters(stmt.call, scope);
+        }
         break;
       }
 
@@ -1644,11 +1657,104 @@ export class TypeChecker {
   /** The function or method whose body is being checked (strict return values). */
   private currentReturn: { name: string; type: TypeReference } | undefined;
 
+  /** `--strict`: END_IF, END_CASE, END_FOR, END_WHILE and END_REPEAT need a `;`. */
+  private checkStrictTerminator(stmt: {
+    unterminated?: UnterminatedEnd;
+  }): void {
+    if (!this.strict || !stmt.unterminated) return;
+    this.addStrictErrorAt(
+      `Missing ';' after ${stmt.unterminated.keyword}`,
+      stmt.unterminated.sourceSpan,
+    );
+  }
+
+  /** `--strict`: a function with a return type may not be called as a statement. */
+  private checkStrictDiscardedResult(
+    call: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (call.instance) return;
+    if (scope.lookup(call.functionName)?.kind === "variable") return;
+    const fn = this.symbolTables.lookupFunction(call.functionName);
+    if (!fn?.returnType) return;
+    this.addStrictErrorAt(
+      `The result of ${call.functionName} is not used; assign it or use it in an expression`,
+      call.sourceSpan,
+    );
+  }
+
+  /** `--strict`: an FB call may only name parameters the FB has. */
+  private checkStrictFbParameters(
+    call: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (call.instance) return;
+    const sym = scope.lookup(call.functionName);
+    if (sym?.kind !== "variable") return;
+    const declared = sym.declaration as VarDeclaration | undefined;
+    if (!declared) return;
+    const typeName = declared.type.name;
+    const known = this.fbParameterNames(typeName);
+    if (!known) return;
+    for (const arg of call.arguments) {
+      if (arg.name === undefined) continue;
+      const upper = arg.name.toUpperCase();
+      if (upper === "EN" || upper === "ENO" || known.has(upper)) continue;
+      this.addStrictErrorAt(
+        `${typeName} has no input or output named ${arg.name}`,
+        arg.sourceSpan,
+      );
+    }
+  }
+
+  /**
+   * The upper-cased names of every input, output and in/out of an FB type,
+   * inherited ones included. Undefined when the type is not a known FB.
+   */
+  private fbParameterNames(typeName: string): Set<string> | undefined {
+    const names = new Set<string>();
+    const isParam = (b: VarBlock): boolean =>
+      b.blockType === "VAR_INPUT" ||
+      b.blockType === "VAR_OUTPUT" ||
+      b.blockType === "VAR_IN_OUT";
+    let current: string | undefined = typeName.toUpperCase();
+    let found = false;
+    for (let depth = 0; current !== undefined && depth < 32; depth++) {
+      const upper: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === upper,
+      );
+      if (fb) {
+        found = true;
+        for (const block of fb.varBlocks.filter(isParam)) {
+          for (const d of block.declarations) {
+            for (const n of d.names) names.add(n.toUpperCase());
+          }
+        }
+        current = fb.extends?.toUpperCase();
+        continue;
+      }
+      const lib = this.symbolTables.lookupFunctionBlock(upper);
+      if (lib) {
+        found = true;
+        for (const m of [...lib.inputs, ...lib.outputs, ...lib.inouts]) {
+          names.add(m.name.toUpperCase());
+        }
+      }
+      break;
+    }
+    return found ? names : undefined;
+  }
+
   /** Strict diagnostics already reported, so an expression visited twice reports once. */
   private strictReported = new Set<string>();
 
   private addStrictError(message: string, at: Expression): void {
-    const { startLine, startCol, file } = at.sourceSpan;
+    this.addStrictErrorAt(message, at.sourceSpan);
+  }
+
+  private addStrictErrorAt(message: string, span: SourceSpan): void {
+    const { startLine, startCol, file } = span;
     const key = `${startLine}:${startCol}:${file ?? ""}:${message}`;
     if (this.strictReported.has(key)) return;
     this.strictReported.add(key);
