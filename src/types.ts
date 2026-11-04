@@ -14,9 +14,8 @@ export interface CompileOptions {
   debug: boolean;
 
   /**
-   * Strict mode (default false): reject implicit narrowing and integer/real/BOOL
-   * conversions, arithmetic on BOOL or bit strings, and an integer used as TIME.
-   * Exact widenings (SINT->INT, INT->REAL, REAL->LREAL, ...) stay allowed.
+   * Strict mode (default false): reject code that strict IEC compilers (matiec)
+   * reject, with the error at the ST line. See docs/CLI.md for the list.
    */
   strict?: boolean;
 

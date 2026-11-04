@@ -11,7 +11,7 @@
  * Options:
  *   -o, --output <file>       Output file path or directory
  *   -d, --debug               Enable debug mode
- *   --strict                  Reject implicit conversions and BOOL/bit-string arithmetic
+ *   --strict                  Reject code that strict IEC compilers (matiec) reject
  *   --no-line-mapping         Disable line mapping
  *   --line-directives         Include #line directives
  *   --source-comments         Include ST source as comments
@@ -308,8 +308,9 @@ Usage:
 Options:
   -o, --output <file>       Output file path (default: <input>.cpp)
   -d, --debug               Enable debug mode
-  --strict                  Reject implicit conversions, BOOL and bit-string
-                            arithmetic, and integers used as TIME
+  --strict                  Reject code that strict IEC compilers (matiec)
+                            reject: implicit conversions, BOOL/bit-string
+                            arithmetic, reserved names, duplicate CASE labels...
   --no-line-mapping         Disable line mapping
   --line-directives         Include #line directives in output
   --source-comments         Include ST source as comments
