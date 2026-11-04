@@ -573,3 +573,66 @@ describe("Test File Analysis - Mock validation", () => {
     expect(result.warnings).toHaveLength(0);
   });
 });
+
+describe("Test File Analysis - CONTINUE", () => {
+  const source = `PROGRAM Main
+  VAR x : INT; END_VAR
+  x := 42;
+END_PROGRAM
+`;
+  const MSG = "CONTINUE must be inside a FOR, WHILE or REPEAT loop";
+
+  it("rejects a bare CONTINUE in a TEST body at its line", () => {
+    const result = analyzeTest(
+      source,
+      `TEST 'bare'
+  VAR i : INT; END_VAR
+  CONTINUE;
+  ASSERT_TRUE(TRUE);
+END_TEST
+`,
+    );
+    expect(result.errors.map((e) => `${e.line}: ${e.message}`)).toEqual([
+      `3: ${MSG}`,
+    ]);
+  });
+
+  it("rejects CONTINUE in an IF of SETUP, TEARDOWN and a TEST", () => {
+    const result = analyzeTest(
+      source,
+      `SETUP
+  IF TRUE THEN CONTINUE; END_IF;
+END_SETUP
+TEARDOWN
+  CONTINUE;
+END_TEARDOWN
+TEST 'in if'
+  IF TRUE THEN CONTINUE; END_IF;
+  ASSERT_TRUE(TRUE);
+END_TEST
+`,
+    );
+    expect(result.errors.map((e) => `${e.line}: ${e.message}`)).toEqual([
+      `2: ${MSG}`,
+      `5: ${MSG}`,
+      `8: ${MSG}`,
+    ]);
+  });
+
+  it("accepts CONTINUE inside FOR, WHILE and REPEAT loops", () => {
+    const result = analyzeTest(
+      source,
+      `TEST 'loops'
+  VAR i : INT; END_VAR
+  FOR i := 1 TO 3 DO
+    IF i = 2 THEN CONTINUE; END_IF;
+  END_FOR;
+  WHILE i < 5 DO i := i + 1; CONTINUE; END_WHILE;
+  REPEAT i := i + 1; CONTINUE; UNTIL i > 7 END_REPEAT;
+  ASSERT_TRUE(TRUE);
+END_TEST
+`,
+    );
+    expect(result.errors).toEqual([]);
+  });
+});

@@ -320,6 +320,10 @@ interface UndeclaredVarContext {
   fbName?: string;
   methodName?: string;
   propertyName?: string;
+  /** Test bodies only (the type checker never sees them): report a CONTINUE outside a loop. */
+  checkContinue?: boolean;
+  /** Loops enclosing the statements being walked. */
+  loopDepth?: number;
 }
 
 export class SemanticAnalyzer {
@@ -3452,8 +3456,22 @@ export class SemanticAnalyzer {
     scope: Scope,
     ctx: UndeclaredVarContext,
   ): void {
+    const inLoop: UndeclaredVarContext = {
+      ...ctx,
+      loopDepth: (ctx.loopDepth ?? 0) + 1,
+    };
     for (const stmt of stmts) {
       switch (stmt.kind) {
+        case "ContinueStatement":
+          if (ctx.checkContinue && !ctx.loopDepth) {
+            this.addError(
+              "CONTINUE must be inside a FOR, WHILE or REPEAT loop",
+              stmt.sourceSpan.startLine,
+              stmt.sourceSpan.startCol,
+              stmt.sourceSpan.file,
+            );
+          }
+          break;
         case "AssignmentStatement":
           this.checkExpressionForUndeclaredVars(stmt.target, scope, ctx);
           this.checkExpressionForUndeclaredVars(stmt.value, scope, ctx);
@@ -3480,7 +3498,7 @@ export class SemanticAnalyzer {
           if (stmt.step) {
             this.checkExpressionForUndeclaredVars(stmt.step, scope, ctx);
           }
-          this.walkStatementsForUndeclaredVars(stmt.body, scope, ctx);
+          this.walkStatementsForUndeclaredVars(stmt.body, scope, inLoop);
           break;
         case "IfStatement":
           this.checkExpressionForUndeclaredVars(stmt.condition, scope, ctx);
@@ -3493,10 +3511,10 @@ export class SemanticAnalyzer {
           break;
         case "WhileStatement":
           this.checkExpressionForUndeclaredVars(stmt.condition, scope, ctx);
-          this.walkStatementsForUndeclaredVars(stmt.body, scope, ctx);
+          this.walkStatementsForUndeclaredVars(stmt.body, scope, inLoop);
           break;
         case "RepeatStatement":
-          this.walkStatementsForUndeclaredVars(stmt.body, scope, ctx);
+          this.walkStatementsForUndeclaredVars(stmt.body, scope, inLoop);
           this.checkExpressionForUndeclaredVars(stmt.condition, scope, ctx);
           break;
         case "CaseStatement":
@@ -3905,7 +3923,7 @@ export class SemanticAnalyzer {
     stmts: TestStatement[],
     scope: Scope,
   ): void {
-    const ctx: UndeclaredVarContext = {};
+    const ctx: UndeclaredVarContext = { checkContinue: true };
     for (const stmt of stmts) {
       switch (stmt.kind) {
         case "AssertCall":
