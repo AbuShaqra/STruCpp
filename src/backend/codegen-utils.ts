@@ -118,19 +118,36 @@ export function formatArrayElementAccess(
 }
 
 /**
+ * A C++ octal escape for one character code (at most 0o777): always exactly
+ * three digits, so the character after it can never extend it. A `\x` escape
+ * would: C++ hex escapes take every hex digit that follows (`'$41BC'`).
+ */
+function octalEscape(code: number): string {
+  return "\\" + code.toString(8).padStart(3, "0");
+}
+
+/**
  * Translate IEC 61131-3 `$`-escape sequences in a string literal's body to C++
  * escape sequences, and escape what C++ needs escaped.
  *
  * Handles `$N`/`$n` (newline), `$L`/`$l` (line feed), `$R`/`$r` (CR), `$T`/`$t`
  * (tab), `$P`/`$p` (form feed), `$$` (literal `$`), `$'` (single quote), `$XX`
- * (hex byte) and `''` (doubled single quote), then escapes backslash and
- * double-quote so the result is safe inside a C++ `"…"` literal.
+ * (hex byte; `$XXXX` in a WSTRING) and `''` (doubled single quote), then
+ * escapes backslash and double-quote so the result is safe inside a C++ `"…"`
+ * literal.
+ *
+ * Every control character (below 0x20, and 0x7F) is written as an octal
+ * escape, never raw: C++ treats a raw CR or LF as a line break, so `\` + CR in
+ * the source (emitted as `\\` + CR) would splice the line, and the backslash
+ * left over would escape the next `"` and end the C++ string early. `$XX` is
+ * written in octal too, since a hex escape would swallow hex digits after it.
  *
  * Shared by the expression emitter and the type generator: a STRING literal has
  * to lower identically whether it appears in a statement, a variable
- * initialiser, or a STRUCT element default.
+ * initialiser, or a STRUCT element default. `wide` is set for WSTRING literals
+ * (emitted as `u"…"`).
  */
-export function translateIECString(inner: string): string {
+export function translateIECString(inner: string, wide = false): string {
   let result = "";
   for (let i = 0; i < inner.length; i++) {
     const ch = inner[i]!;
@@ -162,19 +179,40 @@ export function translateIECString(inner: string): string {
           result += "'";
           i++;
           break;
-        default:
-          // $XX hex escape: two hex digits
-          if (
-            i + 2 < inner.length &&
-            /^[0-9A-Fa-f]{2}$/.test(inner.substring(i + 1, i + 3))
-          ) {
-            result += "\\x" + inner.substring(i + 1, i + 3);
-            i += 2;
+        default: {
+          if (wide && next === '"') {
+            // `$"` is the WSTRING double quote (in a STRING it is no escape)
+            result += '\\"';
+            i++;
+            break;
+          }
+          // $XXXX (WSTRING) or $XX hex escape, written as a non-greedy escape
+          const digits =
+            wide && /^[0-9A-Fa-f]{4}$/.test(inner.substring(i + 1, i + 5))
+              ? 4
+              : /^[0-9A-Fa-f]{2}$/.test(inner.substring(i + 1, i + 3))
+                ? 2
+                : 0;
+          if (digits > 0) {
+            const code = parseInt(inner.substring(i + 1, i + 1 + digits), 16);
+            if (code <= 0o777) {
+              result += octalEscape(code);
+            } else {
+              // A code unit beyond octal range (WSTRING only). `\uXXXX` is
+              // out: g++ rejects surrogates (`\uD800`) and the C0/C1 range.
+              // A hex escape takes every hex digit after it, so end the
+              // literal and restart it with the same `u` prefix: adjacent
+              // literals concatenate, and the next character cannot run into
+              // it. The space keeps `"u"` from reading as a literal suffix.
+              result += "\\x" + code.toString(16).padStart(4, "0") + '" u"';
+            }
+            i += digits;
           } else {
             // Unknown $-escape, pass through
             result += "\\\\$";
           }
           break;
+        }
       }
     } else if (ch === "'" && i + 1 < inner.length && inner[i + 1] === "'") {
       // ST doubled-quote → single quote
@@ -184,6 +222,13 @@ export function translateIECString(inner: string): string {
       result += "\\\\";
     } else if (ch === '"') {
       result += '\\"';
+    } else if (ch === "?") {
+      // Never two `?` in a row in the C++ source: `??/` is a trigraph for `\`
+      // in -std=gnu++14 and below, and a backslash would eat the next quote.
+      result += "\\?";
+    } else if (ch < " " || ch === "\x7f") {
+      // A raw control character, CR and LF above all: never into the C++ raw
+      result += octalEscape(ch.charCodeAt(0));
     } else {
       result += ch;
     }
