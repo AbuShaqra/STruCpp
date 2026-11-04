@@ -298,13 +298,22 @@ describe("strict mode: row l, duplicate CASE labels", () => {
       ["7: Duplicate CASE label 1"],
     );
   });
-  it("expands ranges", () => {
+  it("compares ranges, one error per overlapping label", () => {
     pin(prog("k : INT;", "CASE k OF 1, 1..3: k := 2; END_CASE;"), [
-      "5: Duplicate CASE label 1",
+      "5: Duplicate CASE label 1..3",
     ]);
     pin(prog("k : INT;", "CASE k OF 1..3: k := 2;\n 2..4: k := 3; END_CASE;"), [
-      "6: Duplicate CASE label 2",
-      "6: Duplicate CASE label 3",
+      "6: Duplicate CASE label 2..4",
+    ]);
+  });
+  it("reports a repeated wide range once", () => {
+    pin(prog("k : INT;", "CASE k OF 0..1000: ;\n 0..1000: ; END_CASE;"), [
+      "6: Duplicate CASE label 0..1000",
+    ]);
+  });
+  it("finds a value inside a range wider than 65536 values", () => {
+    pin(prog("k : DINT;", "CASE k OF 0..100000: ;\n 5: ; END_CASE;"), [
+      "6: Duplicate CASE label 5",
     ]);
   });
   it("rejects a repeated negative label", () => {

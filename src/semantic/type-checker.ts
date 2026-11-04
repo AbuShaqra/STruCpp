@@ -1670,42 +1670,38 @@ export class TypeChecker {
   private currentReturn: { name: string; type: TypeReference } | undefined;
 
   /**
-   * `--strict`: a CASE label value may appear once, ranges expanded. The C++
-   * switch would otherwise fail with "duplicate case value". Labels that are
-   * not integer literals or enum values are not compared.
+   * `--strict`: a CASE label value may appear once; ranges are compared by their
+   * bounds. The C++ switch would otherwise fail with "duplicate case value".
+   * Labels that are not integer literals or enum values are not compared.
    */
   private checkStrictDuplicateLabels(
     stmt: Extract<Statement, { kind: "CaseStatement" }>,
     scope: Scope,
   ): void {
-    const seen = new Set<string>();
-    const maxExpanded = 65536;
+    const enums = new Set<string>();
+    const ranges: Array<{ lo: number; hi: number }> = [];
     for (const c of stmt.cases) {
       for (const label of c.labels) {
         const lo = this.caseLabelValue(label.start, scope);
         const hi = label.end ? this.caseLabelValue(label.end, scope) : lo;
-        if (lo === undefined || hi === undefined) continue;
-        const keys: Array<{ key: string; text: string }> = [];
-        if (typeof lo === "string" || typeof hi === "string") {
-          if (typeof lo === "string" && lo === hi) {
-            keys.push({ key: `E:${lo}`, text: lo });
-          }
-        } else if (hi >= lo && hi - lo < maxExpanded) {
-          for (let v = lo; v <= hi; v++) {
-            keys.push({ key: `I:${v}`, text: String(v) });
-          }
+        let duplicate = false;
+        let text = "";
+        if (typeof lo === "string" && lo === hi) {
+          duplicate = enums.has(lo);
+          enums.add(lo);
+          text = lo;
+        } else if (typeof lo === "number" && typeof hi === "number") {
+          if (hi < lo) continue;
+          duplicate = ranges.some((r) => lo <= r.hi && r.lo <= hi);
+          ranges.push({ lo, hi });
+          text = lo === hi ? String(lo) : `${lo}..${hi}`;
         }
-        const fresh = new Set<string>();
-        for (const { key, text } of keys) {
-          if (seen.has(key)) {
-            this.addStrictErrorAt(
-              `Duplicate CASE label ${text}`,
-              label.sourceSpan,
-            );
-          }
-          fresh.add(key);
+        if (duplicate) {
+          this.addStrictErrorAt(
+            `Duplicate CASE label ${text}`,
+            label.sourceSpan,
+          );
         }
-        for (const k of fresh) seen.add(k);
       }
     }
   }
