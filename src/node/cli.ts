@@ -573,6 +573,7 @@ function compileLibraryMode(options: CLIOptions): void {
     namespace: libNamespace,
     noSource: options.noSource,
     builtin: options.builtin,
+    strict: options.strict,
   };
   if (dependencies.length > 0) {
     stlibOpts.dependencies = dependencies;
@@ -637,6 +638,7 @@ function runTestMode(options: CLIOptions): void {
     headerFileName: "generated.hpp",
     fileName: basename(inputPath),
     isTestBuild: true,
+    strict: options.strict,
   };
   if (additionalSources.length > 0) {
     compileOptions.additionalSources = additionalSources;
@@ -932,6 +934,7 @@ async function importLibMode(options: CLIOptions): Promise<void> {
     version: options.libVersion,
     namespace: libNamespace,
     noSource: options.noSource,
+    strict: options.strict,
   };
   if (dependencies.length > 0) {
     stlibOpts.dependencies = dependencies;
