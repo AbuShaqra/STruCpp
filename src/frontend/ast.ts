@@ -850,6 +850,8 @@ export interface VariableExpression extends TypedNode {
   globalList?: string;
   /** Set by the type checker when the storage reached lies in a UNION's storage (feature union). */
   unionMember?: true;
+  /** Set by the type checker when a REFERENCE TO is bound to this alias-typed variable, which compile cannot lower yet: the message. */
+  aliasReferenceBinding?: string;
 }
 
 /**

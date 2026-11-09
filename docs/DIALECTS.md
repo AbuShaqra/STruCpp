@@ -102,6 +102,14 @@ included, and `ADR` both in statements and in a declaration's initial value. IEC
 `REF_TO`, `REF()` and `^` need no feature. `--test` files are analysed with the default set, so they are
 not refused under `iec-3`.
 
+A `REFERENCE TO` VAR_INPUT is bound to its argument at the call. Where `reference_to` is on, these
+arguments are errors: an expression (`REFERENCE TO input 'R' needs a variable to refer to, not an
+expression`), a constant (`... not a constant`), a variable of another type, a REF_TO or a subrange
+(`REFERENCE TO INT cannot refer to a DINT variable`; for a subrange the message adds that writes through the
+reference would not be checked against the subrange). A variable of an alias of the referenced type passes
+the check, and compile refuses it as not supported yet (`binding a REFERENCE TO INT to a variable of alias
+type 'MYINT' is not supported yet`), as it does for `r REF= x` with `x` of an alias type.
+
 `self_caret` is in neither the default set nor `iec-3`. IEC writes THIS and SUPER with a dot: `THIS.x`,
 `THIS.M()`, `SUPER.x` and `SUPER.M()` need no feature, and `SUPER.M()` reaches the nearest base that
 declares `M`. `THIS^.x` means the same as `THIS.x`. `REF=` on a THIS member (`THIS.r REF= x`) needs
