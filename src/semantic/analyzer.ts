@@ -422,6 +422,7 @@ export class SemanticAnalyzer {
       this.stdRegistry,
       this.options.strict === true,
       this.features,
+      (feature, construct) => this.featureMessage(feature, construct),
     );
   }
 
@@ -446,6 +447,7 @@ export class SemanticAnalyzer {
         this.stdRegistry,
         this.options.strict === true,
         this.features,
+        (feature, construct) => this.featureMessage(feature, construct),
       );
     }
 
@@ -2452,11 +2454,22 @@ export class SemanticAnalyzer {
     span: { startLine: number; startCol: number; file?: string | undefined },
   ): void {
     if (this.features.has(feature)) return;
-    let message = `${construct} needs the feature ${feature}`;
+    this.addError(
+      this.featureMessage(feature, construct),
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
+  }
+
+  /** `<construct> needs the feature <id>`, plus the loaded profiles that have it. */
+  private featureMessage(feature: FeatureId, construct: string): string {
+    const message = `${construct} needs the feature ${feature}`;
     const dialect = this.options.dialect;
     const profiles = dialect ? profilesWithFeature(dialect, feature) : [];
-    if (profiles.length > 0) message += ` (profiles: ${profiles.join(", ")})`;
-    this.addError(message, span.startLine, span.startCol, span.file);
+    return profiles.length > 0
+      ? `${message} (profiles: ${profiles.join(", ")})`
+      : message;
   }
 
   /**
