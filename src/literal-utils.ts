@@ -42,3 +42,30 @@ export function exactIntegerLiteralValue(raw: string): bigint | undefined {
     return undefined;
   }
 }
+
+/** Bit width of each IEC 61131-3 integer type, keyed by upper-case name. */
+const INTEGER_TYPE_BITS: Readonly<Record<string, number>> = {
+  SINT: 8,
+  INT: 16,
+  DINT: 32,
+  LINT: 64,
+  USINT: 8,
+  UINT: 16,
+  UDINT: 32,
+  ULINT: 64,
+};
+
+/**
+ * Inclusive value range of an IEC integer type (`SINT` → [-128, 127]), or
+ * undefined when `typeName` is not one.
+ */
+export function integerTypeRange(
+  typeName: string,
+): { min: bigint; max: bigint } | undefined {
+  const name = typeName.toUpperCase();
+  const bits = INTEGER_TYPE_BITS[name];
+  if (bits === undefined) return undefined;
+  if (name.startsWith("U")) return { min: 0n, max: (1n << BigInt(bits)) - 1n };
+  const half = 1n << BigInt(bits - 1);
+  return { min: -half, max: half - 1n };
+}

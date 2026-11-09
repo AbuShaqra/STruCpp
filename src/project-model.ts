@@ -421,8 +421,10 @@ export function parseTimeLiteral(literal: string): TimeValue {
   const rawValue = literal;
   let nanoseconds = 0;
 
-  // Remove T# or TIME# prefix (case insensitive)
+  // Remove T# or TIME# prefix (case insensitive), then the optional sign
   let value = literal.replace(/^(T|TIME)#/i, "");
+  const negative = value.startsWith("-");
+  value = value.replace(/^[+-]/, "");
 
   // Parse components: d (days), h (hours), m (minutes), s (seconds), ms (milliseconds), us (microseconds), ns (nanoseconds)
   const patterns = [
@@ -445,7 +447,7 @@ export function parseTimeLiteral(literal: string): TimeValue {
     }
   }
 
-  return { nanoseconds, rawValue };
+  return { nanoseconds: negative ? -nanoseconds : nanoseconds, rawValue };
 }
 
 // =============================================================================
@@ -764,6 +766,15 @@ export class ProjectModelBuilder {
       const upperName = propName.toUpperCase();
       if (upperName === "INTERVAL") {
         interval = this.extractTimeValue(expr);
+        if (interval !== undefined && interval.nanoseconds < 0) {
+          const span = expr.sourceSpan;
+          this.addError(
+            `Task '${task.name}' INTERVAL must not be negative`,
+            span.startLine,
+            span.startCol,
+            span.file,
+          );
+        }
       } else if (upperName === "PRIORITY") {
         priority = this.extractIntValue(expr);
       }

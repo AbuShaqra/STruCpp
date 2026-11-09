@@ -74,6 +74,9 @@ export function formatIntegerLiteral(rawValue: string, value: number): string {
   }
   const exact = exactIntegerLiteralValue(rawValue);
   if (exact === undefined) return String(value);
+  // INT64_MIN has no C++ literal: `-9223372036854775808` negates an unsigned value.
+  if (exact < -CPP_SIGNED_LITERAL_MAX)
+    return `(-${CPP_SIGNED_LITERAL_MAX}LL - 1)`;
   return exact > CPP_SIGNED_LITERAL_MAX ? `${exact}ULL` : exact.toString();
 }
 
