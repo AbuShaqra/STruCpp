@@ -256,9 +256,22 @@ export class STParser extends CstParser {
         DEF: () => this.CONSUME2(tokens.Identifier),
       });
     });
-    // Interface methods (abstract, no body)
+    // Method prototypes; PROPERTY prototypes (feature property, checked in
+    // the analyzer) reuse the FB rule, whose accessors must have no body here.
     this.MANY(() => {
-      this.SUBRULE(this.interfaceMethodDeclaration);
+      this.OR({
+        DEF: [
+          {
+            ALT: () => this.SUBRULE(this.interfaceMethodDeclaration),
+            GATE: () => this.LA(1).tokenType === tokens.METHOD,
+          },
+          {
+            ALT: () => this.SUBRULE(this.propertyDeclaration),
+            GATE: () => this.LA(1).tokenType === tokens.PROPERTY,
+          },
+        ],
+        IGNORE_AMBIGUITIES: true,
+      });
     });
     this.CONSUME(tokens.END_INTERFACE);
   });

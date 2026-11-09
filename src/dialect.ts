@@ -17,6 +17,7 @@ export const KNOWN_FEATURES = [
   "reference_to",
   "ref_assign",
   "self_caret",
+  "property",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];

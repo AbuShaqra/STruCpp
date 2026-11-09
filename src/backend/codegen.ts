@@ -1160,6 +1160,15 @@ export class CodeGenerator {
         ifaceMethods,
       );
     }
+    // Interface properties, own and inherited, resolve on the interface type
+    for (const iface of ast.interfaces) {
+      for (const prop of this.interfacePropertiesOf(iface.name, ast)) {
+        this.propertyNameMap.set(
+          `${iface.name.toUpperCase()}.${prop.name.toUpperCase()}`,
+          prop.name,
+        );
+      }
+    }
 
     this.sharedInterfaceBases = this.findSharedInterfaceBases(ast);
 
@@ -2082,9 +2091,65 @@ export class CodeGenerator {
       }
     }
 
+    // Property prototypes: pure virtual accessors an implementing FB overrides
+    for (const prop of iface.properties) {
+      const type = this.mapTypeRefToCpp(prop.type);
+      this.emitHeaderLineDirective(prop.sourceSpan.startLine);
+      const propLine = this.currentHeaderLine;
+      if (prop.getter) {
+        this.emitHeader(`    virtual ${type} get_${prop.name}() const = 0;`);
+      }
+      if (prop.setter) {
+        this.emitHeader(
+          `    virtual void set_${prop.name}(${type} ${prop.name}) = 0;`,
+        );
+      }
+      this.recordHeaderLineMapping(prop.sourceSpan.startLine, propLine);
+    }
+
     this.emitHeader("};");
     this.emitHeaderLineReset();
     this.emitHeader("");
+  }
+
+  /**
+   * Properties an interface declares, its own first, then each EXTENDS
+   * base's (nearest wins).
+   */
+  private interfacePropertiesOf(
+    name: string,
+    ast: CompilationUnit,
+  ): PropertyDeclaration[] {
+    const found = new Map<string, PropertyDeclaration>();
+    const visited = new Set<string>();
+    const visit = (ifaceName: string): void => {
+      const upper = ifaceName.toUpperCase();
+      if (visited.has(upper)) return;
+      visited.add(upper);
+      const iface = ast.interfaces.find((i) => i.name.toUpperCase() === upper);
+      if (!iface) return;
+      for (const p of iface.properties) {
+        const key = p.name.toUpperCase();
+        if (!found.has(key)) found.set(key, p);
+      }
+      for (const base of iface.extends ?? []) visit(base);
+    };
+    visit(name);
+    return [...found.values()];
+  }
+
+  /**
+   * `obj.get_P()` on the instance `obj` designates: through an interface
+   * variable, on the instance it refers to.
+   */
+  private propertyRead(
+    objectCode: string,
+    ownerType: string | undefined,
+    propName: string,
+  ): string {
+    return ownerType !== undefined && this.isInterfaceType(ownerType)
+      ? `itf_ref(${objectCode}).get_${propName}()`
+      : `${objectCode}.get_${propName}()`;
   }
 
   /**
@@ -4577,7 +4642,7 @@ export class CodeGenerator {
         if (isLast) {
           const propName = this.resolvePropertyName(currentType, field);
           if (propName) {
-            result += `.get_${propName}()`;
+            result = this.propertyRead(result, currentType, propName);
             continue;
           }
         }
@@ -4640,8 +4705,7 @@ export class CodeGenerator {
           if (isLast) {
             const propName = this.resolvePropertyName(currentType, step.name);
             if (propName) {
-              result += `.get_${propName}()`;
-              return result;
+              return this.propertyRead(result, currentType, propName);
             }
           }
           const fieldType = this.resolveMemberType(currentType, step.name);
@@ -6008,7 +6072,11 @@ export class CodeGenerator {
           delete baseExpr.accessChain;
         }
       }
-      objectCode = this.generateVariableExpression(baseExpr) + ".";
+      const base = this.generateVariableExpression(baseExpr);
+      // Through an interface, on the instance it refers to
+      objectCode = this.isInterfaceType(currentType)
+        ? `itf_ref(${base}).`
+        : `${base}.`;
     }
 
     return { objectCode, propertyName: propName };

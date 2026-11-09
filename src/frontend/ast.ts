@@ -210,6 +210,8 @@ export interface InterfaceDeclaration extends ASTNode {
   name: string;
   extends?: string[];
   methods: MethodDeclaration[];
+  /** PROPERTY prototypes (feature property); each accessor present has no body. */
+  properties: PropertyDeclaration[];
 }
 
 /**
