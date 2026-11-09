@@ -243,7 +243,13 @@ describe("--check exit code 2", () => {
   });
 
   it("combined with --build", () => {
-    expect(run(["--check", "--build", "clean.st"]).status).toBe(2);
+    // Runs in a scratch dir: if the combination were accepted it would build there, not in fixtures.
+    const dir = join(tmpdir(), "strucpp-cli-check-build");
+    if (existsSync(dir)) rmSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(join(FIX, "clean.st"), join(dir, "clean.st"));
+    expect(run(["--check", "--build", "clean.st"], dir).status).toBe(2);
+    expect(readdirSync(dir)).toEqual(["clean.st"]);
   });
 
   it("a dialect flag without a value", () => {
