@@ -221,7 +221,10 @@ function buildTypeSymbol(type: TypeDeclaration): DocumentSymbol {
   switch (def.kind) {
     case "StructDefinition": {
       const sd = def as StructDefinition;
-      const children = sd.fields.map((f) => buildFieldSymbol(f));
+      // Own fields only: the copies inherited through EXTENDS lie in the base's range.
+      const children = sd.fields
+        .slice(sd.inheritedDeclarations ?? 0)
+        .map((f) => buildFieldSymbol(f));
       return DocumentSymbol.create(
         type.name,
         "STRUCT",

@@ -73,6 +73,7 @@ the root. A profile without `extends` has only its own features.
 | `property`           | `PROPERTY` prototypes in an `INTERFACE`                      |
 | `postfix_enum_base`  | an enumeration base type after the value list, `(A, B) DINT` |
 | `named_global_lists` | a global qualified by its list name, `GVL_A.x`               |
+| `struct_extends`     | a STRUCT that inherits another's fields, `ST_B EXTENDS ST_A` |
 
 ## Refusals
 
@@ -89,6 +90,7 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `PROPERTY` inside an `INTERFACE`            | `property`           | `PROPERTY in an INTERFACE needs the feature property`                                |
 | `TYPE E : (A, B) DINT;` (base after list)   | `postfix_enum_base`  | `an enum base type written after the value list needs the feature postfix_enum_base` |
 | `GVL_A.x` (list-qualified global)           | `named_global_lists` | `Global variable list access 'GVL_A.X' needs the feature named_global_lists`         |
+| `TYPE ST_B EXTENDS ST_A : STRUCT`           | `struct_extends`     | `EXTENDS on a STRUCT needs the feature struct_extends`                               |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
@@ -194,6 +196,47 @@ END_PROGRAM
   Top-level globals are not in the debug table.
 - With the feature off, `GVL_A.x` is refused at the access only where `GVL_A` names a list and nothing
   else; an unknown name is still `Undeclared variable 'GVL_A'`.
+
+`struct_extends` is in neither the default set nor `iec-3`: IEC 61131-3 Ed. 3 `Struct_Type_Decl` takes no
+EXTENDS, and 3.46 limits inheritance to classes, function block types and interfaces. With the feature on, a
+STRUCT declared in a `TYPE` block may name a base STRUCT:
+
+```
+TYPE
+  ST_A : STRUCT a1 : INT := 10; a2 : BOOL; END_STRUCT;
+  ST_B EXTENDS ST_A : STRUCT b1 : INT; END_STRUCT;
+  ST_C EXTENDS ST_B : STRUCT c1 : REAL; END_STRUCT;
+END_TYPE
+```
+
+- The derived STRUCT holds the base's fields first (with their initial values), then its own; chains of any
+  length work, in any declaration order. `c.a1` reaches an inherited field, and a structure initializer
+  sets inherited fields too: `c : ST_C := (a1 := 1, b1 := 2, c1 := 0.5);`.
+- The refusal with the feature off is reported at `EXTENDS`; the STRUCT is still given the base's fields,
+  so its uses add no second error.
+- IEC 61131-3 Ed. 3 6.4.4.6: two structured variables are assignment-compatible only when they have the same
+  type. So neither `a := b` (derived to base) nor `b := a` is accepted: `Cannot assign ST_B to ST_A: a
+  structured variable is assignment-compatible only with the same type (ST_B EXTENDS ST_A)`. The same holds
+  for an argument bound to a `VAR_INPUT` or `VAR_IN_OUT`, positional or named: `Cannot assign ST_B to
+  parameter 'X' of type ST_A: ...`; an argument of any other STRUCT type is refused there when either
+  type is a derived STRUCT. Some implementations accept derived-to-base assignment; that is not
+  supported here (a possible later feature). Copy fields one by one instead.
+- Errors at the base name: `Undefined type 'ST_X' in EXTENDS clause of STRUCT 'ST_B'`; `STRUCT 'ST_B'
+  cannot extend 'FB_X', a FUNCTION_BLOCK: the base must be a STRUCT` (also an INTERFACE, FUNCTION,
+  PROGRAM, enumeration, alias, ARRAY, subrange or elementary type); `Circular EXTENDS in STRUCT 'ST_A':
+  ST_A EXTENDS ST_B EXTENDS ST_A` (reported for each STRUCT of the cycle; a STRUCT extending itself too).
+  At a field: `Field 'A1' of STRUCT 'ST_C' is already inherited from 'ST_A'` (names compare
+  case-insensitively). At EXTENDS: `EXTENDS on TYPE 'T' needs a STRUCT definition`.
+- Limit: the base must be declared in the compiled sources. A STRUCT from a library is refused (`STRUCT
+  'ST_B' cannot extend 'ST_LIB', a STRUCT from a library: the base must be declared in the compiled
+  sources`), since a library exports its fields' names and types but not their initial values.
+- A library built from sources that declare a derived STRUCT exports it with all its fields, as a plain
+  STRUCT; its consumers need no feature.
+- In C++ the derived STRUCT is a plain struct holding every field, the same as the struct written out in
+  full; it does not derive from the base's C++ struct. Initial values, arrays of it, FB and STRUCT members
+  of its type and the debug table therefore work as for any STRUCT, and the two types stay unrelated in C++
+  too. Inherited fields keep the base declaration's source position, so diagnostics and hover point there;
+  the language server's outline lists each STRUCT's own fields.
 
 `program_methods` is not in the default set: a `METHOD` in a `PROGRAM` is refused with no dialect flag too
 (before profiles it did not parse at all). `--strict` does not change any feature. A refused method is still

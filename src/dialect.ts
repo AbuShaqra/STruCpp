@@ -20,6 +20,7 @@ export const KNOWN_FEATURES = [
   "property",
   "postfix_enum_base",
   "named_global_lists",
+  "struct_extends",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];
