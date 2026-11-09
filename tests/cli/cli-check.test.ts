@@ -122,6 +122,24 @@ describe("--check --json", () => {
     expect(report.summary).toEqual({ errors: 0, warnings: 1 });
   });
 
+  it("pragmas: exit 0, each listed as a warning with its position", () => {
+    for (const dialect of [[], ["--dialect", "iec-3"]]) {
+      const { status, report } = runJson([...dialect, "pragma.st"]);
+      expect(status).toBe(0);
+      expect(report.summary).toEqual({ errors: 0, warnings: 2 });
+      expect(
+        report.diagnostics.map((d) => [d.severity, d.line, d.column]),
+      ).toEqual([
+        ["warning", 1, 1],
+        ["warning", 4, 3],
+      ]);
+      for (const d of report.diagnostics) {
+        expect(d.file).toBe("pragma.st");
+        expect(d.message).toMatch(/pragma ignored/i);
+      }
+    }
+  });
+
   it("several files; the path is reported as given", () => {
     const r = run(["--check", "--json", "clean.st", join(FIX, "helper-bad.st")]);
     expect(r.status).toBe(1);

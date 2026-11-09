@@ -92,7 +92,7 @@ src/
 
 ### Lexer
 
-Chevrotain tokenizer with case-insensitive keywords. All keywords use `LONGER_ALT = Identifier` to prevent keyword/identifier conflicts. Custom pattern matchers handle time literals (`T#1h2m3s`), typed literals (`DINT#42`), nested comment blocks (`(* ... (* ... *) ... *)`), and pragma blocks (`{external ...}`).
+Chevrotain tokenizer with case-insensitive keywords. All keywords use `LONGER_ALT = Identifier` to prevent keyword/identifier conflicts. Custom pattern matchers handle time literals (`T#1h2m3s`), typed literals (`DINT#42`), nested comment blocks (`(* ... (* ... *) ... *)`), and pragma blocks (`{external ...}` as a token; any other `{...}` is collected in the `pragmas` lexer group, skipped by the parser and reported as a warning).
 
 ### Parser
 

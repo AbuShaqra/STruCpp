@@ -14,7 +14,7 @@ import {
   AnalysisResult,
 } from "./types.js";
 import { parse as parseSource } from "./frontend/parser.js";
-import { toCompileErrors } from "./frontend/parse-errors.js";
+import { toCompileErrors, pragmaWarnings } from "./frontend/parse-errors.js";
 import { buildAST } from "./frontend/ast-builder.js";
 import { transpileILSource } from "./il/il-transpiler.js";
 import { buildProjectModel } from "./project-model.js";
@@ -352,6 +352,13 @@ function runPipeline(
   // Phase 1: Parse ST source to CST. Lexer errors do not stop the parse,
   // so analyze mode still sees the rest of the file.
   const parseResult = parseSource(effectiveSource);
+  warnings.push(
+    ...pragmaWarnings(
+      parseResult.pragmas,
+      effectiveSource,
+      mergedOptions.fileName,
+    ),
+  );
   if (parseResult.errors.length > 0) {
     errors.push(...toCompileErrors(parseResult.errors, mergedOptions.fileName));
     // In analyze mode, continue with partial CST from Chevrotain recovery.
@@ -429,6 +436,13 @@ function runPipeline(
         }
 
         const addlParseResult = parseSource(effectiveAddlSource);
+        warnings.push(
+          ...pragmaWarnings(
+            addlParseResult.pragmas,
+            effectiveAddlSource,
+            addlSource.fileName,
+          ),
+        );
         if (addlParseResult.errors.length > 0) {
           errors.push(
             ...toCompileErrors(addlParseResult.errors, addlSource.fileName),
