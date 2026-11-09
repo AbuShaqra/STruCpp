@@ -73,7 +73,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | Initialization | Supported | `:= expression` |
 | Array initialization | Supported | `:= [1, 2, 3]` and the bracket-less `:= 1, 2, 3`. Multi-dimensional arrays take either a flat row-major list or a nested one (`:= [[1, 2], [3, 4]]`), where each inner list fills one row from its own bound. Nesting depth and value count are validated against the declared dimensions |
 | Array repetition | Supported | `:= [10(0)]`, `:= [3(1), 2(5)]`, `:= [7, 4(2), 9]`. The repeated value may be a structure initializer. Max count 65536 |
-| Structure initialization | Supported | `:= (x := 1.0, y := 2.0)`; nested, in array literals, and for FB instances. Omitted elements keep their own declared default. Only valid as a declaration's initial value, as in the standard — one written inside a statement is rejected |
+| Structure initialization | Supported | `:= (x := 1.0, y := 2.0)`; nested, in array literals, and for FB instances (IEC 6.6.3.3, needs no feature; init arguments after the type, `fb : FB_A(p := 1)`, are the feature `fb_init`). Omitted elements keep their own declared default. Only valid as a declaration's initial value, as in the standard — one written inside a statement is rejected |
 | STRUCT element defaults | Supported | Scalar, array-literal and structure-initializer defaults on a STRUCT element all carry their values |
 
 ### Initialization gaps
@@ -133,6 +133,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | OVERRIDE | Supported | Method override with C++ override specifier |
 | PUBLIC/PRIVATE/PROTECTED | Supported | Access modifiers |
 | THIS | Supported | Self-reference in methods: `THIS.member`, `THIS.m()`, and `THIS.r REF= x` (the feature `ref_assign`). `THIS^.member` and `THIS^.m()` are a vendor extension, the feature `self_caret` (refused with no dialect flag and under `--dialect iec-3`). Bare `THIS^` (the own instance) is a vendor form that is still accepted in every dialect. Bare `THIS` refers to the own instance, e.g. passed into an interface-typed input |
+| FB_init | Supported | An extension (IEC 61131-3 Ed. 3 has no initialisation method): the feature `fb_init` (refused with no dialect flag and under `--dialect iec-3`). A METHOD FB_init runs once per instance at start-up, global instances first, members before their holder, every FB_init of an EXTENDS chain base first, with the flags `bInitRetains` and `bInCopyCode` FALSE; init arguments `fb : FB_A(p := 1)` set its inputs. With the feature off, a declared FB_init gets a warning that it is not run. Not yet: instances local to a FUNCTION or METHOD, in VAR_TEMP or held in a STRUCT, and init arguments on a library FB (refused by compile). See [DIALECTS.md](DIALECTS.md) |
 | SUPER | Supported | `SUPER.m()` and `SUPER.member` reach the base FB's method or member, through any number of EXTENDS levels, in every dialect. The caret forms `SUPER^.m()`, `SUPER^.member` and `SUPER^()` are vendor forms that are still accepted in every dialect |
 
 ## Standard Functions
@@ -217,7 +218,7 @@ edges on `CU` and `CD` leave `CV` unchanged. CODESYS does not document that case
 | Feature | Notes |
 |---------|-------|
 | UNION (parts) | Initial values, forcing and debugging of members, RETAIN, REF/REF= of a member, REFERENCE TO members (see above) |
-| FB_Init / FB_Exit | Constructor/destructor lifecycle methods |
+| FB_exit | Destructor lifecycle method (FB_init is supported with the feature `fb_init`, see above) |
 | __QUERYINTERFACE | Runtime interface query |
 | Bit access (var.%X0) | Individual bit addressing |
 | TRY/CATCH/FINALLY | Exception handling |

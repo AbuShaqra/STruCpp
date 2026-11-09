@@ -200,6 +200,8 @@ export interface MethodDeclaration extends ASTNode {
   body: Statement[];
   /** True when the method is a lowered ACTION (needs no feature in a PROGRAM). */
   fromAction?: boolean;
+  /** Span of the method's name. */
+  nameSpan?: SourceSpan;
 }
 
 /**
@@ -312,6 +314,10 @@ export interface VarDeclaration extends ASTNode {
    * only the source holds the user's spelling.
    */
   nameSpans?: SourceSpan[];
+  /** Init arguments `fb : FB_A(p := 1)` in source order (feature fb_init). */
+  fbInitArguments?: Argument[];
+  /** Span of the `(` that opens {@link fbInitArguments}. */
+  fbInitSpan?: SourceSpan;
 }
 
 // =============================================================================

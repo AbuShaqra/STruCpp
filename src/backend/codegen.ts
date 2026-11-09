@@ -61,6 +61,16 @@ import {
   parseTodLiteralToNs,
 } from "../project-model.js";
 import { isElementaryType, TypeRegistry } from "../semantic/type-registry.js";
+import {
+  FB_INIT_FLAGS,
+  FbInitPlan,
+  INSTANCE_BLOCKS,
+  fbChain,
+  fbInitChain,
+  fbInitInput,
+  fbInitInputs,
+  storedInstance,
+} from "../semantic/fb-init.js";
 import { wrapReferenceChain } from "./reference-types.js";
 import { TypeCodeGenerator, IEC_TO_CPP_VAR_TYPE } from "./type-codegen.js";
 import {
@@ -304,6 +314,9 @@ export interface CodeGenOptions {
    *  for function-level tree-shaking. Off by default — production
    *  compiles produce identical output regardless. */
   emitChunkMarkers?: boolean;
+
+  /** The feature fb_init is on: run FB_init at start-up (see fb-init.ts). */
+  fbInit?: boolean;
 }
 
 /**
@@ -617,6 +630,12 @@ export class CodeGenerator {
   /** The PROGRAM whose run() or methods are being generated: `MAIN.M()`
    *  inside MAIN is a call on `this` (feature program_methods). */
   private currentProgramName: string | undefined;
+
+  /** FB_init start-up work of this unit (feature fb_init), or undefined when off. */
+  private fbInitPlan: FbInitPlan | undefined;
+
+  /** True once the header defines `__fb_init_globals()`. */
+  private fbInitGlobalsEmitted = false;
 
   /** Topologically sorted function blocks (computed once in generate(), used by header + impl) */
   private sortedFBs: CompilationUnit["functionBlocks"] = [];
@@ -1115,6 +1134,9 @@ export class CodeGenerator {
     this.codegenWarnings = [];
     this.tempVarCounter = 0;
     this.ast = ast; // Store AST for looking up program bodies
+    this.fbInitPlan =
+      this.options.fbInit === true ? new FbInitPlan(ast) : undefined;
+    this.fbInitGlobalsEmitted = false;
 
     // Build set of known FB types from AST (library FB types already registered
     // via registerLibraryFBTypes() before generate() is called)
@@ -1507,6 +1529,7 @@ export class CodeGenerator {
 
     // GVL globals that hold a function block, now that its class is complete
     this.emitGvlGlobals(ast, true);
+    this.emitFbInitGlobals(ast);
 
     // Generate program class declarations
     if (this.projectModel) {
@@ -1888,6 +1911,14 @@ export class CodeGenerator {
     if (fb.properties.length > 0) {
       this.emitHeader("");
       this.generatePropertyDeclarations(fb.properties);
+    }
+
+    if (this.fbInitPlan?.needsMembers(fb) === true) {
+      this.emitHeader("");
+      this.emitHeader("    // Start-up FB_init of the member instances");
+      this.emitHeader(
+        `    void __fb_init_members(${this.fbInitMembersParams(fb)});`,
+      );
     }
 
     // Virtual destructor (needed for classes with virtual methods)
@@ -2651,6 +2682,35 @@ export class CodeGenerator {
       this.exitScope();
     }
 
+    if (this.fbInitPlan?.needsMembers(fb) === true) {
+      this.emit(
+        `void ${fb.name}::__fb_init_members(${this.fbInitMembersParams(fb)}) {`,
+      );
+      const base =
+        fb.extends !== undefined
+          ? this.fbInitMembersOwner(fb.extends)
+          : undefined;
+      if (base) {
+        const names = this.fbInitInputBlock(base.name).declarations.map(
+          (d) => d.names[0] ?? "",
+        );
+        this.emit(`    ${base.name}::__fb_init_members(${names.join(", ")});`);
+      }
+      // The FB_init inputs come last, so they shadow members of the same name.
+      this.enterScope([...fb.varBlocks, this.fbInitInputBlock(fb.name)]);
+      for (const decl of this.fbInitPlan.memberDeclarations(fb)) {
+        for (const name of decl.names) {
+          const member = this.mangleMemberIfNeeded(name, decl.type.name);
+          for (const line of this.fbInitInstanceLines(decl, member)) {
+            this.emit(`    ${line}`);
+          }
+        }
+      }
+      this.exitScope();
+      this.emit("}");
+      this.emit("");
+    }
+
     this.currentFBName = undefined;
     this.currentFBExtends = undefined;
     this.currentFBVarBlocks = [];
@@ -2997,6 +3057,7 @@ export class CodeGenerator {
 
       // Initialize located variable pointers
       this.generateLocatedVarPointerInit(prog.name);
+      this.emitProgramFbInit(prog, astProg);
 
       this.emit("}");
     } else {
@@ -3022,6 +3083,7 @@ export class CodeGenerator {
 
       // Initialize located variable pointers
       this.generateLocatedVarPointerInit(prog.name);
+      this.emitProgramFbInit(prog, astProg);
 
       this.emit("}");
     }
@@ -3065,6 +3127,164 @@ export class CodeGenerator {
       this.recordLineMapping(astProg.sourceSpan.endLine, closingBraceLine);
       this.generateProgramMethodImplementations(astProg, prog.varExternal);
     }
+  }
+
+  /** The nearest FB of `name`'s chain (itself first) that declares `__fb_init_members`. */
+  private fbInitMembersOwner(
+    name: string,
+  ): CompilationUnit["functionBlocks"][0] | undefined {
+    const plan = this.fbInitPlan;
+    if (!plan) return undefined;
+    return fbChain(plan.fbs, name)
+      .reverse()
+      .find((fb) => plan.needsMembers(fb));
+  }
+
+  /** One VAR_INPUT block with the FB_init inputs of `name`'s chain (see fbInitInputs). */
+  private fbInitInputBlock(name: string): VarBlock {
+    const declarations = this.fbInitPlan
+      ? fbInitInputs(this.fbInitPlan.fbs, name)
+      : [];
+    return {
+      kind: "VarBlock",
+      sourceSpan:
+        this.fbInitPlan?.fbs.get(name.toUpperCase())?.sourceSpan ??
+        this.ast!.sourceSpan,
+      blockType: "VAR_INPUT",
+      isConstant: false,
+      isRetain: false,
+      isNonRetain: false,
+      declarations,
+    };
+  }
+
+  /** C++ parameter list of `fb`'s `__fb_init_members`: its chain's FB_init inputs. */
+  private fbInitMembersParams(
+    fb: CompilationUnit["functionBlocks"][0],
+  ): string {
+    return this.fbInitInputBlock(fb.name)
+      .declarations.map(
+        (d) => `${this.mapTypeRefToCpp(d.type)} ${d.names[0] ?? ""}`,
+      )
+      .join(", ");
+  }
+
+  /**
+   * C++ statements that run the start-up work of instance `cppName` declared
+   * by `decl`: its members' FB_init, then each FB_init of its chain, base
+   * first, with the flags FALSE and the init arguments by name. An array
+   * runs it per element, row-major.
+   */
+  private fbInitInstanceLines(decl: VarDeclaration, cppName: string): string[] {
+    const plan = this.fbInitPlan;
+    if (!plan || !this.ast) return [];
+    const stored = storedInstance(this.ast, decl.type);
+    const fb = stored ? plan.fbs.get(stored.name.toUpperCase()) : undefined;
+    if (!stored || !fb || !plan.needs(fb.name)) return [];
+    const target = stored.dims > 0 ? "__e" : cppName;
+    const body: string[] = [];
+    const span = decl.fbInitSpan ?? decl.sourceSpan;
+    const named = (decl.fbInitArguments ?? []).filter(
+      (a) => a.name !== undefined && !a.isOutput,
+    );
+    const membersOwner = this.fbInitMembersOwner(fb.name);
+    if (membersOwner) {
+      const inputs = this.fbInitInputBlock(membersOwner.name);
+      const names = new Set(
+        inputs.declarations.map((d) => (d.names[0] ?? "").toUpperCase()),
+      );
+      const values = this.bindArgumentsByName(
+        [inputs],
+        named.filter((a) => names.has((a.name ?? "").toUpperCase())),
+        `the FB_init inputs of '${membersOwner.name}'`,
+        span,
+      );
+      body.push(`${target}.__fb_init_members(${values.join(", ")});`);
+    }
+    for (const { fb: owner, method } of fbInitChain(plan.fbs, fb.name)) {
+      const args: Argument[] = FB_INIT_FLAGS.map((flag) => ({
+        kind: "Argument",
+        sourceSpan: span,
+        name: flag,
+        isOutput: false,
+        value: {
+          kind: "LiteralExpression",
+          sourceSpan: span,
+          literalType: "BOOL",
+          value: false,
+          rawValue: "FALSE",
+        },
+      }));
+      for (const arg of named) {
+        if (fbInitInput(method, (arg.name ?? "").toUpperCase())) args.push(arg);
+      }
+      const values = this.bindArgumentsByName(
+        method.varBlocks,
+        args,
+        `method '${method.name}'`,
+        span,
+      );
+      body.push(
+        `${target}.${owner.name}::${method.name}(${values.join(", ")});`,
+      );
+    }
+    if (stored.dims === 0) return body;
+    return [
+      `::strucpp::for_each_element(${cppName}, [&](${fb.name}& __e) {`,
+      ...body.map((line) => `    ${line}`),
+      "});",
+    ];
+  }
+
+  /**
+   * Header: the once-only start-up work of the global instances, in
+   * declaration order, which every PROGRAM constructor runs first.
+   */
+  private emitFbInitGlobals(ast: CompilationUnit): void {
+    if (!this.fbInitPlan) return;
+    const lines: string[] = [];
+    for (const block of ast.globalVarBlocks) {
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          lines.push(...this.fbInitInstanceLines(decl, name));
+        }
+      }
+    }
+    if (lines.length === 0) return;
+    this.fbInitGlobalsEmitted = true;
+    this.emitHeader("// Start-up FB_init of the global instances, run once");
+    this.emitHeader("inline void __fb_init_globals() {");
+    this.emitHeader("    static bool done = false;");
+    this.emitHeader("    if (done) return;");
+    this.emitHeader("    done = true;");
+    for (const line of lines) this.emitHeader(`    ${line}`);
+    this.emitHeader("}");
+    this.emitHeader("");
+  }
+
+  /** Program constructor body: the global start-up work, then the program's instances. */
+  private emitProgramFbInit(
+    prog: ProgramDecl,
+    astProg: CompilationUnit["programs"][0] | undefined,
+  ): void {
+    if (!this.fbInitPlan) return;
+    if (this.fbInitGlobalsEmitted) this.emit("    __fb_init_globals();");
+    if (!astProg) return;
+    this.currentProgramName = prog.name;
+    this.enterScope(astProg.varBlocks);
+    for (const block of astProg.varBlocks) {
+      if (!INSTANCE_BLOCKS.has(block.blockType)) continue;
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          const member = this.mangleMemberIfNeeded(name, decl.type.name);
+          for (const line of this.fbInitInstanceLines(decl, member)) {
+            this.emit(`    ${line}`);
+          }
+        }
+      }
+    }
+    this.exitScope();
+    this.currentProgramName = undefined;
   }
 
   /**

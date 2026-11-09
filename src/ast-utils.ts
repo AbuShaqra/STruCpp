@@ -457,6 +457,7 @@ function getChildren(node: ASTNode): ASTNode[] {
       const vd = node as VarDeclaration;
       children.push(vd.type);
       if (vd.initialValue) children.push(vd.initialValue);
+      if (vd.fbInitArguments) children.push(...vd.fbInitArguments);
       break;
     }
 

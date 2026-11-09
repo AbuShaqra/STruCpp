@@ -865,6 +865,9 @@ export class ASTBuilder {
       varBlocks,
       body,
       ...(returnType !== undefined ? { returnType } : {}),
+      ...(nameToken !== undefined
+        ? { nameSpan: tokenToSourceSpan(nameToken) }
+        : {}),
     };
   }
 
@@ -1718,6 +1721,23 @@ export class ASTBuilder {
       }
     }
 
+    // Init arguments of an FB instance (feature fb_init)
+    const fbInitNode = getFirstNode(children.fbInitArguments);
+    let fbInitArguments: Argument[] | undefined;
+    let fbInitSpan: SourceSpan | undefined;
+    if (fbInitNode) {
+      const fbInitChildren = fbInitNode.children as CstChildren;
+      const listNode = getFirstNode(fbInitChildren.argumentList);
+      const listChildren = listNode?.children as CstChildren | undefined;
+      fbInitArguments = getAllNodes(listChildren?.argument).map((a) =>
+        this.buildArgument(a),
+      );
+      const open = getFirstToken(fbInitChildren.LParen);
+      fbInitSpan = open
+        ? tokenToSourceSpan(open)
+        : nodeToSourceSpan(fbInitNode);
+    }
+
     // Use conditional spreading for optional properties to comply with exactOptionalPropertyTypes
     return {
       kind: "VarDeclaration",
@@ -1729,6 +1749,8 @@ export class ASTBuilder {
       ...(addressKind !== undefined ? { addressKind } : {}),
       ...(addressSpan !== undefined ? { addressSpan } : {}),
       ...(nameSpans.length > 0 ? { nameSpans } : {}),
+      ...(fbInitArguments !== undefined ? { fbInitArguments } : {}),
+      ...(fbInitSpan !== undefined ? { fbInitSpan } : {}),
     };
   }
 

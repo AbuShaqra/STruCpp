@@ -22,6 +22,7 @@ export const KNOWN_FEATURES = [
   "named_global_lists",
   "struct_extends",
   "union",
+  "fb_init",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];
