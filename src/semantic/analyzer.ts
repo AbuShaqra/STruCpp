@@ -3258,8 +3258,14 @@ export class SemanticAnalyzer {
     const userArgs = stripEnEno(expr.arguments);
     const argCount = userArgs.length;
 
-    // Look up in std function registry
-    const desc = this.stdRegistry.lookup(nameUpper);
+    // Look up in std function registry; a user or library function named
+    // like a typed truncation (TRUNC_INT) keeps its own signature.
+    const sym = this.symbolTables.globalScope.lookup(nameUpper);
+    const desc =
+      this.stdRegistry.lookup(nameUpper) ??
+      (sym?.kind === "function"
+        ? undefined
+        : this.stdRegistry.resolveTypedTrunc(nameUpper));
     if (desc) {
       if (desc.isVariadic) {
         const minArgs = desc.minArgs ?? desc.params.length;
@@ -3302,7 +3308,6 @@ export class SemanticAnalyzer {
       // (the C++ compiler for library functions, or silent zero-fill for
       // user functions). Function-block invocations resolve to a variable,
       // not a function, so their optional inputs never reach this path.
-      const sym = this.symbolTables.globalScope.lookup(nameUpper);
       if (sym?.kind === "function") {
         this.checkRequiredFunctionInputs(expr, sym, userArgs);
       }

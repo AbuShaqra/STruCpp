@@ -41,7 +41,10 @@ import type {
 import { walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry, SourceSpan } from "../types.js";
-import { StdFunctionRegistry } from "../semantic/std-function-registry.js";
+import {
+  StdFunctionRegistry,
+  type StdFunctionDescriptor,
+} from "../semantic/std-function-registry.js";
 import type {
   ProjectModel,
   ConfigurationDecl,
@@ -5239,8 +5242,9 @@ export class CodeGenerator {
         // Check conversion functions (INT_TO_REAL → REAL)
         const conv = this.stdRegistry.resolveConversion(fnUpper);
         if (conv) return conv.toType.toUpperCase();
-        // Check std functions with specific return type
-        const std = this.stdRegistry.lookup(fnUpper);
+        // Check std functions with specific return type (and TRUNC_INT)
+        const std =
+          this.stdRegistry.lookup(fnUpper) ?? this.typedTrunc(fnUpper);
         if (std?.specificReturnType)
           return std.specificReturnType.toUpperCase();
         if (std?.returnTypeFor && expr.arguments.length > 0) {
@@ -5577,6 +5581,31 @@ export class CodeGenerator {
   }
 
   /**
+   * `code` wrapped as `IEC_REAL(...)` / `IEC_LREAL(...)` when `arg` checked
+   * as REAL / LREAL (codegen emits REAL literals and expressions as double).
+   */
+  private atRealType(code: string, arg: Expression | undefined): string {
+    const t = arg?.resolvedType;
+    const tn = t && "name" in t ? (t.name as string).toUpperCase() : undefined;
+    return tn === "REAL" || tn === "LREAL" ? `IEC_${tn}(${code})` : code;
+  }
+
+  /**
+   * The typed truncation `nameUpper` names (TRUNC_INT, REAL_TRUNC_INT),
+   * unless a user or library function of that name shadows it.
+   */
+  private typedTrunc(nameUpper: string): StdFunctionDescriptor | undefined {
+    const own = this.ast?.functions.some(
+      (f) => f.name.toUpperCase() === nameUpper,
+    );
+    if (own === true) return undefined;
+    if (this._symbolTables?.lookupFunction(nameUpper) !== undefined) {
+      return undefined;
+    }
+    return this.stdRegistry.resolveTypedTrunc(nameUpper);
+  }
+
+  /**
    * Generate C++ for a function call expression.
    * Handles: dotted method calls (THIS.method, SUPER.method, instance.method),
    * standard functions, *_TO_* conversions, DELETE->DELETE_STR mapping,
@@ -5725,14 +5754,22 @@ export class CodeGenerator {
       // emits REAL literals/expressions containing one as double.  Pass the
       // argument at its checked ST type so DINT (REAL) / LINT (LREAL) match.
       if (stdFunc.returnTypeFor && args.length > 0) {
-        const t = expr.arguments[0]?.value.resolvedType;
-        const tn =
-          t && "name" in t ? (t.name as string).toUpperCase() : undefined;
-        if (tn === "REAL" || tn === "LREAL") {
-          args[0] = `IEC_${tn}(${args[0]})`;
-        }
+        args[0] = this.atRealType(args[0]!, expr.arguments[0]?.value);
       }
       return `${stdFunc.cppName}(${args.join(", ")})`;
+    }
+
+    // 2b. Typed truncation (TRUNC_INT, REAL_TRUNC_INT): runtime helpers of
+    // the same name; the overloaded form takes its argument at its ST type.
+    const typedTrunc = this.typedTrunc(nameUpper);
+    if (typedTrunc) {
+      const args = expr.arguments.map((arg) =>
+        this.generateExpression(arg.value),
+      );
+      if (typedTrunc.params[0]?.specificType === undefined && args.length > 0) {
+        args[0] = this.atRealType(args[0]!, expr.arguments[0]?.value);
+      }
+      return `${typedTrunc.cppName}(${args.join(", ")})`;
     }
 
     // 3. Check for named arguments that may need reordering

@@ -147,8 +147,44 @@ export class StdFunctionRegistry {
   isStandardFunction(name: string): boolean {
     const upper = name.toUpperCase();
     return (
-      this.functions.has(upper) || this.resolveConversion(upper) !== undefined
+      this.functions.has(upper) ||
+      this.resolveConversion(upper) !== undefined ||
+      this.resolveTypedTrunc(upper) !== undefined
     );
+  }
+
+  /**
+   * Resolve a typed truncation name (IEC 61131-3 Ed. 3, Table 22):
+   * `TRUNC_<int>` takes any ANY_REAL, `<REAL|LREAL>_TRUNC_<int>` that type;
+   * both return `<int>`. Not registered, so it stays out of `getAll()`.
+   */
+  resolveTypedTrunc(name: string): StdFunctionDescriptor | undefined {
+    const upper = name.toUpperCase();
+    const match = upper.match(
+      /^(?:(REAL|LREAL)_)?TRUNC_(SINT|INT|DINT|LINT|USINT|UINT|UDINT|ULINT)$/,
+    );
+    if (!match) return undefined;
+    const fromType = match[1];
+    const param: StdFunctionParam =
+      fromType === undefined
+        ? { name: "IN", constraint: "ANY_REAL", isByRef: false }
+        : {
+            name: "IN",
+            constraint: "specific",
+            specificType: fromType,
+            isByRef: false,
+          };
+    return {
+      name: upper,
+      cppName: upper,
+      returnConstraint: "specific",
+      returnMatchesFirstParam: false,
+      specificReturnType: match[2]!,
+      params: [param],
+      isVariadic: false,
+      isConversion: false,
+      category: "conversion",
+    };
   }
 
   /**

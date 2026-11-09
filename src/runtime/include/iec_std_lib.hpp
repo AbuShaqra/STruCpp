@@ -382,6 +382,46 @@ inline auto TRUNC(T value) noexcept
         static_cast<double>(iec_unwrap(value)), true));
 }
 
+namespace detail {
+/**
+ * Typed truncation into the integer IECVar R: the argument is first taken
+ * as the float type F (REAL or LREAL), then truncated as TRUNC does.
+ */
+template<typename R, typename F, typename T>
+inline R iec_trunc_to(T value) noexcept {
+    return R(iec_float_to_int<typename R::value_type>(
+        static_cast<double>(static_cast<F>(iec_unwrap(value))), true));
+}
+}  // namespace detail
+
+/**
+ * Typed truncation (IEC 61131-3 Ed. 3, Table 22): TRUNC_<int> takes any
+ * ANY_REAL, REAL_TRUNC_<int> / LREAL_TRUNC_<int> that type. Toward zero,
+ * saturating at the target's limits, NaN gives 0.
+ */
+#define STRUCPP_TYPED_TRUNC(INT)                                            \
+    template<typename T>                                                    \
+    inline IEC_##INT TRUNC_##INT(T value) noexcept {                        \
+        return detail::iec_trunc_to<IEC_##INT, double>(value);             \
+    }                                                                       \
+    template<typename T>                                                    \
+    inline IEC_##INT REAL_TRUNC_##INT(T value) noexcept {                   \
+        return detail::iec_trunc_to<IEC_##INT, float>(value);              \
+    }                                                                       \
+    template<typename T>                                                    \
+    inline IEC_##INT LREAL_TRUNC_##INT(T value) noexcept {                  \
+        return detail::iec_trunc_to<IEC_##INT, double>(value);             \
+    }
+STRUCPP_TYPED_TRUNC(SINT)
+STRUCPP_TYPED_TRUNC(INT)
+STRUCPP_TYPED_TRUNC(DINT)
+STRUCPP_TYPED_TRUNC(LINT)
+STRUCPP_TYPED_TRUNC(USINT)
+STRUCPP_TYPED_TRUNC(UINT)
+STRUCPP_TYPED_TRUNC(UDINT)
+STRUCPP_TYPED_TRUNC(ULINT)
+#undef STRUCPP_TYPED_TRUNC
+
 /**
  * ROUND - Round to nearest integer
  * Input: ANY_REAL, Output: ANY_REAL
