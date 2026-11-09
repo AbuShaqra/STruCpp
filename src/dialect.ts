@@ -19,6 +19,7 @@ export const KNOWN_FEATURES = [
   "self_caret",
   "property",
   "postfix_enum_base",
+  "named_global_lists",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];

@@ -17,6 +17,7 @@
  *   --dialect-file <path>     Load a dialect profile file (repeatable)
  *   --dialect-path <dir>      Load every *.json profile in a folder (repeatable)
  *   --feature <+id|-id>       Enable or disable a feature (repeatable)
+ *   --global-list <f>=<name>  Name the global variable list of input <f> (repeatable)
  *   --print-dialect           Print the resolved dialect as JSON and exit
  *   --check                   Parse and analyse only; write nothing (exit 0/1/2)
  *   --json                    With --check: print one JSON report on stdout
@@ -51,6 +52,7 @@ import { tmpdir, platform } from "os";
 import { execFileSync } from "child_process";
 import { analyze, compile, getVersion, compileStlib } from "../index.js";
 import { DialectError, resolveDialect } from "../dialect.js";
+import { isGlobalListName } from "../semantic/global-lists.js";
 import { nodeDialectIO } from "./dialect-io.js";
 import {
   formatDiagnostic,
@@ -86,6 +88,8 @@ interface CLIOptions {
   dialectFiles: string[];
   dialectPath: string[];
   features: string[];
+  /** `--global-list <file>=<name>` entries, in order. */
+  globalLists: Array<{ file: string; name: string }>;
   printDialect: boolean;
   check: boolean;
   json: boolean;
@@ -158,6 +162,7 @@ function parseArgs(args: string[]): CLIOptions {
     dialectFiles: [],
     dialectPath: [],
     features: [],
+    globalLists: [],
     printDialect: false,
     check: false,
     json: false,
@@ -211,6 +216,19 @@ function parseArgs(args: string[]): CLIOptions {
       else if (arg === "--dialect-file") options.dialectFiles.push(nextArg);
       else if (arg === "--dialect-path") options.dialectPath.push(nextArg);
       else options.features.push(nextArg);
+    } else if (arg === "--global-list") {
+      i++;
+      const spec = args[i] ?? "";
+      const eq = spec.lastIndexOf("=");
+      const file = spec.slice(0, Math.max(eq, 0));
+      const name = spec.slice(eq + 1);
+      if (eq <= 0 || !isGlobalListName(name)) {
+        console.error(
+          `error: --global-list needs <file>=<name> with an identifier name, got '${spec}'`,
+        );
+        process.exit(usageExit);
+      }
+      options.globalLists.push({ file, name });
     } else if (arg === "--print-dialect") {
       options.printDialect = true;
     } else if (arg === "--check") {
@@ -337,7 +355,41 @@ function parseArgs(args: string[]): CLIOptions {
     i++;
   }
 
+  const listFiles = new Set<string>();
+  for (const { file } of options.globalLists) {
+    const path = resolve(file);
+    let problem: string | undefined;
+    if (listFiles.has(path)) problem = "is given twice";
+    else if (!options.inputs.some((input) => resolve(input) === path)) {
+      problem = "is not an input file";
+    }
+    if (problem !== undefined) {
+      console.error(`error: --global-list file '${file}' ${problem}`);
+      process.exit(usageExit);
+    }
+    listFiles.add(path);
+  }
+
   return options;
+}
+
+/** The `--global-list` name given for input file `input`, if any. */
+function globalListNameFor(
+  options: CLIOptions,
+  input: string,
+): string | undefined {
+  const path = resolve(input);
+  return options.globalLists.find((g) => resolve(g.file) === path)?.name;
+}
+
+/** `entry` with the `--global-list` name of `input` added when one is given. */
+function withGlobalListName<T extends object>(
+  options: CLIOptions,
+  input: string,
+  entry: T,
+): T & { globalListName?: string } {
+  const name = globalListNameFor(options, input);
+  return name === undefined ? entry : { ...entry, globalListName: name };
 }
 
 function showHelp(): void {
@@ -366,6 +418,10 @@ Options:
   --feature <+id|-id>       Enable (+id or id) or disable (-id) a feature after
                             the profile (repeatable): program_methods,
                             pointer_to, reference_to, ref_assign
+  --global-list <file>=<name>
+                            Name the global variable list of input <file>
+                            (default: its file stem; repeatable). Used by
+                            the feature named_global_lists
   --print-dialect           Print the resolved dialect as JSON and exit
   --check                   Parse and analyse only: no C++ output, no g++.
                             Exit 0 = no errors, 1 = errors, 2 = usage,
@@ -727,14 +783,20 @@ function runTestMode(options: CLIOptions): void {
     process.exit(1);
   }
 
-  const additionalSources: Array<{ source: string; fileName: string }> = [];
+  const additionalSources: Array<{
+    source: string;
+    fileName: string;
+    globalListName?: string;
+  }> = [];
   for (const extra of options.inputs.slice(1)) {
     const extraPath = resolve(extra);
     try {
-      additionalSources.push({
-        source: readFileSync(extraPath, "utf-8"),
-        fileName: basename(extraPath),
-      });
+      additionalSources.push(
+        withGlobalListName(options, extra, {
+          source: readFileSync(extraPath, "utf-8"),
+          fileName: basename(extraPath),
+        }),
+      );
     } catch {
       console.error(`Error: Cannot read source file: ${extraPath}`);
       process.exit(1);
@@ -748,6 +810,7 @@ function runTestMode(options: CLIOptions): void {
     isTestBuild: true,
     strict: options.strict,
     ...dialectCompileOptions(options),
+    ...withGlobalListName(options, primaryInput, {}),
   };
   if (additionalSources.length > 0) {
     compileOptions.additionalSources = additionalSources;
@@ -1192,8 +1255,13 @@ function checkMode(options: CLIOptions): never {
       strict: options.strict,
       ...dialectOptions,
       fileName: sources[0]!.fileName,
+      ...withGlobalListName(options, files[0]!, {}),
     };
-    if (sources.length > 1) analyzeOptions.additionalSources = sources.slice(1);
+    if (sources.length > 1) {
+      analyzeOptions.additionalSources = sources
+        .slice(1)
+        .map((src, i) => withGlobalListName(options, files[i + 1]!, src));
+    }
     const libPaths = getEffectiveLibraryPaths(options);
     if (libPaths.length > 0) {
       analyzeOptions.libraries = libPaths.flatMap((p) => discoverStlibs(p));
@@ -1293,14 +1361,20 @@ async function main(): Promise<void> {
   }
 
   // Read additional source files
-  const additionalSources: Array<{ source: string; fileName: string }> = [];
+  const additionalSources: Array<{
+    source: string;
+    fileName: string;
+    globalListName?: string;
+  }> = [];
   for (const extra of options.inputs.slice(1)) {
     const extraPath = resolve(extra);
     try {
-      additionalSources.push({
-        source: readFileSync(extraPath, "utf-8"),
-        fileName: basename(extraPath),
-      });
+      additionalSources.push(
+        withGlobalListName(options, extra, {
+          source: readFileSync(extraPath, "utf-8"),
+          fileName: basename(extraPath),
+        }),
+      );
     } catch {
       console.error(`Error: Cannot read input file: ${extraPath}`);
       process.exit(1);
@@ -1319,6 +1393,7 @@ async function main(): Promise<void> {
     headerFileName,
     cppFileName: basename(outputPath),
     fileName: basename(inputPath),
+    ...withGlobalListName(options, primaryInput, {}),
   };
   if (additionalSources.length > 0) {
     compileOptions.additionalSources = additionalSources;

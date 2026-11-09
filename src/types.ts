@@ -78,10 +78,16 @@ export interface CompileOptions {
   /** Primary source file name for error reporting (default: "main.st") */
   fileName?: string;
 
-  /** Additional ST source files to compile together */
+  /** Global variable list name of the primary source's top-level VAR_GLOBAL
+   *  blocks (feature named_global_lists). Default: the stem of `fileName`. */
+  globalListName?: string;
+
+  /** Additional ST source files to compile together. `globalListName` names
+   *  the file's global variable list (default: the stem of `fileName`). */
   additionalSources?: Array<{
     source: string;
     fileName: string;
+    globalListName?: string;
   }>;
 
   /**

@@ -75,6 +75,8 @@ export interface VariableSymbol extends BaseSymbol {
    * declare fails the build of `generated_debug.cpp`.
    */
   cppName?: string | undefined;
+  /** Set on a global reached through a list-qualified name (`name` is then `LIST.NAME`). */
+  globalList?: string;
 }
 
 /**
@@ -84,6 +86,8 @@ export interface ConstantSymbol extends BaseSymbol {
   kind: "constant";
   declaration: VarDeclaration;
   value?: unknown;
+  /** Set on a global reached through a list-qualified name (`name` is then `LIST.NAME`). */
+  globalList?: string;
 }
 
 /**

@@ -237,6 +237,7 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 | `--dialect-file <path>` | Load a profile file (repeatable); one file and no `--dialect` selects it                |
 | `--dialect-path <dir>`  | Load and check every `*.json` profile in a folder (repeatable)                          |
 | `--feature <+id\|-id>`  | Enable (`+id` or `id`) or disable (`-id`) a feature after the profile (repeatable)      |
+| `--global-list <f>=<n>` | Name the global variable list of input file `<f>` (default: its stem; repeatable)      |
 | `--print-dialect`       | Print the resolved dialect as JSON (`{"id":...,"features":[...]}`) and exit             |
 
 With no `--dialect` and no `--dialect-file` the compiler runs with the default features
@@ -245,6 +246,17 @@ enables no feature; `--dialect iec` is refused with an error naming `iec-3`. The
 `--compile-lib`, `--import-lib`, `--check`); a bad profile prints one `error:` line and exits 1
 (2 with `--check`). The
 profile format and the features are in [DIALECTS.md](DIALECTS.md).
+
+`--global-list <file>=<name>` names the global variable list formed by the top-level `VAR_GLOBAL` blocks of
+an input file, for the feature `named_global_lists` (`<name>.var`). Without it a file's list is named by its
+stem (`lists/GVL_A.st` → `GVL_A`). `<file>` is matched against the input files by resolved path and the
+last `=` splits it from `<name>`, which must be an identifier. It works in compile, `--check` and `--test`
+mode. A malformed value, a file that is not an input, or a file given twice is a usage error (exit 2 with
+`--check`, 1 otherwise):
+
+```bash
+strucpp --check main.st lists/a.st --global-list lists/a.st=GVL_A --feature +named_global_lists
+```
 
 ```bash
 strucpp --dialect iec-3 --print-dialect

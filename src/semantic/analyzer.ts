@@ -42,6 +42,12 @@ import { Scope, SymbolTables } from "./symbol-table.js";
 import type { FunctionSymbol } from "./symbol-table.js";
 import { TypeChecker } from "./type-checker.js";
 import {
+  GlobalListResolver,
+  prepareGlobalLists,
+  type GlobalListDiagnostic,
+  type GlobalLists,
+} from "./global-lists.js";
+import {
   DEFAULT_FEATURES,
   profilesWithFeature,
   type FeatureId,
@@ -368,6 +374,13 @@ export class SemanticAnalyzer {
   private errors: CompileError[] = [];
   private warnings: CompileError[] = [];
 
+  /** Global variable lists of the unit being analyzed (see global-lists.ts). */
+  private globalLists: GlobalLists | undefined;
+  /** Internal name of a renamed or aliased list global → `LIST.NAME`. */
+  private globalListDisplayNames = new Map<string, string>();
+  /** Global-list diagnostics whose text is final (see displayGlobalListNames). */
+  private verbatimDiagnostics = new WeakSet<CompileError>();
+
   /** Track all located variables for duplicate detection */
   private locatedVars: LocatedVarInfo[] = [];
 
@@ -416,20 +429,25 @@ export class SemanticAnalyzer {
       );
     }
 
-    // Pass 1: Build symbol tables
+    // Pass 1: Build symbol tables (global lists first: they may rename globals)
+    this.globalListDisplayNames.clear();
+    this.prepareGlobalLists(ast);
     this.buildSymbolTables(ast);
 
     // Reported before the gates below so a type error in any merged source cannot hide
     // an undefined type — and excluded from them, so the reverse cannot happen either.
     const errorsBeforeTypeReferences = this.errors.length;
     this.validateTypeReferences(ast);
+    // Before type checking, so every later pass sees the unqualified form.
+    const globalListErrors = this.resolveGlobalListAccess(ast);
     // A feature refusal is located and does not gate the passes below either,
     // so the rest of a refused method is still checked.
     this.validateProgramMethodFeature(ast);
     this.validateInterfaceProperties(ast);
     this.validatePostfixEnumBases(ast);
     this.validateConfigurationGlobalsHoldNoFB(ast);
-    const typeReferenceErrors = this.errors.length - errorsBeforeTypeReferences;
+    const typeReferenceErrors =
+      this.errors.length - errorsBeforeTypeReferences - globalListErrors;
 
     if (this.options.strict === true) this.validateReservedNames(ast);
 
@@ -445,12 +463,157 @@ export class SemanticAnalyzer {
       this.validateSemantics(ast);
     }
 
+    this.displayGlobalListNames(this.errors);
+    this.displayGlobalListNames(this.warnings);
+
     return {
       success: this.errors.length === 0,
       symbolTables: this.symbolTables,
       errors: this.errors,
       warnings: this.warnings,
     };
+  }
+
+  /** Report a global-list diagnostic; returns true when it must gate the later passes. */
+  private reportGlobalList(d: GlobalListDiagnostic): boolean {
+    if (d.featureRefusal) {
+      this.requireFeature(
+        "named_global_lists",
+        `Global variable list access '${d.access}'`,
+        d.span,
+      );
+      return false;
+    }
+    this.addError(d.message, d.span.startLine, d.span.startCol, d.span.file);
+    // It may name an internal name the program declares: keep it verbatim.
+    const added = this.errors[this.errors.length - 1];
+    if (added) this.verbatimDiagnostics.add(added);
+    return true;
+  }
+
+  /**
+   * Collect the global variable lists and, with named_global_lists, rename the
+   * globals two lists share (see global-lists.ts). Runs before the symbol tables.
+   */
+  private prepareGlobalLists(ast: CompilationUnit): void {
+    const enabled = this.features.has("named_global_lists");
+    this.globalLists = prepareGlobalLists(ast, enabled, (d) => {
+      this.reportGlobalList(d);
+    });
+    for (const list of this.globalLists.lists.values()) {
+      for (const [upper, declared] of list.variables) {
+        if (
+          declared.toUpperCase() !== upper &&
+          !this.globalLists.clashing.has(declared)
+        ) {
+          this.globalListDisplayNames.set(declared, `${list.name}.${upper}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Rewrite `LIST.var` access in every POU body (see global-lists.ts) and
+   * report plain uses of a name two lists declare. Returns how many errors it
+   * added that gate the later passes; a feature refusal does not.
+   */
+  private resolveGlobalListAccess(ast: CompilationUnit): number {
+    const lists = this.globalLists;
+    if (!lists || lists.lists.size === 0) return 0;
+    const enabled = this.features.has("named_global_lists");
+    let gating = 0;
+    const report = (d: GlobalListDiagnostic): void => {
+      if (this.reportGlobalList(d)) gating++;
+    };
+    const globalScope = this.symbolTables.globalScope;
+    // A renamed global's symbol shows, and completes, as `LIST.NAME`.
+    for (const [internal, display] of this.globalListDisplayNames) {
+      const sym = globalScope.lookupLocal(internal);
+      if (sym?.kind === "variable" || sym?.kind === "constant") {
+        sym.name = display;
+        sym.globalList = display.slice(0, display.indexOf("."));
+      }
+    }
+    const resolver = new GlobalListResolver(lists, enabled, report);
+    const defineAlias = (name: string, alias: string): boolean => {
+      const sym = globalScope.lookupLocal(name);
+      if (sym?.kind !== "variable" && sym?.kind !== "constant") return false;
+      const existing = globalScope.lookupLocal(alias);
+      if (existing) {
+        return (
+          (existing.kind === "variable" || existing.kind === "constant") &&
+          existing.globalList !== undefined &&
+          existing.declaration === sym.declaration
+        );
+      }
+      const list = alias.slice(0, alias.indexOf("__"));
+      const display = `${lists.lists.get(list)?.name ?? list}.${name.toUpperCase()}`;
+      globalScope.define({ ...sym, name: alias });
+      const aliasSym = globalScope.lookupLocal(alias);
+      if (aliasSym?.kind === "variable" || aliasSym?.kind === "constant") {
+        aliasSym.name = display;
+        aliasSym.globalList = display.slice(0, display.indexOf("."));
+      }
+      this.globalListDisplayNames.set(alias, display);
+      const aliases = (sym.declaration.listAliases ??= []);
+      aliases.push({ name, alias });
+      return true;
+    };
+    this.forEachPouBody(ast, (body, scope, ctx) => {
+      resolver.rewriteStatements(body, {
+        resolvesOtherwise: (name) => {
+          const upper = name.toUpperCase();
+          return (
+            scope.lookup(upper) !== undefined ||
+            this.isContextName(upper, ctx) ||
+            this.stdRegistry.isStandardFunction(name) ||
+            this.enumMemberMap.has(upper)
+          );
+        },
+        hidesGlobal: (name) => {
+          const upper = name.toUpperCase();
+          const hit = scope.lookup(upper);
+          if (hit !== globalScope.lookup(upper)) {
+            return !(hit?.kind === "variable" && hit.isExternal);
+          }
+          return this.isContextName(upper, ctx);
+        },
+        defineAlias,
+      });
+    });
+    // VAR_EXTERNAL cannot name a global two lists declare.
+    const pous = [...ast.programs, ...ast.functions, ...ast.functionBlocks];
+    for (const pou of pous) {
+      const blocks = [
+        ...pou.varBlocks,
+        ...("methods" in pou ? pou.methods.flatMap((m) => m.varBlocks) : []),
+      ];
+      for (const block of blocks) {
+        if (block.blockType !== "VAR_EXTERNAL") continue;
+        for (const decl of block.declarations) {
+          for (const name of decl.names) {
+            resolver.checkExternal(name, decl.sourceSpan);
+          }
+        }
+      }
+    }
+    return gating;
+  }
+
+  /** Show `LIST.NAME` in place of the internal name of a list-qualified global. */
+  private displayGlobalListNames(diags: CompileError[]): void {
+    if (this.globalListDisplayNames.size === 0) return;
+    const re = new RegExp(
+      `\\b(${[...this.globalListDisplayNames.keys()].join("|")})\\b`,
+      "gi",
+    );
+    for (const d of diags) {
+      if (this.verbatimDiagnostics.has(d)) continue;
+      d.message = d.message.replace(
+        re,
+        (m) => this.globalListDisplayNames.get(m.toUpperCase()) ?? m,
+      );
+    }
   }
 
   /**
@@ -3992,21 +4155,30 @@ export class SemanticAnalyzer {
    * Validate that all variable references in POU bodies refer to declared variables.
    */
   private validateUndeclaredVariables(ast: CompilationUnit): void {
+    this.forEachPouBody(ast, (body, scope, ctx) =>
+      this.walkStatementsForUndeclaredVars(body, scope, ctx),
+    );
+  }
+
+  /**
+   * Call `visit` with each POU body (program, function, FB, method, property
+   * accessor), the scope its names resolve in and its context.
+   */
+  private forEachPouBody(
+    ast: CompilationUnit,
+    visit: (body: Statement[], scope: Scope, ctx: UndeclaredVarContext) => void,
+  ): void {
     // Programs
     for (const prog of ast.programs) {
       const scope = this.symbolTables.getProgramScope(prog.name);
       if (scope) {
-        this.walkStatementsForUndeclaredVars(prog.body, scope, {});
+        visit(prog.body, scope, {});
         for (const method of prog.methods) {
           const methodScope = this.symbolTables.getMethodScope(
             prog.name,
             method.name,
           );
-          this.walkStatementsForUndeclaredVars(
-            method.body,
-            methodScope ?? scope,
-            { methodName: method.name },
-          );
+          visit(method.body, methodScope ?? scope, { methodName: method.name });
         }
       }
     }
@@ -4015,7 +4187,7 @@ export class SemanticAnalyzer {
     for (const func of ast.functions) {
       const scope = this.symbolTables.getFunctionScope(func.name);
       if (scope) {
-        this.walkStatementsForUndeclaredVars(func.body, scope, {
+        visit(func.body, scope, {
           functionName: func.name,
         });
       }
@@ -4025,7 +4197,7 @@ export class SemanticAnalyzer {
     for (const fb of ast.functionBlocks) {
       const scope = this.symbolTables.getFBScope(fb.name);
       if (scope) {
-        this.walkStatementsForUndeclaredVars(fb.body, scope, {
+        visit(fb.body, scope, {
           fbName: fb.name,
         });
         for (const method of fb.methods) {
@@ -4033,24 +4205,20 @@ export class SemanticAnalyzer {
             fb.name,
             method.name,
           );
-          this.walkStatementsForUndeclaredVars(
-            method.body,
-            methodScope ?? scope,
-            {
-              fbName: fb.name,
-              methodName: method.name,
-            },
-          );
+          visit(method.body, methodScope ?? scope, {
+            fbName: fb.name,
+            methodName: method.name,
+          });
         }
         for (const prop of fb.properties) {
           if (prop.getter) {
-            this.walkStatementsForUndeclaredVars(prop.getter, scope, {
+            visit(prop.getter, scope, {
               fbName: fb.name,
               propertyName: prop.name,
             });
           }
           if (prop.setter) {
-            this.walkStatementsForUndeclaredVars(prop.setter, scope, {
+            visit(prop.setter, scope, {
               fbName: fb.name,
               propertyName: prop.name,
             });
@@ -4301,6 +4469,39 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * True when `upper` names, in the body `ctx` describes, an inherited FB
+   * member (EXTENDS chain), the function/method/property return variable, or
+   * THIS/SUPER inside an FB.
+   */
+  private isContextName(upper: string, ctx: UndeclaredVarContext): boolean {
+    if (ctx.fbName) {
+      const fbSym = this.symbolTables.globalScope.lookup(ctx.fbName);
+      if (fbSym?.kind === "functionBlock") {
+        let parentName = fbSym.declaration.extends;
+        const visited = new Set<string>();
+        while (parentName) {
+          const parentUpper = parentName.toUpperCase();
+          if (visited.has(parentUpper)) break;
+          visited.add(parentUpper);
+          const parentScope = this.symbolTables.getFBScope(parentName);
+          if (parentScope?.lookupLocal(upper)) return true;
+          const parentSym = this.symbolTables.globalScope.lookup(parentUpper);
+          if (parentSym?.kind !== "functionBlock") break;
+          parentName = parentSym.declaration.extends;
+        }
+      }
+    }
+    if (ctx.functionName && upper === ctx.functionName.toUpperCase()) {
+      return true;
+    }
+    if (ctx.methodName && upper === ctx.methodName.toUpperCase()) return true;
+    if (ctx.propertyName && upper === ctx.propertyName.toUpperCase()) {
+      return true;
+    }
+    return (upper === "THIS" || upper === "SUPER") && ctx.fbName !== undefined;
+  }
+
+  /**
    * Check whether a name is declared in the current scope chain or context.
    */
   private checkNameDeclared(
@@ -4321,34 +4522,8 @@ export class SemanticAnalyzer {
     const scopeHit = scope.lookup(upper);
     if (scopeHit && scopeHit.kind !== "enumValue") return;
 
-    // 1b. Inherited FB member variables (walk EXTENDS chain)
-    if (ctx.fbName) {
-      const fbSym = this.symbolTables.globalScope.lookup(ctx.fbName);
-      if (fbSym?.kind === "functionBlock") {
-        let parentName = fbSym.declaration.extends;
-        const visited = new Set<string>();
-        while (parentName) {
-          const parentUpper = parentName.toUpperCase();
-          if (visited.has(parentUpper)) break;
-          visited.add(parentUpper);
-          const parentScope = this.symbolTables.getFBScope(parentName);
-          if (parentScope?.lookupLocal(upper)) return;
-          const parentSym = this.symbolTables.globalScope.lookup(parentUpper);
-          if (parentSym?.kind !== "functionBlock") break;
-          parentName = parentSym.declaration.extends;
-        }
-      }
-    }
-
-    // 2. Function return variable (FuncName := value)
-    if (ctx.functionName && upper === ctx.functionName.toUpperCase()) return;
-
-    // 3. Method/property return variable
-    if (ctx.methodName && upper === ctx.methodName.toUpperCase()) return;
-    if (ctx.propertyName && upper === ctx.propertyName.toUpperCase()) return;
-
-    // 4. THIS / SUPER keywords (valid in FB/method/property context)
-    if ((upper === "THIS" || upper === "SUPER") && ctx.fbName) return;
+    // 1b-4. Inherited FB members, return variables, THIS / SUPER
+    if (this.isContextName(upper, ctx)) return;
 
     // 5. Standard functions (safety net)
     if (this.stdRegistry.isStandardFunction(name)) return;

@@ -576,6 +576,13 @@ function getBodyCompletions(
 
   while (currentScope) {
     for (const sym of currentScope.getAllSymbols()) {
+      // A list-qualified global (named_global_lists) is not offered by name.
+      if (
+        (sym.kind === "variable" || sym.kind === "constant") &&
+        sym.globalList !== undefined
+      ) {
+        continue;
+      }
       const upper = sym.name.toUpperCase();
       if (seen.has(upper)) continue;
       seen.add(upper);

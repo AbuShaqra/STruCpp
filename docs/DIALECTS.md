@@ -63,30 +63,32 @@ the root. A profile without `extends` has only its own features.
 
 ## Features
 
-| Feature             | Enables                                                      |
-| ------------------- | ------------------------------------------------------------ |
-| `program_methods`   | `METHOD` inside a `PROGRAM`                                  |
-| `pointer_to`        | `POINTER TO`, `ADR()` and `^` on a pointer                   |
-| `reference_to`      | `REFERENCE TO`                                               |
-| `ref_assign`        | the reference assignment `REF=`                              |
-| `self_caret`        | `THIS^.member` and `THIS^.M()`                               |
-| `property`          | `PROPERTY` prototypes in an `INTERFACE`                      |
-| `postfix_enum_base` | an enumeration base type after the value list, `(A, B) DINT` |
+| Feature              | Enables                                                      |
+| -------------------- | ------------------------------------------------------------ |
+| `program_methods`    | `METHOD` inside a `PROGRAM`                                  |
+| `pointer_to`         | `POINTER TO`, `ADR()` and `^` on a pointer                   |
+| `reference_to`       | `REFERENCE TO`                                               |
+| `ref_assign`         | the reference assignment `REF=`                              |
+| `self_caret`         | `THIS^.member` and `THIS^.M()`                               |
+| `property`           | `PROPERTY` prototypes in an `INTERFACE`                      |
+| `postfix_enum_base`  | an enumeration base type after the value list, `(A, B) DINT` |
+| `named_global_lists` | a global qualified by its list name, `GVL_A.x`               |
 
 ## Refusals
 
 When a feature is off the compile fails with an error at the construct's own line and column:
 
-| Construct                                   | Feature             | Message                                                                              |
-| ------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------ |
-| `POINTER TO <type>` (variable, type, field) | `pointer_to`        | `POINTER TO needs the feature pointer_to`                                            |
-| `ADR(x)`                                    | `pointer_to`        | `ADR needs the feature pointer_to`                                                   |
-| `REFERENCE TO <type>` and `REFERENCE_TO`    | `reference_to`      | `REFERENCE TO needs the feature reference_to`                                        |
-| `r REF= x`                                  | `ref_assign`        | `REF= needs the feature ref_assign`                                                  |
-| `METHOD` inside a `PROGRAM`                 | `program_methods`   | `METHOD in a PROGRAM needs the feature program_methods`                              |
-| `THIS^.member`, `THIS^.M()`                 | `self_caret`        | `THIS^.member needs the feature self_caret`                                          |
-| `PROPERTY` inside an `INTERFACE`            | `property`          | `PROPERTY in an INTERFACE needs the feature property`                                |
-| `TYPE E : (A, B) DINT;` (base after list)   | `postfix_enum_base` | `an enum base type written after the value list needs the feature postfix_enum_base` |
+| Construct                                   | Feature              | Message                                                                              |
+| ------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------ |
+| `POINTER TO <type>` (variable, type, field) | `pointer_to`         | `POINTER TO needs the feature pointer_to`                                            |
+| `ADR(x)`                                    | `pointer_to`         | `ADR needs the feature pointer_to`                                                   |
+| `REFERENCE TO <type>` and `REFERENCE_TO`    | `reference_to`       | `REFERENCE TO needs the feature reference_to`                                        |
+| `r REF= x`                                  | `ref_assign`         | `REF= needs the feature ref_assign`                                                  |
+| `METHOD` inside a `PROGRAM`                 | `program_methods`    | `METHOD in a PROGRAM needs the feature program_methods`                              |
+| `THIS^.member`, `THIS^.M()`                 | `self_caret`         | `THIS^.member needs the feature self_caret`                                          |
+| `PROPERTY` inside an `INTERFACE`            | `property`           | `PROPERTY in an INTERFACE needs the feature property`                                |
+| `TYPE E : (A, B) DINT;` (base after list)   | `postfix_enum_base`  | `an enum base type written after the value list needs the feature postfix_enum_base` |
+| `GVL_A.x` (list-qualified global)           | `named_global_lists` | `Global variable list access 'GVL_A.X' needs the feature named_global_lists`         |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
@@ -146,6 +148,53 @@ END_TYPE
 The postfix form is accepted in a `TYPE` declaration only, not in an anonymous enumeration inside a variable
 declaration.
 
+`named_global_lists` is in neither the default set nor `iec-3`: in IEC 61131-3 Ed. 3 global variables
+live in CONFIGURATION, RESOURCE and PROGRAM, and a namespace holds no variables, so a global list name is
+not IEC. The top-level `VAR_GLOBAL` blocks of one source file (outside any CONFIGURATION) form a global
+variable list. Its name is the file's stem (`GVL_A.st` and `dir/GVL_A.st` give `GVL_A`), or what the caller
+gives: `globalListName` on the compile options (the primary source) or on an `additionalSources` entry, and
+`--global-list <file>=<name>` on the CLI. A list name compares case-insensitively; a stem that is not an
+identifier names no list. With the feature on:
+
+```
+(* GVL_A.st *)
+VAR_GLOBAL x : INT := 1; fb : FB_Add; arr : ARRAY[1..3] OF INT; END_VAR
+(* GVL_B.st *)
+VAR_GLOBAL x : INT := 2; END_VAR
+(* main.st *)
+PROGRAM Main
+VAR x : REAL; END_VAR
+GVL_A.x := GVL_B.x + 1;       (* two globals named x, one per list *)
+x := 2.5;                     (* the local *)
+GVL_A.arr[2] := GVL_A.fb.out; (* member, subscript and dereference chains *)
+GVL_A.fb.M();                 (* a method through the list *)
+END_PROGRAM
+```
+
+- `LIST.var` reads and writes the global `var` of that list, followed by any chain of members, subscripts
+  and dereferences, in POU bodies (programs, functions, FBs, methods, property accessors). It types and
+  generates exactly like the unqualified access to that global. Initial values, CONFIGURATION entries and
+  `--test` files do not take the qualified form.
+- Unqualified access keeps working: qualifying is not enforced.
+- A list name is consulted last. When the name before the dot is anything else in that body (a local,
+  member or global variable, a POU, a type, an enum value, a function or method name, THIS/SUPER), that
+  wins and the access means what it meant before. So a variable `GVL_A : ST_Pair` makes `GVL_A.x` its field.
+- A local or member `x` hides the global `x` for plain `x` only: `GVL_A.x` still reaches the global.
+- Two lists may declare the same name: `GVL_A.x` and `GVL_B.x` are distinct variables with their own
+  initial values. A plain `x` there is an error at the use, `'X' is declared in lists GVL_A and GVL_B;
+  qualify it as GVL_A.X or GVL_B.X`, unless a local `x` hides both; so is a `VAR_EXTERNAL x`. With the
+  feature off the second declaration is still `Symbol 'X' already defined in scope 'global'`.
+- `GVL_A.nope` is `'NOPE' is not a variable of global variable list 'GVL_A'`; two files with the same list
+  name are an error at the second file's first block.
+- In C++ a global no other list declares keeps its name. A global two lists declare is emitted as
+  `LIST__NAME` (`GVL_A__X`), and a global reached as `GVL_A.x` where a local `x` hides it gets a reference
+  `inline T& GVL_A__X = X;` (`const` for a constant) after its definition. Messages, hover and the symbol
+  table show `GVL_A.X`; the language server's completion lists neither form. The lexer accepts `__` in an
+  identifier, so a program declaring `GVL_A__X` itself makes that access an error naming the clash.
+  Top-level globals are not in the debug table.
+- With the feature off, `GVL_A.x` is refused at the access only where `GVL_A` names a list and nothing
+  else; an unknown name is still `Undeclared variable 'GVL_A'`.
+
 `program_methods` is not in the default set: a `METHOD` in a `PROGRAM` is refused with no dialect flag too
 (before profiles it did not parse at all). `--strict` does not change any feature. A refused method is still
 registered and checked, so a call to it adds no second error. Program methods go before the body, interleaved with the VAR blocks
@@ -190,7 +239,8 @@ Unknown top-level keys and wrongly typed values are refused the same way.
 ## Library API
 
 `compile()` and `compileStlib()` take `dialect` (an id or a profile object), `dialectFiles`, `dialectPath`,
-`features` and `dialectIO`. The core never reads files: pass `nodeDialectIO` from `strucpp/node` (or your
+`features` and `dialectIO`. `compile()` and `analyze()` also take `globalListName` (and the same key on each
+`additionalSources` entry) for `named_global_lists`; a name that is not an identifier throws a `TypeError`. The core never reads files: pass `nodeDialectIO` from `strucpp/node` (or your
 own `{readFile, listDir}`) with `dialectFiles` or `dialectPath`. A bad profile is a compile error
 (line 0). `resolveDialect()` and `profilesWithFeature()` are exported for callers that resolve themselves.
 

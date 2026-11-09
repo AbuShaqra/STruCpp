@@ -541,3 +541,27 @@ END_FUNCTION_BLOCK
     expect(upperLabels(getCompletions(analysis, "v.st", line, col, source))).toEqual(["X", "Y"]);
   });
 });
+
+describe("named global lists", () => {
+  it("offers no internal list-qualified name of a global", () => {
+    const main = [
+      "PROGRAM Main",
+      "VAR y : INT; END_VAR",
+      "y := GVL_A.y + GVL_A.x + GVL_B.x;",
+      "",
+      "END_PROGRAM",
+    ].join("\n");
+    const analysis = analyze(main, {
+      fileName: "main.st",
+      additionalSources: [
+        { fileName: "GVL_A.st", source: "VAR_GLOBAL x : INT; y : INT; END_VAR" },
+        { fileName: "GVL_B.st", source: "VAR_GLOBAL x : INT; END_VAR" },
+      ],
+      features: ["+named_global_lists"],
+    });
+    expect(analysis.errors).toEqual([]);
+    const labels = upperLabels(getCompletions(analysis, "main.st", 4, 1, main));
+    expect(labels).toContain("Y");
+    expect(labels.filter((l) => l.startsWith("GVL_"))).toEqual([]);
+  });
+});
