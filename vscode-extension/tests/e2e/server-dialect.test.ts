@@ -41,7 +41,7 @@ const POINTER_FB = `FUNCTION_BLOCK Holder
 END_FUNCTION_BLOCK`;
 
 function profile(id: string, features: DialectProfile["features"]): DialectProfile {
-  return { id, name: id, extends: "iec", features, semantics: {} };
+  return { id, name: id, extends: "iec-3", features, semantics: {} };
 }
 
 const IEC_ONLY = profile("test-plain", []);
@@ -324,6 +324,10 @@ describe("LSP server dialect profile (stdio)", () => {
         [{ dialect: { id: 7, features: [] } }, /'id' must be a non-empty string/],
         [{ dialect: { id: "test-loop", extends: "test-loop", features: [] } }, /extends cycle/],
         [{ dialect: { id: "test-orphan", extends: "test-missing", features: [] } }, /not loaded/],
+        [
+          { dialect: { id: "test-old", extends: "iec", features: [] } },
+          /extends 'iec', which is not loaded; the IEC 61131-3 Ed\. 3 profile is 'iec-3'/,
+        ],
         [{ dialect: "test-pointers" }, /must be a profile object/],
         [{ dialect: WITH_BOTH, features: "pointer_to" }, /'features' must be an array of strings/],
         [{ dialect: WITH_BOTH, features: ["no_such_feature"] }, /unknown feature 'no_such_feature'/],

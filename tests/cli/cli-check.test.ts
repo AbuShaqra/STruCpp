@@ -158,23 +158,23 @@ describe("--check honours the dialect flags", () => {
     expect(report.dialect).toBeNull();
   });
 
-  it("--dialect iec refuses it with exit 1", () => {
-    const { status, report } = runJson(["--dialect", "iec", "pointer.st"]);
+  it("--dialect iec-3 refuses it with exit 1", () => {
+    const { status, report } = runJson(["--dialect", "iec-3", "pointer.st"]);
     expect(status).toBe(1);
-    expect(report.dialect).toBe("iec");
+    expect(report.dialect).toBe("iec-3");
     expect(report.diagnostics[0]!.message).toMatch(/pointer_to/);
   });
 
-  it("--feature +pointer_to after --dialect iec accepts it", () => {
+  it("--feature +pointer_to after --dialect iec-3 accepts it", () => {
     const { status, report } = runJson([
       "--dialect",
-      "iec",
+      "iec-3",
       "--feature",
       "+pointer_to",
       "pointer.st",
     ]);
     expect(status).toBe(0);
-    expect(report.dialect).toBe("iec");
+    expect(report.dialect).toBe("iec-3");
   });
 
   it("--dialect-path selects a profile from a folder", () => {
@@ -219,6 +219,16 @@ describe("--check exit code 2", () => {
     const report = JSON.parse(r.out) as CheckReport;
     expect(report.summary.errors).toBe(1);
     expect(report.diagnostics[0]!.severity).toBe("error");
+  });
+
+  it("--dialect iec exits 2 and names iec-3", () => {
+    const r = run(["--check", "--json", "--dialect", "iec", "clean.st"]);
+    expect(r.status).toBe(2);
+    const report = JSON.parse(r.out) as CheckReport;
+    expect(report.dialect).toBeNull();
+    expect(report.diagnostics[0]!.message).toBe(
+      "unknown dialect 'iec' (known: iec-3); the IEC 61131-3 Ed. 3 profile is 'iec-3'",
+    );
   });
 
   it("a broken profile folder", () => {

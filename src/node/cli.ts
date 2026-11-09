@@ -13,7 +13,7 @@
  *   -o, --output <file>       Output file path or directory
  *   -d, --debug               Enable debug mode
  *   --strict                  Reject code that strict IEC compilers (matiec) reject
- *   --dialect <id>            Compile under a dialect profile (built-in: iec)
+ *   --dialect <id>            Compile under a dialect profile (built-in: iec-3)
  *   --dialect-file <path>     Load a dialect profile file (repeatable)
  *   --dialect-path <dir>      Load every *.json profile in a folder (repeatable)
  *   --feature <+id|-id>       Enable or disable a feature (repeatable)
@@ -355,7 +355,7 @@ Options:
   --strict                  Reject code that strict IEC compilers (matiec)
                             reject: implicit conversions, BOOL/bit-string
                             arithmetic, reserved names, duplicate CASE labels...
-  --dialect <id>            Compile under a dialect profile: the built-in iec,
+  --dialect <id>            Compile under a dialect profile: the built-in iec-3,
                             a --dialect-file profile or <dir>/<id>.json in a
                             --dialect-path folder (default: no profile, the
                             features pointer_to, reference_to, ref_assign)
@@ -409,7 +409,7 @@ Examples:
   strucpp program.st -o program.cpp -L ./libs/
   strucpp program.st -o program.cpp --debug --line-directives
   strucpp program.st -o program.cpp --build
-  strucpp --check --json program.st utils.st --dialect iec
+  strucpp --check --json program.st utils.st --dialect iec-3
   strucpp --compile-lib math.st -o mathlib/ --lib-name math-lib
   strucpp --compile-lib src/mylib/ -o out/ --lib-name my-lib
   strucpp counter.st --test test_counter.st

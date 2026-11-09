@@ -20,7 +20,7 @@ export interface CompileOptions {
   strict?: boolean;
 
   /**
-   * Dialect to compile under: a profile id (built-in `iec`, a `dialectFiles`
+   * Dialect to compile under: a profile id (built-in `iec-3`, a `dialectFiles`
    * profile or `<dir>/<id>.json` in `dialectPath`) or a profile object.
    * Unset: the default feature set. See docs/DIALECTS.md.
    */

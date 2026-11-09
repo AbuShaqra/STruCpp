@@ -43,7 +43,7 @@ const PLAIN_PROGRAM = `PROGRAM Main
 END_PROGRAM`;
 
 function profile(id: string, features: DialectProfile["features"]): DialectProfile {
-  return { id, name: id, extends: "iec", features, semantics: {} };
+  return { id, name: id, extends: "iec-3", features, semantics: {} };
 }
 
 const IEC_ONLY = profile("test-plain", []);
@@ -140,6 +140,28 @@ describe("parseDialectSettings", () => {
     const orphan = parseDialectSettings({ id: "orphan", extends: "missing", features: [] }, undefined);
     expect(orphan.ok).toBe(false);
     if (!orphan.ok) expect(orphan.message).toMatch(/extends 'missing', which is not loaded/);
+  });
+
+  it("accepts a profile extending iec-3 and rejects one extending iec with a hint", () => {
+    const current = parseDialectSettings({ id: "cur", extends: "iec-3", features: ["pointer_to"] }, undefined);
+    expect(current.ok).toBe(true);
+    const old = parseDialectSettings({ id: "old", extends: "iec", features: [] }, undefined);
+    expect(old.ok).toBe(false);
+    if (!old.ok) {
+      expect(old.message).toBe(
+        "dialect 'old': extends 'iec', which is not loaded; the IEC 61131-3 Ed. 3 profile is 'iec-3'",
+      );
+    }
+  });
+
+  it("rejects a profile whose own id is iec as reserved", () => {
+    const result = parseDialectSettings({ id: "iec", features: [] }, undefined);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toBe(
+        "dialect 'iec': the id 'iec' is reserved; the IEC 61131-3 Ed. 3 profile is 'iec-3'",
+      );
+    }
   });
 
   it("rejects a profile given as a string, number or array", () => {

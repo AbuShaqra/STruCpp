@@ -1,6 +1,6 @@
 /**
  * METHODs in a PROGRAM are the dialect feature program_methods: refused with
- * no dialect flag and under `iec` (at the METHOD line), accepted with
+ * no dialect flag and under `iec-3` (at the METHOD line), accepted with
  * `--feature +program_methods` or a profile that has it. Strict mode is a
  * separate axis. A program's methods are callable only inside the program.
  */
@@ -34,8 +34,8 @@ describe("the feature program_methods", () => {
     expect(result.success).toBe(false);
   });
 
-  it("refused without the feature, at the METHOD line (iec)", () => {
-    const result = compile(SRC, { dialect: "iec" });
+  it("refused without the feature, at the METHOD line (iec-3)", () => {
+    const result = compile(SRC, { dialect: "iec-3" });
     expect(lines(result)).toEqual([`5:1: ${REFUSAL}`]);
     expect(result.success).toBe(false);
   });
@@ -53,7 +53,7 @@ END_METHOD
   One();
 END_PROGRAM
 `;
-    expect(lines(compile(src, { dialect: "iec" }))).toEqual([
+    expect(lines(compile(src, { dialect: "iec-3" }))).toEqual([
       `3:1: ${REFUSAL}`,
       `7:3: ${REFUSAL}`,
     ]);
@@ -61,7 +61,7 @@ END_PROGRAM
 
   it("accepted with --feature +program_methods", () => {
     expect(compile(SRC, ON).errors).toEqual([]);
-    expect(compile(SRC, { dialect: "iec", ...ON }).errors).toEqual([]);
+    expect(compile(SRC, { dialect: "iec-3", ...ON }).errors).toEqual([]);
   });
 
   it("accepted under vendor-a from --dialect-path", () => {
@@ -73,9 +73,9 @@ END_PROGRAM
     expect(result.errors).toEqual([]);
   });
 
-  it("the refusal under iec names (profiles: vendor-a)", () => {
+  it("the refusal under iec-3 names (profiles: vendor-a)", () => {
     const result = compile(SRC, {
-      dialect: "iec",
+      dialect: "iec-3",
       dialectPath: [GOOD],
       dialectIO: nodeDialectIO,
     });
@@ -84,22 +84,22 @@ END_PROGRAM
 
   it("strict mode does not change it", () => {
     expect(lines(compile(SRC, { strict: true }))).toEqual([`5:1: ${REFUSAL}`]);
-    expect(lines(compile(SRC, { strict: true, dialect: "iec" }))).toEqual([
+    expect(lines(compile(SRC, { strict: true, dialect: "iec-3" }))).toEqual([
       `5:1: ${REFUSAL}`,
     ]);
     expect(compile(SRC, { strict: true, ...ON }).errors).toEqual([]);
     expect(
-      compile(SRC, { strict: true, dialect: "iec", ...ON }).errors,
+      compile(SRC, { strict: true, dialect: "iec-3", ...ON }).errors,
     ).toEqual([]);
   });
 
-  it("a PROGRAM without methods is untouched under iec", () => {
+  it("a PROGRAM without methods is untouched under iec-3", () => {
     const src = `PROGRAM MAIN
 VAR n : INT; END_VAR
   n := n + 1;
 END_PROGRAM
 `;
-    expect(compile(src, { dialect: "iec" }).errors).toEqual([]);
+    expect(compile(src, { dialect: "iec-3" }).errors).toEqual([]);
   });
 
   it("FUNCTION_BLOCK methods need no feature", () => {
@@ -111,7 +111,7 @@ END_METHOD
   Count();
 END_FUNCTION_BLOCK
 `;
-    expect(compile(src, { dialect: "iec" }).errors).toEqual([]);
+    expect(compile(src, { dialect: "iec-3" }).errors).toEqual([]);
   });
 
   it("a refused program method called from the body gives exactly one error", () => {

@@ -67,7 +67,7 @@ Parse and analyse ST without generating C++, writing any file or needing `g++`:
 
 ```bash
 strucpp --check main.st utils.st
-strucpp --check --json main.st utils.st --dialect iec
+strucpp --check --json main.st utils.st --dialect iec-3
 ```
 
 It runs the same parse and semantic analysis as compile mode, with the same libraries (bundled and
@@ -89,7 +89,7 @@ With `--json`, stdout carries exactly one JSON document, also for exit code 2:
 
 ```json
 {
-  "dialect": "iec",
+  "dialect": "iec-3",
   "files": ["main.st", "lib/utils.st"],
   "diagnostics": [
     {
@@ -233,21 +233,21 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 
 | Flag                    | Description                                                                             |
 | ----------------------- | --------------------------------------------------------------------------------------- |
-| `--dialect <id>`        | Compile under a profile: built-in `iec`, a `--dialect-file` or `--dialect-path` profile |
+| `--dialect <id>`        | Compile under a profile: built-in `iec-3`, a `--dialect-file`/`--dialect-path` profile  |
 | `--dialect-file <path>` | Load a profile file (repeatable); one file and no `--dialect` selects it                |
 | `--dialect-path <dir>`  | Load and check every `*.json` profile in a folder (repeatable)                          |
 | `--feature <+id\|-id>`  | Enable (`+id` or `id`) or disable (`-id`) a feature after the profile (repeatable)      |
 | `--print-dialect`       | Print the resolved dialect as JSON (`{"id":...,"features":[...]}`) and exit             |
 
 With no `--dialect` and no `--dialect-file` the compiler runs with the default features
-`pointer_to`, `reference_to` and `ref_assign` (its behaviour before profiles). `--dialect iec`
-enables no feature. The flags apply in every mode that compiles ST (compile, build, `--test`,
+`pointer_to`, `reference_to` and `ref_assign` (its behaviour before profiles). `--dialect iec-3`
+enables no feature; `--dialect iec` is refused with an error naming `iec-3`. The flags apply in every mode that compiles ST (compile, build, `--test`,
 `--compile-lib`, `--import-lib`, `--check`); a bad profile prints one `error:` line and exits 1
 (2 with `--check`). The
 profile format and the features are in [DIALECTS.md](DIALECTS.md).
 
 ```bash
-strucpp --dialect iec --print-dialect
+strucpp --dialect iec-3 --print-dialect
 strucpp main.st -o main.cpp --dialect-path dialects/ --dialect vendor-a
 strucpp main.st -o main.cpp --feature -pointer_to
 ```

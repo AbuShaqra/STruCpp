@@ -239,7 +239,7 @@ END_PROGRAM
 });
 
 describe("ACTION semantics", () => {
-  it("program action needs no feature under iec", () => {
+  it("program action needs no feature under iec-3", () => {
     const src = `PROGRAM MAIN
 VAR n : INT; END_VAR
   Count();
@@ -252,7 +252,7 @@ ACTION MAIN.Twice
   Count();
 END_ACTION
 `;
-    expect(compile(src, { dialect: "iec" }).errors).toEqual([]);
+    expect(compile(src, { dialect: "iec-3" }).errors).toEqual([]);
     expect(compile(src).errors).toEqual([]);
   });
 
@@ -275,7 +275,7 @@ ACTION MAIN.Sum
   g := n;
 END_ACTION
 `;
-    expect(compile(src, { dialect: "iec", strict: true }).errors).toEqual([]);
+    expect(compile(src, { dialect: "iec-3", strict: true }).errors).toEqual([]);
   });
 
   it("an undeclared name inside an action is an error", () => {
@@ -334,7 +334,7 @@ VAR b : Fb; END_VAR
   b.Reset();
 END_PROGRAM
 `;
-    expect(compile(src, { strict: true, dialect: "iec" }).errors).toEqual([]);
+    expect(compile(src, { strict: true, dialect: "iec-3" }).errors).toEqual([]);
   });
 
   it("MAIN.Name() from another POU is refused with C12's message", () => {
@@ -382,7 +382,7 @@ VAR mode : (Idle, Running) := Idle; END_VAR
   END_ACTION
 END_PROGRAM
 `;
-    expect(compile(src, { dialect: "iec" }).errors).toEqual([]);
+    expect(compile(src, { dialect: "iec-3" }).errors).toEqual([]);
   });
 
   it("an action calls another action of the same program", () => {
@@ -398,6 +398,6 @@ VAR n : INT; END_VAR
   END_ACTION
 END_PROGRAM
 `;
-    expect(compile(src, { dialect: "iec" }).errors).toEqual([]);
+    expect(compile(src, { dialect: "iec-3" }).errors).toEqual([]);
   });
 });
