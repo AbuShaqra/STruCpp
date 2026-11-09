@@ -876,8 +876,10 @@ export class TypeChecker {
         }
       }
 
-      // Check standard functions
-      const desc = this.stdRegistry.lookup(nameUpper);
+      // Check standard functions (and typed truncation, TRUNC_INT)
+      const desc =
+        this.stdRegistry.lookup(nameUpper) ??
+        this.stdRegistry.resolveTypedTrunc(nameUpper);
       if (desc) {
         // Specific return type
         if (desc.specificReturnType) {
@@ -2477,7 +2479,9 @@ export class TypeChecker {
     if (!this.stdRegistry) return;
 
     const nameUpper = expr.functionName.toUpperCase();
-    const desc = this.stdRegistry.lookup(nameUpper);
+    const desc =
+      this.stdRegistry.lookup(nameUpper) ??
+      this.stdRegistry.resolveTypedTrunc(nameUpper);
     if (!desc) return; // User-defined or unknown — skip constraint checking
 
     // Validate argument types against parameter constraints. Strip EN/ENO
