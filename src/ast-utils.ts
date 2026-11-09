@@ -273,7 +273,7 @@ export function collectReferences(
 export interface EnclosingScope {
   kind: "program" | "function" | "functionBlock" | "method" | "global";
   name: string;
-  parentName?: string; // FB name when kind === 'method'
+  parentName?: string; // FB or PROGRAM name when kind === 'method'
 }
 
 /**
@@ -286,9 +286,14 @@ export function findEnclosingPOU(
   line: number,
   column: number,
 ): EnclosingScope {
-  // Check programs
+  // Check programs (and their methods)
   for (const prog of ast.programs) {
     if (containsPosition(prog, file, line, column)) {
+      for (const method of prog.methods) {
+        if (containsPosition(method, file, line, column)) {
+          return { kind: "method", name: method.name, parentName: prog.name };
+        }
+      }
       return { kind: "program", name: prog.name };
     }
   }
@@ -378,7 +383,7 @@ function getChildren(node: ASTNode): ASTNode[] {
 
     case "ProgramDeclaration": {
       const pd = node as ProgramDeclaration;
-      children.push(...pd.varBlocks, ...pd.body);
+      children.push(...pd.varBlocks, ...pd.methods, ...pd.body);
       break;
     }
 

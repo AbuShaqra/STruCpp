@@ -392,13 +392,15 @@ export class SymbolTables {
   }
 
   /**
-   * Create a new scope for a method within a function block.
-   * The method scope's parent is the FB scope, giving the lookup chain:
-   * method locals → FB members → globals.
+   * Create a new scope for a method within a function block or a program.
+   * The method scope's parent is the owner's scope, giving the lookup chain:
+   * method locals → FB (or program) members → globals.
    */
   createMethodScope(fbName: string, methodName: string): Scope {
-    const fbScope = this.getFBScope(fbName);
-    const parent = fbScope ?? this.globalScope;
+    const parent =
+      this.getFBScope(fbName) ??
+      this.getProgramScope(fbName) ??
+      this.globalScope;
     const key = `${fbName.toUpperCase()}.${methodName.toUpperCase()}`;
     const scope = new Scope(`${fbName}.${methodName}`, parent);
     this.methodScopes.set(key, scope);

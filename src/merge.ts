@@ -37,6 +37,7 @@ export function mergeCompilationUnits(
     merged.types.push(...unit.types);
     merged.configurations.push(...unit.configurations);
     merged.globalVarBlocks.push(...unit.globalVarBlocks);
+    merged.actions.push(...unit.actions);
   }
 
   // Use the source span from the first unit

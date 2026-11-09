@@ -118,6 +118,19 @@ export interface CompilationUnit extends ASTNode {
   types: TypeDeclaration[];
   configurations: ConfigurationDeclaration[];
   globalVarBlocks: VarBlock[];
+  /** Top-level `ACTION Owner.Name ... END_ACTION` blocks (owner set). */
+  actions: ActionDeclaration[];
+}
+
+/**
+ * ACTION declaration: a named statement block of a PROGRAM or FUNCTION_BLOCK.
+ * `owner` is set only for the top-level form `ACTION Owner.Name`.
+ */
+export interface ActionDeclaration extends ASTNode {
+  kind: "ActionDeclaration";
+  owner?: string;
+  name: string;
+  body: Statement[];
 }
 
 // =============================================================================
@@ -131,6 +144,10 @@ export interface ProgramDeclaration extends ASTNode {
   kind: "ProgramDeclaration";
   name: string;
   varBlocks: VarBlock[];
+  /** METHODs declared in the PROGRAM (the dialect feature program_methods). */
+  methods: MethodDeclaration[];
+  /** ACTION blocks written inside the PROGRAM, after its body. */
+  actions: ActionDeclaration[];
   body: Statement[];
 }
 
@@ -158,6 +175,8 @@ export interface FunctionBlockDeclaration extends ASTNode {
   varBlocks: VarBlock[];
   methods: MethodDeclaration[];
   properties: PropertyDeclaration[];
+  /** ACTION blocks written inside the FUNCTION_BLOCK, after its body. */
+  actions: ActionDeclaration[];
   body: Statement[];
 }
 
@@ -179,6 +198,8 @@ export interface MethodDeclaration extends ASTNode {
   returnType?: TypeReference;
   varBlocks: VarBlock[];
   body: Statement[];
+  /** True when the method is a lowered ACTION (needs no feature in a PROGRAM). */
+  fromAction?: boolean;
 }
 
 /**
@@ -1041,5 +1062,6 @@ export function createCompilationUnit(): CompilationUnit {
     types: [],
     configurations: [],
     globalVarBlocks: [],
+    actions: [],
   };
 }

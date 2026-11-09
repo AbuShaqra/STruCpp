@@ -6,3 +6,4 @@
 - **[Architecture](ARCHITECTURE.md)** -- Compilation pipeline, module map, and subsystem design
 - **[C++ Runtime](RUNTIME.md)** -- Header-only runtime library: types, IECVar, standard functions
 - **[IEC 61131-3 Compliance](IEC_COMPLIANCE.md)** -- Supported language features and known gaps
+- **[Dialects](DIALECTS.md)** -- Dialect profiles and the language features they enable

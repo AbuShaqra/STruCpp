@@ -27,6 +27,9 @@ export {
   loadStlibFromFile,
 } from "./library-loader.js";
 
+// Filesystem-backed dialect profile reader
+export { nodeDialectIO } from "./dialect-io.js";
+
 // Filesystem-backed library config
 export { loadLibraryConfig } from "./library-config.js";
 

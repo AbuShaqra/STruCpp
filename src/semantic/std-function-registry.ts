@@ -50,6 +50,13 @@ export interface StdFunctionDescriptor {
   returnMatchesFirstParam: boolean;
   /** Specific return type name (when returnConstraint is "specific") */
   specificReturnType?: string;
+  /**
+   * Result type name for a given first-argument type name (upper case), for
+   * functions whose result differs from, but depends on, the argument type
+   * (TRUNC: REAL gives DINT, LREAL gives LINT). Takes precedence over
+   * returnMatchesFirstParam; undefined falls back to it.
+   */
+  returnTypeFor?: (argType: string) => string | undefined;
   /** Parameter descriptors */
   params: StdFunctionParam[];
   /** Whether the function accepts variadic arguments (2+) */
@@ -228,8 +235,8 @@ export class StdFunctionRegistry {
       category: "numeric",
     });
 
-    // Real-only functions: SQRT, LN, LOG, EXP, TRUNC, ROUND
-    for (const fn of ["SQRT", "LN", "LOG", "EXP", "TRUNC", "ROUND"]) {
+    // Real-only functions: SQRT, LN, LOG, EXP, ROUND
+    for (const fn of ["SQRT", "LN", "LOG", "EXP", "ROUND"]) {
       this.register({
         name: fn,
         cppName: fn,
@@ -241,6 +248,20 @@ export class StdFunctionRegistry {
         category: "numeric",
       });
     }
+
+    // TRUNC(ANY_REAL) -> integer: DINT for REAL, LINT for LREAL
+    this.register({
+      name: "TRUNC",
+      cppName: "TRUNC",
+      returnConstraint: "ANY_INT",
+      returnMatchesFirstParam: false,
+      returnTypeFor: (argType) =>
+        argType === "REAL" ? "DINT" : argType === "LREAL" ? "LINT" : undefined,
+      params: [{ name: "IN", constraint: "ANY_REAL", isByRef: false }],
+      isVariadic: false,
+      isConversion: false,
+      category: "numeric",
+    });
 
     // EXPT(ANY_REAL, ANY_REAL) -> ANY_REAL
     this.register({

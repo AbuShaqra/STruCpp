@@ -435,6 +435,14 @@ export function lowerInlineTypes(unit: CompilationUnit): CompileError[] {
 
   for (const program of unit.programs) {
     lowerBlocks(program.varBlocks, program.name, program.name, hoisted);
+    for (const method of program.methods) {
+      lowerBlocks(
+        method.varBlocks,
+        `${program.name}_${method.name}`,
+        program.name,
+        hoisted,
+      );
+    }
   }
   for (const fn of unit.functions) {
     lowerBlocks(fn.varBlocks, fn.name, fn.name, hoisted);
@@ -501,6 +509,12 @@ export function lowerInlineTypes(unit: CompilationUnit): CompileError[] {
     });
   for (const program of unit.programs) {
     byTarget([program.varBlocks, program.body], program.varBlocks);
+    for (const method of program.methods) {
+      byTarget(
+        [method.varBlocks, method.body],
+        [...program.varBlocks, ...method.varBlocks],
+      );
+    }
   }
   for (const fn of unit.functions) {
     byTarget([fn.varBlocks, fn.body], fn.varBlocks);
@@ -527,13 +541,23 @@ export function lowerInlineTypes(unit: CompilationUnit): CompileError[] {
     variableNames(blocks, new Set(globals));
 
   for (const program of unit.programs) {
+    const programLocal = ownedBy(program.name);
     qualifyBody(
       [program.varBlocks, program.body],
-      ownedBy(program.name),
+      programLocal,
       visible(program.varBlocks),
       globalMembers,
       errors,
     );
+    for (const method of program.methods) {
+      qualifyBody(
+        [method.varBlocks, method.body],
+        mergeLocal(programLocal, ownedBy(`${program.name}_${method.name}`)),
+        visible([...program.varBlocks, ...method.varBlocks]),
+        globalMembers,
+        errors,
+      );
+    }
   }
   for (const fn of unit.functions) {
     qualifyBody(

@@ -12,6 +12,11 @@
  *   -o, --output <file>       Output file path or directory
  *   -d, --debug               Enable debug mode
  *   --strict                  Reject code that strict IEC compilers (matiec) reject
+ *   --dialect <id>            Compile under a dialect profile (built-in: iec)
+ *   --dialect-file <path>     Load a dialect profile file (repeatable)
+ *   --dialect-path <dir>      Load every *.json profile in a folder (repeatable)
+ *   --feature <+id|-id>       Enable or disable a feature (repeatable)
+ *   --print-dialect           Print the resolved dialect as JSON and exit
  *   --no-line-mapping         Disable line mapping
  *   --line-directives         Include #line directives
  *   --source-comments         Include ST source as comments
@@ -42,6 +47,8 @@ import { resolve, basename, dirname, join, relative, sep } from "path";
 import { tmpdir, platform } from "os";
 import { execFileSync } from "child_process";
 import { compile, getVersion, compileStlib } from "../index.js";
+import { DialectError, resolveDialect } from "../dialect.js";
+import { nodeDialectIO } from "./dialect-io.js";
 import {
   formatDiagnostic,
   buildSourceMap,
@@ -71,6 +78,11 @@ interface CLIOptions {
   output?: string;
   debug: boolean;
   strict: boolean;
+  dialect?: string;
+  dialectFiles: string[];
+  dialectPath: string[];
+  features: string[];
+  printDialect: boolean;
   lineMapping: boolean;
   lineDirectives: boolean;
   sourceComments: boolean;
@@ -142,6 +154,10 @@ function parseArgs(args: string[]): CLIOptions {
     inputs: [],
     debug: false,
     strict: false,
+    dialectFiles: [],
+    dialectPath: [],
+    features: [],
+    printDialect: false,
     lineMapping: true,
     lineDirectives: false,
     sourceComments: false,
@@ -174,6 +190,24 @@ function parseArgs(args: string[]): CLIOptions {
       options.debug = true;
     } else if (arg === "--strict") {
       options.strict = true;
+    } else if (
+      arg === "--dialect" ||
+      arg === "--dialect-file" ||
+      arg === "--dialect-path" ||
+      arg === "--feature"
+    ) {
+      i++;
+      const nextArg = args[i];
+      if (nextArg === undefined) {
+        console.error(`error: ${arg} needs a value`);
+        process.exit(1);
+      }
+      if (arg === "--dialect") options.dialect = nextArg;
+      else if (arg === "--dialect-file") options.dialectFiles.push(nextArg);
+      else if (arg === "--dialect-path") options.dialectPath.push(nextArg);
+      else options.features.push(nextArg);
+    } else if (arg === "--print-dialect") {
+      options.printDialect = true;
     } else if (arg === "--no-line-mapping") {
       options.lineMapping = false;
     } else if (arg === "--line-directives") {
@@ -311,6 +345,18 @@ Options:
   --strict                  Reject code that strict IEC compilers (matiec)
                             reject: implicit conversions, BOOL/bit-string
                             arithmetic, reserved names, duplicate CASE labels...
+  --dialect <id>            Compile under a dialect profile: the built-in iec,
+                            a --dialect-file profile or <dir>/<id>.json in a
+                            --dialect-path folder (default: no profile, the
+                            features pointer_to, reference_to, ref_assign)
+  --dialect-file <path>     Load a dialect profile (repeatable); one file and
+                            no --dialect selects it
+  --dialect-path <dir>      Load and check every *.json profile in a folder
+                            (repeatable)
+  --feature <+id|-id>       Enable (+id or id) or disable (-id) a feature after
+                            the profile (repeatable): program_methods,
+                            pointer_to, reference_to, ref_assign
+  --print-dialect           Print the resolved dialect as JSON and exit
   --no-line-mapping         Disable line mapping
   --line-directives         Include #line directives in output
   --source-comments         Include ST source as comments
@@ -357,6 +403,51 @@ Examples:
 
 For more information, visit: https://github.com/Autonomy-Logic/STruCpp
 `);
+}
+
+/** The dialect flags as compile options (empty when none is given). */
+function dialectCompileOptions(
+  options: CLIOptions,
+): Pick<
+  CompileOptions,
+  "dialect" | "dialectFiles" | "dialectPath" | "features" | "dialectIO"
+> {
+  const out: Pick<
+    CompileOptions,
+    "dialect" | "dialectFiles" | "dialectPath" | "features" | "dialectIO"
+  > = {};
+  if (options.dialect !== undefined) out.dialect = options.dialect;
+  if (options.dialectFiles.length > 0) out.dialectFiles = options.dialectFiles;
+  if (options.dialectPath.length > 0) out.dialectPath = options.dialectPath;
+  if (options.features.length > 0) out.features = options.features;
+  if (out.dialectFiles || out.dialectPath) out.dialectIO = nodeDialectIO;
+  return out;
+}
+
+/**
+ * Check the dialect flags before any mode runs: a bad profile prints one
+ * `error:` line and exits 1; `--print-dialect` prints the result and exits 0.
+ */
+function checkDialect(options: CLIOptions): void {
+  const req = dialectCompileOptions(options);
+  if (Object.keys(req).length === 0 && !options.printDialect) return;
+  try {
+    const d = resolveDialect(
+      req,
+      nodeDialectIO.readFile,
+      nodeDialectIO.listDir,
+    );
+    if (options.printDialect) {
+      console.log(
+        JSON.stringify({ id: d.id, features: [...d.features].sort() }),
+      );
+      process.exit(0);
+    }
+  } catch (e) {
+    if (!(e instanceof DialectError)) throw e;
+    console.error(`error: ${e.message}`);
+    process.exit(1);
+  }
 }
 
 /**
@@ -575,6 +666,7 @@ function compileLibraryMode(options: CLIOptions): void {
     noSource: options.noSource,
     builtin: options.builtin,
     strict: options.strict,
+    ...dialectCompileOptions(options),
   };
   if (dependencies.length > 0) {
     stlibOpts.dependencies = dependencies;
@@ -640,6 +732,7 @@ function runTestMode(options: CLIOptions): void {
     fileName: basename(inputPath),
     isTestBuild: true,
     strict: options.strict,
+    ...dialectCompileOptions(options),
   };
   if (additionalSources.length > 0) {
     compileOptions.additionalSources = additionalSources;
@@ -936,6 +1029,7 @@ async function importLibMode(options: CLIOptions): Promise<void> {
     namespace: libNamespace,
     noSource: options.noSource,
     strict: options.strict,
+    ...dialectCompileOptions(options),
   };
   if (dependencies.length > 0) {
     stlibOpts.dependencies = dependencies;
@@ -980,6 +1074,8 @@ async function main(): Promise<void> {
     showHelp();
     process.exit(options.showHelp ? 0 : 1);
   }
+
+  checkDialect(options);
 
   // Decompile mode
   if (options.decompileLib) {
@@ -1047,11 +1143,13 @@ async function main(): Promise<void> {
   const compileOptions: Partial<CompileOptions> = {
     debug: options.debug,
     strict: options.strict,
+    ...dialectCompileOptions(options),
     lineMapping: options.lineMapping,
     lineDirectives: options.lineDirectives,
     sourceComments: options.sourceComments,
     optimizationLevel: options.optimizationLevel,
     headerFileName,
+    cppFileName: basename(outputPath),
     fileName: basename(inputPath),
   };
   if (additionalSources.length > 0) {

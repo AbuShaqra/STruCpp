@@ -27,6 +27,8 @@ import type {
   CompilationUnit,
   FunctionBlockDeclaration,
   FunctionDeclaration,
+  MethodDeclaration,
+  ProgramDeclaration,
   Statement,
   VarBlock,
   UnterminatedEnd,
@@ -54,6 +56,7 @@ import {
   type AccessType,
 } from "./type-utils.js";
 import { stripEnEno } from "../ast-utils.js";
+import { DEFAULT_FEATURES } from "../dialect.js";
 
 // Re-export from type-utils for backward compatibility
 export { ELEMENTARY_TYPES, TYPE_CATEGORIES } from "./type-utils.js";
@@ -247,6 +250,8 @@ export class TypeChecker {
     private symbolTables: SymbolTables,
     private stdRegistry?: StdFunctionRegistry,
     private strict = false,
+    /** Language features enabled by the dialect. */
+    readonly features: ReadonlySet<string> = DEFAULT_FEATURES,
   ) {}
 
   /**
@@ -266,8 +271,25 @@ export class TypeChecker {
     for (const prog of ast.programs) {
       const scope = this.symbolTables.getProgramScope(prog.name);
       if (scope) {
+        this.currentProgram = prog;
         this.checkVarBlocks(prog.varBlocks, scope);
         this.checkStatements(prog.body, scope);
+        for (const method of prog.methods) {
+          const methodScope = this.symbolTables.getMethodScope(
+            prog.name,
+            method.name,
+          );
+          this.checkVarBlocks(method.varBlocks, methodScope ?? scope);
+          if (method.returnType) {
+            this.currentReturn = {
+              name: method.name,
+              type: method.returnType,
+            };
+          }
+          this.checkStatements(method.body, methodScope ?? scope);
+          this.currentReturn = undefined;
+        }
+        this.currentProgram = undefined;
       }
     }
 
@@ -750,6 +772,15 @@ export class TypeChecker {
 
     const nameUpper = expr.functionName.toUpperCase();
 
+    // A bare call inside a PROGRAM to one of its own methods (the method
+    // shadows a FUNCTION of the same name, as a C++ member does)
+    const ownMethod = this.ownProgramMethod(expr.functionName);
+    if (ownMethod) {
+      const retType = this.methodReturnType(ownMethod);
+      if (retType) expr.resolvedType = retType;
+      return retType;
+    }
+
     // Check user-defined functions in symbol tables
     const funcSymbol = this.symbolTables.lookupFunction(expr.functionName);
     if (funcSymbol !== undefined) {
@@ -762,9 +793,16 @@ export class TypeChecker {
       // the EN-input check (and bit/num operand rules) require.
       if (returnType && isGenericGroupType(returnType) && this.stdRegistry) {
         const desc = this.stdRegistry.lookup(nameUpper);
-        if (desc?.returnMatchesFirstParam) {
-          const userArgs = stripEnEno(expr.arguments);
-          const firstArgType = userArgs[0]?.value.resolvedType;
+        const userArgs = stripEnEno(expr.arguments);
+        const firstArgType = userArgs[0]?.value.resolvedType;
+        const mappedName =
+          desc?.returnTypeFor &&
+          firstArgType &&
+          "name" in firstArgType &&
+          desc.returnTypeFor((firstArgType.name as string).toUpperCase());
+        if (mappedName && ELEMENTARY_TYPES[mappedName]) {
+          returnType = ELEMENTARY_TYPES[mappedName];
+        } else if (desc?.returnMatchesFirstParam) {
           if (firstArgType) returnType = firstArgType;
         }
       }
@@ -794,6 +832,18 @@ export class TypeChecker {
         if (desc.specificReturnType) {
           const retType =
             ELEMENTARY_TYPES[desc.specificReturnType.toUpperCase()];
+          if (retType) {
+            expr.resolvedType = retType;
+            return retType;
+          }
+        }
+        // Result type derived from the first argument's type (TRUNC).
+        if (desc.returnTypeFor) {
+          const first = stripEnEno(expr.arguments)[0]?.value.resolvedType;
+          const name =
+            first && "name" in first ? (first.name as string) : undefined;
+          const mapped = name && desc.returnTypeFor(name.toUpperCase());
+          const retType = mapped ? ELEMENTARY_TYPES[mapped] : undefined;
           if (retType) {
             expr.resolvedType = retType;
             return retType;
@@ -871,28 +921,45 @@ export class TypeChecker {
 
     if (!objTypeName) return undefined;
 
-    // Find the FB declaration and the method
-    const fb = this.ast.functionBlocks.find(
-      (f) => f.name.toUpperCase() === objTypeName.toUpperCase(),
+    // Find the FB (or program) declaration and the method
+    const method = this.methodsOfType(objTypeName)?.find(
+      (m) => m.name.toUpperCase() === expr.methodName.toUpperCase(),
     );
-    if (fb) {
-      const method = fb.methods.find(
-        (m) => m.name.toUpperCase() === expr.methodName.toUpperCase(),
-      );
-      if (method?.returnType) {
-        const retType =
-          ELEMENTARY_TYPES[method.returnType.name.toUpperCase()] ??
-          ({
-            typeKind: "elementary",
-            name: method.returnType.name,
-            sizeBits: 0,
-          } as ElementaryType);
-        expr.resolvedType = retType;
-        return retType;
-      }
-    }
+    const retType = method ? this.methodReturnType(method) : undefined;
+    if (retType) expr.resolvedType = retType;
+    return retType;
+  }
 
-    return undefined;
+  /** The methods of the FB or PROGRAM named `typeName` (not inherited ones). */
+  private methodsOfType(typeName: string): MethodDeclaration[] | undefined {
+    const upper = typeName.toUpperCase();
+    return (
+      this.ast?.functionBlocks.find((f) => f.name.toUpperCase() === upper)
+        ?.methods ??
+      this.ast?.programs.find((p) => p.name.toUpperCase() === upper)?.methods
+    );
+  }
+
+  /** A bare `Name(...)` inside a PROGRAM that names one of its methods. */
+  private ownProgramMethod(name: string): MethodDeclaration | undefined {
+    if (!this.currentProgram || name.includes(".")) return undefined;
+    const upper = name.toUpperCase();
+    return this.currentProgram.methods.find(
+      (m) => m.name.toUpperCase() === upper,
+    );
+  }
+
+  /** The declared return type of a method, or undefined when it has none. */
+  private methodReturnType(method: MethodDeclaration): IECType | undefined {
+    if (!method.returnType) return undefined;
+    return (
+      ELEMENTARY_TYPES[method.returnType.name.toUpperCase()] ??
+      ({
+        typeKind: "elementary",
+        name: method.returnType.name,
+        sizeBits: 0,
+      } as ElementaryType)
+    );
   }
 
   // ===========================================================================
@@ -1387,6 +1454,8 @@ export class TypeChecker {
         )
         .flatMap((b) => b.declarations)
         .flatMap((d) => d.names.map((name) => ({ name, type: d.type })));
+    const ownMethod = this.ownProgramMethod(expr.functionName);
+    if (ownMethod) return fromBlocks(ownMethod.varBlocks);
     const fn = this.findUserFunction(expr.functionName);
     if (fn) return fromBlocks(fn.varBlocks);
     const sym = scope.lookup(expr.functionName);
@@ -1669,6 +1738,9 @@ export class TypeChecker {
   /** The function or method whose body is being checked (strict return values). */
   private currentReturn: { name: string; type: TypeReference } | undefined;
 
+  /** The PROGRAM whose body or method is being checked (bare method calls). */
+  private currentProgram: ProgramDeclaration | undefined;
+
   /**
    * `--strict`: a CASE label value may appear once; ranges are compared by their
    * bounds. The C++ switch would otherwise fail with "duplicate case value".
@@ -1899,6 +1971,8 @@ export class TypeChecker {
     }
     const desc = this.stdRegistry.lookup(expr.functionName.toUpperCase());
     if (!desc || !STRICT_GENERIC.has(desc.returnConstraint)) return undefined;
+    // TRUNC's result type is fixed by its argument type, not adapted to it.
+    if (desc.returnTypeFor) return undefined;
     const params = desc.params;
     const out: Expression[] = [];
     stripEnEno([...expr.arguments]).forEach((arg, i) => {
@@ -2131,24 +2205,35 @@ export class TypeChecker {
     methodName: string,
   ): Array<{ name: string; type: AccessType }> | undefined {
     if (!this.ast) return undefined;
+    const inputsOf = (
+      method: MethodDeclaration,
+    ): Array<{ name: string; type: AccessType }> =>
+      method.varBlocks
+        .filter(
+          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
+        )
+        .flatMap((b) => b.declarations)
+        .flatMap((d) => d.names.map((n) => ({ name: n, type: d.type })));
     let current = fbTypeName?.toUpperCase();
     for (let depth = 0; current !== undefined && depth < 32; depth++) {
       const name: string = current;
       const fb = this.ast.functionBlocks.find(
         (f) => f.name.toUpperCase() === name,
       );
-      if (!fb) return undefined;
+      if (!fb) {
+        // A PROGRAM's methods (programs have no base type)
+        const prog = this.ast.programs.find(
+          (p) => p.name.toUpperCase() === name,
+        );
+        const own = prog?.methods.find(
+          (m) => m.name.toUpperCase() === methodName.toUpperCase(),
+        );
+        return own ? inputsOf(own) : undefined;
+      }
       const method = fb.methods.find(
         (m) => m.name.toUpperCase() === methodName.toUpperCase(),
       );
-      if (method) {
-        return method.varBlocks
-          .filter(
-            (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
-          )
-          .flatMap((b) => b.declarations)
-          .flatMap((d) => d.names.map((n) => ({ name: n, type: d.type })));
-      }
+      if (method) return inputsOf(method);
       current = fb.extends?.toUpperCase();
     }
     return undefined;

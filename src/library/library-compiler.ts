@@ -398,6 +398,12 @@ function compileNativeEntries(
   };
 }
 
+/** Dialect options a library compile forwards to the ST compiler. */
+export type LibraryDialectOptions = Pick<
+  import("../types.js").CompileOptions,
+  "dialect" | "dialectFiles" | "dialectPath" | "features" | "dialectIO"
+>;
+
 /**
  * Every exported name in a manifest that is claimed by more than one symbol.
  *
@@ -463,7 +469,7 @@ export function compileLibrary(
     globalConstants?: Record<string, number>;
     /** Check the ST sources with --strict rules */
     strict?: boolean;
-  },
+  } & LibraryDialectOptions,
 ): LibraryCompileResult {
   const catByName = buildCategoryByPouName(sources);
   const docByName = buildDocByPouName(sources);
@@ -541,6 +547,11 @@ export function compileLibrary(
     emitChunkMarkers: true,
   };
   if (options.strict === true) compileOpts.strict = true;
+  if (options.dialect !== undefined) compileOpts.dialect = options.dialect;
+  if (options.dialectFiles) compileOpts.dialectFiles = options.dialectFiles;
+  if (options.dialectPath) compileOpts.dialectPath = options.dialectPath;
+  if (options.features) compileOpts.features = options.features;
+  if (options.dialectIO) compileOpts.dialectIO = options.dialectIO;
   if (options.dependencies) {
     compileOpts.libraries = options.dependencies;
   }
@@ -786,7 +797,7 @@ export function compileStlib(
     globalConstants?: Record<string, number>;
     /** Check the ST sources with --strict rules */
     strict?: boolean;
-  },
+  } & LibraryDialectOptions,
 ): StlibCompileResult {
   const libResult = compileLibrary(sources, options);
   if (options.builtin) {

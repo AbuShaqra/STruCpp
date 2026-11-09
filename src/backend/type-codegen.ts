@@ -216,17 +216,22 @@ export class TypeCodeGenerator {
    * Assumes types are already in dependency order.
    */
   generateTypes(types: TypeDeclaration[]): string {
-    this.output = [];
-    this.knownEnumNames = new Set();
+    this.useTypeScope(types);
+    return this.emitTypeDeclarations(types);
+  }
 
-    // Build reverse map for bare enum member qualification
+  /**
+   * Build the enum lookups (bare member qualification, enum field wrappers)
+   * from every type of the unit. Done once, so a type emitted on its own later
+   * (codegen emits a STRUCT holding a function block after the FB classes)
+   * still qualifies a bare enum member in its initialisers.
+   */
+  useTypeScope(types: readonly TypeDeclaration[]): void {
+    const enums = types.filter((t) => t.definition.kind === "EnumDefinition");
+    this.knownEnumNames = new Set(enums.map((t) => t.name.toUpperCase()));
     this.enumMemberToType = buildEnumMemberMap(
-      types
-        .filter(
-          (t) =>
-            t.definition.kind === "EnumDefinition" &&
-            t.inline?.owner === undefined,
-        )
+      enums
+        .filter((t) => t.inline?.owner === undefined)
         .map((t) => ({
           name: t.name,
           members: (
@@ -234,13 +239,25 @@ export class TypeCodeGenerator {
           ).members.map((m) => m.name),
         })),
     );
+  }
 
+  /**
+   * Emit the given types, in the order given, with the lookups set by
+   * `useTypeScope`. `banner` adds the "User-defined types" heading.
+   */
+  emitTypeDeclarations(
+    types: readonly TypeDeclaration[],
+    banner = true,
+  ): string {
+    this.output = [];
     if (types.length === 0) {
       return "";
     }
 
-    this.emit("// User-defined types");
-    this.emit("");
+    if (banner) {
+      this.emit("// User-defined types");
+      this.emit("");
+    }
 
     for (const type of types) {
       if (this.options.emitChunkMarkers) {
@@ -269,7 +286,6 @@ export class TypeCodeGenerator {
         this.emit("");
         break;
       case "EnumDefinition":
-        this.knownEnumNames.add(type.name.toUpperCase());
         this.generateEnumType(type.name, def);
         // Generate IEC_ wrapper for enum variables using IEC_ENUM
         this.emit(`using IEC_${type.name} = IEC_ENUM<${type.name}>;`);

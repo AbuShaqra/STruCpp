@@ -23,6 +23,8 @@ import type {
   StructType,
   EnumType,
   FunctionBlockType,
+  TypeDeclaration,
+  TypeDefinition,
   TypeReference,
   VarDeclaration,
   VariableExpression,
@@ -955,5 +957,68 @@ export function describeType(t: IECType): string {
       return `REF_TO ${describeType((t as ReferenceType).referencedType)}`;
     default:
       return t.typeKind;
+  }
+}
+
+/**
+ * The type names a declaration holds by value: its own type, or an inline
+ * array's element type. A POINTER TO, REF_TO or REFERENCE TO holds nothing by
+ * value (a declared class is enough for it), so it gives none.
+ */
+export function typeNamesHeldByValue(typeRef: TypeReference): string[] {
+  if (typeRef.referenceKind !== "none") return [];
+  if (typeRef.elementTypeName !== undefined) {
+    return (typeRef.elementReferenceChain?.length ?? 0) > 0
+      ? []
+      : [typeRef.elementTypeName];
+  }
+  return [typeRef.name];
+}
+
+/**
+ * Upper-case names of the user TYPEs that hold a function block by value,
+ * directly or through other user types: a STRUCT with an FB field, an ARRAY OF
+ * an FB, a STRUCT holding such a STRUCT, an alias of one. An FB is whatever
+ * `isFunctionBlock` says (user FBs and library FBs such as TON). The C++ of
+ * such a type needs the FB class complete, so codegen emits it after the FB
+ * classes ("late" types), and a CONFIGURATION VAR_GLOBAL cannot hold one.
+ */
+export function typesHoldingFunctionBlocks(
+  types: readonly TypeDeclaration[],
+  isFunctionBlock: (upperName: string) => boolean,
+): Set<string> {
+  const held = new Map<string, string[]>();
+  for (const t of types) {
+    held.set(
+      t.name.toUpperCase(),
+      typeNamesHeldByTypeDefinition(t.definition).map((n) => n.toUpperCase()),
+    );
+  }
+  const late = new Set<string>();
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [name, names] of held) {
+      if (late.has(name)) continue;
+      if (names.some((n) => late.has(n) || isFunctionBlock(n))) {
+        late.add(name);
+        grew = true;
+      }
+    }
+  }
+  return late;
+}
+
+/** The type names a TYPE definition holds by value (see typeNamesHeldByValue). */
+export function typeNamesHeldByTypeDefinition(def: TypeDefinition): string[] {
+  switch (def.kind) {
+    case "StructDefinition":
+      return def.fields.flatMap((f) => typeNamesHeldByValue(f.type));
+    case "ArrayDefinition":
+      return typeNamesHeldByValue(def.elementType);
+    case "TypeReference":
+      return typeNamesHeldByValue(def);
+    default:
+      return [];
   }
 }

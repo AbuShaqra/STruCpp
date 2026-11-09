@@ -1,0 +1,1 @@
+{"id":"bad-feature","name":"Bad feature","extends":"iec","features":["no_such_feature"],"semantics":{}}

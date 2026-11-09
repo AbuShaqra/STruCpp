@@ -11,6 +11,7 @@ import type { CstNode, IToken } from "chevrotain";
 import type {
   CompilationUnit,
   ProgramDeclaration,
+  ActionDeclaration,
   FunctionDeclaration,
   FunctionBlockDeclaration,
   InterfaceDeclaration,
@@ -262,6 +263,7 @@ function getIdentifierOrKeywordImage(node: CstNode): string {
     "ABSTRACT",
     "FINAL",
     "CONTINUE",
+    "ACTION",
     "AND",
     "OR",
     "XOR",
@@ -436,6 +438,12 @@ export class ASTBuilder {
     const interfaces: InterfaceDeclaration[] = [];
     const types: TypeDeclaration[] = [];
     const configurations: ConfigurationDeclaration[] = [];
+    const actions: ActionDeclaration[] = [];
+
+    // Process top-level ACTION blocks
+    for (const node of getAllNodes(children.topLevelActionDeclaration)) {
+      actions.push(this.buildActionDeclaration(node, true));
+    }
 
     // Process program declarations
     for (const node of getAllNodes(children.programDeclaration)) {
@@ -483,6 +491,7 @@ export class ASTBuilder {
       types,
       configurations,
       globalVarBlocks,
+      actions,
     };
     applyTypeDefaults(unit);
     return unit;
@@ -504,6 +513,11 @@ export class ASTBuilder {
       varBlocks.push(this.buildVarBlock(varBlockNode));
     }
 
+    const methods: MethodDeclaration[] = [];
+    for (const methodNode of getAllNodes(children.methodDeclaration)) {
+      methods.push(this.buildMethodDeclaration(methodNode));
+    }
+
     const body: Statement[] = [];
     // Statements are wrapped in a statementList node
     const stmtListNode = getFirstNode(children.statementList);
@@ -520,6 +534,35 @@ export class ASTBuilder {
       sourceSpan: nodeToSourceSpan(node),
       name,
       varBlocks,
+      methods,
+      actions: getAllNodes(children.actionDeclaration).map((a) =>
+        this.buildActionDeclaration(a, false),
+      ),
+      body,
+    };
+  }
+
+  /**
+   * Build an ActionDeclaration from an actionDeclaration or
+   * topLevelActionDeclaration CST node.
+   */
+  buildActionDeclaration(node: CstNode, topLevel: boolean): ActionDeclaration {
+    const children = node.children as CstChildren;
+    const names = getAllIdentifierOrKeywordImages(children.identifierOrKeyword);
+    const body: Statement[] = [];
+    const stmtListNode = getFirstNode(children.statementList);
+    if (stmtListNode) {
+      const stmtListChildren = stmtListNode.children as CstChildren;
+      for (const stmtNode of getAllNodes(stmtListChildren.statement)) {
+        const stmt = this.buildStatement(stmtNode);
+        if (stmt) body.push(...(Array.isArray(stmt) ? stmt : [stmt]));
+      }
+    }
+    return {
+      kind: "ActionDeclaration",
+      sourceSpan: nodeToSourceSpan(node),
+      ...(topLevel ? { owner: names[0] ?? "" } : {}),
+      name: (topLevel ? names[1] : names[0]) ?? "",
       body,
     };
   }
@@ -655,6 +698,9 @@ export class ASTBuilder {
       varBlocks,
       methods,
       properties,
+      actions: getAllNodes(children.actionDeclaration).map((a) =>
+        this.buildActionDeclaration(a, false),
+      ),
       body,
       ...(extendsName !== undefined ? { extends: extendsName } : {}),
       ...(implementsList !== undefined ? { implements: implementsList } : {}),

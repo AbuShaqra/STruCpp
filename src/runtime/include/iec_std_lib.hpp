@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <limits>
 #include "iec_var.hpp"
 #include "iec_traits.hpp"
 #include "iec_retain.hpp"
@@ -348,13 +349,37 @@ inline T ATAN2(T y, T x) noexcept {
     return T(std::atan2(static_cast<double>(iec_unwrap(y)), static_cast<double>(iec_unwrap(x))));
 }
 
+namespace detail {
+/**
+ * REAL/LREAL to a non-bool integer: NaN gives 0, out-of-range saturates (a
+ * plain cast would be undefined behaviour). `truncate` picks trunc over round.
+ */
+template<typename ToVal>
+inline ToVal iec_float_to_int(double v, bool truncate) noexcept {
+    if (v != v) return static_cast<ToVal>(0);
+    const double r = truncate ? std::trunc(v) : std::round(v);
+    if (r >= static_cast<double>(std::numeric_limits<ToVal>::max()))
+        return std::numeric_limits<ToVal>::max();
+    if (r <= static_cast<double>(std::numeric_limits<ToVal>::min()))
+        return std::numeric_limits<ToVal>::min();
+    return static_cast<ToVal>(r);
+}
+}  // namespace detail
+
 /**
  * TRUNC - Truncate toward zero
- * Input: ANY_REAL, Output: ANY_REAL (integer part)
+ * Input: ANY_REAL, Output: DINT for REAL, LINT for LREAL (saturating)
  */
 template<typename T, enable_if_any_real<T> = 0>
-inline T TRUNC(T value) noexcept {
-    return T(std::trunc(static_cast<double>(iec_unwrap(value))));
+inline auto TRUNC(T value) noexcept
+    -> std::conditional_t<
+        std::is_same<std::decay_t<decltype(iec_unwrap(value))>, float>::value,
+        IEC_DINT, IEC_LINT> {
+    using R = std::conditional_t<
+        std::is_same<std::decay_t<decltype(iec_unwrap(value))>, float>::value,
+        IEC_DINT, IEC_LINT>;
+    return R(detail::iec_float_to_int<typename R::value_type>(
+        static_cast<double>(iec_unwrap(value)), true));
 }
 
 /**
@@ -750,9 +775,18 @@ inline T ROR(T in, N n) noexcept {
  * Helper: round-then-cast for REAL→integer conversions per IEC 61131-3
  */
 namespace detail {
+template<typename ToVal>
+inline ToVal iec_convert_value_impl2(double v, std::true_type /*bool*/) noexcept {
+    return static_cast<ToVal>(std::round(v));
+}
+template<typename ToVal>
+inline ToVal iec_convert_value_impl2(double v, std::false_type) noexcept {
+    return iec_float_to_int<ToVal>(v, false);
+}
 template<typename ToVal, typename FromVal>
 inline ToVal iec_convert_value_impl(FromVal value, std::true_type /*round*/) noexcept {
-    return static_cast<ToVal>(std::round(static_cast<double>(value)));
+    return iec_convert_value_impl2<ToVal>(
+        static_cast<double>(value), std::is_same<ToVal, bool>{});
 }
 template<typename ToVal, typename FromVal>
 inline ToVal iec_convert_value_impl(FromVal value, std::false_type) noexcept {

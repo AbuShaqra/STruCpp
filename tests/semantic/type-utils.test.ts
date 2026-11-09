@@ -20,6 +20,7 @@ import {
   resolveFieldType,
   resolveArrayElementType,
   typeName,
+  typesHoldingFunctionBlocks,
 } from "../../src/semantic/type-utils.js";
 import type { ElementaryType, IECType } from "../../src/frontend/ast.js";
 import { buildAST } from "../../src/frontend/ast-builder.js";
@@ -469,6 +470,35 @@ describe("type-utils", () => {
       expect(map.get("RUNNING")?.typeName).toBe("State1");
       expect(map.get("ACTIVE")?.typeName).toBe("State2");
       expect(map.get("IDLE")?.typeName).toBeNull();
+    });
+  });
+
+  describe("typesHoldingFunctionBlocks", () => {
+    const fbs = new Set(["FB_BELT", "TON"]);
+    const isFB = (n: string): boolean => fbs.has(n);
+    const late = (source: string): string[] =>
+      [...typesHoldingFunctionBlocks(parseAST(source).types, isFB)].sort();
+
+    it("finds FB fields directly, through STRUCTs, arrays and aliases", () => {
+      expect(
+        late(`TYPE
+  ST_Line : STRUCT belt : FB_Belt; END_STRUCT;
+  ST_Outer : STRUCT inner : ST_Line; END_STRUCT;
+  Pair : ARRAY[0..1] OF FB_Belt;
+  ST_Inline : STRUCT ts : ARRAY[0..2] OF TON; END_STRUCT;
+  LineAlias : ST_Outer;
+  ST_Plain : STRUCT x : INT; END_STRUCT;
+  E_Mode : (Idle, Run);
+END_TYPE`),
+      ).toEqual(["LINEALIAS", "PAIR", "ST_INLINE", "ST_LINE", "ST_OUTER"]);
+    });
+
+    it("a pointer or reference to an FB holds nothing by value", () => {
+      expect(
+        late(`TYPE
+  ST_Ptr : STRUCT p : POINTER TO FB_Belt; r : REF_TO TON; END_STRUCT;
+END_TYPE`),
+      ).toEqual([]);
     });
   });
 });

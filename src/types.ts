@@ -19,6 +19,25 @@ export interface CompileOptions {
    */
   strict?: boolean;
 
+  /**
+   * Dialect to compile under: a profile id (built-in `iec`, a `dialectFiles`
+   * profile or `<dir>/<id>.json` in `dialectPath`) or a profile object.
+   * Unset: the default feature set. See docs/DIALECTS.md.
+   */
+  dialect?: string | import("./dialect.js").DialectProfile;
+
+  /** Dialect profile files to load (one file and no `dialect` selects it). Needs `dialectIO`. */
+  dialectFiles?: string[];
+
+  /** Folders whose `*.json` dialect profiles are all loaded. Needs `dialectIO`. */
+  dialectPath?: string[];
+
+  /** Feature overrides applied after the dialect: `+id`, `-id` or `id`. */
+  features?: string[];
+
+  /** File access for `dialectFiles`/`dialectPath` (`nodeDialectIO` from `strucpp/node`). */
+  dialectIO?: import("./dialect.js").DialectIO;
+
   /** Generate line mapping between ST and C++ */
   lineMapping: boolean;
 
@@ -40,6 +59,13 @@ export interface CompileOptions {
 
   /** Header filename to use in #include directive (default: "generated.hpp") */
   headerFileName?: string;
+
+  /** Implementation filename the concatenated `cppCode` is written to. With
+   *  `lineDirectives`, the `#line` that follows each generated body in
+   *  `cppCode` names it, so the code after a body maps back to the generated
+   *  file (default: "generated.cpp"). Each `cppFiles` entry names its own
+   *  `name` instead, numbered within that file. */
+  cppFileName?: string;
 
   /** Extra `#include "..."` lines emitted in every per-POU translation
    *  unit (after the shared `headerFileName` include). The editor sets

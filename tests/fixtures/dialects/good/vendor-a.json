@@ -1,0 +1,1 @@
+{"id":"vendor-a","name":"Vendor A","extends":"iec","features":["program_methods","pointer_to","reference_to","ref_assign"],"semantics":{}}

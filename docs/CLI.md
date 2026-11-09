@@ -131,6 +131,10 @@ Format is auto-detected. Extracts ST source from the binary/ZIP format, compiles
 | `--no-line-mapping`   | Disable ST-to-C++ line mapping                          |
 | `-O <level>`          | Optimization level: 0, 1, or 2 (default: 0)             |
 
+With `--line-directives`, each generated body is preceded by `#line N "<file>.st"` lines and followed by a
+`#line N "<output>.cpp"` (or `.hpp` in the header) that hands the rest of the file back to the generated file, so a
+C++ diagnostic in code after a body points at the generated line, not at the body's last ST line.
+
 ### Libraries
 
 | Flag                   | Description                                                    |
@@ -166,6 +170,28 @@ Format is auto-detected. Extracts ST source from the binary/ZIP format, compiles
 - an empty FOR body, a function result that is discarded, a missing `;` after END_IF,
   END_CASE, END_FOR, END_WHILE or END_REPEAT, an FB call naming a parameter the FB lacks,
   and a duplicate or overlapping CASE label.
+
+### Dialects
+
+| Flag                    | Description                                                                             |
+| ----------------------- | --------------------------------------------------------------------------------------- |
+| `--dialect <id>`        | Compile under a profile: built-in `iec`, a `--dialect-file` or `--dialect-path` profile |
+| `--dialect-file <path>` | Load a profile file (repeatable); one file and no `--dialect` selects it                |
+| `--dialect-path <dir>`  | Load and check every `*.json` profile in a folder (repeatable)                          |
+| `--feature <+id\|-id>`  | Enable (`+id` or `id`) or disable (`-id`) a feature after the profile (repeatable)      |
+| `--print-dialect`       | Print the resolved dialect as JSON (`{"id":...,"features":[...]}`) and exit             |
+
+With no `--dialect` and no `--dialect-file` the compiler runs with the default features
+`pointer_to`, `reference_to` and `ref_assign` (its behaviour before profiles). `--dialect iec`
+enables no feature. The flags apply in every mode that compiles ST (compile, build, `--test`,
+`--compile-lib`, `--import-lib`); a bad profile prints one `error:` line and exits 1. The
+profile format and the features are in [DIALECTS.md](DIALECTS.md).
+
+```bash
+strucpp --dialect iec --print-dialect
+strucpp main.st -o main.cpp --dialect-path dialects/ --dialect vendor-a
+strucpp main.st -o main.cpp --feature -pointer_to
+```
 
 ### Info
 

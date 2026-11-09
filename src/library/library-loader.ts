@@ -443,6 +443,7 @@ export function registerLibrarySymbols(
           varBlocks: [],
           methods: [],
           properties: [],
+          actions: [],
           body: [],
         },
         inputs: fb.inputs.map((i) => makeVarSymbol(i, "input")),

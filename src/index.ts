@@ -36,10 +36,17 @@ import type {
 } from "./frontend/ast.js";
 import { mergeCompilationUnits } from "./merge.js";
 import { lowerInlineTypes } from "./frontend/lower-inline-types.js";
+import { lowerActions } from "./semantic/lower-actions.js";
 import { walkAST } from "./ast-utils.js";
 import { registerLibrarySymbols } from "./library/library-loader.js";
 import type { StlibArchive } from "./library/library-manifest.js";
 import { annotateErrorsWithPouContext } from "./diagnostic-pou-context.js";
+import {
+  DialectError,
+  resolveDialect,
+  type DialectRequest,
+  type ResolvedDialect,
+} from "./dialect.js";
 
 /**
  * Default compilation options
@@ -71,6 +78,18 @@ function validateCompileOptions(options: CompileOptions): void {
       );
     }
   }
+}
+
+/** The dialect fields of the compile options, as a resolveDialect request. */
+function dialectRequestFromOptions(
+  options: Partial<CompileOptions>,
+): DialectRequest {
+  const req: DialectRequest = {};
+  if (options.dialect !== undefined) req.dialect = options.dialect;
+  if (options.dialectFiles) req.dialectFiles = options.dialectFiles;
+  if (options.dialectPath) req.dialectPath = options.dialectPath;
+  if (options.features) req.features = options.features;
+  return req;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +298,27 @@ function runPipeline(
   let symbolTables: SymbolTables | undefined;
   const allArchives: StlibArchive[] = [];
 
+  let dialect: ResolvedDialect;
+  try {
+    dialect = resolveDialect(
+      dialectRequestFromOptions(mergedOptions),
+      mergedOptions.dialectIO?.readFile,
+      mergedOptions.dialectIO?.listDir,
+    );
+  } catch (e) {
+    if (!(e instanceof DialectError)) throw e;
+    errors.push({ message: e.message, line: 0, column: 0, severity: "error" });
+    return {
+      ast,
+      projectModel,
+      symbolTables,
+      errors,
+      warnings,
+      allArchives,
+      mergedOptions,
+    };
+  }
+
   // Phase 0: IL→ST transpilation (if source contains IL bodies)
   let effectiveSource = source;
   {
@@ -472,7 +512,9 @@ function runPipeline(
     }
 
     ast = mergeCompilationUnits(units);
-    const loweringErrors = lowerInlineTypes(ast);
+    // Actions first, so lowerInlineTypes qualifies inline enum members in
+    // action bodies as it does in the owner's methods.
+    const loweringErrors = [...lowerActions(ast), ...lowerInlineTypes(ast)];
     errors.push(...loweringErrors);
     if (!continueOnError && loweringErrors.length > 0) {
       return {
@@ -641,6 +683,8 @@ function runPipeline(
   try {
     const analyzer = new SemanticAnalyzer({
       strict: mergedOptions.strict === true,
+      features: dialect.features,
+      dialect,
     });
     const semanticResult = analyzer.analyze(ast, semanticSymbolTables);
     symbolTables = semanticResult.symbolTables;
@@ -757,6 +801,7 @@ export function compile(
     sourceComments: pipeline.mergedOptions.debug,
     lineDirectives: pipeline.mergedOptions.lineDirectives ?? false,
     headerFileName: pipeline.mergedOptions.headerFileName ?? "generated.hpp",
+    cppFileName: pipeline.mergedOptions.cppFileName ?? "generated.cpp",
     fileName: pipeline.mergedOptions.fileName ?? "main.st",
     ...(pipeline.mergedOptions.lineDirectiveFileName
       ? { lineDirectiveFileName: pipeline.mergedOptions.lineDirectiveFileName }
@@ -1098,6 +1143,23 @@ export {
   findEnclosingPOU,
 } from "./ast-utils.js";
 export type { EnclosingScope } from "./ast-utils.js";
+
+// Re-export dialect profiles
+export {
+  KNOWN_FEATURES,
+  DEFAULT_FEATURES,
+  IEC_PROFILE,
+  DialectError,
+  resolveDialect,
+  profilesWithFeature,
+} from "./dialect.js";
+export type {
+  FeatureId,
+  DialectProfile,
+  DialectRequest,
+  ResolvedDialect,
+  DialectIO,
+} from "./dialect.js";
 
 // Re-export library system
 export { compileLibrary, compileStlib } from "./library/library-compiler.js";

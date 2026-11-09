@@ -62,6 +62,9 @@ function buildPouRanges(ast: CompilationUnit): PouSectionRange[] {
 
   for (const prog of ast.programs) {
     out.push(rangeFromPou(prog, "PROGRAM"));
+    for (const m of prog.methods) {
+      out.push(rangeFromMethod(prog, "PROGRAM", m));
+    }
   }
   for (const fn of ast.functions) {
     out.push(rangeFromPou(fn, "FUNCTION"));
@@ -73,7 +76,7 @@ function buildPouRanges(ast: CompilationUnit): PouSectionRange[] {
     // editor opens the right tab.  (Method-level addressing would need
     // a separate mechanism that the editor doesn't currently expose.)
     for (const m of fb.methods) {
-      out.push(rangeFromMethod(fb, m));
+      out.push(rangeFromMethod(fb, "FUNCTION_BLOCK", m));
     }
   }
 
@@ -98,13 +101,14 @@ function rangeFromPou(
 }
 
 function rangeFromMethod(
-  fb: FunctionBlockDeclaration,
+  owner: FunctionBlockDeclaration | ProgramDeclaration,
+  kind: "PROGRAM" | "FUNCTION_BLOCK",
   method: MethodDeclaration,
 ): PouSectionRange {
   const bodySpan = spanOfStatements(method.body);
   return {
-    pouName: fb.name,
-    pouKind: "FUNCTION_BLOCK",
+    pouName: owner.name,
+    pouKind: kind,
     file: method.sourceSpan.file,
     pouStartLine: method.sourceSpan.startLine,
     pouEndLine: method.sourceSpan.endLine,

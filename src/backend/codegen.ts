@@ -28,15 +28,19 @@ import type {
   VariableExpression,
   ReferenceKind,
   TypeReference,
+  TypeDeclaration,
   AccessStep,
   ExternalCodePragma,
   MethodDeclaration,
+  VarBlock,
   InterfaceDeclaration,
   PropertyDeclaration,
   Visibility,
+  ASTNode,
 } from "../frontend/ast.js";
+import { walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
-import type { LineMapEntry } from "../types.js";
+import type { LineMapEntry, SourceSpan } from "../types.js";
 import { StdFunctionRegistry } from "../semantic/std-function-registry.js";
 import type {
   ProjectModel,
@@ -80,6 +84,9 @@ import {
   typeName as typeNameUtil,
   buildEnumMemberMap,
   type EnumMemberEntry,
+  typeNamesHeldByTypeDefinition,
+  typeNamesHeldByValue,
+  typesHoldingFunctionBlocks,
 } from "../semantic/type-utils.js";
 import {
   generateInitializerValue,
@@ -112,6 +119,12 @@ interface LibraryFieldShape {
   referenceKind?: ReferenceKind;
 }
 
+/** One class-like header entry, in dependency order: a user function block
+ *  or a late struct (a user STRUCT holding a function block by value). */
+type HeaderClassNode =
+  | { kind: "functionBlock"; fb: CompilationUnit["functionBlocks"][0] }
+  | { kind: "type"; type: TypeDeclaration };
+
 /** A library FB member as read from its manifest. */
 interface LibraryField extends LibraryFieldShape {
   name: string;
@@ -141,6 +154,50 @@ interface LocatedVarDescriptor {
    * initialiser to bind `arr[i]` rather than `arr` (openplc-editor#565).
    */
   elementIndex?: number;
+}
+
+/**
+ * Physical lines one emitted string occupies in the joined output: one, plus
+ * one for each newline inside it (a library chunk or a type block may carry
+ * several lines in one string).
+ */
+function physicalLineCount(line: string): number {
+  let count = 1;
+  for (let i = line.indexOf("\n"); i !== -1; i = line.indexOf("\n", i + 1)) {
+    count++;
+  }
+  return count;
+}
+
+/**
+ * Placeholder for a `#line` reset back to the generated file. Its number and
+ * file name depend on the file the line ends up in (each `cppFiles` entry, the
+ * concatenated `cppCode`, the header), so `generate()` resolves it per output
+ * with `resolveLineResets`. The NUL bytes keep it from matching emitted code.
+ */
+const LINE_RESET_PLACEHOLDER = "\u0000#line-reset\u0000";
+
+/**
+ * Replace each `LINE_RESET_PLACEHOLDER` in `lines` with
+ * `#line <n> "<fileName>"`, where n is the placeholder's own physical line + 1
+ * in the file written by joining `lines` (a `#line N` numbers the line after
+ * it). Returns a new array; other entries are kept as they are.
+ */
+function resolveLineResets(
+  lines: readonly string[],
+  fileName: string,
+): string[] {
+  const out: string[] = [];
+  let physicalLine = 1;
+  for (const line of lines) {
+    out.push(
+      line === LINE_RESET_PLACEHOLDER
+        ? `#line ${physicalLine + 1} "${fileName}"`
+        : line,
+    );
+    physicalLine += physicalLineCount(line);
+  }
+  return out;
 }
 
 /**
@@ -209,6 +266,13 @@ export interface CodeGenOptions {
 
   /** Header filename to use in #include directive (default: "generated.hpp") */
   headerFileName: string;
+
+  /** Implementation filename named by the `#line` reset after each body in
+   *  the concatenated `cppCode` (the file the CLI writes) when
+   *  `lineDirectives` is on (default: "generated.cpp"). Each `cppFiles` entry
+   *  names itself instead; every reset's number is its own line + 1 in the
+   *  file it is written to. */
+  cppFileName?: string;
 
   /** Additional library headers to include in the generated header */
   libraryHeaders: string[];
@@ -392,11 +456,15 @@ export class CodeGenerator {
   private outputFiles: Map<string, string[]> = new Map();
   protected output: string[] = []; // currently-active bucket
   private currentLine = 1; // line counter within currently-active file
+  /** An ST `#line` is in force in the implementation output. */
+  private cppStLineActive = false;
 
   private headerOutput: string[] = [];
   private lineMap: Map<number, LineMapEntry> = new Map();
   private headerLineMap: Map<number, LineMapEntry> = new Map();
   private currentHeaderLine = 1;
+  /** Header counterpart of `cppStLineActive`. */
+  private headerStLineActive = false;
   private projectModel?: ProjectModel;
 
   /** Track located variables for descriptor array generation */
@@ -413,6 +481,21 @@ export class CodeGenerator {
    *  composite externals can be declared + debugged but their in-body access is
    *  gated here (fail-loud) until locked field/element/call codegen lands. */
   private compositeExternals: Set<string> = new Set();
+
+  /** Composite-global arguments of a method or function call bound to a
+   *  VAR_IN_OUT / VAR_OUTPUT, mapped to the copy-in temporary the call binds
+   *  instead (copy-in/copy-out, see hoistGlobalInOutCopies). */
+  private globalInOutTemps: Map<VariableExpression, string> = new Map();
+
+  /** Copy-out lines (no indent) of the statement being emitted, written after
+   *  the call's value is computed (see hoistGlobalInOutCopies). */
+  private pendingGlobalCopyOuts: string[] = [];
+
+  /** Calls in a compound statement's header (IF / ELSIF / WHILE / REPEAT
+   *  condition, CASE selector, FOR bounds) whose composite-global arguments
+   *  are copied in and out around the call itself (wrapGlobalInOutCall). */
+  private globalInOutCallWraps: Map<Expression, VariableExpression[]> =
+    new Map();
 
   /** Store AST for looking up program bodies when using project model */
   protected ast?: CompilationUnit;
@@ -523,8 +606,22 @@ export class CodeGenerator {
   /** Current FB's var blocks, kept so method scopes can see FB member types */
   private currentFBVarBlocks: CompilationUnit["programs"][0]["varBlocks"] = [];
 
+  /** The PROGRAM whose run() or methods are being generated: `MAIN.M()`
+   *  inside MAIN is a call on `this` (feature program_methods). */
+  private currentProgramName: string | undefined;
+
   /** Topologically sorted function blocks (computed once in generate(), used by header + impl) */
   private sortedFBs: CompilationUnit["functionBlocks"] = [];
+
+  /** The header's class sequence: the FB classes and the late types, in
+   *  dependency order (computed once in generate(); the implementation pass
+   *  uses `sortedFBs`, the FBs alone in the same order). */
+  private sortedHeaderClasses: HeaderClassNode[] = [];
+
+  /** Upper-case names of the late types: user TYPEs that hold a function
+   *  block (user or library) by value. They are emitted among the FB classes,
+   *  after the library header chunks, instead of with the other user types. */
+  private lateTypeNames: Set<string> = new Set();
 
   /** Per-archive reachable-chunk emission state.
    *
@@ -1000,6 +1097,8 @@ export class CodeGenerator {
     this.headerLineMap = new Map();
     this.currentLine = 1;
     this.currentHeaderLine = 1;
+    this.cppStLineActive = false;
+    this.headerStLineActive = false;
     this.locatedVars = [];
     this.codegenWarnings = [];
     this.tempVarCounter = 0;
@@ -1073,6 +1172,16 @@ export class CodeGenerator {
       }
     }
 
+    // Program methods (feature program_methods) resolve like an FB's
+    for (const prog of ast.programs) {
+      for (const method of prog.methods) {
+        this.methodNameMap.set(
+          `${prog.name.toUpperCase()}.${method.name.toUpperCase()}`,
+          method.name,
+        );
+      }
+    }
+
     // Build set of known struct/UDT types and enum member maps
     const enumDescriptors: Array<{ name: string; members: string[] }> = [];
     for (const td of ast.types) {
@@ -1093,8 +1202,29 @@ export class CodeGenerator {
       this.knownProgramTypes.add(prog.name.toUpperCase());
     }
 
-    // Topologically sort FBs once (used in both header and implementation)
-    this.sortedFBs = this.topologicalSortFBs(ast.functionBlocks);
+    // A user TYPE holding a function block by value is a "late" type. Only a
+    // late STRUCT needs the FB class complete at its definition, so only it is
+    // sorted and emitted with the FB classes; a late ARRAY or alias is a
+    // `using` that instantiates nothing and stays with the other types, where
+    // method and interface signatures can name it.
+    this.lateTypeNames = typesHoldingFunctionBlocks(ast.types, (name) =>
+      this.knownFBTypes.has(name),
+    );
+
+    // Topologically sort FBs and late structs once (used in both header and
+    // implementation)
+    this.sortedHeaderClasses = this.topologicalSortFBs(
+      ast.functionBlocks,
+      ast.types.filter(
+        (t) =>
+          t.definition.kind === "StructDefinition" &&
+          this.lateTypeNames.has(t.name.toUpperCase()),
+      ),
+      ast.types,
+    );
+    this.sortedFBs = this.sortedHeaderClasses.flatMap((node) =>
+      node.kind === "functionBlock" ? [node.fb] : [],
+    );
 
     // Generate header
     this.generateHeader(ast);
@@ -1103,8 +1233,13 @@ export class CodeGenerator {
     this.generateImplementation(ast);
 
     const eol = this.options.lineEnding;
+    // `#line` resets are placeholders until here: each output numbers and
+    // names them for itself (a per-TU file is not the concatenated cppCode).
     const cppFiles = Array.from(this.outputFiles.entries()).map(
-      ([name, lines]) => ({ name, content: lines.join(eol) }),
+      ([name, lines]) => ({
+        name,
+        content: resolveLineResets(lines, name).join(eol),
+      }),
     );
     return {
       cppFiles,
@@ -1112,8 +1247,14 @@ export class CodeGenerator {
       // shape for callers (CLI single-file output, library compiler,
       // REPL preview, tests) that don't care about per-TU split. The
       // public compile() wrapper exposes this verbatim.
-      cppCode: cppFiles.map((f) => f.content).join(eol),
-      headerCode: this.headerOutput.join(eol),
+      cppCode: resolveLineResets(
+        Array.from(this.outputFiles.values()).flat(),
+        this.options.cppFileName ?? "generated.cpp",
+      ).join(eol),
+      headerCode: resolveLineResets(
+        this.headerOutput,
+        this.options.headerFileName,
+      ).join(eol),
       lineMap: this.lineMap,
       headerLineMap: this.headerLineMap,
       warnings: this.codegenWarnings,
@@ -1235,53 +1376,44 @@ export class CodeGenerator {
     // declarations, which is harmless — redundant class declarations are legal.
     this.emitPouForwardDeclarations(ast);
 
-    // Generate user-defined types (Phase 2.2)
+    // A late STRUCT (holding a function block) is defined among the FB classes
+    // below; the types, interface and method signatures before it name it, so
+    // declare it here.
+    const lateStructs = this.sortedHeaderClasses.flatMap((node) =>
+      node.kind === "type" ? [node.type.name] : [],
+    );
+    for (const name of lateStructs) this.emitHeader(`struct ${name};`);
+    if (lateStructs.length > 0) this.emitHeader("");
+
+    // Generate user-defined types (Phase 2.2). Late structs wait for the FB
+    // classes below; the enum lookups cover all types.
+    const typeCodeGen = new TypeCodeGenerator({
+      indent: this.options.indent,
+      lineEnding: this.options.lineEnding,
+      emitChunkMarkers: this.options.emitChunkMarkers ?? false,
+      // Struct fields must mangle by the same rule as everything else that
+      // names them, and only codegen knows the FB / program type names.
+      isUserDefinedType: (t) => this.isUserDefinedType(t),
+    });
     if (ast.types.length > 0) {
+      const lateStructNames = new Set(lateStructs.map((n) => n.toUpperCase()));
       const typeRegistry = new TypeRegistry();
       typeRegistry.registerTypes(ast.types);
-      const typeCodeGen = new TypeCodeGenerator({
-        indent: this.options.indent,
-        lineEnding: this.options.lineEnding,
-        emitChunkMarkers: this.options.emitChunkMarkers ?? false,
-        // Struct fields must mangle by the same rule as everything else that
-        // names them, and only codegen knows the FB / program type names.
-        isUserDefinedType: (t) => this.isUserDefinedType(t),
-      });
-      const typeCode = typeCodeGen.generateFromRegistry(typeRegistry);
-      for (const line of typeCode.split(this.options.lineEnding)) {
-        this.emitHeader(line);
+      const ordered = typeRegistry.getTypesInDependencyOrder();
+      typeCodeGen.useTypeScope(ordered);
+      const typeCode = typeCodeGen.emitTypeDeclarations(
+        ordered.filter((t) => !lateStructNames.has(t.name.toUpperCase())),
+      );
+      if (typeCode.length > 0) {
+        for (const line of typeCode.split(this.options.lineEnding)) {
+          this.emitHeader(line);
+        }
       }
     }
 
-    // Generate top-level global variables (GVL files)
-    if (ast.globalVarBlocks.length > 0) {
-      this.emitHeader("// Global variables");
-      for (const block of ast.globalVarBlocks) {
-        const constQualifier = block.isConstant ? "const " : "";
-        for (const decl of block.declarations) {
-          const cppType = this.mapTypeRefToCpp(decl.type);
-          for (const name of decl.names) {
-            // `inline`, not a static-local behind a reference: the debug table takes
-            // their address into PROGMEM, which needs a constant.
-            this.emitHeaderChunkMarker("begin", "inlineGlobal", name);
-            if (decl.initialValue) {
-              const initExpr = this.generateInitializer(
-                decl.initialValue,
-                cppType,
-                decl.type.name,
-              );
-              this.emitHeader(
-                `${constQualifier}inline ${cppType} ${name} = ${initExpr};`,
-              );
-            } else {
-              this.emitHeader(`inline ${cppType} ${name}{};`);
-            }
-            this.emitHeaderChunkMarker("end", "inlineGlobal", name);
-          }
-        }
-      }
-      this.emitHeader("");
-    }
+    // Generate top-level global variables (GVL files). One that holds a
+    // function block waits for the FB classes and late types below.
+    this.emitGvlGlobals(ast, false);
 
     // Inject reachable library chunks (header side).
     //
@@ -1334,12 +1466,24 @@ export class CodeGenerator {
     // VAR_EXTERNAL pointer to a global) can name them.
     this.emitFileScopeGlobals();
 
-    // Generate function block class declarations (topologically sorted by dependency)
-    for (const fb of this.sortedFBs) {
+    // Generate function block class declarations and late structs
+    // (topologically sorted by dependency)
+    for (const node of this.sortedHeaderClasses) {
+      if (node.kind === "type") {
+        const typeCode = typeCodeGen.emitTypeDeclarations([node.type], false);
+        for (const line of typeCode.split(this.options.lineEnding)) {
+          this.emitHeader(line);
+        }
+        continue;
+      }
+      const fb = node.fb;
       this.emitHeaderChunkMarker("begin", "functionBlock", fb.name);
       this.generateFBHeaderDeclaration(fb);
       this.emitHeaderChunkMarker("end", "functionBlock", fb.name);
     }
+
+    // GVL globals that hold a function block, now that its class is complete
+    this.emitGvlGlobals(ast, true);
 
     // Generate program class declarations
     if (this.projectModel) {
@@ -1503,6 +1647,51 @@ export class CodeGenerator {
       this.emitCppChunkMarker("end", "function", func.name);
       this.endTranslationUnit();
     }
+  }
+
+  /**
+   * Emit the file-level VAR_GLOBALs (GVL files) as `inline` header objects:
+   * those holding a function block by value (`late`: an FB or a late type, or
+   * an inline array of one) or the others. A late one needs the FB class
+   * complete, so it is emitted after the FB classes and late types.
+   */
+  private emitGvlGlobals(ast: CompilationUnit, late: boolean): void {
+    const holdsFB = (typeRef: TypeReference): boolean =>
+      typeNamesHeldByValue(typeRef).some((n) => {
+        const upper = n.toUpperCase();
+        return this.knownFBTypes.has(upper) || this.lateTypeNames.has(upper);
+      });
+    let emittedAny = false;
+    for (const block of ast.globalVarBlocks) {
+      const constQualifier = block.isConstant ? "const " : "";
+      for (const decl of block.declarations) {
+        if (holdsFB(decl.type) !== late) continue;
+        if (!emittedAny) {
+          this.emitHeader("// Global variables");
+          emittedAny = true;
+        }
+        const cppType = this.mapTypeRefToCpp(decl.type);
+        for (const name of decl.names) {
+          // `inline`, not a static-local behind a reference: the debug table takes
+          // their address into PROGMEM, which needs a constant.
+          this.emitHeaderChunkMarker("begin", "inlineGlobal", name);
+          if (decl.initialValue) {
+            const initExpr = this.generateInitializer(
+              decl.initialValue,
+              cppType,
+              decl.type.name,
+            );
+            this.emitHeader(
+              `${constQualifier}inline ${cppType} ${name} = ${initExpr};`,
+            );
+          } else {
+            this.emitHeader(`inline ${cppType} ${name}{};`);
+          }
+          this.emitHeaderChunkMarker("end", "inlineGlobal", name);
+        }
+      }
+    }
+    if (emittedAny) this.emitHeader("");
   }
 
   /**
@@ -1686,6 +1875,7 @@ export class CodeGenerator {
     }
 
     this.emitHeader("};");
+    this.emitHeaderLineReset();
     this.emitHeader("");
   }
 
@@ -1724,6 +1914,8 @@ export class CodeGenerator {
       }
     }
 
+    this.emitProgramVarInstMembers(prog.methods);
+
     this.emitHeader("");
     // Implicit IEC 61131-3 ENO pin. Mirrors EN at every call site, so
     // user code that does `IF prog.ENO THEN ...` after invoking the
@@ -1738,8 +1930,36 @@ export class CodeGenerator {
     this.emitHeader("");
     this.emitHeader("    // Run program");
     this.emitHeader("    void run() override;");
+    this.emitProgramMethodDeclarations(prog.methods);
     this.emitHeader("};");
+    this.emitHeaderLineReset();
     this.emitHeader("");
+  }
+
+  /**
+   * VAR_INST storage of a PROGRAM's methods (feature program_methods), as
+   * mangled data members, like an FB's.
+   */
+  private emitProgramVarInstMembers(methods: MethodDeclaration[]): void {
+    const varInstMembers = this.collectVarInstMembers({ methods });
+    if (varInstMembers.length === 0) return;
+    this.emitHeader("    // Method instance variables (VAR_INST)");
+    for (const m of varInstMembers) {
+      this.emitHeader(`    ${m.cppType} ${m.mangledName};`);
+    }
+  }
+
+  /**
+   * A PROGRAM's methods (feature program_methods), declared last in the class,
+   * after the ProgramBase overrides. They are non-virtual (D7): a program has
+   * no inheritance, so nothing dispatches on them, and the class's vtable
+   * stays exactly as for a program without methods.
+   */
+  private emitProgramMethodDeclarations(methods: MethodDeclaration[]): void {
+    if (methods.length === 0) return;
+    this.emitHeader("");
+    this.emitHeader("    // Methods");
+    this.generateMethodDeclarations(methods, true);
   }
 
   /**
@@ -1756,6 +1976,7 @@ export class CodeGenerator {
       `${this.mapTypeRefToCpp(func.returnType)} ${func.name}(${params.join(", ")});`,
     );
     this.recordHeaderLineMapping(func.sourceSpan.startLine, declLine);
+    this.emitHeaderLineReset();
   }
 
   /**
@@ -1850,16 +2071,17 @@ export class CodeGenerator {
     }
 
     this.emitHeader("};");
+    this.emitHeaderLineReset();
     this.emitHeader("");
   }
 
   /**
-   * Collect VAR_INST members from all methods of a function block.
+   * Collect VAR_INST members from all methods of a function block or program.
    * These become name-mangled class members: __MethodName__varName
    */
-  private collectVarInstMembers(
-    fb: CompilationUnit["functionBlocks"][0],
-  ): Array<{ mangledName: string; cppType: string }> {
+  private collectVarInstMembers(fb: {
+    methods: MethodDeclaration[];
+  }): Array<{ mangledName: string; cppType: string }> {
     const result: Array<{ mangledName: string; cppType: string }> = [];
     for (const method of fb.methods) {
       for (const block of method.varBlocks) {
@@ -1880,8 +2102,14 @@ export class CodeGenerator {
 
   /**
    * Generate method declarations in the class header, grouped by visibility.
+   * A PROGRAM's methods pass `nonVirtual`: plain members, so the program
+   * class's vtable (the ProgramBase overrides) stays as it is (the analyzer
+   * refuses ABSTRACT and OVERRIDE on them; FINAL needs no specifier).
    */
-  private generateMethodDeclarations(methods: MethodDeclaration[]): void {
+  private generateMethodDeclarations(
+    methods: MethodDeclaration[],
+    nonVirtual = false,
+  ): void {
     // Group by visibility
     const groups: Record<Visibility, MethodDeclaration[]> = {
       PUBLIC: [],
@@ -1919,7 +2147,10 @@ export class CodeGenerator {
         let prefix: string;
         let suffix: string;
 
-        if (method.isAbstract) {
+        if (nonVirtual) {
+          prefix = "";
+          suffix = "";
+        } else if (method.isAbstract) {
           prefix = "virtual ";
           suffix = " = 0";
         } else if (method.isOverride) {
@@ -2092,6 +2323,7 @@ export class CodeGenerator {
 
     this.emitLineDirective(method.sourceSpan.endLine);
     this.emit("}");
+    this.emitLineReset();
     this.emit("");
     this.recordLineMapping(method.sourceSpan.startLine, implLine);
   }
@@ -2116,6 +2348,7 @@ export class CodeGenerator {
       this.emit(`    return ${prop.name}_result;`);
       this.currentFunctionName = undefined;
       this.emit("}");
+      this.emitLineReset();
       this.emit("");
       this.recordLineMapping(prop.sourceSpan.startLine, getterLine);
     }
@@ -2128,6 +2361,7 @@ export class CodeGenerator {
       // In setter, prop.name refers to the input parameter (no redirection)
       this.generateStatements(prop.setter);
       this.emit("}");
+      this.emitLineReset();
       this.emit("");
       this.recordLineMapping(prop.sourceSpan.startLine, setterLine);
     }
@@ -2166,6 +2400,7 @@ export class CodeGenerator {
 
     // Run method
     this.emit(`void Program_${prog.name}::run() {`);
+    this.currentProgramName = prog.name;
     this.enterScope(prog.varBlocks);
     if (prog.body.length > 0) {
       // Generate statements (Phase 2.8: only ExternalCodePragma; Phase 3+: all statements)
@@ -2174,11 +2409,58 @@ export class CodeGenerator {
       this.emit("    // Empty program body");
     }
     this.exitScope();
+    this.currentProgramName = undefined;
     this.emitLineDirective(prog.sourceSpan.endLine);
     const closingBraceLine = this.currentLine;
     this.emit("}");
+    this.emitLineReset();
     this.emit("");
     this.recordLineMapping(prog.sourceSpan.endLine, closingBraceLine);
+
+    // This path rewrites no VAR_EXTERNAL in run(), so neither in the methods.
+    this.generateProgramMethodImplementations(prog, []);
+  }
+
+  /**
+   * Implementations of a PROGRAM's methods (feature program_methods), after
+   * run(), as members of `Program_<NAME>`.
+   *
+   * generateMethodImplementation resolves names through the FB-scope fields
+   * (currentFBVarBlocks, currentFBName, ...), which an FB sets for its own
+   * methods and clears at its end. A program sets them to itself here: its
+   * VARs, no base, no interfaces, and the same VAR_EXTERNAL rewriting as its
+   * run() (`externals`), then clears them the same way an FB does.
+   */
+  private generateProgramMethodImplementations(
+    prog: CompilationUnit["programs"][0],
+    externals: ReadonlyArray<{ name: string; typeName: string }>,
+  ): void {
+    if (prog.methods.length === 0) return;
+    this.currentFBName = prog.name;
+    this.currentFBExtends = undefined;
+    this.currentFBVarBlocks = prog.varBlocks;
+    this.currentFBInterfaceMethods = new Set();
+    this.currentProgramName = prog.name;
+    this.programExternals = new Set(
+      externals.map((ext) => ext.name.toUpperCase()),
+    );
+    this.compositeExternals = new Set(
+      externals
+        .filter((ext) => !isElementaryType(ext.typeName))
+        .map((ext) => ext.name.toUpperCase()),
+    );
+
+    for (const method of prog.methods) {
+      this.generateMethodImplementation(method, `Program_${prog.name}`);
+    }
+
+    this.currentFBName = undefined;
+    this.currentFBExtends = undefined;
+    this.currentFBVarBlocks = [];
+    this.currentFBInterfaceMethods = new Set();
+    this.currentProgramName = undefined;
+    this.programExternals = new Set();
+    this.compositeExternals = new Set();
   }
 
   /**
@@ -2263,6 +2545,7 @@ export class CodeGenerator {
     this.exitScope();
     this.emitLineDirective(fb.sourceSpan.endLine);
     this.emit("}");
+    this.emitLineReset();
     this.emit("");
     this.recordLineMapping(fb.sourceSpan.startLine, fbImplLine);
 
@@ -2336,6 +2619,7 @@ export class CodeGenerator {
       this.emit(`${retType} ${func.name}_real(${params.join(", ")}) {`);
       emitFunctionBody(func.name);
       this.emit("}");
+      this.emitLineReset();
       this.emit("");
       this.recordLineMapping(func.sourceSpan.startLine, realLine);
 
@@ -2358,6 +2642,7 @@ export class CodeGenerator {
       this.emit(`${retType} ${func.name}(${params.join(", ")}) {`);
       emitFunctionBody(func.name);
       this.emit("}");
+      this.emitLineReset();
       this.emit("");
       this.recordLineMapping(func.sourceSpan.startLine, funcImplLine);
     }
@@ -2507,6 +2792,10 @@ export class CodeGenerator {
       }
     }
 
+    if (astProg) {
+      this.emitProgramVarInstMembers(astProg.methods);
+    }
+
     this.emitHeader("");
     // Implicit IEC 61131-3 ENO pin (see generateProgramHeaderDeclaration
     // for the rationale; this is the project-model code path, same shape).
@@ -2560,7 +2849,12 @@ export class CodeGenerator {
     // mirror pins their vtable positions, and renumbering would mis-dispatch
     // run() for any program built against a different version.
 
+    if (astProg) {
+      this.emitProgramMethodDeclarations(astProg.methods);
+    }
+
     this.emitHeader("};");
+    this.emitHeaderLineReset();
     this.emitHeader("");
   }
 
@@ -2658,6 +2952,7 @@ export class CodeGenerator {
         .filter((ext) => !isElementaryType(ext.typeName))
         .map((ext) => ext.name.toUpperCase()),
     );
+    this.currentProgramName = prog.name;
     if (astProg) {
       this.enterScope(astProg.varBlocks);
     }
@@ -2673,11 +2968,14 @@ export class CodeGenerator {
     }
     this.programExternals = new Set();
     this.compositeExternals = new Set();
+    this.currentProgramName = undefined;
     const closingBraceLine = this.currentLine;
     this.emit("}");
+    this.emitLineReset();
     this.emit("");
     if (astProg) {
       this.recordLineMapping(astProg.sourceSpan.endLine, closingBraceLine);
+      this.generateProgramMethodImplementations(astProg, prog.varExternal);
     }
   }
 
@@ -3026,6 +3324,25 @@ export class CodeGenerator {
     this.currentStatementIndent = indent;
     this.emitLineDirective(stmt.sourceSpan.startLine);
     const cppStartLine = this.currentLine;
+    // A composite global passed to a VAR_IN_OUT / VAR_OUTPUT of a method or
+    // function: copy-in before the statement (or around the call, in a
+    // compound statement's header), copy-out after it.
+    const outerCopyOuts = this.pendingGlobalCopyOuts;
+    this.pendingGlobalCopyOuts = [];
+    let hoisted: VariableExpression[] = [];
+    let wrapped: Expression[] = [];
+    if (this.isCompoundStatement(stmt)) {
+      wrapped = this.registerGlobalInOutCallWraps(stmt);
+    } else {
+      hoisted = this.hoistGlobalInOutCopies(stmt, indent);
+    }
+    // Hoisted copy-ins open a block (see hoistGlobalInOutCopies): the
+    // statement and its copy-outs go one level in, and the block closes after.
+    const outerIndent = indent;
+    if (hoisted.length > 0) {
+      indent = indent + this.options.indent;
+      this.currentStatementIndent = indent;
+    }
     // Compound statements handle their own line mappings internally
     let isCompound = false;
     switch (stmt.kind) {
@@ -3128,6 +3445,11 @@ export class CodeGenerator {
         );
       }
     }
+    this.flushGlobalCopyOuts(indent);
+    if (hoisted.length > 0) this.emit(`${outerIndent}}`);
+    this.pendingGlobalCopyOuts = outerCopyOuts;
+    for (const arg of hoisted) this.globalInOutTemps.delete(arg);
+    for (const call of wrapped) this.globalInOutCallWraps.delete(call);
     if (!isCompound) {
       this.recordLineMapping(stmt.sourceSpan.startLine, cppStartLine);
     }
@@ -3265,12 +3587,30 @@ export class CodeGenerator {
     valueExpr: Expression,
     indent: string,
   ): void {
-    const nameUpper = target.name.toUpperCase();
-    const ptr = this.resolveVariableBaseName(target.name);
     const tmp = `__gwv_${this.tempVarCounter++}`;
     const value = this.generateExpression(valueExpr);
-    this.emit(`${indent}auto ${tmp} = ${value};`);
+    // In a block of its own: a declaration directly under a CASE label would
+    // be jumped over by the next label (C++ "jump to case label").
+    const inner = indent + this.options.indent;
+    this.emit(`${indent}{`);
+    this.emit(`${inner}auto ${tmp} = ${value};`);
+    // A call in the value that took a composite global by copy-in writes it
+    // back now, before this store, as the call ran before the assignment.
+    this.flushGlobalCopyOuts(inner);
+    this.emit(`${inner}${this.compositeGlobalStore(target, tmp)}`);
+    this.emit(`${indent}}`);
+  }
 
+  /**
+   * The locked store of `tmp` into a composite shared global (whole object,
+   * field / element, or bit), one self-contained `with_lock`, without indent.
+   */
+  private compositeGlobalStore(
+    target: VariableExpression,
+    tmp: string,
+  ): string {
+    const nameUpper = target.name.toUpperCase();
+    const ptr = this.resolveVariableBaseName(target.name);
     const lastField = target.fieldAccess[target.fieldAccess.length - 1];
     const isBitWrite =
       target.fieldAccess.length > 0 && /^\d+$/.test(lastField ?? "");
@@ -3287,16 +3627,245 @@ export class CodeGenerator {
         else delete baseVar.accessChain;
       }
       const lv = this.renderAccessTail("(*__glk)", baseVar, nameUpper);
-      this.emit(
-        `${indent}${ptr}->with_lock([&](auto* __glk){ ${lv} = (${lv} & ~(1ULL << ${lastField})) | ((${tmp} ? 1ULL : 0ULL) << ${lastField}); });`,
-      );
-      return;
+      return `${ptr}->with_lock([&](auto* __glk){ ${lv} = (${lv} & ~(1ULL << ${lastField})) | ((${tmp} ? 1ULL : 0ULL) << ${lastField}); });`;
     }
 
     const lv = this.renderAccessTail("(*__glk)", target, nameUpper);
-    this.emit(
-      `${indent}${ptr}->with_lock([&](auto* __glk){ ${lv} = ${tmp}; });`,
+    return `${ptr}->with_lock([&](auto* __glk){ ${lv} = ${tmp}; });`;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Composite globals passed to a VAR_IN_OUT / VAR_OUTPUT of a method or
+  // function: copy-in / copy-out.
+  //
+  // A composite global's read is `X->with_lock(...)`, a copy that cannot bind
+  // to the callee's `T&`. The argument is read into a temporary under the lock
+  // (copy-in), the call binds the temporary, and the temporary is written back
+  // under the lock (copy-out) — the model the FB VAR_IN_OUT path uses. Each
+  // lock is self-contained, so the call runs under no lock: a callee reaching
+  // the same global through VAR_EXTERNAL cannot deadlock on GlobalVar's
+  // non-recursive mutex, and two globals in one call never nest their locks.
+  // ---------------------------------------------------------------------------
+
+  private isCompoundStatement(stmt: Statement): boolean {
+    return (
+      stmt.kind === "IfStatement" ||
+      stmt.kind === "CaseStatement" ||
+      stmt.kind === "ForStatement" ||
+      stmt.kind === "WhileStatement" ||
+      stmt.kind === "RepeatStatement"
     );
+  }
+
+  /**
+   * Simple statement: emit the copy-in of every composite-global VAR_IN_OUT /
+   * VAR_OUTPUT argument of the calls in `stmt` before it, the way `__gwv_`
+   * reads are hoisted, and queue the copy-outs (written after the statement,
+   * or before a composite-global store, see emitCompositeGlobalWrite).
+   * Returns the arguments now bound to temporaries. When there are any, the
+   * copy-ins open a block (`{`, closed by generateStatement after the
+   * copy-outs): a declaration directly under a CASE label would be jumped
+   * over by the next label (C++ "jump to case label").
+   */
+  private hoistGlobalInOutCopies(
+    stmt: Statement,
+    indent: string,
+  ): VariableExpression[] {
+    if (this.compositeExternals.size === 0) return [];
+    const calls = this.findGlobalInOutCalls(stmt);
+    if (!calls.some(({ args }) => args.length > 0)) return [];
+    this.emit(`${indent}{`);
+    const inner = indent + this.options.indent;
+    const hoisted: VariableExpression[] = [];
+    for (const { args } of calls) {
+      for (const arg of args) {
+        const tmp = `__gio_${this.tempVarCounter++}`;
+        this.emit(
+          `${inner}auto ${tmp} = ${this.generateVariableExpression(arg)};`,
+        );
+        this.globalInOutTemps.set(arg, tmp);
+        this.pendingGlobalCopyOuts.push(this.compositeGlobalStore(arg, tmp));
+        hoisted.push(arg);
+      }
+    }
+    return hoisted;
+  }
+
+  /** Write the queued copy-outs of the current statement. */
+  private flushGlobalCopyOuts(indent: string): void {
+    for (const line of this.pendingGlobalCopyOuts) {
+      this.emit(`${indent}${line}`);
+    }
+    this.pendingGlobalCopyOuts = [];
+  }
+
+  /**
+   * Compound statement: a call in its header may run many times (a WHILE
+   * condition) or not at all (an ELSIF condition), so the copies cannot sit
+   * before and after the statement. Mark the calls; generateExpression wraps
+   * each in a lambda that copies in, calls and copies out.
+   */
+  private registerGlobalInOutCallWraps(stmt: Statement): Expression[] {
+    if (this.compositeExternals.size === 0) return [];
+    const calls = this.findGlobalInOutCalls(stmt);
+    for (const { call, args } of calls) {
+      this.globalInOutCallWraps.set(call, args);
+    }
+    return calls.map(({ call }) => call);
+  }
+
+  /** Copy-in, call and copy-out as one expression (see registerGlobalInOutCallWraps). */
+  private wrapGlobalInOutCall(
+    expr: Expression,
+    generate: () => string,
+  ): string {
+    const args = this.globalInOutCallWraps.get(expr);
+    if (!args) return generate();
+    const copyIns: string[] = [];
+    const copyOuts: string[] = [];
+    for (const arg of args) {
+      const tmp = `__gio_${this.tempVarCounter++}`;
+      copyIns.push(`auto ${tmp} = ${this.generateVariableExpression(arg)};`);
+      this.globalInOutTemps.set(arg, tmp);
+      copyOuts.push(this.compositeGlobalStore(arg, tmp));
+    }
+    const result = `__gio_${this.tempVarCounter++}`;
+    const call = generate();
+    for (const arg of args) this.globalInOutTemps.delete(arg);
+    return `[&]{ ${copyIns.join(" ")} auto ${result} = ${call}; ${copyOuts.join(" ")} return ${result}; }()`;
+  }
+
+  /**
+   * The method and function calls in `root` (not in its nested statements)
+   * with a composite-global argument bound to a VAR_IN_OUT or VAR_OUTPUT, in
+   * evaluation order (arguments before their call).
+   */
+  private findGlobalInOutCalls(
+    root: Statement,
+  ): Array<{ call: Expression; args: VariableExpression[] }> {
+    const found: Array<{ call: Expression; args: VariableExpression[] }> = [];
+    const visit = (node: ASTNode): boolean => {
+      if (node !== root && node.kind.endsWith("Statement")) return false;
+      if (
+        node.kind !== "FunctionCallExpression" &&
+        node.kind !== "MethodCallExpression"
+      ) {
+        return true;
+      }
+      const call = node as FunctionCallExpression | MethodCallExpression;
+      if (call.kind === "MethodCallExpression") walkAST(call.object, visit);
+      else if (call.instance) walkAST(call.instance, visit);
+      for (const arg of call.arguments) walkAST(arg, visit);
+      const args = this.globalInOutArgs(call);
+      if (args.length > 0) found.push({ call, args });
+      return false;
+    };
+    walkAST(root, visit);
+    return found;
+  }
+
+  /** The arguments of `call` that are composite globals bound to a VAR_IN_OUT
+   *  or VAR_OUTPUT of a callee declared in this unit. */
+  private globalInOutArgs(
+    call: FunctionCallExpression | MethodCallExpression,
+  ): VariableExpression[] {
+    const isCompositeGlobal = (e: Expression): e is VariableExpression =>
+      e.kind === "VariableExpression" &&
+      !e.isDereference &&
+      this.compositeExternals.has(e.name.toUpperCase()) &&
+      !/^\d+$/.test(e.fieldAccess[e.fieldAccess.length - 1] ?? "");
+    if (!call.arguments.some((a) => isCompositeGlobal(a.value))) return [];
+    const varBlocks = this.calleeVarBlocks(call);
+    if (!varBlocks) return [];
+
+    const params: Array<{ name: string; blockType: string }> = [];
+    for (const block of varBlocks) {
+      if (
+        block.blockType === "VAR_INPUT" ||
+        block.blockType === "VAR_IN_OUT" ||
+        block.blockType === "VAR_OUTPUT"
+      ) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names) {
+            params.push({
+              name: name.toUpperCase(),
+              blockType: block.blockType,
+            });
+          }
+        }
+      }
+    }
+    // Bind as bindArgumentsByName does: named by name, positional to the
+    // unclaimed parameters in declaration order.
+    const claimed = new Set(
+      call.arguments
+        .filter((a) => a.name !== undefined)
+        .map((a) => a.name!.toUpperCase()),
+    );
+    const free = params.filter((p) => !claimed.has(p.name));
+    let positional = 0;
+    const result: VariableExpression[] = [];
+    for (const arg of call.arguments) {
+      const param =
+        arg.name !== undefined
+          ? params.find((p) => p.name === arg.name!.toUpperCase())
+          : free[positional++];
+      if (!param || !isCompositeGlobal(arg.value)) continue;
+      if (
+        arg.isOutput ||
+        param.blockType === "VAR_IN_OUT" ||
+        param.blockType === "VAR_OUTPUT"
+      ) {
+        result.push(arg.value);
+      }
+    }
+    return result;
+  }
+
+  /** The declaration blocks of the method or user FUNCTION `call` invokes;
+   *  undefined for a function block invocation, a standard function or a
+   *  callee not declared in this unit. */
+  private calleeVarBlocks(
+    call: FunctionCallExpression | MethodCallExpression,
+  ): VarBlock[] | undefined {
+    if (call.kind === "MethodCallExpression") {
+      if (
+        call.object.kind !== "VariableExpression" ||
+        call.object.fieldAccess.length > 0 ||
+        call.object.subscripts.length > 0
+      ) {
+        return undefined;
+      }
+      const ownerType = this.currentScopeVarTypes.get(
+        call.object.name.toUpperCase(),
+      );
+      return this.findMethodDeclaration(ownerType, call.methodName)?.varBlocks;
+    }
+    const name = call.functionName;
+    if (name.includes(".")) {
+      const dotIdx = name.indexOf(".");
+      return this.findMethodDeclaration(
+        this.dottedCallOwnerType(name.substring(0, dotIdx)),
+        name.substring(dotIdx + 1),
+      )?.varBlocks;
+    }
+    const nameUpper = name.toUpperCase();
+    if (
+      this.getFBInvocationType(name, call.instance !== undefined) !==
+        undefined ||
+      this.stdRegistry.resolveConversion(nameUpper) ||
+      this.stdRegistry.lookup(nameUpper)
+    ) {
+      return undefined;
+    }
+    const func = this.ast?.functions.find(
+      (f) => f.name.toUpperCase() === nameUpper,
+    );
+    if (func) return func.varBlocks;
+    return this.findMethodDeclaration(
+      this.currentFBName ?? this.currentProgramName,
+      nameUpper,
+    )?.varBlocks;
   }
 
   /**
@@ -3666,9 +4235,13 @@ export class CodeGenerator {
       case "ParenthesizedExpression":
         return `(${this.generateExpression(expr.expression)})`;
       case "FunctionCallExpression":
-        return this.generateFunctionCallExpression(expr);
+        return this.wrapGlobalInOutCall(expr, () =>
+          this.generateFunctionCallExpression(expr),
+        );
       case "MethodCallExpression":
-        return this.generateMethodCallExpression(expr);
+        return this.wrapGlobalInOutCall(expr, () =>
+          this.generateMethodCallExpression(expr),
+        );
       case "RefExpression":
         return `REF(${this.generateExpression(expr.operand)})`;
       case "DrefExpression":
@@ -3776,6 +4349,11 @@ export class CodeGenerator {
    * Generate C++ for a variable expression.
    */
   private generateVariableExpression(expr: VariableExpression): string {
+    // A composite global bound by copy-in/copy-out to a VAR_IN_OUT or
+    // VAR_OUTPUT: the call binds the temporary (hoistGlobalInOutCopies).
+    const copyInTemp = this.globalInOutTemps.get(expr);
+    if (copyInTemp !== undefined) return copyInTemp;
+
     const nameUpper = expr.name.toUpperCase();
 
     // Composite shared global (struct / array / function-block) accessed in a
@@ -4175,9 +4753,6 @@ export class CodeGenerator {
    */
   private generateMethodCallExpression(expr: MethodCallExpression): string {
     const obj = this.generateExpression(expr.object);
-    const args = expr.arguments
-      .map((a) => this.generateExpression(a.value))
-      .join(", ");
     // Try type-specific resolution first (avoids collisions when two FBs share a method name)
     let resolvedName: string;
     if (expr.object.kind === "VariableExpression") {
@@ -4190,6 +4765,16 @@ export class CodeGenerator {
     } else {
       resolvedName = this.resolveMethodNameGlobal(expr.methodName);
     }
+    const ownerType =
+      expr.object.kind === "VariableExpression"
+        ? this.currentScopeVarTypes.get(expr.object.name.toUpperCase())
+        : undefined;
+    const args = this.generateMethodCallArgs(
+      ownerType,
+      expr.methodName,
+      expr.arguments,
+      expr.sourceSpan,
+    ).join(", ");
     return `${obj}.${resolvedName}(${args})`;
   }
 
@@ -4279,6 +4864,11 @@ export class CodeGenerator {
         const std = this.stdRegistry.lookup(fnUpper);
         if (std?.specificReturnType)
           return std.specificReturnType.toUpperCase();
+        if (std?.returnTypeFor && expr.arguments.length > 0) {
+          const at = this.inferExprType(expr.arguments[0]!.value);
+          const mapped = at && std.returnTypeFor(at.toUpperCase());
+          if (mapped) return mapped;
+        }
         // For generic functions returning same type as first param, infer from first arg
         if (std?.returnMatchesFirstParam && expr.arguments.length > 0) {
           return this.inferExprType(expr.arguments[0]!.value);
@@ -4621,17 +5211,26 @@ export class CodeGenerator {
       const dotIdx = expr.functionName.indexOf(".");
       const prefix = expr.functionName.substring(0, dotIdx);
       const methodName = expr.functionName.substring(dotIdx + 1);
-      const args = expr.arguments.map((arg) =>
-        this.generateExpression(arg.value),
-      );
 
       // Resolve method name case from declaration
       const varType = this.currentScopeVarTypes.get(prefix.toUpperCase());
+      const ownerType = this.dottedCallOwnerType(prefix);
+      const args = this.generateMethodCallArgs(
+        ownerType,
+        methodName,
+        expr.arguments,
+        expr.sourceSpan,
+      );
       const resolvedMethod = varType
         ? this.resolveMethodName(varType, methodName)
         : this.resolveMethodNameGlobal(methodName);
 
-      if (prefix.toUpperCase() === "THIS") {
+      if (
+        prefix.toUpperCase() === "THIS" ||
+        prefix.toUpperCase() === this.currentProgramName?.toUpperCase()
+      ) {
+        // THIS.M(), or MAIN.M() inside MAIN (the only place the analyzer
+        // lets a program's method be called from)
         return `this->${resolvedMethod}(${args.join(", ")})`;
       } else if (prefix.toUpperCase() === "SUPER" && this.currentFBExtends) {
         return `${this.currentFBExtends}::${resolvedMethod}(${args.join(", ")})`;
@@ -4734,6 +5333,17 @@ export class CodeGenerator {
         return generated;
       });
       this.harmonizeStdFuncArgs(args, expr.arguments, stdFunc);
+      // TRUNC's C++ result type follows the C++ argument type, but codegen
+      // emits REAL literals/expressions containing one as double.  Pass the
+      // argument at its checked ST type so DINT (REAL) / LINT (LREAL) match.
+      if (stdFunc.returnTypeFor && args.length > 0) {
+        const t = expr.arguments[0]?.value.resolvedType;
+        const tn =
+          t && "name" in t ? (t.name as string).toUpperCase() : undefined;
+        if (tn === "REAL" || tn === "LREAL") {
+          args[0] = `IEC_${tn}(${args[0]})`;
+        }
+      }
       return `${stdFunc.cppName}(${args.join(", ")})`;
     }
 
@@ -4743,6 +5353,27 @@ export class CodeGenerator {
       const reordered = this.reorderNamedArguments(expr);
       if (reordered) {
         return `${expr.functionName}(${reordered.join(", ")})`;
+      }
+    }
+
+    // 3b. A bare call of a method of the enclosing block or program (the
+    // member call needs no prefix): bind named arguments by name.
+    if (
+      hasNamedArgs &&
+      !this.ast?.functions.some((f) => f.name.toUpperCase() === nameUpper)
+    ) {
+      const method = this.findMethodDeclaration(
+        this.currentFBName ?? this.currentProgramName,
+        nameUpper,
+      );
+      if (method) {
+        const bound = this.generateMethodCallArgs(
+          this.currentFBName ?? this.currentProgramName,
+          nameUpper,
+          expr.arguments,
+          expr.sourceSpan,
+        );
+        return `${expr.functionName}(${bound.join(", ")})`;
       }
     }
 
@@ -4806,6 +5437,21 @@ export class CodeGenerator {
     return `${expr.functionName}(${args.join(", ")})`;
   }
 
+  /** The type that owns the method of a dotted call `prefix.M(...)`:
+   *  THIS (or the program's own name) is the enclosing block, SUPER its base,
+   *  anything else the declared type of the variable `prefix`. */
+  private dottedCallOwnerType(prefix: string): string | undefined {
+    const prefixUpper = prefix.toUpperCase();
+    if (
+      prefixUpper === "THIS" ||
+      prefixUpper === this.currentProgramName?.toUpperCase()
+    ) {
+      return this.currentFBName ?? this.currentProgramName;
+    }
+    if (prefixUpper === "SUPER") return this.currentFBExtends;
+    return this.currentScopeVarTypes.get(prefixUpper);
+  }
+
   /**
    * Reorder named arguments to match function declaration parameter order.
    * Positional args are placed first (in declaration order, skipping named slots),
@@ -4820,7 +5466,85 @@ export class CodeGenerator {
       (f) => f.name.toUpperCase() === expr.functionName.toUpperCase(),
     );
     if (!funcDecl) return null;
+    return this.bindArgumentsByName(
+      funcDecl.varBlocks,
+      expr.arguments,
+      `function '${expr.functionName}'`,
+      expr.sourceSpan,
+    );
+  }
 
+  /**
+   * Find a method's declaration on a function block, a program or an
+   * interface, walking the base chain of function blocks. Undefined when the
+   * type is not declared in this compilation unit (a library block).
+   */
+  private findMethodDeclaration(
+    typeName: string | undefined,
+    methodName: string,
+  ): MethodDeclaration | undefined {
+    if (!typeName || !this.ast) return undefined;
+    const methodUpper = methodName.toUpperCase();
+    const seen = new Set<string>();
+    let current: string | undefined = typeName.toUpperCase();
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      const fb = this.ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === current,
+      );
+      const owner =
+        fb ??
+        this.ast.programs.find((p) => p.name.toUpperCase() === current) ??
+        this.ast.interfaces.find((i) => i.name.toUpperCase() === current);
+      if (!owner) return undefined;
+      const found = owner.methods.find(
+        (m) => m.name.toUpperCase() === methodUpper,
+      );
+      if (found) return found;
+      current = fb?.extends?.toUpperCase();
+    }
+    return undefined;
+  }
+
+  /**
+   * Emit the arguments of a method call. Positional calls keep source order;
+   * with a named argument they are bound to the method's parameters by name
+   * and ordered as its C++ parameter list (VAR_INPUT, VAR_IN_OUT and
+   * VAR_OUTPUT in declaration order). Falls back to source order when the
+   * method's declaration is not in this unit.
+   */
+  private generateMethodCallArgs(
+    ownerType: string | undefined,
+    methodName: string,
+    callArgs: Argument[],
+    callSpan: SourceSpan,
+  ): string[] {
+    if (callArgs.some((a) => a.name !== undefined)) {
+      const method = this.findMethodDeclaration(ownerType, methodName);
+      if (method) {
+        return this.bindArgumentsByName(
+          method.varBlocks,
+          callArgs,
+          `method '${method.name}'`,
+          callSpan,
+        );
+      }
+    }
+    return callArgs.map((a) => this.generateExpression(a.value));
+  }
+
+  /**
+   * Bind a call's arguments to a callee's parameters by name. `varBlocks` is
+   * the callee's declaration, taken VAR_INPUT / VAR_IN_OUT / VAR_OUTPUT in
+   * declaration order (the order of its C++ parameter list). Shared by
+   * function calls and method calls.
+   */
+  private bindArgumentsByName(
+    varBlocks: VarBlock[],
+    callArgs: Argument[],
+    calleeLabel: string,
+    callSpan: SourceSpan,
+  ): string[] {
     // Build parameter info from VAR_INPUT, VAR_IN_OUT, VAR_OUTPUT blocks
     const params: Array<{
       name: string;
@@ -4828,7 +5552,7 @@ export class CodeGenerator {
       blockType: string;
       defaultExpr?: string;
     }> = [];
-    for (const block of funcDecl.varBlocks) {
+    for (const block of varBlocks) {
       if (
         block.blockType === "VAR_INPUT" ||
         block.blockType === "VAR_IN_OUT" ||
@@ -4863,7 +5587,7 @@ export class CodeGenerator {
     // (skip implicit EN/ENO — handled separately by EN/ENO codegen logic)
     const namedArgs = new Map<string, { expr: string; isOutput: boolean }>();
     const claimedSlots = new Set<string>();
-    for (const arg of expr.arguments) {
+    for (const arg of callArgs) {
       if (arg.name !== undefined) {
         const upperName = arg.name.toUpperCase();
         if (upperName === "EN" || upperName === "ENO") continue;
@@ -4891,15 +5615,15 @@ export class CodeGenerator {
     for (const [argName, argInfo] of namedArgs) {
       const param = paramLookup.get(argName);
       if (!param) {
-        const span = expr.sourceSpan;
+        const span = callSpan;
         this.codegenWarnings.push({
-          message: `Named argument '${argName}' does not match any parameter of function '${expr.functionName}'`,
+          message: `Named argument '${argName}' does not match any parameter of ${calleeLabel}`,
           line: span.startLine,
           column: span.startCol,
           file: span.file,
         });
       } else if (argInfo.isOutput && param.blockType === "VAR_INPUT") {
-        const span = expr.sourceSpan;
+        const span = callSpan;
         this.codegenWarnings.push({
           message: `Output argument '=>' used for input parameter '${param.name.toLowerCase()}' — did you mean ':='?`,
           line: span.startLine,
@@ -4911,7 +5635,7 @@ export class CodeGenerator {
 
     // Collect positional args (preserving source order)
     const positionalArgs: string[] = [];
-    for (const arg of expr.arguments) {
+    for (const arg of callArgs) {
       if (arg.name === undefined) {
         positionalArgs.push(this.generateExpression(arg.value));
       }
@@ -5232,77 +5956,115 @@ export class CodeGenerator {
   }
 
   /**
-   * Topologically sort function blocks so that FBs containing instances of
-   * other FBs are emitted after their dependencies (Kahn's algorithm).
+   * Topologically sort function blocks and late structs (user STRUCTs holding
+   * a function block) so that each is emitted after the FBs and late structs
+   * it holds by value (Kahn's algorithm). An FB depends on its member types
+   * and its EXTENDS parent; a late struct on the user FBs and late structs it
+   * holds. A held type that is neither — an ARRAY or alias, emitted with the
+   * other types — is resolved through to what it holds (`allTypes`), so a
+   * member `pair : BeltPair` (`ARRAY[0..1] OF FB_Belt`) still orders FB_Belt
+   * first. Library FBs and early types are emitted before all of these.
    */
   private topologicalSortFBs(
     fbs: CompilationUnit["functionBlocks"],
-  ): CompilationUnit["functionBlocks"] {
-    if (fbs.length <= 1) return fbs;
+    lateTypes: readonly TypeDeclaration[] = [],
+    allTypes: readonly TypeDeclaration[] = [],
+  ): HeaderClassNode[] {
+    const nodes: HeaderClassNode[] = [
+      ...fbs.map((fb): HeaderClassNode => ({ kind: "functionBlock", fb })),
+      ...lateTypes.map((type): HeaderClassNode => ({ kind: "type", type })),
+    ];
+    if (nodes.length <= 1) return nodes;
 
-    // Build name → FB mapping
-    const fbMap = new Map<string, (typeof fbs)[0]>();
-    for (const fb of fbs) {
-      fbMap.set(fb.name.toUpperCase(), fb);
-    }
+    // Build key → node mapping. Keys carry the kind so an FB and a TYPE of
+    // the same name stay apart; a name resolves to an FB first.
+    const nodeName = (n: HeaderClassNode): string =>
+      (n.kind === "functionBlock" ? n.fb.name : n.type.name).toUpperCase();
+    const keyOf = (n: HeaderClassNode): string => `${n.kind}:${nodeName(n)}`;
+    const nodeMap = new Map<string, HeaderClassNode>();
+    for (const n of nodes) nodeMap.set(keyOf(n), n);
+    const resolve = (typeName: string): string | undefined => {
+      const upper = typeName.toUpperCase();
+      if (nodeMap.has(`functionBlock:${upper}`))
+        return `functionBlock:${upper}`;
+      if (nodeMap.has(`type:${upper}`)) return `type:${upper}`;
+      return undefined;
+    };
+    const typeByName = new Map<string, TypeDeclaration>();
+    for (const t of allTypes) typeByName.set(t.name.toUpperCase(), t);
 
-    // Build adjacency: fbName → set of FB names it depends on (has as members)
+    // Build adjacency: node → set of nodes it depends on (holds as members)
     const deps = new Map<string, Set<string>>();
-    for (const fb of fbs) {
-      const fbDeps = new Set<string>();
-      for (const block of fb.varBlocks) {
-        for (const decl of block.declarations) {
-          const typeName = decl.type.name.toUpperCase();
-          if (fbMap.has(typeName) && typeName !== fb.name.toUpperCase()) {
-            fbDeps.add(typeName);
+    for (const n of nodes) {
+      const self = keyOf(n);
+      const nodeDeps = new Set<string>();
+      const seen = new Set<string>();
+      const addDep = (typeName: string | undefined): void => {
+        if (typeName === undefined) return;
+        const dep = resolve(typeName);
+        if (dep !== undefined) {
+          if (dep !== self) nodeDeps.add(dep);
+          return;
+        }
+        // An early ARRAY or alias: depend on what it holds.
+        const upper = typeName.toUpperCase();
+        const type = typeByName.get(upper);
+        if (type === undefined || seen.has(upper)) return;
+        seen.add(upper);
+        for (const held of typeNamesHeldByTypeDefinition(type.definition)) {
+          addDep(held);
+        }
+      };
+      if (n.kind === "functionBlock") {
+        for (const block of n.fb.varBlocks) {
+          for (const decl of block.declarations) {
+            addDep(decl.type.name);
+            // An inline ARRAY OF a late type or an FB holds its elements.
+            addDep(decl.type.elementTypeName);
           }
         }
-      }
-      // Also check EXTENDS (parent FB must come first)
-      if (fb.extends) {
-        const parentUpper = fb.extends.toUpperCase();
-        if (fbMap.has(parentUpper)) {
-          fbDeps.add(parentUpper);
+        // Also check EXTENDS (parent FB must come first)
+        addDep(n.fb.extends);
+      } else {
+        for (const held of typeNamesHeldByTypeDefinition(n.type.definition)) {
+          addDep(held);
         }
       }
-      deps.set(fb.name.toUpperCase(), fbDeps);
+      deps.set(self, nodeDeps);
     }
 
     // Kahn's algorithm
     const inDegree = new Map<string, number>();
-    for (const fb of fbs) {
-      inDegree.set(
-        fb.name.toUpperCase(),
-        deps.get(fb.name.toUpperCase())!.size,
-      );
+    for (const n of nodes) {
+      inDegree.set(keyOf(n), deps.get(keyOf(n))!.size);
     }
 
     const queue: string[] = [];
-    for (const [name, degree] of inDegree) {
-      if (degree === 0) queue.push(name);
+    for (const [key, degree] of inDegree) {
+      if (degree === 0) queue.push(key);
     }
 
-    const sorted: (typeof fbs)[0][] = [];
+    const sorted: HeaderClassNode[] = [];
     while (queue.length > 0) {
-      const name = queue.shift()!;
-      sorted.push(fbMap.get(name)!);
+      const key = queue.shift()!;
+      sorted.push(nodeMap.get(key)!);
 
-      // Reduce in-degree for FBs that depend on this one
-      for (const [fbName, fbDeps] of deps) {
-        if (fbDeps.has(name)) {
-          fbDeps.delete(name);
-          const newDeg = inDegree.get(fbName)! - 1;
-          inDegree.set(fbName, newDeg);
-          if (newDeg === 0) queue.push(fbName);
+      // Reduce in-degree for nodes that depend on this one
+      for (const [nodeKey, nodeDeps] of deps) {
+        if (nodeDeps.has(key)) {
+          nodeDeps.delete(key);
+          const newDeg = inDegree.get(nodeKey)! - 1;
+          inDegree.set(nodeKey, newDeg);
+          if (newDeg === 0) queue.push(nodeKey);
         }
       }
     }
 
     // If cycle detected, append remaining in original order
-    if (sorted.length < fbs.length) {
-      for (const fb of fbs) {
-        if (!sorted.includes(fb)) {
-          sorted.push(fb);
+    if (sorted.length < nodes.length) {
+      for (const n of nodes) {
+        if (!sorted.includes(n)) {
+          sorted.push(n);
         }
       }
     }
@@ -6341,7 +7103,21 @@ export class CodeGenerator {
         this.options.lineDirectiveFileName ?? this.options.fileName
       ).replaceAll("\\", "/");
       this.emit(`#line ${stLine} "${fn}"`);
+      this.cppStLineActive = true;
     }
+  }
+
+  /**
+   * After a body's closing brace: hand the following lines back to the
+   * generated file, so code after the body (the next POU's constructor, the
+   * configuration) is not attributed to the body's last ST line. Emits a
+   * placeholder that `generate()` resolves per output file (its own name and
+   * line). No-op unless an ST directive is in force.
+   */
+  private emitLineReset(): void {
+    if (!this.cppStLineActive) return;
+    this.emit(LINE_RESET_PLACEHOLDER);
+    this.cppStLineActive = false;
   }
 
   /**
@@ -6353,7 +7129,15 @@ export class CodeGenerator {
         this.options.lineDirectiveFileName ?? this.options.fileName
       ).replaceAll("\\", "/");
       this.emitHeader(`#line ${stLine} "${fn}"`);
+      this.headerStLineActive = true;
     }
+  }
+
+  /** The header's `emitLineReset`, resolved to `headerFileName`. */
+  private emitHeaderLineReset(): void {
+    if (!this.headerStLineActive) return;
+    this.emitHeader(LINE_RESET_PLACEHOLDER);
+    this.headerStLineActive = false;
   }
 
   /**

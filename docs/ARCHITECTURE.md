@@ -164,7 +164,7 @@ All program/function variables are wrapped in `IECVar<T>` which provides transpa
 
 ### Line Mapping
 
-The code generator tracks ST source line -> C++ output line correspondence, stored in `lineMap`. This enables debugger integration and meaningful error reporting against the original ST source. Optional `#line` directives and source comments can be emitted for direct C++ debugging.
+The code generator tracks ST source line -> C++ output line correspondence, stored in `lineMap`. This enables debugger integration and meaningful error reporting against the original ST source. Optional `#line` directives and source comments can be emitted for direct C++ debugging. With `#line` directives on, a `#line` naming the generated file (`cppFileName`, default `generated.cpp`, or `headerFileName`) follows each body. It is numbered and named per output after generation: in each per-TU `cppFiles` entry it names that file and counts that file's lines; in the concatenated `cppCode` and in the header it names `cppFileName`/`headerFileName` and counts theirs.
 
 ## Library System
 

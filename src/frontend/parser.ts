@@ -71,6 +71,11 @@ export class STParser extends CstParser {
             GATE: () => this.LA(1).tokenType === tokens.CONFIGURATION,
           },
           {
+            // ACTION Owner.Name ... END_ACTION outside its POU
+            ALT: () => this.SUBRULE(this.topLevelActionDeclaration),
+            GATE: () => this.isActionDeclarationAhead(true),
+          },
+          {
             // Top-level VAR_GLOBAL ... END_VAR (GVL files)
             ALT: () => this.SUBRULE(this.varBlock),
             GATE: () => this.LA(1).tokenType === tokens.VAR_GLOBAL,
@@ -91,11 +96,30 @@ export class STParser extends CstParser {
   public programDeclaration = this.RULE("programDeclaration", () => {
     this.CONSUME(tokens.PROGRAM);
     this.CONSUME(tokens.Identifier);
+    // VAR blocks and methods interleaved (before body), as in a
+    // FUNCTION_BLOCK; the analyzer refuses methods without the feature
+    // program_methods. PROPERTY stays out of programs.
     this.MANY(() => {
-      this.SUBRULE(this.varBlock);
+      this.OR({
+        DEF: [
+          {
+            ALT: () => this.SUBRULE(this.varBlock),
+            GATE: () => this.isVarBlockAhead(),
+          },
+          {
+            ALT: () => this.SUBRULE(this.methodDeclaration),
+            GATE: () => this.LA(1).tokenType === tokens.METHOD,
+          },
+        ],
+        IGNORE_AMBIGUITIES: true,
+      });
     });
     this.OPTION(() => {
       this.SUBRULE(this.statementList);
+    });
+    this.MANY2({
+      GATE: () => this.isActionDeclarationAhead(false),
+      DEF: () => this.SUBRULE(this.actionDeclaration),
     });
     this.CONSUME(tokens.END_PROGRAM);
   });
@@ -170,7 +194,47 @@ export class STParser extends CstParser {
       this.OPTION4(() => {
         this.SUBRULE(this.statementList);
       });
+      this.MANY3({
+        GATE: () => this.isActionDeclarationAhead(false),
+        DEF: () => this.SUBRULE(this.actionDeclaration),
+      });
       this.CONSUME(tokens.END_FUNCTION_BLOCK);
+    },
+  );
+
+  /**
+   * ACTION Name [:] statements END_ACTION, inside a PROGRAM or FUNCTION_BLOCK
+   * after its body. An action has no VAR blocks of its own.
+   */
+  public actionDeclaration = this.RULE("actionDeclaration", () => {
+    this.CONSUME(tokens.ACTION);
+    this.SUBRULE(this.identifierOrKeyword);
+    this.OPTION(() => {
+      this.CONSUME(tokens.Colon);
+    });
+    this.OPTION2(() => {
+      this.SUBRULE(this.statementList);
+    });
+    this.CONSUME(tokens.END_ACTION);
+  });
+
+  /**
+   * ACTION Owner.Name [:] statements END_ACTION, outside the owning POU.
+   */
+  public topLevelActionDeclaration = this.RULE(
+    "topLevelActionDeclaration",
+    () => {
+      this.CONSUME(tokens.ACTION);
+      this.SUBRULE(this.identifierOrKeyword); // owner
+      this.CONSUME(tokens.Dot);
+      this.SUBRULE2(this.identifierOrKeyword); // action name
+      this.OPTION(() => {
+        this.CONSUME(tokens.Colon);
+      });
+      this.OPTION2(() => {
+        this.SUBRULE(this.statementList);
+      });
+      this.CONSUME(tokens.END_ACTION);
     },
   );
 
@@ -382,6 +446,8 @@ export class STParser extends CstParser {
         { ALT: () => this.CONSUME(tokens.FINAL) },
         // CONTINUE is a statement only where a statement starts (see continueStatement)
         { ALT: () => this.CONSUME(tokens.CONTINUE) },
+        // ACTION starts a declaration only before `Name` (see isActionDeclarationAhead)
+        { ALT: () => this.CONSUME(tokens.ACTION) },
         // IEC 61131-3 operator keywords that can also be called as functions
         // (e.g. AND(a, b, c), OR(x, y), NOT(z), MOD(a, b), XOR(a, b))
         { ALT: () => this.CONSUME(tokens.AND) },
@@ -947,8 +1013,12 @@ export class STParser extends CstParser {
    * List of statements
    */
   public statementList = this.RULE("statementList", () => {
-    this.MANY(() => {
-      this.SUBRULE(this.statement);
+    this.MANY({
+      // an ACTION block after the body ends the statement list
+      GATE: () => !this.isActionDeclarationAhead(false),
+      DEF: () => {
+        this.SUBRULE(this.statement);
+      },
     });
   });
 
@@ -1108,6 +1178,7 @@ export class STParser extends CstParser {
     tokens.ABSTRACT,
     tokens.FINAL,
     tokens.CONTINUE,
+    tokens.ACTION,
     // IEC 61131-3 operator keywords usable as function names
     tokens.AND,
     tokens.OR,
@@ -1213,6 +1284,18 @@ export class STParser extends CstParser {
       next !== tokens.LParen &&
       next !== tokens.Caret
     );
+  }
+
+  /**
+   * ACTION starts a declaration when a name follows (`ACTION Name`; the name may
+   * itself be a contextual keyword such as Set or On). The top-level form
+   * `ACTION Owner.Name` also needs the dot. Anything else (`action := 1`,
+   * `action.x`) is the identifier `action`.
+   */
+  private isActionDeclarationAhead(topLevel: boolean): boolean {
+    if (this.LA(1).tokenType !== tokens.ACTION) return false;
+    if (!this.isIdentifierOrKeywordToken(this.LA(2).tokenType)) return false;
+    return topLevel ? this.LA(3).tokenType === tokens.Dot : true;
   }
 
   private isMethodCallAhead(): boolean {

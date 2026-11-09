@@ -18,6 +18,7 @@ import type {
   FunctionBlockDeclaration,
   FunctionCallExpression,
   LiteralExpression,
+  MethodCallExpression,
   MethodDeclaration,
   MockFunctionStatement,
   TypeDeclaration,
@@ -38,6 +39,12 @@ import { Scope, SymbolTables } from "./symbol-table.js";
 import type { FunctionSymbol } from "./symbol-table.js";
 import { TypeChecker } from "./type-checker.js";
 import {
+  DEFAULT_FEATURES,
+  profilesWithFeature,
+  type FeatureId,
+  type ResolvedDialect,
+} from "../dialect.js";
+import {
   getBitAccessWidth,
   resolveFieldType,
   resolveArrayElementType,
@@ -49,6 +56,8 @@ import {
   arrayTotalSize,
   type ArrayShape,
   type EnumMemberEntry,
+  typeNamesHeldByValue,
+  typesHoldingFunctionBlocks,
 } from "./type-utils.js";
 import {
   isEnArgument,
@@ -339,12 +348,24 @@ export class SemanticAnalyzer {
   /** Track all located variables for duplicate detection */
   private locatedVars: LocatedVarInfo[] = [];
 
-  constructor(private readonly options: { strict?: boolean } = {}) {
+  /** Language features enabled for this analysis (the dialect's, or the default set). */
+  readonly features: ReadonlySet<string>;
+
+  constructor(
+    private readonly options: {
+      strict?: boolean;
+      features?: ReadonlySet<string>;
+      dialect?: ResolvedDialect;
+    } = {},
+  ) {
+    this.features =
+      options.features ?? options.dialect?.features ?? DEFAULT_FEATURES;
     this.symbolTables = new SymbolTables();
     this.typeChecker = new TypeChecker(
       this.symbolTables,
       this.stdRegistry,
       this.options.strict === true,
+      this.features,
     );
   }
 
@@ -368,6 +389,7 @@ export class SemanticAnalyzer {
         this.symbolTables,
         this.stdRegistry,
         this.options.strict === true,
+        this.features,
       );
     }
 
@@ -378,6 +400,10 @@ export class SemanticAnalyzer {
     // an undefined type — and excluded from them, so the reverse cannot happen either.
     const errorsBeforeTypeReferences = this.errors.length;
     this.validateTypeReferences(ast);
+    // A feature refusal is located and does not gate the passes below either,
+    // so the rest of a refused method is still checked.
+    this.validateProgramMethodFeature(ast);
+    this.validateConfigurationGlobalsHoldNoFB(ast);
     const typeReferenceErrors = this.errors.length - errorsBeforeTypeReferences;
 
     if (this.options.strict === true) this.validateReservedNames(ast);
@@ -400,6 +426,149 @@ export class SemanticAnalyzer {
       errors: this.errors,
       warnings: this.warnings,
     };
+  }
+
+  /**
+   * A METHOD written in a PROGRAM needs the feature program_methods; a lowered
+   * ACTION (`fromAction`) does not. Strict mode does not change this.
+   */
+  private validateProgramMethodFeature(ast: CompilationUnit): void {
+    for (const prog of ast.programs) {
+      for (const method of prog.methods) {
+        if (method.fromAction === true) continue;
+        this.requireFeature(
+          "program_methods",
+          "METHOD in a PROGRAM",
+          method.sourceSpan,
+        );
+      }
+    }
+  }
+
+  /**
+   * A CONFIGURATION VAR_GLOBAL cannot hold a function block (user or library),
+   * directly or through a STRUCT or ARRAY: its storage is a shared,
+   * lock-guarded global and an FB instance there has no locking design (D3,
+   * C11). A global variable list or a PROGRAM can hold one. Refused at the
+   * declaration, called or not, like a feature refusal (not gated below).
+   */
+  private validateConfigurationGlobalsHoldNoFB(ast: CompilationUnit): void {
+    const isFunctionBlock = (name: string): boolean =>
+      this.symbolTables.globalScope.lookup(name)?.kind === "functionBlock";
+    const lateTypes = typesHoldingFunctionBlocks(ast.types, isFunctionBlock);
+    for (const config of ast.configurations) {
+      for (const block of config.varBlocks) {
+        if (block.blockType !== "VAR_GLOBAL") continue;
+        for (const decl of block.declarations) {
+          const held = typeNamesHeldByValue(decl.type).find(
+            (n) =>
+              isFunctionBlock(n.toUpperCase()) ||
+              lateTypes.has(n.toUpperCase()),
+          );
+          if (held === undefined) continue;
+          const shown =
+            decl.type.elementTypeName !== undefined
+              ? `ARRAY OF ${held}`
+              : decl.type.name;
+          for (const name of decl.names) {
+            this.addError(
+              `VAR_GLOBAL ${name} in a CONFIGURATION cannot hold a FUNCTION_BLOCK (${shown}); declare it in a global variable list or in a PROGRAM`,
+              decl.sourceSpan.startLine,
+              decl.sourceSpan.startCol,
+              decl.sourceSpan.file,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * A program's methods and actions may be called only inside the program:
+   * its body, its methods and its actions. `MAIN.Name()` or `p.Name()` (with
+   * `p : MAIN`) from any other POU is refused — the generated code has no
+   * program instance another POU can reach.
+   */
+  private validateProgramMethodCalls(ast: CompilationUnit): void {
+    const programs = new Map<string, { name: string; methods: Set<string> }>();
+    for (const prog of ast.programs) {
+      if (prog.methods.length === 0) continue;
+      programs.set(prog.name.toUpperCase(), {
+        name: prog.name,
+        methods: new Set(prog.methods.map((m) => m.name.toUpperCase())),
+      });
+    }
+    if (programs.size === 0) return;
+
+    const check = (
+      callerProgram: string | undefined,
+      blocks: readonly VarBlock[],
+      bodies: readonly Statement[][],
+    ): void => {
+      const varTypes = this.buildVarTypeMap([...blocks]);
+      const refuse = (
+        objectName: string,
+        methodName: string,
+        span: { startLine: number; startCol: number; file?: string },
+      ): void => {
+        const obj = objectName.toUpperCase();
+        const target = programs.get(varTypes.get(obj) ?? obj);
+        if (!target || !target.methods.has(methodName.toUpperCase())) return;
+        if (target.name.toUpperCase() === callerProgram) return;
+        this.addError(
+          `the methods and actions of PROGRAM ${target.name} can be called only inside ${target.name}`,
+          span.startLine,
+          span.startCol,
+          span.file,
+        );
+      };
+      for (const body of bodies) {
+        for (const stmt of body) {
+          walkAST(stmt, (node) => {
+            if (node.kind === "FunctionCallExpression") {
+              const call = node as FunctionCallExpression;
+              const parts = call.functionName.split(".");
+              if (parts.length === 2 && !call.instance) {
+                refuse(parts[0]!, parts[1]!, call.sourceSpan);
+              }
+            } else if (node.kind === "MethodCallExpression") {
+              const call = node as MethodCallExpression;
+              const obj = call.object;
+              if (
+                obj.kind === "VariableExpression" &&
+                obj.fieldAccess.length === 0 &&
+                obj.subscripts.length === 0
+              ) {
+                refuse(obj.name, call.methodName, call.sourceSpan);
+              }
+            }
+          });
+        }
+      }
+    };
+
+    for (const prog of ast.programs) {
+      const self = prog.name.toUpperCase();
+      check(self, prog.varBlocks, [prog.body]);
+      for (const method of prog.methods) {
+        check(self, [...prog.varBlocks, ...method.varBlocks], [method.body]);
+      }
+    }
+    for (const func of ast.functions) {
+      check(undefined, func.varBlocks, [func.body]);
+    }
+    for (const fb of ast.functionBlocks) {
+      check(undefined, fb.varBlocks, [fb.body]);
+      for (const method of fb.methods) {
+        check(undefined, [...fb.varBlocks, ...method.varBlocks], [method.body]);
+      }
+      for (const prop of fb.properties) {
+        const bodies = [prop.getter, prop.setter].filter(
+          (b): b is Statement[] => b !== undefined,
+        );
+        check(undefined, fb.varBlocks, bodies);
+      }
+    }
   }
 
   /**
@@ -431,6 +600,10 @@ export class SemanticAnalyzer {
     for (const prog of ast.programs) {
       check(prog.name, prog.sourceSpan);
       checkBlocks(prog.varBlocks);
+      for (const method of prog.methods) {
+        check(method.name, method.sourceSpan);
+        checkBlocks(method.varBlocks);
+      }
     }
     for (const fn of ast.functions) {
       if (fn.name.toUpperCase() !== "MOVE") check(fn.name, fn.sourceSpan);
@@ -622,46 +795,7 @@ export class SemanticAnalyzer {
         );
 
         // Create method scopes (parent = FB scope for correct lookup chain)
-        for (const method of fbDecl.methods) {
-          try {
-            const methodScope = this.symbolTables.createMethodScope(
-              fbDecl.name,
-              method.name,
-            );
-            this.buildVarBlockSymbols(
-              method.varBlocks,
-              methodScope,
-              "functionBlock",
-              fbDecl.name,
-              false,
-            );
-            // Register method return variable (MethodName := value)
-            if (method.returnType) {
-              const retType = this.resolveVarType(method.returnType.name);
-              methodScope.define({
-                name: method.name,
-                kind: "variable",
-                type: retType,
-                declaration: undefined as unknown as VarDeclaration,
-                isInput: false,
-                isOutput: false,
-                isInOut: false,
-                isExternal: false,
-                isGlobal: false,
-                isRetain: false,
-              });
-            }
-          } catch (methodErr) {
-            if (methodErr instanceof Error) {
-              this.addError(
-                methodErr.message,
-                method.sourceSpan.startLine,
-                method.sourceSpan.startCol,
-                method.sourceSpan.file,
-              );
-            }
-          }
-        }
+        this.buildMethodScopes(fbDecl.name, fbDecl.methods);
       } catch (err) {
         if (err instanceof Error) {
           this.addError(
@@ -720,6 +854,9 @@ export class SemanticAnalyzer {
           progDecl.name,
           true,
         );
+        // Program methods: parent = program scope. A method refused for want
+        // of program_methods is still registered, so calls to it add nothing.
+        this.buildMethodScopes(progDecl.name, progDecl.methods);
       } catch (err) {
         if (err instanceof Error) {
           this.addError(
@@ -804,6 +941,55 @@ export class SemanticAnalyzer {
               );
             }
           }
+        }
+      }
+    }
+  }
+
+  /**
+   * Create a scope per method of an FB or a program, holding the method's
+   * own VARs and its return variable (`MethodName := value`).
+   */
+  private buildMethodScopes(
+    ownerName: string,
+    methods: readonly MethodDeclaration[],
+  ): void {
+    for (const method of methods) {
+      try {
+        const methodScope = this.symbolTables.createMethodScope(
+          ownerName,
+          method.name,
+        );
+        this.buildVarBlockSymbols(
+          method.varBlocks,
+          methodScope,
+          "functionBlock",
+          ownerName,
+          false,
+        );
+        if (method.returnType) {
+          const retType = this.resolveVarType(method.returnType.name);
+          methodScope.define({
+            name: method.name,
+            kind: "variable",
+            type: retType,
+            declaration: undefined as unknown as VarDeclaration,
+            isInput: false,
+            isOutput: false,
+            isInOut: false,
+            isExternal: false,
+            isGlobal: false,
+            isRetain: false,
+          });
+        }
+      } catch (methodErr) {
+        if (methodErr instanceof Error) {
+          this.addError(
+            methodErr.message,
+            method.sourceSpan.startLine,
+            method.sourceSpan.startCol,
+            method.sourceSpan.file,
+          );
         }
       }
     }
@@ -938,6 +1124,9 @@ export class SemanticAnalyzer {
     // Validate access modifier enforcement
     this.validateAccessModifiers(ast);
 
+    // Program methods are callable only inside their program (C12)
+    this.validateProgramMethodCalls(ast);
+
     // Validate bit access bounds and ADR l-value targets
     this.validateExpressions(ast);
 
@@ -1014,7 +1203,12 @@ export class SemanticAnalyzer {
       for (const body of bodies) this.checkSubscriptCounts(body, scope, ast);
     };
 
-    for (const prog of ast.programs) checkPou(prog.varBlocks, [prog.body]);
+    for (const prog of ast.programs) {
+      checkPou(prog.varBlocks, [prog.body]);
+      for (const method of prog.methods) {
+        checkPou([...prog.varBlocks, ...method.varBlocks], [method.body]);
+      }
+    }
     for (const func of ast.functions) checkPou(func.varBlocks, [func.body]);
     for (const fb of ast.functionBlocks) {
       checkPou(fb.varBlocks, [fb.body]);
@@ -1786,6 +1980,24 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * Refuse a construct whose dialect feature is off. The message names the
+   * construct and the feature and, when profiles were loaded, which of them
+   * have it, so the caller can pick one.
+   */
+  private requireFeature(
+    feature: FeatureId,
+    construct: string,
+    span: { startLine: number; startCol: number; file?: string | undefined },
+  ): void {
+    if (this.features.has(feature)) return;
+    let message = `${construct} needs the feature ${feature}`;
+    const dialect = this.options.dialect;
+    const profiles = dialect ? profilesWithFeature(dialect, feature) : [];
+    if (profiles.length > 0) message += ` (profiles: ${profiles.join(", ")})`;
+    this.addError(message, span.startLine, span.startCol, span.file);
+  }
+
+  /**
    * Add an error message.
    */
   private addError(
@@ -1855,6 +2067,24 @@ export class SemanticAnalyzer {
         methodNames.add(m.name.toUpperCase());
       }
       ifaceMap.set(iface.name.toUpperCase(), methodNames);
+    }
+
+    // A PROGRAM has no base and no derived types: nothing to override.
+    for (const prog of ast.programs) {
+      for (const method of prog.methods) {
+        const modifier = method.isAbstract
+          ? "ABSTRACT"
+          : method.isOverride
+            ? "OVERRIDE"
+            : undefined;
+        if (modifier === undefined) continue;
+        this.addError(
+          `Method '${method.name}' in PROGRAM '${prog.name}' cannot be ${modifier}: a PROGRAM has no inheritance.`,
+          method.sourceSpan.startLine,
+          method.sourceSpan.startCol,
+          method.sourceSpan.file,
+        );
+      }
     }
 
     for (const fb of ast.functionBlocks) {
@@ -1948,13 +2178,14 @@ export class SemanticAnalyzer {
 
       // IMPLEMENTS contract validation: check all interface methods are provided
       if (fb.implements && !fb.isAbstract) {
+        // A lowered ACTION (fromAction) never implements an interface method.
         const fbMethodNames = new Set<string>();
         for (const m of fb.methods) {
-          fbMethodNames.add(m.name.toUpperCase());
+          if (m.fromAction !== true) fbMethodNames.add(m.name.toUpperCase());
         }
         // Include inherited methods
-        for (const name of parentMethods.keys()) {
-          fbMethodNames.add(name);
+        for (const [name, m] of parentMethods) {
+          if (m.fromAction !== true) fbMethodNames.add(name);
         }
 
         for (const ifaceName of fb.implements) {
@@ -2153,6 +2384,13 @@ export class SemanticAnalyzer {
     for (const prog of ast.programs) {
       const varTypeMap = this.buildVarTypeMap(prog.varBlocks);
       checkStatementsInScope(prog.body, varTypeMap);
+      for (const method of prog.methods) {
+        const methodVarMap = new Map(varTypeMap);
+        for (const [k, v] of this.buildVarTypeMap(method.varBlocks)) {
+          methodVarMap.set(k, v);
+        }
+        checkStatementsInScope(method.body, methodVarMap);
+      }
     }
 
     // Check function blocks (body and method bodies)
@@ -2302,6 +2540,17 @@ export class SemanticAnalyzer {
     for (const prog of ast.programs) {
       const varTypeMap = this.buildVarTypeMap(prog.varBlocks);
       this.walkStatementsForExpressionValidation(prog.body, varTypeMap, ast);
+      for (const method of prog.methods) {
+        const methodVarTypeMap = new Map(varTypeMap);
+        for (const [k, v] of this.buildVarTypeMap(method.varBlocks)) {
+          methodVarTypeMap.set(k, v);
+        }
+        this.walkStatementsForExpressionValidation(
+          method.body,
+          methodVarTypeMap,
+          ast,
+        );
+      }
     }
     for (const func of ast.functions) {
       const varTypeMap = this.buildVarTypeMap(func.varBlocks);
@@ -2322,6 +2571,13 @@ export class SemanticAnalyzer {
           ast,
         );
       }
+      for (const prop of fb.properties) {
+        for (const body of [prop.getter, prop.setter]) {
+          if (body) {
+            this.walkStatementsForExpressionValidation(body, varTypeMap, ast);
+          }
+        }
+      }
     }
   }
 
@@ -2339,6 +2595,7 @@ export class SemanticAnalyzer {
         this.validateExpression(stmt.target, varTypeMap, ast);
         this.validateExpression(stmt.value, varTypeMap, ast);
       } else if (stmt.kind === "RefAssignStatement") {
+        this.requireFeature("ref_assign", "REF=", stmt.sourceSpan);
         this.validateExpression(stmt.target, varTypeMap, ast);
         this.validateExpression(stmt.source, varTypeMap, ast);
       } else if (stmt.kind === "FunctionCallStatement") {
@@ -2518,6 +2775,10 @@ export class SemanticAnalyzer {
       if (sym?.kind === "function") {
         this.checkRequiredFunctionInputs(expr, sym, userArgs);
       }
+    }
+
+    if (nameUpper === "ADR") {
+      this.requireFeature("pointer_to", "ADR", expr.sourceSpan);
     }
 
     // Additional ADR / REF_LINK constraint: argument must be an l-value
@@ -2760,6 +3021,19 @@ export class SemanticAnalyzer {
         null,
         getAncestors,
       );
+      for (const method of prog.methods) {
+        const methodVarMap = new Map(varTypeMap);
+        for (const [k, v] of this.buildVarTypeMap(method.varBlocks)) {
+          methodVarMap.set(k, v);
+        }
+        this.walkStatementsForAccessViolations(
+          method.body,
+          methodVarMap,
+          methodVisibility,
+          null,
+          getAncestors,
+        );
+      }
     }
 
     // Check method calls in functions
@@ -3198,6 +3472,60 @@ export class SemanticAnalyzer {
     );
   }
 
+  /** POINTER TO and REFERENCE TO are dialect features: refuse them where the feature is off. */
+  private requireReferenceFeatures(typeRef: TypeReference): void {
+    const kinds = new Set<string>([
+      ...(typeRef.referenceChain ?? [typeRef.referenceKind]),
+      ...(typeRef.elementReferenceChain ?? []),
+    ]);
+    if (kinds.has("pointer_to")) {
+      this.requireFeature("pointer_to", "POINTER TO", typeRef.sourceSpan);
+    }
+    if (kinds.has("reference_to")) {
+      this.requireFeature("reference_to", "REFERENCE TO", typeRef.sourceSpan);
+    }
+  }
+
+  /**
+   * ADR is a dialect feature (pointer_to): refuse it in a declaration's
+   * initial value too, where the statement walk does not reach.
+   */
+  private requireAdrFeatureIn(expr: Expression | undefined): void {
+    if (!expr) return;
+    switch (expr.kind) {
+      case "FunctionCallExpression":
+        if (expr.functionName.toUpperCase() === "ADR") {
+          this.requireFeature("pointer_to", "ADR", expr.sourceSpan);
+        }
+        for (const arg of expr.arguments) this.requireAdrFeatureIn(arg.value);
+        break;
+      case "MethodCallExpression":
+        this.requireAdrFeatureIn(expr.object);
+        for (const arg of expr.arguments) this.requireAdrFeatureIn(arg.value);
+        break;
+      case "BinaryExpression":
+        this.requireAdrFeatureIn(expr.left);
+        this.requireAdrFeatureIn(expr.right);
+        break;
+      case "UnaryExpression":
+      case "RefExpression":
+      case "DrefExpression":
+        this.requireAdrFeatureIn(expr.operand);
+        break;
+      case "ParenthesizedExpression":
+        this.requireAdrFeatureIn(expr.expression);
+        break;
+      case "ArrayLiteralExpression":
+        for (const el of expr.elements) this.requireAdrFeatureIn(el);
+        break;
+      case "StructInitializerExpression":
+        for (const el of expr.elements) this.requireAdrFeatureIn(el.value);
+        break;
+      default:
+        break;
+    }
+  }
+
   /**
    * Validate a single TypeReference node. Reports an error if the referenced type is unknown.
    */
@@ -3206,6 +3534,7 @@ export class SemanticAnalyzer {
     context: string,
   ): void {
     this.validateReferenceLevels(typeRef, context);
+    this.requireReferenceFeatures(typeRef);
 
     // Skip empty or VOID type names
     if (!typeRef.name || typeRef.name.toUpperCase() === "VOID") return;
@@ -3234,6 +3563,7 @@ export class SemanticAnalyzer {
       for (const block of varBlocks) {
         for (const decl of block.declarations) {
           this.validateSingleTypeReference(decl.type, context);
+          this.requireAdrFeatureIn(decl.initialValue);
         }
       }
     };
@@ -3241,6 +3571,18 @@ export class SemanticAnalyzer {
     // Programs
     for (const prog of ast.programs) {
       validateVarBlocks(prog.varBlocks, `PROGRAM '${prog.name}'`);
+      for (const method of prog.methods) {
+        if (method.returnType) {
+          this.validateSingleTypeReference(
+            method.returnType,
+            `METHOD '${method.name}' of '${prog.name}' return type`,
+          );
+        }
+        validateVarBlocks(
+          method.varBlocks,
+          `METHOD '${method.name}' of '${prog.name}'`,
+        );
+      }
     }
 
     // Functions — var blocks + return type
@@ -3337,6 +3679,19 @@ export class SemanticAnalyzer {
     for (const block of ast.globalVarBlocks) {
       for (const decl of block.declarations) {
         this.validateSingleTypeReference(decl.type, "VAR_GLOBAL");
+        this.requireAdrFeatureIn(decl.initialValue);
+      }
+    }
+
+    // CONFIGURATION var blocks: only the dialect features are checked here
+    // (RESOURCE has no var blocks in this grammar). Their type names are
+    // resolved elsewhere, so the no-flag result is unchanged.
+    for (const config of ast.configurations) {
+      for (const block of config.varBlocks) {
+        for (const decl of block.declarations) {
+          this.requireReferenceFeatures(decl.type);
+          this.requireAdrFeatureIn(decl.initialValue);
+        }
       }
     }
 
@@ -3357,6 +3712,7 @@ export class SemanticAnalyzer {
       case "StructDefinition":
         for (const field of def.fields) {
           this.validateSingleTypeReference(field.type, `STRUCT '${typeName}'`);
+          this.requireAdrFeatureIn(field.initialValue);
         }
         break;
       case "ArrayDefinition":
@@ -3396,6 +3752,17 @@ export class SemanticAnalyzer {
       const scope = this.symbolTables.getProgramScope(prog.name);
       if (scope) {
         this.walkStatementsForUndeclaredVars(prog.body, scope, {});
+        for (const method of prog.methods) {
+          const methodScope = this.symbolTables.getMethodScope(
+            prog.name,
+            method.name,
+          );
+          this.walkStatementsForUndeclaredVars(
+            method.body,
+            methodScope ?? scope,
+            { methodName: method.name },
+          );
+        }
       }
     }
 

@@ -464,6 +464,13 @@ export const END_METHOD = createToken({
   name: "END_METHOD",
   pattern: /END_METHOD/i,
 });
+// ACTION ... END_ACTION (IEC 61131-3 ed. 2 SFC-style actions, also used with ST).
+// ACTION is contextual (see isActionDeclarationAhead in the parser).
+export const ACTION = createToken({ name: "ACTION", pattern: /ACTION/i });
+export const END_ACTION = createToken({
+  name: "END_ACTION",
+  pattern: /END_ACTION/i,
+});
 export const INTERFACE = createToken({
   name: "INTERFACE",
   pattern: /INTERFACE/i,
@@ -739,6 +746,8 @@ const keywordTokens = [
   __DELETE,
   METHOD,
   END_METHOD,
+  ACTION,
+  END_ACTION,
   INTERFACE,
   END_INTERFACE,
   EXTENDS,
@@ -869,6 +878,8 @@ export const allTokens = [
   __NEW,
   __DELETE,
   END_METHOD,
+  ACTION,
+  END_ACTION,
   END_INTERFACE,
   END_PROPERTY,
   END_GET,
