@@ -30,6 +30,7 @@ requiring that output to be GPL-licensed.
 
   Files:  src/runtime/include/*.hpp, src/runtime/repl/iec_repl.hpp,
           src/runtime/test/iec_test.hpp, libs/*.stlib
+          (except libs/oscat-basic.stlib, see Third-Party Code)
   License: GPL-3.0-only WITH STruCpp-runtime-exception
            (see LICENSE and COPYING.RUNTIME)
 
@@ -49,6 +50,15 @@ details.
           (except iec_repl.hpp)
   License: MIT (Copyright (c) 2021 Daan Leijen)
 
+The OSCAT BASIC 3.35 library (www.oscat.de) is distributed unmodified, free
+of charge, under its own licence agreement, not under the GPL. This covers
+the source file and the library archive the build compiles from it.
+
+  Files:  libs/sources/oscat-basic/oscat_basic_335.library,
+          libs/oscat-basic.stlib (built from it)
+  License: OSCAT BASIC Software User Agreement of 20.06.2013
+           (see libs/sources/oscat-basic/LICENSE-OSCAT.txt and README.md)
+
 Summary
 -------
 
@@ -57,5 +67,7 @@ Summary
   Compiler (src/*.ts, etc.)   | GPL-3.0-only
   Runtime headers (*.hpp)     | GPL-3.0-only + Runtime Exception
   Standard libraries (*.stlib)| GPL-3.0-only + Runtime Exception
+                              | (except oscat-basic.stlib)
   REPL / isocline             | MIT (third-party)
+  OSCAT BASIC 3.35            | OSCAT licence, www.oscat.de (third-party)
   Your compiled programs      | Your choice
