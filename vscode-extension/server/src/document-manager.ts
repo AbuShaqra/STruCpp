@@ -18,6 +18,7 @@ import type {
 import { parseTestFile, analyzeTestFile } from "strucpp";
 import { isTestFile } from "../../shared/test-utils.js";
 import { NullWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js";
+import { dialectOptions, type DialectSettings } from "./dialect-settings.js";
 
 export interface DocumentState {
   uri: string;
@@ -59,9 +60,26 @@ export class DocumentManager {
    */
   private _caseMap = new Map<string, string>();
 
+  /** Dialect selection merged into every analysis; empty = compiler default. */
+  private dialect: DialectSettings = {};
+
   constructor(analyzeFn: AnalyzeFn, workspaceFs: WorkspaceFs = NullWorkspaceFs) {
     this.analyzeFn = analyzeFn;
     this.workspaceFs = workspaceFs;
+  }
+
+  /**
+   * Select the dialect profile and feature overrides for every later
+   * analysis (open, workspace and library documents). The caller validates
+   * the values (see `parseDialectSettings`) and re-analyses as needed.
+   */
+  setDialect(settings: DialectSettings): void {
+    this.dialect = { ...settings };
+  }
+
+  /** Dialect compile options for the current selection; `{}` when none is set. */
+  getDialectOptions(): Pick<Partial<CompileOptions>, "dialect" | "features"> {
+    return dialectOptions(this.dialect);
   }
 
   /** Get the workspace-wide case map for identifier casing restoration. */
@@ -524,6 +542,7 @@ export class DocumentManager {
       fileName: currentFileName,
       ...(additionalSources.length > 0 ? { additionalSources } : {}),
       ...libraryOption,
+      ...this.getDialectOptions(),
     };
 
     // Test files use TEST/END_TEST syntax that the standard parser doesn't

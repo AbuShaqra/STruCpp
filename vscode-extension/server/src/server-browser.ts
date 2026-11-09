@@ -23,6 +23,10 @@
  *     parses with `loadStlibFromBuffer` and seeds the document
  *     manager's archive cache.
  *
+ *   - Settings, including the `strucpp.dialect` / `strucpp.features`
+ *     profile selection: there is no configuration channel here.
+ *     `DocumentManager.setDialect` is the hook a future one would call.
+ *
  *   - All build / debug / REPL commands: compile, build, debug-
  *     build, library-compile, test runner.  Those use g++ or the
  *     filesystem and have no place in the editor's autocomplete

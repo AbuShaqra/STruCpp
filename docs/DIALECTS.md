@@ -116,3 +116,29 @@ Unknown top-level keys and wrongly typed values are refused the same way.
 `features` and `dialectIO`. The core never reads files: pass `nodeDialectIO` from `strucpp/node` (or your
 own `{readFile, listDir}`) with `dialectFiles` or `dialectPath`. A bad profile is a compile error
 (line 0). `resolveDialect()` and `profilesWithFeature()` are exported for callers that resolve themselves.
+
+## Language server
+
+The Node language server (`vscode-extension/server`) reads two keys of the `strucpp` workspace
+configuration, at start-up and on `workspace/didChangeConfiguration`:
+
+- `dialect`: a profile object, or `null`/absent for the compiler's default;
+- `features`: an array of `+id`, `-id` or `id` overrides, or `null`/absent.
+
+The server reads no profile files. Diagnostics of open, workspace and library documents and the
+compile, build, debug-build, library and test requests all use the selection. A change re-analyses the
+open documents. A rejected value keeps the previous selection and shows
+`STruC++: dialect profile rejected: <message>`. The browser server has no configuration channel.
+
+```json
+{
+  "dialect": {
+    "id": "test-pointers",
+    "name": "Pointers",
+    "extends": "iec",
+    "features": ["pointer_to"],
+    "semantics": {}
+  },
+  "features": ["+program_methods"]
+}
+```

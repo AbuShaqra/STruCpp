@@ -239,6 +239,17 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically format Structured Text files on save"
+        },
+        "strucpp.dialect": {
+          "type": ["object", "null"],
+          "default": null,
+          "markdownDescription": "Dialect profile object (`id`, `name`, `extends`, `features`, `semantics`) used for diagnostics and builds. `null` uses the compiler's default."
+        },
+        "strucpp.features": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "default": null,
+          "markdownDescription": "Feature overrides applied after the dialect profile: `+id`, `-id` or `id`."
         }
       }
     },

@@ -5,6 +5,7 @@
  */
 
 import { RequestType, RequestType0, NotificationType0 } from "vscode-languageserver/node.js";
+import type { DialectProfile } from "strucpp";
 
 // ---------------------------------------------------------------------------
 // strucpp/compile
@@ -76,6 +77,10 @@ export interface ExtensionSettings {
   autoAnalyze: boolean;
   analyzeDelay: number;
   formatOnSave: boolean;
+  /** Dialect profile object to analyse and compile under; null = compiler default. */
+  dialect: DialectProfile | null;
+  /** Single-feature overrides (`+id`, `-id` or `id`) applied after the profile; null = none. */
+  features: string[] | null;
 }
 
 export const GetSettingsRequest = new RequestType<
