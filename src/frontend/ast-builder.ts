@@ -1109,6 +1109,19 @@ export class ASTBuilder {
       members.push(this.buildEnumMember(memberNode));
     }
 
+    // `(A, B) DINT`: the same definition as the base-first `DINT (A, B)`, whose
+    // `:= member` default lives only on the TypeDeclaration, plus the marker.
+    const postfixBaseNode = getFirstNode(children.dataType);
+    if (postfixBaseNode) {
+      return {
+        kind: "EnumDefinition",
+        sourceSpan: nodeToSourceSpan(node),
+        baseType: this.buildTypeReference(postfixBaseNode),
+        members,
+        postfixBase: true,
+      };
+    }
+
     // Check for default value: := DefaultValue
     let defaultValue: string | undefined;
     const identifiers = getAllTokens(children.Identifier);

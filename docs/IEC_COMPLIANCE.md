@@ -26,7 +26,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 |------|--------|-------|
 | TYPE ... END_TYPE | Supported | Type aliases |
 | STRUCT ... END_STRUCT | Supported | With nested structs. A field may be a function block instance (a user FB or a library FB such as `TON`), directly, as an `ARRAY OF` one, or through another STRUCT, in any declaration order. Call it with no arguments (`s.tmr();`) after setting its inputs on the field: a call with arguments through a selector (`s.tmr(IN := x)`) is not yet supported for any FB |
-| Enumerations | Supported | With optional base type |
+| Enumerations | Supported | With optional base type before the value list, `DINT (A, B)`. The base written after the list, `(A, B) DINT`, is a vendor ordering: the feature `postfix_enum_base` (refused with no dialect flag and under `--dialect iec-3`), same meaning and C++ as the base-first form |
 | Initialized type declarations | Supported | A type may carry its own default (`Setpoint : REAL := 25.0;`, `Origin : Point := (x := 0.0);`), inherited by every declaration of the type that has no initializer |
 | ARRAY (1D) | Supported | Arbitrary bounds: ARRAY[1..10] OF INT |
 | ARRAY (2D) | Supported | ARRAY[1..3, 1..4] OF REAL |
