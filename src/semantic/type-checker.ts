@@ -27,6 +27,7 @@ import type {
   CompilationUnit,
   FunctionBlockDeclaration,
   FunctionDeclaration,
+  InterfaceDeclaration,
   MethodDeclaration,
   ProgramDeclaration,
   Statement,
@@ -149,6 +150,13 @@ function describeReferenceShape(shape: {
 /**
  * Type checker for IEC 61131-3 programs.
  */
+/** An input or in-out parameter of a call, in declaration order. */
+interface CallInput {
+  name: string;
+  type: AccessType;
+  inOut: boolean;
+}
+
 /** `NULL` or `0`: the only initializers a pointer or reference keeps (it starts null anyway). */
 function isNullInitializer(expr: Expression): boolean {
   return (
@@ -763,6 +771,11 @@ export class TypeChecker {
       this.resolveExprType(arg.value, scope);
     }
     this.validateReferenceArguments(expr, scope);
+    this.validateInterfaceArguments(
+      this.callInputs(expr, scope) ??
+        this.dottedMethodInputs(expr.functionName, scope),
+      expr.arguments,
+    );
     if (this.strict) {
       this.checkStrictArguments(
         this.callInputs(expr, scope) ??
@@ -906,6 +919,10 @@ export class TypeChecker {
     ) {
       const owner = this.memberChainOwner(expr.object, scope);
       const method = this.checkMemberChainCall(expr, expr.object, owner);
+      this.validateInterfaceArguments(
+        this.methodInputsOf(owner?.name, expr.methodName),
+        expr.arguments,
+      );
       if (this.strict) {
         this.checkStrictArguments(
           this.methodInputsOf(owner?.name, expr.methodName),
@@ -918,6 +935,10 @@ export class TypeChecker {
       return chainRet;
     }
 
+    this.validateInterfaceArguments(
+      this.methodInputs(objType, expr, scope),
+      expr.arguments,
+    );
     if (this.strict) {
       this.checkStrictArguments(
         this.methodInputs(objType, expr, scope),
@@ -1241,6 +1262,21 @@ export class TypeChecker {
           );
           continue;
         }
+        if (
+          this.isInterfaceDeclType(decl.type) &&
+          !(
+            decl.initialValue.kind === "LiteralExpression" &&
+            decl.initialValue.literalType === "NULL"
+          )
+        ) {
+          this.addError(
+            `Interface initializers other than NULL are not supported; assign '${decl.names[0] ?? ""}' in the body instead`,
+            decl.initialValue.sourceSpan.startLine,
+            decl.initialValue.sourceSpan.startCol,
+            decl.initialValue.sourceSpan.file,
+          );
+          continue;
+        }
         const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
         if (!targetType) continue; // Non-elementary types — handled elsewhere
         const valueType = this.resolveExprType(decl.initialValue, scope);
@@ -1513,6 +1549,11 @@ export class TypeChecker {
     target: Expression,
     value: Expression,
   ): void {
+    const targetInterface = this.interfaceTypeOf(targetType);
+    if (targetInterface !== undefined) {
+      this.checkInterfaceValue(targetInterface, valueType, value);
+      return;
+    }
     if (!targetType || !valueType) return;
 
     if (this.strict && this.checkStrictConversion(targetType, value)) return;
@@ -1587,6 +1628,150 @@ export class TypeChecker {
       );
       return;
     }
+  }
+
+  /** The interface this compile declares under `name`. */
+  private interfaceNamed(name: string): InterfaceDeclaration | undefined {
+    const upper = name.toUpperCase();
+    return this.ast?.interfaces.find((i) => i.name.toUpperCase() === upper);
+  }
+
+  /** The interface name when `type` is a plain interface type (not a reference or array). */
+  private interfaceTypeOf(type: IECType | undefined): string | undefined {
+    if (type?.typeKind !== "elementary") return undefined;
+    const name = (type as ElementaryType).name;
+    return this.interfaceNamed(name) ? name : undefined;
+  }
+
+  /** A declared type that is a plain interface: the variable refers to an instance. */
+  private isInterfaceDeclType(type: AccessType): boolean {
+    return (
+      (type.referenceKind === undefined || type.referenceKind === "none") &&
+      type.arrayDimensions === undefined &&
+      this.interfaceNamed(type.name) !== undefined
+    );
+  }
+
+  /**
+   * Interface `source` is `target` or extends it, directly or through a base.
+   * Undefined when an interface on the way is not declared in this compile.
+   */
+  private interfaceExtends(
+    source: string,
+    target: string,
+    depth = 0,
+  ): boolean | undefined {
+    if (source.toUpperCase() === target.toUpperCase()) return true;
+    const itf = this.interfaceNamed(source);
+    if (!itf || depth >= 32) return undefined;
+    let unknown = false;
+    for (const base of itf.extends ?? []) {
+      const found = this.interfaceExtends(base, target, depth + 1);
+      if (found === true) return true;
+      if (found === undefined) unknown = true;
+    }
+    return unknown ? undefined : false;
+  }
+
+  /**
+   * Function block `fbName`, or a base it extends, implements `target` or an
+   * interface extending it. Undefined when a type on the way is not declared here.
+   */
+  private fbImplements(fbName: string, target: string): boolean | undefined {
+    let current: string | undefined = fbName.toUpperCase();
+    let unknown = false;
+    for (let depth = 0; current !== undefined && depth < 32; depth++) {
+      const upper: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === upper,
+      );
+      if (!fb) return undefined;
+      for (const itf of fb.implements ?? []) {
+        const found = this.interfaceExtends(itf, target);
+        if (found === true) return true;
+        if (found === undefined) unknown = true;
+      }
+      current = fb.extends?.toUpperCase();
+    }
+    return unknown || current !== undefined ? undefined : false;
+  }
+
+  /**
+   * A value stored in a variable of interface `target`: NULL, an instance of
+   * an implementing FB (THIS included) or a variable of the same or an
+   * extending interface. Anything this compile cannot resolve passes.
+   */
+  private checkInterfaceValue(
+    target: string,
+    valueType: IECType | undefined,
+    value: Expression,
+  ): void {
+    let source: string | undefined;
+    if (valueType === undefined) {
+      const bareThis =
+        value.kind === "VariableExpression" &&
+        value.name.toUpperCase() === "THIS" &&
+        value.fieldAccess.length === 0 &&
+        (value.accessChain === undefined || value.accessChain.length === 0);
+      if (!bareThis || this.currentFBName === undefined) return;
+      source = this.currentFBName;
+    } else if (valueType.typeKind === "reference") {
+      return;
+    } else {
+      source = typeNameUtil(valueType);
+    }
+    const fail = (detail: string): void => {
+      this.addError(
+        `Cannot assign ${source} to ${target}${detail}`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+    };
+    const upper = source.toUpperCase();
+    if (this.interfaceNamed(source)) {
+      if (this.interfaceExtends(source, target) === false) {
+        fail(`: ${source} does not extend ${target}`);
+      }
+      return;
+    }
+    if (this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper)) {
+      if (this.fbImplements(source, target) === false) {
+        fail(`: ${source} does not implement ${target}`);
+      }
+      return;
+    }
+    const isStruct =
+      this.ast?.types.some(
+        (t) =>
+          t.name.toUpperCase() === upper &&
+          t.definition.kind === "StructDefinition",
+      ) ?? false;
+    if (ELEMENTARY_TYPES[upper] !== undefined || isStruct) fail("");
+  }
+
+  /** Arguments bound to an interface-typed input are checked like an assignment. */
+  private validateInterfaceArguments(
+    inputs: CallInput[] | undefined,
+    args: readonly Argument[],
+  ): void {
+    if (!inputs) return;
+    stripEnEno([...args]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (!input || input.inOut || !this.isInterfaceDeclType(input.type)) {
+        return;
+      }
+      this.checkInterfaceValue(
+        input.type.name,
+        arg.value.resolvedType,
+        arg.value,
+      );
+    });
   }
 
   /**
@@ -1694,16 +1879,21 @@ export class TypeChecker {
   private callInputs(
     expr: FunctionCallExpression,
     scope: Scope,
-  ): Array<{ name: string; type: AccessType }> | undefined {
-    const fromBlocks = (
-      blocks: readonly VarBlock[],
-    ): Array<{ name: string; type: AccessType }> =>
+  ): CallInput[] | undefined {
+    const fromBlocks = (blocks: readonly VarBlock[]): CallInput[] =>
       blocks
         .filter(
           (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
         )
-        .flatMap((b) => b.declarations)
-        .flatMap((d) => d.names.map((name) => ({ name, type: d.type })));
+        .flatMap((b) =>
+          b.declarations.flatMap((d) =>
+            d.names.map((name) => ({
+              name,
+              type: d.type,
+              inOut: b.blockType === "VAR_IN_OUT",
+            })),
+          ),
+        );
     const ownMethod = this.ownProgramMethod(expr.functionName);
     if (ownMethod) return fromBlocks(ownMethod.varBlocks);
     const fn = this.findUserFunction(expr.functionName);
@@ -1728,9 +1918,13 @@ export class TypeChecker {
       return chain.flatMap((fb) => fromBlocks(fb.varBlocks));
     const libraryFb = this.symbolTables.lookupFunctionBlock(typeName);
     if (!libraryFb) return undefined;
-    return [...libraryFb.inputs, ...libraryFb.inouts].map((m) => ({
+    return [
+      ...libraryFb.inputs.map((m) => ({ m, inOut: false })),
+      ...libraryFb.inouts.map((m) => ({ m, inOut: true })),
+    ].map(({ m, inOut }) => ({
       name: m.name,
       type: m.declaration.type,
+      inOut,
     }));
   }
 
@@ -2438,7 +2632,7 @@ export class TypeChecker {
     objType: IECType | undefined,
     expr: MethodCallExpression,
     scope: Scope,
-  ): Array<{ name: string; type: AccessType }> | undefined {
+  ): CallInput[] | undefined {
     let typeName: string | undefined;
     if (objType?.typeKind === "elementary") {
       typeName = (objType as ElementaryType).name;
@@ -2453,7 +2647,7 @@ export class TypeChecker {
   private dottedMethodInputs(
     functionName: string,
     scope: Scope,
-  ): Array<{ name: string; type: AccessType }> | undefined {
+  ): CallInput[] | undefined {
     const parts = functionName.split(".");
     if (parts.length !== 2) return undefined;
     const sym = scope.lookup(parts[0]!);
@@ -2465,17 +2659,22 @@ export class TypeChecker {
   private methodInputsOf(
     fbTypeName: string | undefined,
     methodName: string,
-  ): Array<{ name: string; type: AccessType }> | undefined {
+  ): CallInput[] | undefined {
     if (!this.ast) return undefined;
-    const inputsOf = (
-      method: MethodDeclaration,
-    ): Array<{ name: string; type: AccessType }> =>
+    const inputsOf = (method: MethodDeclaration): CallInput[] =>
       method.varBlocks
         .filter(
           (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
         )
-        .flatMap((b) => b.declarations)
-        .flatMap((d) => d.names.map((n) => ({ name: n, type: d.type })));
+        .flatMap((b) =>
+          b.declarations.flatMap((d) =>
+            d.names.map((n) => ({
+              name: n,
+              type: d.type,
+              inOut: b.blockType === "VAR_IN_OUT",
+            })),
+          ),
+        );
     let current = fbTypeName?.toUpperCase();
     for (let depth = 0; current !== undefined && depth < 32; depth++) {
       const name: string = current;

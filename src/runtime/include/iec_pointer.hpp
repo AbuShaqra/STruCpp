@@ -46,6 +46,7 @@
 #pragma once
 
 #include <cstddef>
+#include <type_traits>
 #include "iec_fault.hpp"
 #if STRUCPP_HAS_EXCEPTIONS
 #include <stdexcept>
@@ -563,5 +564,117 @@ using REFERENCE_TO = IEC_REFERENCE_TO<T>;
  *   elem_ref = REF(arr[5]);  // arr[5] returns IECVar<INT_t>&
  *   elem_ref.deref().set(100);
  */
+
+// =============================================================================
+// Interface Variable (IEC 61131-3 Ed. 3 interface-typed variables)
+// =============================================================================
+
+/**
+ * A variable of interface type: a non-owning, nullable reference to an
+ * instance of a function block that implements interface I. NULL by default.
+ *
+ * Assignment takes an implementing instance (any class derived from I),
+ * another interface variable of I or of an interface extending I, or NULL.
+ * A call through a NULL interface raises the null-reference fault, as a
+ * NULL REF_TO dereference does. Equality compares the referenced instance.
+ *
+ * @tparam I The interface class (abstract, generated from INTERFACE)
+ */
+template<typename I>
+class IEC_ITF {
+    I* ptr_;
+
+    template<typename U>
+    using if_derived = typename std::enable_if<std::is_base_of<I, U>::value, int>::type;
+
+public:
+    using interface_type = I;
+
+    IEC_ITF() noexcept : ptr_(nullptr) {}
+    IEC_ITF(std::nullptr_t) noexcept : ptr_(nullptr) {}
+    IEC_ITF(const IEC_ITF&) = default;
+    IEC_ITF& operator=(const IEC_ITF&) = default;
+
+    /** Refer to an implementing instance (`itf := fb`). */
+    template<typename U, if_derived<U> = 0>
+    IEC_ITF(U& obj) noexcept : ptr_(&obj) {}
+
+    /** Take the instance of a variable of an extending interface. */
+    template<typename J, if_derived<J> = 0>
+    IEC_ITF(const IEC_ITF<J>& other) noexcept : ptr_(other.get()) {}
+
+    IEC_ITF& operator=(std::nullptr_t) noexcept {
+        ptr_ = nullptr;
+        return *this;
+    }
+
+    template<typename U, if_derived<U> = 0>
+    IEC_ITF& operator=(U& obj) noexcept {
+        ptr_ = &obj;
+        return *this;
+    }
+
+    template<typename J, if_derived<J> = 0>
+    IEC_ITF& operator=(const IEC_ITF<J>& other) noexcept {
+        ptr_ = other.get();
+        return *this;
+    }
+
+    I* get() const noexcept { return ptr_; }
+    bool is_null() const noexcept { return ptr_ == nullptr; }
+
+    /** The referenced instance; raises the null-reference fault when NULL. */
+    I& deref() const {
+        if (ptr_ == nullptr) {
+#if STRUCPP_HAS_EXCEPTIONS
+            throw NullReferenceException("call through a NULL interface");
+#else
+            iec_runtime_fault(IecFault::NullReference, "call through a NULL interface");
+#endif
+        }
+        return *ptr_;
+    }
+
+    /** Pass to a VAR_IN_OUT or interface return of type I. */
+    operator I&() const { return deref(); }
+
+    bool operator==(std::nullptr_t) const noexcept { return ptr_ == nullptr; }
+    bool operator!=(std::nullptr_t) const noexcept { return ptr_ != nullptr; }
+};
+
+namespace detail {
+/** Address of the whole instance behind an interface pointer, for equality. */
+template<typename I>
+inline const void* itf_identity(const I* p) noexcept {
+    return dynamic_cast<const void*>(p);
+}
+}  // namespace detail
+
+/** Equal when both refer to the same instance (or both are NULL). */
+template<typename I, typename J>
+inline bool operator==(const IEC_ITF<I>& a, const IEC_ITF<J>& b) noexcept {
+    return detail::itf_identity(a.get()) == detail::itf_identity(b.get());
+}
+
+template<typename I, typename J>
+inline bool operator!=(const IEC_ITF<I>& a, const IEC_ITF<J>& b) noexcept {
+    return !(a == b);
+}
+
+template<typename I>
+inline bool operator==(std::nullptr_t, const IEC_ITF<I>& b) noexcept { return b.is_null(); }
+template<typename I>
+inline bool operator!=(std::nullptr_t, const IEC_ITF<I>& b) noexcept { return !b.is_null(); }
+
+/**
+ * The instance a method is called on: an interface variable is dereferenced
+ * (NULL raises the fault), anything else (a VAR_IN_OUT `I&`) passes through.
+ */
+template<typename I>
+inline I& itf_ref(IEC_ITF<I>& p) { return p.deref(); }
+template<typename I>
+inline I& itf_ref(const IEC_ITF<I>& p) { return p.deref(); }
+template<typename T>
+inline T& itf_ref(T& obj) noexcept { return obj; }
 
 }  // namespace strucpp

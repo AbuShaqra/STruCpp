@@ -1979,25 +1979,28 @@ export class STParser extends CstParser {
   });
 
   /**
-   * THIS.member or THIS.method(args) access; bare THIS^ is the own instance.
+   * THIS.member or THIS.method(args) access; bare THIS^ is the own instance,
+   * and bare THIS refers to it (e.g. passed into an interface-typed input).
    * `THIS^.member` is accepted here and gated by the feature self_caret in the analyzer.
    */
   public thisAccess = this.RULE("thisAccess", () => {
     this.CONSUME(tokens.THIS);
-    this.OR([
-      {
-        // THIS^ (dereference - return self), optionally THIS^.member
-        GATE: () => this.LA(1).tokenType === tokens.Caret,
-        ALT: () => {
-          this.CONSUME(tokens.Caret);
-          this.OPTION3(() => this.SUBRULE2(this.selfMemberTail));
+    this.OPTION(() => {
+      this.OR([
+        {
+          // THIS^ (dereference - return self), optionally THIS^.member
+          GATE: () => this.LA(1).tokenType === tokens.Caret,
+          ALT: () => {
+            this.CONSUME(tokens.Caret);
+            this.OPTION3(() => this.SUBRULE2(this.selfMemberTail));
+          },
         },
-      },
-      {
-        // THIS.member or THIS.method(args)
-        ALT: () => this.SUBRULE(this.selfMemberTail),
-      },
-    ]);
+        {
+          // THIS.member or THIS.method(args)
+          ALT: () => this.SUBRULE(this.selfMemberTail),
+        },
+      ]);
+    });
   });
 
   /** `.member` or `.method(args)` after THIS or THIS^. */

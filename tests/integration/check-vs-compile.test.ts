@@ -3,15 +3,19 @@
 /**
  * `--check` runs analyze(); a build runs compile(). On the sample programs
  * both must agree: analyze() reports no errors exactly when compile()
- * succeeds. Known cases where the check passes but the build does not are
- * recorded below.
+ * succeeds. A case that once passed the check but not the build is run
+ * through g++ below.
  */
 
-import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync, statSync } from "fs";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "fs";
+import { tmpdir } from "os";
 import { join, resolve, relative } from "path";
 import { analyze, compile } from "../../src/index.js";
 import { discoverStlibs } from "../../src/node/library-loader.js";
+import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
+
+const describeIfGpp = hasGpp ? describe : describe.skip;
 
 const ROOT = resolve(__dirname, "../..");
 const LIBS = discoverStlibs(join(ROOT, "libs"));
@@ -47,12 +51,23 @@ describe("analyze() agrees with compile() on the samples", () => {
   });
 });
 
-describe("recorded: the check passes, the build does not", () => {
-  // An interface-typed VAR_INPUT passes analyze() and compile(), but the
-  // generated C++ declares a field of abstract type and g++ rejects it.
-  // Listed as a known gap; this test pins today's behaviour.
-  it("interface-typed VAR_INPUT", () => {
-    const source = `
+describeIfGpp(
+  "interface-typed VAR_INPUT: the check and the build agree",
+  () => {
+    // Was a recorded gap: the field had the abstract interface type and g++
+    // rejected it. It is now a nullable reference to the instance and builds.
+    let tempDir: string;
+    let pchPath: string;
+    beforeAll(() => {
+      tempDir = mkdtempSync(join(tmpdir(), "strucpp-checkvscompile-"));
+      pchPath = createPCH(tempDir);
+    });
+    afterAll(() => {
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it("builds and runs", () => {
+      const source = `
 INTERFACE ICounter
   METHOD Value : INT
   END_METHOD
@@ -81,9 +96,18 @@ PROGRAM Main
   u(c := cnt);
 END_PROGRAM
 `;
-    expect(analyze(source).errors).toEqual([]);
-    const compiled = compile(source);
-    expect(compiled.success).toBe(true);
-    expect(compiled.headerCode).toMatch(/ICOUNTER\s+C\b/);
-  });
-});
+      expect(analyze(source).errors).toEqual([]);
+      const compiled = compile(source, { headerFileName: "generated.hpp" });
+      expect(compiled.success).toBe(true);
+      const out = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: compiled.headerCode,
+        cppCode: compiled.cppCode,
+        testName: "itf_input",
+        mainCode: `#include <iostream>\nint main() {\n using namespace strucpp;\n Program_MAIN p;\n p.CNT.N = 7;\n p.run();\n std::cout << p.U.V.get() << std::endl;\n return 0;\n}\n`,
+      });
+      expect(out).toBe("7");
+    });
+  },
+);
