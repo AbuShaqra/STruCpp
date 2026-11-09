@@ -29,6 +29,9 @@ $ strucpp --dialect iec --feature +program_methods --print-dialect
 {"id":"iec","features":["program_methods"]}
 ```
 
+`--check` (analysis only, see [CLI.md](CLI.md#check)) resolves the dialect the same way. Its JSON report
+names the resolved id in `dialect`, and a bad profile exits 2.
+
 ## Profile format
 
 ```json

@@ -14,7 +14,7 @@ import {
   AnalysisResult,
 } from "./types.js";
 import { parse as parseSource } from "./frontend/parser.js";
-import { suggestionForParseError } from "./frontend/parser-error-message-provider.js";
+import { toCompileErrors } from "./frontend/parse-errors.js";
 import { buildAST } from "./frontend/ast-builder.js";
 import { transpileILSource } from "./il/il-transpiler.js";
 import { buildProjectModel } from "./project-model.js";
@@ -349,39 +349,11 @@ function runPipeline(
     }
   }
 
-  // Phase 1: Parse ST source to CST
+  // Phase 1: Parse ST source to CST. Lexer errors do not stop the parse,
+  // so analyze mode still sees the rest of the file.
   const parseResult = parseSource(effectiveSource);
   if (parseResult.errors.length > 0) {
-    for (const err of parseResult.errors) {
-      // Chevrotain's IRecognitionException — only the fields we
-      // actually read are typed here.  `context.ruleStack` is the
-      // chain of rules being parsed at the failure point; the
-      // innermost rule (last entry) drives the suggestion lookup.
-      const errObj = err as {
-        message?: string;
-        token?: {
-          startLine?: number;
-          startColumn?: number;
-          tokenType?: { name?: string };
-        };
-        context?: { ruleStack?: string[] };
-      };
-      const ruleStack = errObj.context?.ruleStack ?? [];
-      const ruleName = ruleStack[ruleStack.length - 1] ?? "";
-      const suggestion = suggestionForParseError(
-        ruleName,
-        errObj.token as Parameters<typeof suggestionForParseError>[1],
-      );
-      const entry: CompileError = {
-        message: errObj.message ?? "Parse error",
-        line: errObj.token?.startLine ?? 0,
-        column: errObj.token?.startColumn ?? 0,
-        severity: "error",
-      };
-      if (mergedOptions.fileName) entry.file = mergedOptions.fileName;
-      if (suggestion) entry.suggestion = suggestion;
-      errors.push(entry);
-    }
+    errors.push(...toCompileErrors(parseResult.errors, mergedOptions.fileName));
     // In analyze mode, continue with partial CST from Chevrotain recovery.
     // In compile mode, abort immediately.
     if (!continueOnError) {
@@ -458,19 +430,9 @@ function runPipeline(
 
         const addlParseResult = parseSource(effectiveAddlSource);
         if (addlParseResult.errors.length > 0) {
-          for (const err of addlParseResult.errors) {
-            const errObj = err as {
-              message?: string;
-              token?: { startLine?: number; startColumn?: number };
-            };
-            errors.push({
-              message: errObj.message ?? "Parse error",
-              line: errObj.token?.startLine ?? 0,
-              column: errObj.token?.startColumn ?? 0,
-              severity: "error",
-              file: addlSource.fileName,
-            });
-          }
+          errors.push(
+            ...toCompileErrors(addlParseResult.errors, addlSource.fileName),
+          );
           // In compile mode, skip files with parse errors.
           // In analyze mode, try to build from the partial CST.
           if (!continueOnError) {
@@ -961,19 +923,7 @@ export function parse(source: string): {
   // Parse ST source to CST
   const parseResult = parseSource(source);
   if (parseResult.errors.length > 0) {
-    for (const err of parseResult.errors) {
-      // Handle Chevrotain error format
-      const errObj = err as {
-        message?: string;
-        token?: { startLine?: number; startColumn?: number };
-      };
-      errors.push({
-        message: errObj.message ?? "Parse error",
-        line: errObj.token?.startLine ?? 0,
-        column: errObj.token?.startColumn ?? 0,
-        severity: "error",
-      });
-    }
+    errors.push(...toCompileErrors(parseResult.errors));
     return { errors };
   }
 
@@ -1175,6 +1125,7 @@ export { getBuiltinStdlibManifest } from "./library/builtin-stdlib.js";
 export { extractNamespaceBody } from "./library/library-utils.js";
 export type {
   LibraryManifest,
+  LibraryCompileError,
   LibraryCompileResult,
   StlibArchive,
   StlibCompileResult,

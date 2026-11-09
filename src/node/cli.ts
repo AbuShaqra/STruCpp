@@ -7,6 +7,7 @@
  * Usage:
  *   strucpp <input.st> [input2.st ...] -o <output.cpp> [options]
  *   strucpp --compile-lib <input.st|.cpp|.py> [...] -o <dir> --lib-name <name> [options]
+ *   strucpp --check [--json] <input.st> [input2.st ...] [options]
  *
  * Options:
  *   -o, --output <file>       Output file path or directory
@@ -17,6 +18,8 @@
  *   --dialect-path <dir>      Load every *.json profile in a folder (repeatable)
  *   --feature <+id|-id>       Enable or disable a feature (repeatable)
  *   --print-dialect           Print the resolved dialect as JSON and exit
+ *   --check                   Parse and analyse only; write nothing (exit 0/1/2)
+ *   --json                    With --check: print one JSON report on stdout
  *   --no-line-mapping         Disable line mapping
  *   --line-directives         Include #line directives
  *   --source-comments         Include ST source as comments
@@ -46,7 +49,7 @@ import {
 import { resolve, basename, dirname, join, relative, sep } from "path";
 import { tmpdir, platform } from "os";
 import { execFileSync } from "child_process";
-import { compile, getVersion, compileStlib } from "../index.js";
+import { analyze, compile, getVersion, compileStlib } from "../index.js";
 import { DialectError, resolveDialect } from "../dialect.js";
 import { nodeDialectIO } from "./dialect-io.js";
 import {
@@ -71,6 +74,7 @@ import {
   findBundledLibsDir,
 } from "./build-utils.js";
 import type { CompileError, CompileOptions } from "../types.js";
+import type { LibraryCompileError } from "../library/library-manifest.js";
 import { importCodesysLibraryFromBytes } from "../library/codesys-import/index.js";
 
 interface CLIOptions {
@@ -83,6 +87,8 @@ interface CLIOptions {
   dialectPath: string[];
   features: string[];
   printDialect: boolean;
+  check: boolean;
+  json: boolean;
   lineMapping: boolean;
   lineDirectives: boolean;
   sourceComments: boolean;
@@ -131,19 +137,14 @@ function printDiagnostics(
 }
 
 /**
- * Coerce a stlib-compile error (which has optional line/file fields) into
- * the CompileError shape `printDiagnostics` consumes. Defaults `column` to
- * 1 since stlib errors don't carry one.
+ * Coerce a stlib-compile error (optional line/column/file) into the
+ * CompileError shape `printDiagnostics` consumes. `column` defaults to 1.
  */
-function toDiagnostic(err: {
-  message: string;
-  line?: number;
-  file?: string;
-}): CompileError {
+function toDiagnostic(err: LibraryCompileError): CompileError {
   return {
     message: err.message,
     line: err.line ?? 0,
-    column: 1,
+    column: err.column ?? 1,
     severity: "error",
     ...(err.file ? { file: err.file } : {}),
   };
@@ -158,6 +159,8 @@ function parseArgs(args: string[]): CLIOptions {
     dialectPath: [],
     features: [],
     printDialect: false,
+    check: false,
+    json: false,
     lineMapping: true,
     lineDirectives: false,
     sourceComments: false,
@@ -178,6 +181,8 @@ function parseArgs(args: string[]): CLIOptions {
     defines: {},
   };
 
+  // Usage errors exit 2 in check mode, 1 otherwise.
+  const usageExit = args.includes("--check") ? 2 : 1;
   let i = 0;
   while (i < args.length) {
     const arg = args[i];
@@ -200,7 +205,7 @@ function parseArgs(args: string[]): CLIOptions {
       const nextArg = args[i];
       if (nextArg === undefined) {
         console.error(`error: ${arg} needs a value`);
-        process.exit(1);
+        process.exit(usageExit);
       }
       if (arg === "--dialect") options.dialect = nextArg;
       else if (arg === "--dialect-file") options.dialectFiles.push(nextArg);
@@ -208,6 +213,10 @@ function parseArgs(args: string[]): CLIOptions {
       else options.features.push(nextArg);
     } else if (arg === "--print-dialect") {
       options.printDialect = true;
+    } else if (arg === "--check") {
+      options.check = true;
+    } else if (arg === "--json") {
+      options.json = true;
     } else if (arg === "--no-line-mapping") {
       options.lineMapping = false;
     } else if (arg === "--line-directives") {
@@ -338,6 +347,7 @@ STruC++ - IEC 61131-3 Structured Text to C++ Compiler
 Usage:
   strucpp <input.st> [input2.st ...] -o <output.cpp> [options]
   strucpp --compile-lib <input.st|.cpp|.py|dir> [...] -o <dir> --lib-name <name> [options]
+  strucpp --check [--json] <input.st> [input2.st ...] [options]
 
 Options:
   -o, --output <file>       Output file path (default: <input>.cpp)
@@ -357,6 +367,10 @@ Options:
                             the profile (repeatable): program_methods,
                             pointer_to, reference_to, ref_assign
   --print-dialect           Print the resolved dialect as JSON and exit
+  --check                   Parse and analyse only: no C++ output, no g++.
+                            Exit 0 = no errors, 1 = errors, 2 = usage,
+                            unreadable file or dialect problem
+  --json                    With --check: print one JSON report on stdout
   --no-line-mapping         Disable line mapping
   --line-directives         Include #line directives in output
   --source-comments         Include ST source as comments
@@ -395,6 +409,7 @@ Examples:
   strucpp program.st -o program.cpp -L ./libs/
   strucpp program.st -o program.cpp --debug --line-directives
   strucpp program.st -o program.cpp --build
+  strucpp --check --json program.st utils.st --dialect iec
   strucpp --compile-lib math.st -o mathlib/ --lib-name math-lib
   strucpp --compile-lib src/mylib/ -o out/ --lib-name my-lib
   strucpp counter.st --test test_counter.st
@@ -749,10 +764,12 @@ function runTestMode(options: CLIOptions): void {
   const result = compile(source, compileOptions);
   if (!result.success) {
     console.error("Error compiling source files:\n");
-    printDiagnostics(result.errors, [
+    const sourceDiagSources = [
       { fileName: basename(inputPath), source },
       ...additionalSources,
-    ]);
+    ];
+    printDiagnostics(result.errors, sourceDiagSources);
+    printDiagnostics(result.warnings, sourceDiagSources, "warn");
     process.exit(1);
   }
 
@@ -1061,6 +1078,149 @@ async function importLibMode(options: CLIOptions): Promise<void> {
   console.log("Import successful!");
 }
 
+/** One diagnostic in the `--check --json` report. */
+type CheckDiagnostic = Omit<CompileError, "file"> & { file: string | null };
+
+/** The one JSON document `--check --json` prints. */
+interface CheckReport {
+  dialect: string | null;
+  files: string[];
+  diagnostics: CheckDiagnostic[];
+  summary: { errors: number; warnings: number };
+}
+
+/** A `--check` diagnostic with `file` first and null when unknown. */
+function toCheckDiagnostic(err: CompileError): CheckDiagnostic {
+  const { file, line, column, severity, message, ...rest } = err;
+  return { file: file ?? null, line, column, severity, message, ...rest };
+}
+
+/**
+ * Order diagnostics by input file (in argument order, unknown files last),
+ * then line and column. The sort is stable, so ties keep analysis order.
+ */
+function sortForCheck(
+  diags: CompileError[],
+  files: ReadonlyArray<string>,
+): CompileError[] {
+  const rank = (f: string | undefined): number => {
+    const i = f === undefined ? -1 : files.indexOf(f);
+    return i < 0 ? files.length : i;
+  };
+  return [...diags].sort(
+    (a, b) =>
+      rank(a.file) - rank(b.file) || a.line - b.line || a.column - b.column,
+  );
+}
+
+/**
+ * `--check` mode: parse and analyse the inputs as compile mode would,
+ * write no files, and exit 0 (no errors), 1 (errors) or 2 (the check
+ * could not run: usage, unreadable file, dialect problem).
+ * Diagnostics name each file by the path given on the command line.
+ */
+function checkMode(options: CLIOptions): never {
+  let dialectId: string | null = null;
+  const files = options.inputs;
+
+  const report = (diags: CompileError[]): CheckReport => ({
+    dialect: dialectId,
+    files: [...files],
+    diagnostics: diags.map(toCheckDiagnostic),
+    summary: {
+      errors: diags.filter((d) => d.severity === "error").length,
+      warnings: diags.filter((d) => d.severity === "warning").length,
+    },
+  });
+
+  /** Report a problem that stopped the check and exit 2. */
+  const cannotRun = (message: string, file?: string): never => {
+    if (options.json) {
+      const err: CompileError = {
+        message,
+        line: 0,
+        column: 0,
+        severity: "error",
+      };
+      if (file !== undefined) err.file = file;
+      console.log(JSON.stringify(report([err]), null, 2));
+    }
+    console.error(`error: ${message}`);
+    process.exit(2);
+  };
+
+  const conflicts: Array<[boolean, string]> = [
+    [options.build, "--build"],
+    [options.compileLib, "--compile-lib"],
+    [options.test.length > 0, "--test"],
+    [options.decompileLib !== undefined, "--decompile-lib"],
+    [options.importLib !== undefined, "--import-lib"],
+    [options.output !== undefined, "-o/--output"],
+  ];
+  for (const [present, flag] of conflicts) {
+    if (present) cannotRun(`--check cannot be combined with ${flag}`);
+  }
+  if (files.length === 0) cannotRun("--check needs at least one input file");
+
+  const dialectOptions = dialectCompileOptions(options);
+  try {
+    dialectId = resolveDialect(
+      dialectOptions,
+      nodeDialectIO.readFile,
+      nodeDialectIO.listDir,
+    ).id;
+  } catch (e) {
+    if (!(e instanceof DialectError)) throw e;
+    cannotRun(e.message);
+  }
+
+  const sources: DiagnosticSource[] = [];
+  for (const file of files) {
+    try {
+      sources.push({
+        fileName: file,
+        source: readFileSync(resolve(file), "utf-8"),
+      });
+    } catch {
+      cannotRun(`Cannot read input file: ${file}`, file);
+    }
+  }
+
+  let diags: CompileError[];
+  try {
+    const analyzeOptions: Partial<CompileOptions> = {
+      strict: options.strict,
+      ...dialectOptions,
+      fileName: sources[0]!.fileName,
+    };
+    if (sources.length > 1) analyzeOptions.additionalSources = sources.slice(1);
+    const libPaths = getEffectiveLibraryPaths(options);
+    if (libPaths.length > 0) {
+      analyzeOptions.libraries = libPaths.flatMap((p) => discoverStlibs(p));
+    }
+    if (Object.keys(options.defines).length > 0) {
+      analyzeOptions.globalConstants = options.defines;
+    }
+    const result = analyze(sources[0]!.source, analyzeOptions);
+    diags = sortForCheck([...result.errors, ...result.warnings], files);
+  } catch (e) {
+    return cannotRun(
+      `check failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  const out = report(diags);
+  if (options.json) {
+    console.log(JSON.stringify(out, null, 2));
+  } else {
+    printDiagnostics(diags, sources);
+    console.log(
+      `${out.summary.errors} error(s), ${out.summary.warnings} warning(s)`,
+    );
+  }
+  process.exit(out.summary.errors > 0 ? 1 : 0);
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const options = parseArgs(args);
@@ -1073,6 +1233,14 @@ async function main(): Promise<void> {
   if (options.showHelp || args.length === 0) {
     showHelp();
     process.exit(options.showHelp ? 0 : 1);
+  }
+
+  if (options.check && !options.printDialect) {
+    checkMode(options);
+  }
+  if (options.json && !options.check) {
+    console.error("error: --json is only valid with --check");
+    process.exit(1);
   }
 
   checkDialect(options);
@@ -1180,6 +1348,7 @@ async function main(): Promise<void> {
   if (!result.success) {
     console.error("\nCompilation failed:\n");
     printDiagnostics(result.errors, diagSources);
+    printDiagnostics(result.warnings, diagSources, "warn");
     process.exit(1);
   }
 

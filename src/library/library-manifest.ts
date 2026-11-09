@@ -308,6 +308,16 @@ export interface LibraryChunk {
 }
 
 /**
+ * One library compilation error. `line` and `column` are 1-based when set.
+ */
+export interface LibraryCompileError {
+  message: string;
+  file?: string;
+  line?: number;
+  column?: number;
+}
+
+/**
  * Result of compiling a library.
  */
 export interface LibraryCompileResult {
@@ -325,7 +335,7 @@ export interface LibraryCompileResult {
    *  order reproduces `headerCode` / `cppCode`. */
   chunks?: LibraryChunk[];
   /** Compilation errors */
-  errors: Array<{ message: string; file?: string; line?: number }>;
+  errors: LibraryCompileError[];
 }
 
 /**
@@ -380,5 +390,5 @@ export interface StlibCompileResult {
   /** The compiled archive */
   archive: StlibArchive;
   /** Compilation errors */
-  errors: Array<{ message: string; file?: string; line?: number }>;
+  errors: LibraryCompileError[];
 }
