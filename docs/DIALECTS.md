@@ -63,28 +63,30 @@ the root. A profile without `extends` has only its own features.
 
 ## Features
 
-| Feature           | Enables                                    |
-| ----------------- | ------------------------------------------ |
-| `program_methods` | `METHOD` inside a `PROGRAM`                |
-| `pointer_to`      | `POINTER TO`, `ADR()` and `^` on a pointer |
-| `reference_to`    | `REFERENCE TO`                             |
-| `ref_assign`      | the reference assignment `REF=`            |
-| `self_caret`      | `THIS^.member` and `THIS^.M()`             |
-| `property`        | `PROPERTY` prototypes in an `INTERFACE`    |
+| Feature             | Enables                                                      |
+| ------------------- | ------------------------------------------------------------ |
+| `program_methods`   | `METHOD` inside a `PROGRAM`                                  |
+| `pointer_to`        | `POINTER TO`, `ADR()` and `^` on a pointer                   |
+| `reference_to`      | `REFERENCE TO`                                               |
+| `ref_assign`        | the reference assignment `REF=`                              |
+| `self_caret`        | `THIS^.member` and `THIS^.M()`                               |
+| `property`          | `PROPERTY` prototypes in an `INTERFACE`                      |
+| `postfix_enum_base` | an enumeration base type after the value list, `(A, B) DINT` |
 
 ## Refusals
 
 When a feature is off the compile fails with an error at the construct's own line and column:
 
-| Construct                                   | Feature           | Message                                                 |
-| ------------------------------------------- | ----------------- | ------------------------------------------------------- |
-| `POINTER TO <type>` (variable, type, field) | `pointer_to`      | `POINTER TO needs the feature pointer_to`               |
-| `ADR(x)`                                    | `pointer_to`      | `ADR needs the feature pointer_to`                      |
-| `REFERENCE TO <type>` and `REFERENCE_TO`    | `reference_to`    | `REFERENCE TO needs the feature reference_to`           |
-| `r REF= x`                                  | `ref_assign`      | `REF= needs the feature ref_assign`                     |
-| `METHOD` inside a `PROGRAM`                 | `program_methods` | `METHOD in a PROGRAM needs the feature program_methods` |
-| `THIS^.member`, `THIS^.M()`                 | `self_caret`      | `THIS^.member needs the feature self_caret`             |
-| `PROPERTY` inside an `INTERFACE`            | `property`        | `PROPERTY in an INTERFACE needs the feature property`   |
+| Construct                                   | Feature             | Message                                                                              |
+| ------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------ |
+| `POINTER TO <type>` (variable, type, field) | `pointer_to`        | `POINTER TO needs the feature pointer_to`                                            |
+| `ADR(x)`                                    | `pointer_to`        | `ADR needs the feature pointer_to`                                                   |
+| `REFERENCE TO <type>` and `REFERENCE_TO`    | `reference_to`      | `REFERENCE TO needs the feature reference_to`                                        |
+| `r REF= x`                                  | `ref_assign`        | `REF= needs the feature ref_assign`                                                  |
+| `METHOD` inside a `PROGRAM`                 | `program_methods`   | `METHOD in a PROGRAM needs the feature program_methods`                              |
+| `THIS^.member`, `THIS^.M()`                 | `self_caret`        | `THIS^.member needs the feature self_caret`                                          |
+| `PROPERTY` inside an `INTERFACE`            | `property`          | `PROPERTY in an INTERFACE needs the feature property`                                |
+| `TYPE E : (A, B) DINT;` (base after list)   | `postfix_enum_base` | `an enum base type written after the value list needs the feature postfix_enum_base` |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
@@ -128,6 +130,21 @@ With the feature on:
   (also through a member chain, `a.itf.Target`), dispatched to the instance's FB. Writing a property the
   interface declares without SET, or reading one it declares without GET, is an error at the access.
 - In C++ the interface gets pure virtual `get_X()`/`set_X()` members that the FB's accessors override.
+
+`postfix_enum_base` is in neither the default set nor `iec-3`. IEC writes the optional base type of an
+enumeration before its value list; this feature also accepts it after the list, with or without member values
+and an optional default. The refusal is reported at the base type. With the feature on, the declaration means
+the same as the base-first form, and the generated C++ is identical (the base is the C++ underlying type):
+
+```
+TYPE
+  Mode : (Idle := 0, Run := 1) DINT := Idle; (* postfix_enum_base *)
+  Same : DINT (Idle := 0, Run := 1) := Idle; (* IEC: base first, every dialect *)
+END_TYPE
+```
+
+The postfix form is accepted in a `TYPE` declaration only, not in an anonymous enumeration inside a variable
+declaration.
 
 `program_methods` is not in the default set: a `METHOD` in a `PROGRAM` is refused with no dialect flag too
 (before profiles it did not parse at all). `--strict` does not change any feature. A refused method is still

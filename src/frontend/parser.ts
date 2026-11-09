@@ -755,6 +755,8 @@ export class STParser extends CstParser {
   /**
    * Simple enumeration type definition: (RED, YELLOW, GREEN)
    * Optionally with default value: (RED, YELLOW, GREEN) := RED
+   * Optionally with a base type after the list: (RED, GREEN) DINT := RED.
+   * That order is gated by the feature postfix_enum_base in the analyzer.
    */
   public simpleEnumType = this.RULE("simpleEnumType", () => {
     this.CONSUME(tokens.LParen);
@@ -763,6 +765,13 @@ export class STParser extends CstParser {
       DEF: () => this.SUBRULE(this.enumMember),
     });
     this.CONSUME(tokens.RParen);
+    // A type name, not the name of the next declaration (`Next : ...`).
+    this.OPTION2({
+      GATE: () =>
+        this.LA(1).tokenType === tokens.Identifier &&
+        this.LA(2).tokenType !== tokens.Colon,
+      DEF: () => this.SUBRULE(this.dataType),
+    });
     this.OPTION(() => {
       this.CONSUME(tokens.Assign);
       this.CONSUME(tokens.Identifier);

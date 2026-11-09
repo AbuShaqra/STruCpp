@@ -382,6 +382,8 @@ export interface EnumDefinition extends ASTNode {
   baseType?: TypeReference;
   members: EnumMember[];
   defaultValue?: string;
+  /** Base type written after the value list, `(A, B) DINT`; needs the feature postfix_enum_base. */
+  postfixBase?: true;
 }
 
 /**

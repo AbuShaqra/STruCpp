@@ -427,6 +427,7 @@ export class SemanticAnalyzer {
     // so the rest of a refused method is still checked.
     this.validateProgramMethodFeature(ast);
     this.validateInterfaceProperties(ast);
+    this.validatePostfixEnumBases(ast);
     this.validateConfigurationGlobalsHoldNoFB(ast);
     const typeReferenceErrors = this.errors.length - errorsBeforeTypeReferences;
 
@@ -466,6 +467,22 @@ export class SemanticAnalyzer {
           method.sourceSpan,
         );
       }
+    }
+  }
+
+  /**
+   * An enumeration base type written after the value list, `(A, B) DINT`,
+   * needs the feature postfix_enum_base. Reported at the base type.
+   */
+  private validatePostfixEnumBases(ast: CompilationUnit): void {
+    for (const typeDecl of ast.types) {
+      const def = typeDecl.definition;
+      if (def.kind !== "EnumDefinition" || def.postfixBase !== true) continue;
+      this.requireFeature(
+        "postfix_enum_base",
+        "an enum base type written after the value list",
+        def.baseType?.sourceSpan ?? def.sourceSpan,
+      );
     }
   }
 
