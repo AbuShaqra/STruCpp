@@ -35,13 +35,23 @@ export interface DialectProfile {
   semantics: Record<string, never>;
 }
 
-/** The built-in root profile: plain IEC 61131-3, no extra features. */
+/** The built-in root profile `iec-3`: plain IEC 61131-3 Ed. 3, no extra features. */
 export const IEC_PROFILE: DialectProfile = {
-  id: "iec",
-  name: "IEC 61131-3",
+  id: "iec-3",
+  name: "IEC 61131-3 Ed. 3 (2013)",
   features: [],
   semantics: {},
 };
+
+/** The retired id of the built-in profile; refused as a selection, a parent and a profile id. */
+const RETIRED_IEC_ID = "iec";
+
+/** Suffix for an error about `id`: names `iec-3` when `id` is the retired `iec`. */
+function retiredIdHint(id: string): string {
+  return id === RETIRED_IEC_ID
+    ? `; the IEC 61131-3 Ed. 3 profile is '${IEC_PROFILE.id}'`
+    : "";
+}
 
 /** A profile that cannot be read, is invalid, or a selection that cannot be resolved. */
 export class DialectError extends Error {
@@ -66,7 +76,7 @@ export interface ResolvedDialect {
   /** Selected profile id, or null when none is selected. */
   id: string | null;
   features: Set<FeatureId>;
-  /** Every profile read from files, folders or the request (never the built-in `iec`). */
+  /** Every profile read from files, folders or the request (never the built-in `iec-3`). */
   loaded: DialectProfile[];
 }
 
@@ -114,6 +124,11 @@ function validateProfile(raw: unknown, where: string): DialectProfile {
   const parent = raw["extends"];
   if (typeof id !== "string" || id.length === 0) {
     throw new DialectError(`${where}: 'id' must be a non-empty string`);
+  }
+  if (id === RETIRED_IEC_ID) {
+    throw new DialectError(
+      `${where}: the id '${id}' is reserved${retiredIdHint(id)}`,
+    );
   }
   if (name !== undefined && typeof name !== "string") {
     throw new DialectError(`${where}: 'name' must be a string`);
@@ -183,7 +198,7 @@ function readProfile(
   return profile;
 }
 
-/** Look a profile up: built-in `iec` first, then loaded profiles in load order. */
+/** Look a profile up: built-in `iec-3` first, then loaded profiles in load order. */
 function findProfile(
   id: string,
   loaded: readonly DialectProfile[],
@@ -213,7 +228,7 @@ function effectiveFeatures(
     const parent = findProfile(parentId, loaded);
     if (!parent) {
       throw new DialectError(
-        `dialect '${current.id}': extends '${parentId}', which is not loaded`,
+        `dialect '${current.id}': extends '${parentId}', which is not loaded${retiredIdHint(parentId)}`,
       );
     }
     current = parent;
@@ -290,7 +305,7 @@ export function resolveDialect(
           .sort(),
       ];
       throw new DialectError(
-        `unknown dialect '${req.dialect}' (known: ${known.join(", ")})`,
+        `unknown dialect '${req.dialect}' (known: ${known.join(", ")})${retiredIdHint(req.dialect)}`,
       );
     }
   } else if (req.dialect === undefined && files.length === 1) {

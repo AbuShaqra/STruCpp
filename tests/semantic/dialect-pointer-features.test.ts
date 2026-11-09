@@ -1,7 +1,7 @@
 /**
  * POINTER TO, ADR, REFERENCE TO and REF= are dialect features: accepted with
  * no dialect flag (today's behaviour), refused at their own line and column
- * under `iec`, accepted again with `--feature +<id>`, and named with the
+ * under `iec-3`, accepted again with `--feature +<id>`, and named with the
  * loaded profiles that have them.
  */
 import { describe, it, expect } from "vitest";
@@ -118,8 +118,8 @@ describe.each(CASES)("$name", (c) => {
     expect(result.errors.map((e) => e.message)).not.toContain(c.message);
   });
 
-  it("is refused under iec at its own line and column", () => {
-    const result = compile(c.source, { dialect: "iec" });
+  it("is refused under iec-3 at its own line and column", () => {
+    const result = compile(c.source, { dialect: "iec-3" });
     const err = result.errors.find((e) => e.message === c.message);
     expect(err, JSON.stringify(result.errors)).toBeDefined();
     expect(err!.line).toBe(c.line);
@@ -127,9 +127,9 @@ describe.each(CASES)("$name", (c) => {
     expect(result.success).toBe(false);
   });
 
-  it("is accepted under iec with the feature turned on", () => {
+  it("is accepted under iec-3 with the feature turned on", () => {
     const result = compile(c.source, {
-      dialect: "iec",
+      dialect: "iec-3",
       features: [`+${c.feature}`],
     });
     expect(result.errors.map((e) => e.message)).not.toContain(c.message);
@@ -137,7 +137,7 @@ describe.each(CASES)("$name", (c) => {
 
   it("names the loaded profiles that have the feature", () => {
     const result = compile(c.source, {
-      dialect: "iec",
+      dialect: "iec-3",
       dialectPath: [GOOD],
       dialectIO: nodeDialectIO,
     });
@@ -147,7 +147,7 @@ describe.each(CASES)("$name", (c) => {
   });
 });
 
-describe("IEC spellings stay accepted under iec", () => {
+describe("IEC spellings stay accepted under iec-3", () => {
   it("REF_TO, REF() and ^ compile", () => {
     const src = `PROGRAM P
 VAR
@@ -160,7 +160,7 @@ END_VAR
   y := r^;
 END_PROGRAM
 `;
-    const result = compile(src, { dialect: "iec" });
+    const result = compile(src, { dialect: "iec-3" });
     expect(result.errors).toEqual([]);
     expect(result.success).toBe(true);
   });
@@ -180,7 +180,7 @@ METHOD OVERRIDE Go
 END_METHOD
 END_FUNCTION_BLOCK
 `;
-    const result = compile(src, { dialect: "iec" });
+    const result = compile(src, { dialect: "iec-3" });
     expect(
       result.errors.filter((e) => e.message.includes("needs the feature")),
     ).toEqual([]);
@@ -202,7 +202,7 @@ END_VAR
 END_METHOD
 END_FUNCTION_BLOCK
 `;
-    const result = compile(src, { dialect: "iec" });
+    const result = compile(src, { dialect: "iec-3" });
     const found = result.errors.map((e) => `${e.line}:${e.message}`);
     expect(found).toContain("5:POINTER TO needs the feature pointer_to");
     expect(found).toContain("7:ADR needs the feature pointer_to");
@@ -224,7 +224,7 @@ PROPERTY Q : INT
 END_PROPERTY
 END_FUNCTION_BLOCK
 `;
-    const result = compile(src, { dialect: "iec" });
+    const result = compile(src, { dialect: "iec-3" });
     const found = result.errors.map((e) => `${e.line}:${e.message}`);
     expect(found).toContain("9:ADR needs the feature pointer_to");
     expect(found).toContain("10:REF= needs the feature ref_assign");
@@ -243,7 +243,7 @@ END_VAR
   F := 1;
 END_FUNCTION
 `;
-    const result = compile(src, { dialect: "iec" });
+    const result = compile(src, { dialect: "iec-3" });
     const found = result.errors.map((e) => `${e.line}:${e.message}`);
     expect(found).toContain("4:REFERENCE TO needs the feature reference_to");
     expect(found).toContain("8:REF= needs the feature ref_assign");
@@ -267,8 +267,8 @@ END_RESOURCE
 END_CONFIGURATION
 `;
 
-  it("POINTER TO and REFERENCE TO in a CONFIGURATION VAR_GLOBAL are refused under iec", () => {
-    const result = compile(CONFIG_SRC, { dialect: "iec" });
+  it("POINTER TO and REFERENCE TO in a CONFIGURATION VAR_GLOBAL are refused under iec-3", () => {
+    const result = compile(CONFIG_SRC, { dialect: "iec-3" });
     const found = result.errors.map((e) => `${e.line}:${e.message}`);
     expect(found).toContain("7:POINTER TO needs the feature pointer_to");
     expect(found).toContain("8:REFERENCE TO needs the feature reference_to");
@@ -291,8 +291,8 @@ END_VAR
 END_PROGRAM
 `;
 
-  it("ADR in a variable's initial value is refused under iec", () => {
-    const result = compile(INIT_SRC, { dialect: "iec" });
+  it("ADR in a variable's initial value is refused under iec-3", () => {
+    const result = compile(INIT_SRC, { dialect: "iec-3" });
     const err = result.errors.find(
       (e) => e.message === "ADR needs the feature pointer_to",
     );

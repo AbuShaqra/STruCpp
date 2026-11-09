@@ -55,10 +55,10 @@ describe("--print-dialect", () => {
     });
   });
 
-  it("--dialect iec --print-dialect", () => {
-    const r = run(["--dialect", "iec", "--print-dialect"]);
+  it("--dialect iec-3 --print-dialect", () => {
+    const r = run(["--dialect", "iec-3", "--print-dialect"]);
     expect(r.status).toBe(0);
-    expect(JSON.parse(r.out)).toEqual({ id: "iec", features: [] });
+    expect(JSON.parse(r.out)).toEqual({ id: "iec-3", features: [] });
   });
 
   it("--dialect-path tests/fixtures/dialects/good --dialect vendor-a --print-dialect", () => {
@@ -141,12 +141,70 @@ describe("bad dialect input", () => {
   it("an unknown dialect or feature exits 1", () => {
     const d = run(["--dialect", "nope", "--print-dialect"]);
     expect(d.status).toBe(1);
-    expect(d.err.trim()).toBe("error: unknown dialect 'nope' (known: iec)");
+    expect(d.err.trim()).toBe("error: unknown dialect 'nope' (known: iec-3)");
     const f = run(["--feature", "+goto", "--print-dialect"]);
     expect(f.status).toBe(1);
     expect(f.err.trim()).toBe(
       "error: unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign)",
     );
+  });
+
+  it("--dialect iec exits 1 with a hint naming iec-3", () => {
+    const r = run(["--dialect", "iec", "--print-dialect"]);
+    expect(r.status).toBe(1);
+    expect(r.err.trim()).toBe(
+      "error: unknown dialect 'iec' (known: iec-3); the IEC 61131-3 Ed. 3 profile is 'iec-3'",
+    );
+  });
+
+  it("a profile file extending iec exits 1 with a hint naming iec-3", () => {
+    const dir = freshDir("extends-iec");
+    const file = join(dir, "old.json");
+    writeFileSync(
+      file,
+      JSON.stringify({ id: "old", extends: "iec", features: [] }),
+    );
+    const r = run(["--dialect-file", file, "--print-dialect"]);
+    expect(r.status).toBe(1);
+    expect(r.err.trim()).toBe(
+      "error: dialect 'old': extends 'iec', which is not loaded; the IEC 61131-3 Ed. 3 profile is 'iec-3'",
+    );
+  });
+
+  it("a profile file whose id is iec exits 1 as reserved", () => {
+    const dir = freshDir("own-iec");
+    const file = join(dir, "iec.json");
+    writeFileSync(file, JSON.stringify({ id: "iec", features: [] }));
+    const r = run([
+      "--dialect-file",
+      file,
+      "--dialect",
+      "iec",
+      "--print-dialect",
+    ]);
+    expect(r.status).toBe(1);
+    expect(r.err.trim()).toBe(
+      `error: dialect file ${file}: the id 'iec' is reserved; the IEC 61131-3 Ed. 3 profile is 'iec-3'`,
+    );
+  });
+
+  it("a profile file extending iec-3 is selected", () => {
+    const dir = freshDir("extends-iec-3");
+    const file = join(dir, "new.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        id: "new",
+        extends: "iec-3",
+        features: ["program_methods"],
+      }),
+    );
+    const r = run(["--dialect-file", file, "--print-dialect"]);
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.out)).toEqual({
+      id: "new",
+      features: ["program_methods"],
+    });
   });
 
   it("a bad profile stops --compile-lib before compiling", () => {
@@ -167,13 +225,13 @@ describe("bad dialect input", () => {
       "nope",
     ]);
     expect(r.status).toBe(1);
-    expect(r.err.trim()).toBe("error: unknown dialect 'nope' (known: iec)");
+    expect(r.err.trim()).toBe("error: unknown dialect 'nope' (known: iec-3)");
     expect(existsSync(join(dir, "f.stlib"))).toBe(false);
   });
 });
 
 describe("compiling under a dialect", () => {
-  it("--dialect iec compiles a plain program with the default libraries", () => {
+  it("--dialect iec-3 compiles a plain program with the default libraries", () => {
     const dir = freshDir("plain");
     const st = join(dir, "main.st");
     writeFileSync(
@@ -185,7 +243,7 @@ describe("compiling under a dialect", () => {
 END_PROGRAM
 `,
     );
-    const r = run([st, "-o", join(dir, "main.cpp"), "--dialect", "iec"]);
+    const r = run([st, "-o", join(dir, "main.cpp"), "--dialect", "iec-3"]);
     expect(r.err).toBe("");
     expect(r.status).toBe(0);
     expect(existsSync(join(dir, "main.cpp"))).toBe(true);
@@ -193,11 +251,11 @@ END_PROGRAM
 
   it("compile() and compileStlib take the dialect options", () => {
     const src = "PROGRAM P\n  VAR x : INT; END_VAR\n  x := 1;\nEND_PROGRAM\n";
-    expect(compile(src, { dialect: "iec" }).success).toBe(true);
+    expect(compile(src, { dialect: "iec-3" }).success).toBe(true);
     const bad = compile(src, { dialect: "nope" });
     expect(bad.success).toBe(false);
     expect(bad.errors.map((e) => e.message)).toEqual([
-      "unknown dialect 'nope' (known: iec)",
+      "unknown dialect 'nope' (known: iec-3)",
     ]);
     expect(
       compile(src, {
@@ -220,7 +278,7 @@ END_PROGRAM
     );
     expect(lib.success).toBe(false);
     expect(lib.errors.map((e) => e.message)).toEqual([
-      "unknown dialect 'nope' (known: iec)",
+      "unknown dialect 'nope' (known: iec-3)",
     ]);
   });
 });

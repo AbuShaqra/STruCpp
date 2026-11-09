@@ -1,1 +1,1 @@
-{"id":"bad-semantics","name":"Bad semantics","extends":"iec","features":[],"semantics":{"trunc_result":"INT"}}
+{"id":"bad-semantics","name":"Bad semantics","extends":"iec-3","features":[],"semantics":{"trunc_result":"INT"}}

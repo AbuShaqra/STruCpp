@@ -61,7 +61,7 @@ function errorOf(fn: () => unknown): DialectError {
 
 const VENDOR_A = profile({
   id: "vendor-a",
-  extends: "iec",
+  extends: "iec-3",
   features: ["program_methods", "pointer_to", "reference_to", "ref_assign"],
 });
 
@@ -76,25 +76,113 @@ describe("resolveDialect", () => {
     expect(d.loaded).toEqual([]);
   });
 
-  it("iec has no features", () => {
-    const d = resolveDialect({ dialect: "iec" });
-    expect(d.id).toBe("iec");
+  it("iec-3 has no features", () => {
+    const d = resolveDialect({ dialect: "iec-3" });
+    expect(d.id).toBe("iec-3");
     expect(d.features.size).toBe(0);
     expect(IEC_PROFILE).toEqual({
-      id: "iec",
-      name: "IEC 61131-3",
+      id: "iec-3",
+      name: "IEC 61131-3 Ed. 3 (2013)",
       features: [],
       semantics: {},
     });
   });
 
-  it("a file profile extending iec adds its features", () => {
+  it("the default is no profile, not iec-3, and keeps its three features", () => {
+    const d = resolveDialect({});
+    expect(d.id).toBeNull();
+    expect([...d.features].sort()).toEqual([
+      "pointer_to",
+      "ref_assign",
+      "reference_to",
+    ]);
+    expect(resolveDialect({ dialect: "iec-3" }).features.size).toBe(0);
+  });
+
+  it("the id 'iec' is refused with a hint naming iec-3", () => {
+    expect(errorOf(() => resolveDialect({ dialect: "iec" })).message).toBe(
+      "unknown dialect 'iec' (known: iec-3); the IEC 61131-3 Ed. 3 profile is 'iec-3'",
+    );
+    const e = errorOf(() =>
+      resolve(
+        { dialect: "iec", dialectPath: ["dir"] },
+        { "dir/vendor-a.json": VENDOR_A },
+      ),
+    );
+    expect(e.message).toBe(
+      "unknown dialect 'iec' (known: iec-3, vendor-a); the IEC 61131-3 Ed. 3 profile is 'iec-3'",
+    );
+  });
+
+  it("a profile extending 'iec' is refused with a hint naming iec-3", () => {
+    const old = profile({ id: "old", extends: "iec", features: [] });
+    expect(
+      errorOf(() =>
+        resolve({ dialectFiles: ["p/old.json"] }, { "p/old.json": old }),
+      ).message,
+    ).toBe(
+      "dialect 'old': extends 'iec', which is not loaded; the IEC 61131-3 Ed. 3 profile is 'iec-3'",
+    );
+    expect(
+      errorOf(() =>
+        resolveDialect({
+          dialect: {
+            id: "obj",
+            name: "Obj",
+            extends: "iec",
+            features: [],
+            semantics: {},
+          },
+        }),
+      ).message,
+    ).toBe(
+      "dialect 'obj': extends 'iec', which is not loaded; the IEC 61131-3 Ed. 3 profile is 'iec-3'",
+    );
+  });
+
+  it("a loaded profile whose own id is 'iec' is refused as reserved", () => {
+    const own = profile({ id: "iec", features: ["pointer_to"] });
+    expect(
+      errorOf(() =>
+        resolve({ dialectFiles: ["p/x.json"] }, { "p/x.json": own }),
+      ).message,
+    ).toBe(
+      "dialect file p/x.json: the id 'iec' is reserved; the IEC 61131-3 Ed. 3 profile is 'iec-3'",
+    );
+    expect(
+      errorOf(() =>
+        resolve(
+          { dialect: "iec-3", dialectPath: ["dir"] },
+          { "dir/iec.json": own },
+        ),
+      ).message,
+    ).toBe(
+      "dialect file dir/iec.json: the id 'iec' is reserved; the IEC 61131-3 Ed. 3 profile is 'iec-3'",
+    );
+    expect(
+      errorOf(() =>
+        resolveDialect({
+          dialect: { id: "iec", name: "Mine", features: [], semantics: {} },
+        }),
+      ).message,
+    ).toBe(
+      "dialect 'iec': the id 'iec' is reserved; the IEC 61131-3 Ed. 3 profile is 'iec-3'",
+    );
+  });
+
+  it("an unknown id other than 'iec' gets no iec-3 hint", () => {
+    expect(errorOf(() => resolveDialect({ dialect: "iec-4" })).message).toBe(
+      "unknown dialect 'iec-4' (known: iec-3)",
+    );
+  });
+
+  it("a file profile extending iec-3 adds its features", () => {
     const d = resolve(
       { dialectFiles: ["p/mine.json"] },
       {
         "p/mine.json": profile({
           id: "mine",
-          extends: "iec",
+          extends: "iec-3",
           features: ["program_methods"],
         }),
       },
@@ -142,19 +230,19 @@ describe("resolveDialect", () => {
     expect([...d.features].sort()).toEqual(["ref_assign", "reference_to"]);
   });
 
-  it("--feature +program_methods under iec adds it", () => {
+  it("--feature +program_methods under iec-3 adds it", () => {
     const d = resolveDialect({
-      dialect: "iec",
+      dialect: "iec-3",
       features: ["+program_methods"],
     });
     expect([...d.features]).toEqual(["program_methods"]);
-    const bare = resolveDialect({ dialect: "iec", features: ["ref_assign"] });
+    const bare = resolveDialect({ dialect: "iec-3", features: ["ref_assign"] });
     expect([...bare.features]).toEqual(["ref_assign"]);
   });
 
   it("--feature overrides apply in order", () => {
     const d = resolveDialect({
-      dialect: "iec",
+      dialect: "iec-3",
       features: ["+pointer_to", "-pointer_to", "+ref_assign"],
     });
     expect([...d.features]).toEqual(["ref_assign"]);
@@ -185,9 +273,9 @@ describe("resolveDialect", () => {
         { "dir/vendor-a.json": VENDOR_A },
       ),
     );
-    expect(e.message).toBe("unknown dialect 'nope' (known: iec, vendor-a)");
+    expect(e.message).toBe("unknown dialect 'nope' (known: iec-3, vendor-a)");
     expect(errorOf(() => resolveDialect({ dialect: "nope" })).message).toBe(
-      "unknown dialect 'nope' (known: iec)",
+      "unknown dialect 'nope' (known: iec-3)",
     );
   });
 
@@ -314,7 +402,7 @@ describe("resolveDialect", () => {
     expect(e.message).toContain("dialect file dir/broken.json");
     const iec = errorOf(() =>
       resolve(
-        { dialect: "iec", dialectPath: ["dir"] },
+        { dialect: "iec-3", dialectPath: ["dir"] },
         { "dir/broken.json": "[" },
       ),
     );
@@ -326,7 +414,7 @@ describe("resolveDialect", () => {
       dialect: {
         id: "obj",
         name: "Obj",
-        extends: "iec",
+        extends: "iec-3",
         features: ["program_methods"],
         semantics: {},
       },
@@ -366,7 +454,7 @@ describe("resolveDialect", () => {
 describe("SemanticAnalyzer features", () => {
   it("defaults to the default set and takes the dialect's features", () => {
     expect(new SemanticAnalyzer().features).toBe(DEFAULT_FEATURES);
-    const iec = resolveDialect({ dialect: "iec" });
+    const iec = resolveDialect({ dialect: "iec-3" });
     expect(new SemanticAnalyzer({ dialect: iec }).features).toBe(iec.features);
     const own = new Set(["program_methods"]);
     expect(new SemanticAnalyzer({ dialect: iec, features: own }).features).toBe(

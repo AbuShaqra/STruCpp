@@ -3,7 +3,7 @@
  * actions run (acceptance 1), an FB action runs through an instance and from a
  * method, an action writes a configuration VAR_GLOBAL through VAR_EXTERNAL
  * (Review Focus 6), RETURN leaves an action, and all of it compiles under
- * --strict --dialect iec.
+ * --strict --dialect iec-3.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -176,7 +176,7 @@ END_PROGRAM
     expect(out).toBe("2");
   });
 
-  it("an action under --strict --dialect iec", () => {
+  it("an action under --strict --dialect iec-3", () => {
     const out = run(
       `FUNCTION_BLOCK Counter
 VAR_INPUT delta : INT; END_VAR
@@ -199,7 +199,7 @@ END_PROGRAM
 `,
       " Program_MAIN p;\n p.run(); p.run();\n std::cout << p.TOTAL.get() << std::endl;",
       "action_strict_iec",
-      { strict: true, dialect: "iec" },
+      { strict: true, dialect: "iec-3" },
     );
     expect(out).toBe("12");
   });

@@ -35,8 +35,8 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | ARRAY[*] (VLA) | Supported | Variable-length array parameters |
 | Subranges | Supported | Runtime validation |
 | REF_TO | Supported | IEC reference type (explicit dereference) |
-| REFERENCE_TO | Supported | Vendor reference type (implicit dereference); a vendor spelling: the feature `reference_to`, refused under `--dialect iec` |
-| POINTER TO | Supported | Vendor pointer type with dereference via ^; a vendor spelling: the feature `pointer_to`, refused under `--dialect iec` |
+| REFERENCE_TO | Supported | Vendor reference type (implicit dereference); a vendor spelling: the feature `reference_to`, refused under `--dialect iec-3` |
+| POINTER TO | Supported | Vendor pointer type with dereference via ^; a vendor spelling: the feature `pointer_to`, refused under `--dialect iec-3` |
 
 ### Not Implemented
 
@@ -92,7 +92,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | Bitwise | `AND`, `OR`, `XOR`, `NOT` (on bit types) | Supported |
 | Bit shift | `SHL`, `SHR`, `ROL`, `ROR` | Supported |
 | Assignment | `:=` | Supported |
-| Reference assign | `REF=` | Supported; a vendor spelling: the feature `ref_assign`, refused under `--dialect iec` |
+| Reference assign | `REF=` | Supported; a vendor spelling: the feature `ref_assign`, refused under `--dialect iec-3` |
 | Dereference | `^`, `DREF()` | Supported |
 | Reference | `REF()` | Supported |
 | Parentheses | `( )` | Supported |
@@ -122,7 +122,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Methods | Supported | On FUNCTION_BLOCK, with return types. On a PROGRAM: a vendor extension, the feature `program_methods` (refused with no dialect flag and under `--dialect iec`); parsed and checked, callable only inside the program; generated as non-virtual members of the program class |
+| Methods | Supported | On FUNCTION_BLOCK, with return types. On a PROGRAM: a vendor extension, the feature `program_methods` (refused with no dialect flag and under `--dialect iec-3`); parsed and checked, callable only inside the program; generated as non-virtual members of the program class |
 | Properties (GET/SET) | Supported | Virtual getter/setter methods in C++ |
 | Inheritance (EXTENDS) | Supported | Single inheritance |
 | Interfaces (IMPLEMENTS) | Supported | Multiple interfaces, generates C++ abstract classes |
@@ -206,9 +206,9 @@ edges on `CU` and `CD` leave `CV` unchanged. CODESYS does not document that case
 | Inline function calls | Supported | Via `{call ...}` pragma |
 | Global constants (`-D`) | Supported | CLI `-D NAME=VALUE`, emits `constexpr` |
 | Dynamic memory | Supported | `__NEW(type)`, `__DELETE(ptr)` |
-| POINTER TO, `ADR()` | Supported | Full pointer type with dereference; the feature `pointer_to` (`ADR` and `POINTER TO` are refused under `--dialect iec`; IEC `REF_TO`, `REF()`, `^`, `THIS^` and `SUPER^` stay accepted) |
+| POINTER TO, `ADR()` | Supported | Full pointer type with dereference; the feature `pointer_to` (`ADR` and `POINTER TO` are refused under `--dialect iec-3`; IEC `REF_TO`, `REF()`, `^`, `THIS^` and `SUPER^` stay accepted) |
 | Typed literals | Supported | `INT#5`, `DINT#42`, `REAL#3.14` |
-| Dialect profiles | Supported | `--dialect`, `--dialect-file`, `--dialect-path`, `--feature`: named feature sets; `iec` enables none, no flag keeps the default set (see [DIALECTS.md](DIALECTS.md)) |
+| Dialect profiles | Supported | `--dialect`, `--dialect-file`, `--dialect-path`, `--feature`: named feature sets; `iec-3` enables none, no flag keeps the default set (see [DIALECTS.md](DIALECTS.md)) |
 
 ## Not Yet Implemented
 

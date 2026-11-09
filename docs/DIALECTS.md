@@ -1,22 +1,28 @@
 # Dialect Profiles
 
 A dialect profile names the language features beyond IEC 61131-3 that a compile accepts. The compiler
-has one built-in profile, `iec`; every other profile is input data given on the command line (or as an
-object through the library API). A vendor profile is input data and is not shipped here.
+has one built-in profile, `iec-3` (IEC 61131-3 Ed. 3, 2013); every other profile is input data given on
+the command line (or as an object through the library API). A vendor profile is input data and is not
+shipped here.
 
 ## Selecting a dialect
 
 | Given                                       | Features in effect                                          |
 | ------------------------------------------- | ----------------------------------------------------------- |
 | no `--dialect`, no `--dialect-file`         | the default set: `pointer_to`, `reference_to`, `ref_assign` |
-| `--dialect iec`                             | none                                                        |
+| `--dialect iec-3`                           | none                                                        |
 | `--dialect <id>`                            | the profile's features plus those it inherits               |
 | one `--dialect-file <path>`, no `--dialect` | that file's profile                                         |
 
 The default set is the compiler's behaviour before profiles existed, so a build with no dialect flag
-behaves exactly as before. `iec` is the strict profile: it enables no feature.
+behaves exactly as before. `iec-3` is the strict profile: it enables no feature. The default is not
+`iec-3`: it selects no profile, so `--print-dialect` and `--check --json` report its id as `null`.
 
-`--dialect <id>` looks the id up in this order: the built-in `iec`, the `--dialect-file` profiles, then
+The id `iec` is reserved and is not an alias: `--dialect iec`, a profile with `"extends": "iec"` and a
+profile whose own `id` is `iec` (file, `--dialect-path` entry or object) are refused with an error that
+names `iec-3`.
+
+`--dialect <id>` looks the id up in this order: the built-in `iec-3`, the `--dialect-file` profiles, then
 `<dir>/<id>.json` in each `--dialect-path` folder in the order given. `--feature +id`, `--feature -id`
 (and a bare `--feature id`, the same as `+id`) are applied in order after the profile.
 
@@ -25,8 +31,8 @@ behaves exactly as before. `iec` is the strict profile: it enables no feature.
 ```bash
 $ strucpp --print-dialect
 {"id":null,"features":["pointer_to","ref_assign","reference_to"]}
-$ strucpp --dialect iec --feature +program_methods --print-dialect
-{"id":"iec","features":["program_methods"]}
+$ strucpp --dialect iec-3 --feature +program_methods --print-dialect
+{"id":"iec-3","features":["program_methods"]}
 ```
 
 `--check` (analysis only, see [CLI.md](CLI.md#check)) resolves the dialect the same way. Its JSON report
@@ -38,7 +44,7 @@ names the resolved id in `dialect`, and a bad profile exits 2.
 {
   "id": "vendor-a",
   "name": "Vendor A",
-  "extends": "iec",
+  "extends": "iec-3",
   "features": ["program_methods", "pointer_to", "reference_to", "ref_assign"],
   "semantics": {}
 }
@@ -48,11 +54,11 @@ names the resolved id in `dialect`, and a bad profile exits 2.
 | ----------- | -------- | ---------------------------------------------------------------------------------------- |
 | `id`        | yes      | The profile's id; in a `--dialect-path` folder it must equal the file name (`<id>.json`) |
 | `name`      | no       | A display name (defaults to the id)                                                      |
-| `extends`   | no       | A parent profile id (`iec` or another loaded profile); its features are inherited        |
+| `extends`   | no       | A parent profile id (`iec-3` or another loaded profile); its features are inherited      |
 | `features`  | no       | Feature ids from the table below                                                         |
 | `semantics` | no       | Reserved: no key is defined yet, so it must be empty                                     |
 
-The effective features of a profile are its own plus every feature its `extends` chain gives; `iec` is
+The effective features of a profile are its own plus every feature its `extends` chain gives; `iec-3` is
 the root. A profile without `extends` has only its own features.
 
 ## Features
@@ -80,7 +86,7 @@ When profiles were loaded and some have the feature, the message ends with `(pro
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
 included, and `ADR` both in statements and in a declaration's initial value. IEC
 `REF_TO`, `REF()`, `^`, `THIS^` and `SUPER^` need no feature. `--test` files are analysed with the default
-set, so they are not refused under `iec`.
+set, so they are not refused under `iec-3`.
 
 `program_methods` is not in the default set: a `METHOD` in a `PROGRAM` is refused with no dialect flag too
 (before profiles it did not parse at all). `--strict` does not change any feature. A refused method is still
@@ -107,8 +113,10 @@ is one line on stderr, `error: <message>`, and exit code 1:
 - `dialect file <path>: id '<x>' does not match the file name` (`--dialect-path` only)
 - `dialect file <path>: semantics key '<k>' is not known`
 - `unknown feature '<id>' in <where> (known: program_methods, pointer_to, reference_to, ref_assign)`
-- `unknown dialect '<id>' (known: iec, ...)`
+- `unknown dialect '<id>' (known: iec-3, ...)`
 - `dialect '<id>': extends '<p>', which is not loaded`
+- either of the two above for the id `iec` ends with `; the IEC 61131-3 Ed. 3 profile is 'iec-3'`
+- `<where>: the id 'iec' is reserved; the IEC 61131-3 Ed. 3 profile is 'iec-3'`
 - `dialect '<id>': extends cycle <a> -> <b> -> <a>`
 
 Unknown top-level keys and wrongly typed values are refused the same way.
@@ -138,7 +146,7 @@ open documents. A rejected value keeps the previous selection and shows
   "dialect": {
     "id": "test-pointers",
     "name": "Pointers",
-    "extends": "iec",
+    "extends": "iec-3",
     "features": ["pointer_to"],
     "semantics": {}
   },
