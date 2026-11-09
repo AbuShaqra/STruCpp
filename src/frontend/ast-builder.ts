@@ -221,6 +221,37 @@ function getAllTokens(items: (CstNode | IToken)[] | undefined): IToken[] {
   return items.filter((item): item is IToken => "image" in item);
 }
 
+/** Span from the start of `first` to the end of `last`. */
+function spanBetween(first: CstNode, last: CstNode): SourceSpan {
+  const start = nodeToSourceSpan(first);
+  const end = nodeToSourceSpan(last);
+  return {
+    file: "",
+    startLine: start.startLine,
+    endLine: end.endLine,
+    startCol: start.startCol,
+    endCol: end.endCol,
+  };
+}
+
+/**
+ * The binary operators among `children`, in source order. `kinds` maps a
+ * token's child key to the operator it spells.
+ */
+function sortedOperators(
+  children: CstChildren,
+  kinds: [string, BinaryOperator][],
+): BinaryOperator[] {
+  const found: { offset: number; op: BinaryOperator }[] = [];
+  for (const [key, op] of kinds) {
+    for (const tok of getAllTokens(children[key])) {
+      found.push({ offset: tok.startOffset ?? 0, op });
+    }
+  }
+  found.sort((a, b) => a.offset - b.offset);
+  return found.map((f) => f.op);
+}
+
 /**
  * Get the start offset of a CST node by finding its earliest token.
  */
@@ -2440,54 +2471,70 @@ export class ASTBuilder {
   }
 
   /**
-   * Build a comparison expression.
+   * Build a comparison expression: relational operands joined by `=`/`<>`,
+   * folded left-associatively (Annex A grouping).
    */
   buildComparisonExpression(node: CstNode): Expression | undefined {
     const children = node.children as CstChildren;
+    const operands = getAllNodes(children.relationalExpression);
+    if (operands.length === 0) {
+      return this.buildRelationalExpression(node);
+    }
+    const ops = sortedOperators(children, [
+      ["Equal", "="],
+      ["NotEqual", "<>"],
+    ]);
+    return this.foldComparisonChain(operands, ops, (n) =>
+      this.buildRelationalExpression(n),
+    );
+  }
 
-    const addExprs = getAllNodes(children.addExpression);
-    if (addExprs.length === 0) {
+  /**
+   * Build a relational expression: additive operands joined by `<`, `>`,
+   * `<=`, `>=`, folded left-associatively.
+   */
+  buildRelationalExpression(node: CstNode): Expression | undefined {
+    const children = node.children as CstChildren;
+    const operands = getAllNodes(children.addExpression);
+    if (operands.length === 0) {
       return this.buildAddExpression(node);
     }
+    const ops = sortedOperators(children, [
+      ["Less", "<"],
+      ["Greater", ">"],
+      ["LessEqual", "<="],
+      ["GreaterEqual", ">="],
+    ]);
+    return this.foldComparisonChain(operands, ops, (n) =>
+      this.buildAddExpression(n),
+    );
+  }
 
-    const firstAddExpr = addExprs[0];
-    if (!firstAddExpr) return undefined;
-    let left = this.buildAddExpression(firstAddExpr);
+  /**
+   * Fold `operands[0] op operands[1] op ...` into a left-nested tree. Each
+   * node spans its first operand to its last, so a chain link reports its
+   * own range rather than the whole chain's.
+   */
+  private foldComparisonChain(
+    operands: CstNode[],
+    ops: BinaryOperator[],
+    build: (n: CstNode) => Expression | undefined,
+  ): Expression | undefined {
+    const first = operands[0];
+    if (!first) return undefined;
+    let left = build(first);
     if (!left) return undefined;
 
-    // Collect all comparison operator tokens with their operators, sorted by position
-    const opTokens: Array<{ offset: number; op: BinaryOperator }> = [];
-    for (const tok of getAllTokens(children.Equal)) {
-      opTokens.push({ offset: tok.startOffset ?? 0, op: "=" });
-    }
-    for (const tok of getAllTokens(children.NotEqual)) {
-      opTokens.push({ offset: tok.startOffset ?? 0, op: "<>" });
-    }
-    for (const tok of getAllTokens(children.Less)) {
-      opTokens.push({ offset: tok.startOffset ?? 0, op: "<" });
-    }
-    for (const tok of getAllTokens(children.Greater)) {
-      opTokens.push({ offset: tok.startOffset ?? 0, op: ">" });
-    }
-    for (const tok of getAllTokens(children.LessEqual)) {
-      opTokens.push({ offset: tok.startOffset ?? 0, op: "<=" });
-    }
-    for (const tok of getAllTokens(children.GreaterEqual)) {
-      opTokens.push({ offset: tok.startOffset ?? 0, op: ">=" });
-    }
-    opTokens.sort((a, b) => a.offset - b.offset);
-
-    for (let i = 1; i < addExprs.length; i++) {
-      const addExpr = addExprs[i];
-      if (!addExpr) continue;
-      const right = this.buildAddExpression(addExpr);
+    for (let i = 1; i < operands.length; i++) {
+      const operand = operands[i];
+      if (!operand) continue;
+      const right = build(operand);
       if (!right) continue;
 
-      const op = opTokens[i - 1]?.op ?? "=";
       left = {
         kind: "BinaryExpression",
-        sourceSpan: nodeToSourceSpan(node),
-        operator: op,
+        sourceSpan: spanBetween(first, operand),
+        operator: ops[i - 1] ?? "=",
         left,
         right,
       };

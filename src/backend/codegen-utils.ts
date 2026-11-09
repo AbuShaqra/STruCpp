@@ -4,7 +4,27 @@
  * Shared utility functions for C++ code generation.
  */
 
+import type { Expression } from "../frontend/ast.js";
 import { exactIntegerLiteralValue } from "../literal-utils.js";
+
+const COMPARISON_OPERATORS: ReadonlySet<string> = new Set([
+  "=",
+  "<>",
+  "<",
+  ">",
+  "<=",
+  ">=",
+]);
+
+/** True for the six ST comparison operators. */
+export function isComparison(operator: string): boolean {
+  return COMPARISON_OPERATORS.has(operator);
+}
+
+/** True when `expr` is an unparenthesised comparison. */
+export function isComparisonExpr(expr: Expression): boolean {
+  return expr.kind === "BinaryExpression" && isComparison(expr.operator);
+}
 
 /**
  * Convert an IEC 61131-3 based numeric string to a C++ literal string.

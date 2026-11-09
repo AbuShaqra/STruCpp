@@ -67,6 +67,8 @@ import {
   formatArrayType,
   formatIntegerLiteral,
   iecBaseToCppLiteral,
+  isComparison,
+  isComparisonExpr,
   translateIECString,
 } from "./codegen-utils.js";
 import { mangledMemberName, needsMemberMangling } from "./member-mangling.js";
@@ -4792,6 +4794,14 @@ export class CodeGenerator {
       expr.operator === "XOR"
     ) {
       return `(${left}) ${cppOp} (${right})`;
+    }
+
+    // A comparison nested directly in a comparison comes from a chain such
+    // as `a < b = c`; parenthesise it so C++ keeps the ST grouping.
+    if (isComparison(expr.operator)) {
+      const l = isComparisonExpr(expr.left) ? `(${left})` : left;
+      const r = isComparisonExpr(expr.right) ? `(${right})` : right;
+      return `${l} ${cppOp} ${r}`;
     }
 
     return `${left} ${cppOp} ${right}`;

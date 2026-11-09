@@ -1816,14 +1816,30 @@ export class STParser extends CstParser {
   });
 
   /**
-   * Comparison expression
+   * Comparison expression: relational expressions joined by `=` or `<>`.
+   * Follows the IEC 61131-3 Annex A grammar: `=` and `<>` bind looser than
+   * `<`, `>`, `<=`, `>=`, and both levels repeat left-associatively, so
+   * `a < b = c` is `(a < b) = c` and `a = b = c` is `(a = b) = c`.
    */
   public comparisonExpression = this.RULE("comparisonExpression", () => {
-    this.SUBRULE(this.addExpression);
-    this.OPTION(() => {
+    this.SUBRULE(this.relationalExpression);
+    this.MANY(() => {
       this.OR([
         { ALT: () => this.CONSUME(tokens.Equal) },
         { ALT: () => this.CONSUME(tokens.NotEqual) },
+      ]);
+      this.SUBRULE2(this.relationalExpression);
+    });
+  });
+
+  /**
+   * Relational expression: additive expressions joined by `<`, `>`, `<=`
+   * or `>=`, left-associative (`a < b < c` is `(a < b) < c`).
+   */
+  public relationalExpression = this.RULE("relationalExpression", () => {
+    this.SUBRULE(this.addExpression);
+    this.MANY(() => {
+      this.OR([
         { ALT: () => this.CONSUME(tokens.Less) },
         { ALT: () => this.CONSUME(tokens.Greater) },
         { ALT: () => this.CONSUME(tokens.LessEqual) },
