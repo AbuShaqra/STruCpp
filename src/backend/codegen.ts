@@ -5250,6 +5250,7 @@ export class CodeGenerator {
         if (std?.returnTypeFor && expr.arguments.length > 0) {
           const at = this.inferExprType(expr.arguments[0]!.value);
           const mapped = at && std.returnTypeFor(at.toUpperCase());
+          if (mapped === "LINT" && this.truncToDint(expr)) return "DINT";
           if (mapped) return mapped;
         }
         // For generic functions returning same type as first param, infer from first arg
@@ -5591,6 +5592,23 @@ export class CodeGenerator {
   }
 
   /**
+   * A TRUNC of an LREAL the checker typed DINT (the feature trunc_dint):
+   * lowered to TRUNC_DINT, as TRUNC itself returns LINT for an LREAL.
+   */
+  private truncToDint(expr: FunctionCallExpression): boolean {
+    const t = expr.resolvedType;
+    const arg = expr.arguments[0]?.value.resolvedType;
+    return (
+      t !== undefined &&
+      "name" in t &&
+      t.name === "DINT" &&
+      arg !== undefined &&
+      "name" in arg &&
+      arg.name === "LREAL"
+    );
+  }
+
+  /**
    * The typed truncation `nameUpper` names (TRUNC_INT, REAL_TRUNC_INT),
    * unless a user or library function of that name shadows it.
    */
@@ -5755,6 +5773,7 @@ export class CodeGenerator {
       // argument at its checked ST type so DINT (REAL) / LINT (LREAL) match.
       if (stdFunc.returnTypeFor && args.length > 0) {
         args[0] = this.atRealType(args[0]!, expr.arguments[0]?.value);
+        if (this.truncToDint(expr)) return `TRUNC_DINT(${args.join(", ")})`;
       }
       return `${stdFunc.cppName}(${args.join(", ")})`;
     }

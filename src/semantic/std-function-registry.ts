@@ -53,10 +53,14 @@ export interface StdFunctionDescriptor {
   /**
    * Result type name for a given first-argument type name (upper case), for
    * functions whose result differs from, but depends on, the argument type
-   * (TRUNC: REAL gives DINT, LREAL gives LINT). Takes precedence over
+   * (TRUNC: REAL gives DINT, LREAL gives LINT; DINT for both with the
+   * feature trunc_dint in `features`). Takes precedence over
    * returnMatchesFirstParam; undefined falls back to it.
    */
-  returnTypeFor?: (argType: string) => string | undefined;
+  returnTypeFor?: (
+    argType: string,
+    features?: ReadonlySet<string>,
+  ) => string | undefined;
   /** Parameter descriptors */
   params: StdFunctionParam[];
   /** Whether the function accepts variadic arguments (2+) */
@@ -285,14 +289,21 @@ export class StdFunctionRegistry {
       });
     }
 
-    // TRUNC(ANY_REAL) -> integer: DINT for REAL, LINT for LREAL
+    // TRUNC(ANY_REAL) -> integer: DINT for REAL, LINT for LREAL (DINT for
+    // both with the feature trunc_dint)
     this.register({
       name: "TRUNC",
       cppName: "TRUNC",
       returnConstraint: "ANY_INT",
       returnMatchesFirstParam: false,
-      returnTypeFor: (argType) =>
-        argType === "REAL" ? "DINT" : argType === "LREAL" ? "LINT" : undefined,
+      returnTypeFor: (argType, features) =>
+        argType === "REAL"
+          ? "DINT"
+          : argType === "LREAL"
+            ? features?.has("trunc_dint") === true
+              ? "DINT"
+              : "LINT"
+            : undefined,
       params: [{ name: "IN", constraint: "ANY_REAL", isByRef: false }],
       isVariadic: false,
       isConversion: false,

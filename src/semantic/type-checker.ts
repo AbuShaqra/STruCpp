@@ -850,7 +850,10 @@ export class TypeChecker {
           desc?.returnTypeFor &&
           firstArgType &&
           "name" in firstArgType &&
-          desc.returnTypeFor((firstArgType.name as string).toUpperCase());
+          desc.returnTypeFor(
+            (firstArgType.name as string).toUpperCase(),
+            this.features,
+          );
         if (mappedName && ELEMENTARY_TYPES[mappedName]) {
           returnType = ELEMENTARY_TYPES[mappedName];
         } else if (desc?.returnMatchesFirstParam) {
@@ -895,7 +898,8 @@ export class TypeChecker {
           const first = stripEnEno(expr.arguments)[0]?.value.resolvedType;
           const name =
             first && "name" in first ? (first.name as string) : undefined;
-          const mapped = name && desc.returnTypeFor(name.toUpperCase());
+          const mapped =
+            name && desc.returnTypeFor(name.toUpperCase(), this.features);
           const retType = mapped ? ELEMENTARY_TYPES[mapped] : undefined;
           if (retType) {
             expr.resolvedType = retType;
