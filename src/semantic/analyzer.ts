@@ -11,16 +11,19 @@ import type {
   Argument,
   ArrayLiteralExpression,
   AssertCall,
+  AssignmentStatement,
   CompilationUnit,
   ElementaryType,
   EnumType,
   Expression,
   FunctionBlockDeclaration,
   FunctionCallExpression,
+  InterfaceDeclaration,
   LiteralExpression,
   MethodCallExpression,
   MethodDeclaration,
   MockFunctionStatement,
+  PropertyDeclaration,
   TypeDeclaration,
   TypeDefinition,
   TypeReference,
@@ -140,6 +143,26 @@ const LOCATABLE_BLOCK_TYPES: ReadonlySet<string> = new Set([
  */
 function bankKey(parsed: ParsedAddress): string {
   return `${parsed.area}${parsed.size}`;
+}
+
+/** What the property-access checks know of `TYPE.PROP`. */
+interface PropertyAccessInfo {
+  hasSetter: boolean;
+  /** Set for interface properties only. */
+  hasGetter?: boolean;
+  /** The interface `TYPE` names, for interface properties. */
+  interfaceName?: string;
+}
+
+/** Identity of a declared type for an exact match (property contracts). */
+function typeKey(t: TypeReference): string {
+  return JSON.stringify([
+    t.name.toUpperCase(),
+    t.referenceChain ?? [t.referenceKind],
+    t.maxLength ?? null,
+    t.arrayDimensions ?? null,
+    t.elementTypeName?.toUpperCase() ?? null,
+  ]);
 }
 
 /**
@@ -403,6 +426,7 @@ export class SemanticAnalyzer {
     // A feature refusal is located and does not gate the passes below either,
     // so the rest of a refused method is still checked.
     this.validateProgramMethodFeature(ast);
+    this.validateInterfaceProperties(ast);
     this.validateConfigurationGlobalsHoldNoFB(ast);
     const typeReferenceErrors = this.errors.length - errorsBeforeTypeReferences;
 
@@ -441,6 +465,135 @@ export class SemanticAnalyzer {
           "METHOD in a PROGRAM",
           method.sourceSpan,
         );
+      }
+    }
+  }
+
+  /**
+   * A PROPERTY in an INTERFACE needs the feature property. With it on, each
+   * prototype declares GET and/or SET, and an accessor has no body.
+   */
+  private validateInterfaceProperties(ast: CompilationUnit): void {
+    for (const iface of ast.interfaces) {
+      for (const prop of iface.properties) {
+        this.requireFeature(
+          "property",
+          "PROPERTY in an INTERFACE",
+          prop.sourceSpan,
+        );
+        if (!this.features.has("property")) continue;
+        const span = prop.sourceSpan;
+        if (prop.getter === undefined && prop.setter === undefined) {
+          this.addError(
+            `Property '${prop.name}' in INTERFACE '${iface.name}' declares no accessor: declare GET and/or SET`,
+            span.startLine,
+            span.startCol,
+            span.file,
+          );
+        }
+        const bodies: [string, Statement[] | undefined][] = [
+          ["GET", prop.getter],
+          ["SET", prop.setter],
+        ];
+        for (const [accessor, body] of bodies) {
+          if (body === undefined || body.length === 0) continue;
+          this.addError(
+            `${accessor} of property '${prop.name}' in INTERFACE '${iface.name}' has a body; an interface accessor is written ${accessor} END_${accessor}`,
+            span.startLine,
+            span.startCol,
+            span.file,
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * The properties an interface declares, its own first, then those of each
+   * EXTENDS base (nearest wins), keyed by upper-case name.
+   */
+  private collectInterfaceProperties(
+    name: string,
+    ifaceDecls: Map<string, InterfaceDeclaration>,
+  ): Map<string, PropertyDeclaration> {
+    const props = new Map<string, PropertyDeclaration>();
+    const visited = new Set<string>();
+    const visit = (ifaceName: string): void => {
+      const upper = ifaceName.toUpperCase();
+      if (visited.has(upper)) return;
+      visited.add(upper);
+      const iface = ifaceDecls.get(upper);
+      if (!iface) return;
+      for (const p of iface.properties) {
+        const key = p.name.toUpperCase();
+        if (!props.has(key)) props.set(key, p);
+      }
+      for (const base of iface.extends ?? []) visit(base);
+    };
+    visit(name);
+    return props;
+  }
+
+  /**
+   * An FB implementing an interface provides each property the interface
+   * (with its bases) declares: same type, and every accessor it declares.
+   */
+  private validateImplementedProperties(
+    fb: FunctionBlockDeclaration,
+    fbMap: Map<string, FunctionBlockDeclaration>,
+    ifaceDecls: Map<string, InterfaceDeclaration>,
+  ): void {
+    if (!this.features.has("property") || !fb.implements) return;
+    // Own properties, then each base FB's (nearest wins)
+    const provided = new Map<string, PropertyDeclaration>();
+    const seen = new Set<string>();
+    let current: FunctionBlockDeclaration | undefined = fb;
+    while (current && !seen.has(current.name.toUpperCase())) {
+      seen.add(current.name.toUpperCase());
+      for (const p of current.properties) {
+        const key = p.name.toUpperCase();
+        if (!provided.has(key)) provided.set(key, p);
+      }
+      current = current.extends
+        ? fbMap.get(current.extends.toUpperCase())
+        : undefined;
+    }
+    for (const ifaceName of fb.implements) {
+      const required = this.collectInterfaceProperties(ifaceName, ifaceDecls);
+      for (const [key, req] of required) {
+        const own = provided.get(key);
+        if (!own) {
+          this.addError(
+            `FUNCTION_BLOCK '${fb.name}' implements '${ifaceName}' but does not provide property '${req.name}'.`,
+            fb.sourceSpan.startLine,
+            fb.sourceSpan.startCol,
+            fb.sourceSpan.file,
+          );
+          continue;
+        }
+        const span = own.sourceSpan;
+        if (typeKey(own.type) !== typeKey(req.type)) {
+          this.addError(
+            `Property '${own.name}' of FUNCTION_BLOCK '${fb.name}' has type ${own.type.name}, but '${ifaceName}' declares it ${req.type.name}.`,
+            span.startLine,
+            span.startCol,
+            span.file,
+          );
+          continue;
+        }
+        const accessors: [string, boolean, boolean][] = [
+          ["GET", req.getter !== undefined, own.getter !== undefined],
+          ["SET", req.setter !== undefined, own.setter !== undefined],
+        ];
+        for (const [accessor, wanted, has] of accessors) {
+          if (!wanted || has) continue;
+          this.addError(
+            `FUNCTION_BLOCK '${fb.name}' implements '${ifaceName}' but its property '${own.name}' has no ${accessor} accessor.`,
+            span.startLine,
+            span.startCol,
+            span.file,
+          );
+        }
       }
     }
   }
@@ -2061,7 +2214,9 @@ export class SemanticAnalyzer {
 
     // Build interface lookup map
     const ifaceMap = new Map<string, Set<string>>();
+    const ifaceDecls = new Map<string, InterfaceDeclaration>();
     for (const iface of ast.interfaces) {
+      ifaceDecls.set(iface.name.toUpperCase(), iface);
       const methodNames = new Set<string>();
       for (const m of iface.methods) {
         methodNames.add(m.name.toUpperCase());
@@ -2178,6 +2333,7 @@ export class SemanticAnalyzer {
 
       // IMPLEMENTS contract validation: check all interface methods are provided
       if (fb.implements && !fb.isAbstract) {
+        this.validateImplementedProperties(fb, fbMap, ifaceDecls);
         // A lowered ACTION (fromAction) never implements an interface method.
         const fbMethodNames = new Set<string>();
         for (const m of fb.methods) {
@@ -2363,11 +2519,28 @@ export class SemanticAnalyzer {
    */
   private validatePropertyAccess(ast: CompilationUnit): void {
     // Build property info map: "FBNAME.PROPNAME" → { hasSetter }
-    const propertyInfo = new Map<string, { hasSetter: boolean }>();
+    const propertyInfo = new Map<string, PropertyAccessInfo>();
     for (const fb of ast.functionBlocks) {
       for (const prop of fb.properties) {
         const key = `${fb.name.toUpperCase()}.${prop.name.toUpperCase()}`;
         propertyInfo.set(key, { hasSetter: prop.setter !== undefined });
+      }
+    }
+    // Interface properties (own and inherited) as seen through a variable
+    if (this.features.has("property")) {
+      const ifaceDecls = new Map<string, InterfaceDeclaration>();
+      for (const iface of ast.interfaces) {
+        ifaceDecls.set(iface.name.toUpperCase(), iface);
+      }
+      for (const iface of ast.interfaces) {
+        const props = this.collectInterfaceProperties(iface.name, ifaceDecls);
+        for (const [key, prop] of props) {
+          propertyInfo.set(`${iface.name.toUpperCase()}.${key}`, {
+            hasSetter: prop.setter !== undefined,
+            hasGetter: prop.getter !== undefined,
+            interfaceName: iface.name,
+          });
+        }
       }
     }
     if (propertyInfo.size === 0) return;
@@ -2378,6 +2551,7 @@ export class SemanticAnalyzer {
       varTypeMap: Map<string, string>,
     ) => {
       this.walkStatementsForPropertyWrites(stmts, varTypeMap, propertyInfo);
+      this.checkInterfacePropertyReads(stmts, varTypeMap, propertyInfo);
     };
 
     // Check programs
@@ -2430,12 +2604,50 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * `itf.P` read where the interface declares P without GET: no getter to
+   * dispatch to. Assignment targets are writes and are skipped.
+   */
+  private checkInterfacePropertyReads(
+    stmts: Statement[],
+    varTypeMap: Map<string, string>,
+    propertyInfo: Map<string, PropertyAccessInfo>,
+  ): void {
+    const targets = new Set<object>();
+    for (const stmt of stmts) {
+      walkAST(stmt, (node) => {
+        if (node.kind === "AssignmentStatement") {
+          targets.add((node as AssignmentStatement).target);
+          return;
+        }
+        if (node.kind !== "VariableExpression" || targets.has(node)) return;
+        const expr = node as VariableExpression;
+        if (expr.fieldAccess.length !== 1 || expr.subscripts.length > 0) {
+          return;
+        }
+        const varType = varTypeMap.get(expr.name.toUpperCase());
+        if (!varType) return;
+        const field = expr.fieldAccess[0]!;
+        const info = propertyInfo.get(`${varType}.${field.toUpperCase()}`);
+        if (info?.interfaceName === undefined || info.hasGetter === true) {
+          return;
+        }
+        this.addError(
+          `Property '${field}' of INTERFACE '${info.interfaceName}' has no GET accessor; it cannot be read through the interface.`,
+          expr.sourceSpan.startLine,
+          expr.sourceSpan.startCol,
+          expr.sourceSpan.file,
+        );
+      });
+    }
+  }
+
+  /**
    * Walk statements looking for assignments to read-only properties.
    */
   private walkStatementsForPropertyWrites(
     stmts: Statement[],
     varTypeMap: Map<string, string>,
-    propertyInfo: Map<string, { hasSetter: boolean }>,
+    propertyInfo: Map<string, PropertyAccessInfo>,
   ): void {
     for (const stmt of stmts) {
       if (stmt.kind === "AssignmentStatement") {
@@ -2452,7 +2664,9 @@ export class SemanticAnalyzer {
             const info = propertyInfo.get(propKey);
             if (info && !info.hasSetter) {
               this.addError(
-                `Property '${fieldName}' of '${varType}' is read-only (no SET accessor).`,
+                info.interfaceName !== undefined
+                  ? `Property '${fieldName}' of INTERFACE '${info.interfaceName}' has no SET accessor; it cannot be written through the interface.`
+                  : `Property '${fieldName}' of '${varType}' is read-only (no SET accessor).`,
                 stmt.sourceSpan.startLine,
                 stmt.sourceSpan.startCol,
                 stmt.sourceSpan.file,
@@ -2472,7 +2686,7 @@ export class SemanticAnalyzer {
   private recurseStatementsForPropertyWrites(
     stmt: Statement,
     varTypeMap: Map<string, string>,
-    propertyInfo: Map<string, { hasSetter: boolean }>,
+    propertyInfo: Map<string, PropertyAccessInfo>,
   ): void {
     if (stmt.kind === "IfStatement") {
       const s = stmt as unknown as {
@@ -3679,6 +3893,12 @@ export class SemanticAnalyzer {
         validateVarBlocks(
           method.varBlocks,
           `METHOD '${method.name}' of INTERFACE '${iface.name}'`,
+        );
+      }
+      for (const prop of iface.properties) {
+        this.validateSingleTypeReference(
+          prop.type,
+          `PROPERTY '${prop.name}' of INTERFACE '${iface.name}'`,
         );
       }
     }

@@ -730,11 +730,17 @@ export class ASTBuilder {
       methods.push(this.buildInterfaceMethodDeclaration(methodNode));
     }
 
+    const properties: PropertyDeclaration[] = [];
+    for (const propNode of getAllNodes(children.propertyDeclaration)) {
+      properties.push(this.buildPropertyDeclaration(propNode));
+    }
+
     return {
       kind: "InterfaceDeclaration",
       sourceSpan: nodeToSourceSpan(node),
       name,
       methods,
+      properties,
       ...(extendsList !== undefined ? { extends: extendsList } : {}),
     };
   }

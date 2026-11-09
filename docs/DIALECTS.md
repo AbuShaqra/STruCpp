@@ -70,6 +70,7 @@ the root. A profile without `extends` has only its own features.
 | `reference_to`    | `REFERENCE TO`                             |
 | `ref_assign`      | the reference assignment `REF=`            |
 | `self_caret`      | `THIS^.member` and `THIS^.M()`             |
+| `property`        | `PROPERTY` prototypes in an `INTERFACE`    |
 
 ## Refusals
 
@@ -83,6 +84,7 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `r REF= x`                                  | `ref_assign`      | `REF= needs the feature ref_assign`                     |
 | `METHOD` inside a `PROGRAM`                 | `program_methods` | `METHOD in a PROGRAM needs the feature program_methods` |
 | `THIS^.member`, `THIS^.M()`                 | `self_caret`      | `THIS^.member needs the feature self_caret`             |
+| `PROPERTY` inside an `INTERFACE`            | `property`        | `PROPERTY in an INTERFACE needs the feature property`   |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
@@ -96,6 +98,36 @@ declares `M`. `THIS^.x` means the same as `THIS.x`. `REF=` on a THIS member (`TH
 `ref_assign`, and `self_caret` as well when written `THIS^.r`. Bare `THIS^` and the forms `SUPER^.M()`,
 `SUPER^.x` and `SUPER^()` are not IEC either, but they were accepted before profiles and still are, in every
 dialect.
+
+`property` is in neither the default set nor `iec-3`: IEC 61131-3 Ed. 3 has no PROPERTY, and its interfaces
+hold method prototypes only. A `PROPERTY` in a `FUNCTION_BLOCK` (with GET/SET bodies) needs no feature and is
+accepted in every dialect. In an `INTERFACE`, a property prototype names its accessors explicitly, with no
+bodies:
+
+```
+INTERFACE ISetpoint
+PROPERTY Value : INT
+GET END_GET
+END_PROPERTY
+PROPERTY Target : INT
+GET END_GET
+SET END_SET
+END_PROPERTY
+END_INTERFACE
+```
+
+With the feature on:
+
+- A prototype with neither GET nor SET is an error (`Property 'X' in INTERFACE 'I' declares no accessor:
+  declare GET and/or SET`), and so is an accessor with a body.
+- A non-ABSTRACT FB that implements the interface (directly, or through an interface that EXTENDS it)
+  provides each property, as its own or from a base FB, with the same type and at least the accessors the
+  interface declares (it may add the other one). A missing property is reported at the FB; a different
+  type or a missing GET or SET at the FB's property.
+- Through an interface variable, `x := itf.Value` calls the instance's GET and `itf.Target := v` its SET
+  (also through a member chain, `a.itf.Target`), dispatched to the instance's FB. Writing a property the
+  interface declares without SET, or reading one it declares without GET, is an error at the access.
+- In C++ the interface gets pure virtual `get_X()`/`set_X()` members that the FB's accessors override.
 
 `program_methods` is not in the default set: a `METHOD` in a `PROGRAM` is refused with no dialect flag too
 (before profiles it did not parse at all). `--strict` does not change any feature. A refused method is still
