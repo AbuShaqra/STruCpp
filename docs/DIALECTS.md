@@ -65,7 +65,7 @@ the root. A profile without `extends` has only its own features.
 
 | Feature              | Enables                                                      |
 | -------------------- | ------------------------------------------------------------ |
-| `program_methods`    | `METHOD` inside a `PROGRAM`                                  |
+| `program_methods`    | `METHOD` inside a `PROGRAM`; a program reached by name, `P.M()` |
 | `pointer_to`         | `POINTER TO`, `ADR()` and `^` on a pointer                   |
 | `reference_to`       | `REFERENCE TO`                                               |
 | `ref_assign`         | the reference assignment `REF=`                              |
@@ -90,6 +90,7 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `REFERENCE TO <type>` and `REFERENCE_TO`    | `reference_to`       | `REFERENCE TO needs the feature reference_to`                                        |
 | `r REF= x`                                  | `ref_assign`         | `REF= needs the feature ref_assign`                                                  |
 | `METHOD` inside a `PROGRAM`                 | `program_methods`    | `METHOD in a PROGRAM needs the feature program_methods`                              |
+| `PRG_A(...)` from another POU               | `program_methods`    | `a call of PROGRAM PRG_A from another POU needs the feature program_methods`         |
 | `THIS^.member`, `THIS^.M()`                 | `self_caret`         | `THIS^.member needs the feature self_caret`                                          |
 | `PROPERTY` inside an `INTERFACE`            | `property`           | `PROPERTY in an INTERFACE needs the feature property`                                |
 | `TYPE E : (A, B) DINT;` (base after list)   | `postfix_enum_base`  | `an enum base type written after the value list needs the feature postfix_enum_base` |
@@ -417,9 +418,9 @@ profiles.
 (before profiles it did not parse at all). `--strict` does not change any feature. A refused method is still
 registered and checked, so a call to it adds no second error. Program methods go before the body, interleaved with the VAR blocks
 as in a FUNCTION_BLOCK; ABSTRACT and OVERRIDE are refused on them (a PROGRAM has no inheritance), and a
-PROGRAM takes no PROPERTY. They may be called only inside their program (its body and its methods):
-`MAIN.Name()`, or `p.Name()` through a variable `p : MAIN`, from any other POU is refused with
-`the methods and actions of PROGRAM MAIN can be called only inside MAIN`. In the generated C++ each program
+PROGRAM takes no PROPERTY. Without the feature a program's actions may be called only inside their program
+(its body and its methods): `MAIN.Name()`, or `p.Name()` through a variable `p : MAIN`, from any other POU
+is refused with `the methods and actions of PROGRAM MAIN can be called only inside MAIN`. In the generated C++ each program
 method is a plain (non-virtual) member function of `Program_<NAME>`, declared after `run()`, so the class's
 vtable is the same as without methods. It sees the program's VARs and reaches its `VAR_EXTERNAL`s exactly as
 `run()` does; `Name()` and `MAIN.Name()` inside MAIN both call it on the same instance.
@@ -427,6 +428,44 @@ vtable is the same as without methods. It sees the program's VARs and reaches it
 `ACTION` blocks need no feature, in a `PROGRAM` or a `FUNCTION_BLOCK`, under every dialect: an action is
 lowered to a parameterless method of its owner that is exempt from `program_methods`, and the same
 inside-the-program rule applies to a program's actions.
+
+### A program reached by name
+
+A PROGRAM has one instance. With `program_methods` its name reaches that instance from any other POU
+(PROGRAM, FUNCTION_BLOCK and its methods and properties, FUNCTION). IEC 61131-3 Ed. 3 has no such access
+(6.5.2.2, 6.6.4; outside a program only access paths, 6.8, reach its variables), so without the feature each
+form stays refused:
+
+| Form                    | With `program_methods`                                                  | Without (message)                                                                  |
+| ----------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `PRG_A.M(...)`          | calls method or action `M`; a PRIVATE or PROTECTED one is refused        | `the methods and actions of PROGRAM PRG_A can be called only inside PRG_A`          |
+| `PRG_A.x`               | reads `x`; writes it when `x` is a VAR_INPUT or a VAR                    | `Cannot access members of program 'PRG_A' directly — declare a variable ...`       |
+| `PRG_A(inp := 1, q => v)` | runs the body (as a statement): `:=` sets a VAR_INPUT, `=>` reads a VAR_OUTPUT, positional arguments fill the VAR_INPUTs in order | `a call of PROGRAM PRG_A from another POU needs the feature program_methods` |
+
+The variable rule: a VAR_INPUT is read and written (Ed. 3 6.6.3.4 lets an input be set apart from the call),
+a VAR_OUTPUT is only read (6.6.3.4: outputs are read, not modified, from outside), a plain VAR is read and
+written (as for a function block instance here, which has no PUBLIC/PRIVATE on VAR), a CONSTANT is only
+read; VAR_TEMP, VAR_IN_OUT and VAR_EXTERNAL are not reachable. A write is an assignment, a `REF=` target or a
+`=>` capture. Other errors: `PROGRAM PRG_A has no variable 'X'`, `PROGRAM PRG_A has no method or action 'M'`,
+`VAR_OUTPUT 'Q' of PROGRAM PRG_A is read-only outside PRG_A`, `PROGRAM PRG_A has no result: call it as a
+statement`. A local variable named `PRG_A` shadows the program. A program calling its own body
+(`PRG_A();` inside PRG_A) is refused under every dialect: `PROGRAM PRG_A cannot call itself` (it used to
+pass `--check` and fail in g++).
+
+Because the program has one instance, once it is reached by name a variable of its type
+(`VAR p : PRG_A; END_VAR`) and a second CONFIGURATION instance of it are refused:
+`PROGRAM PRG_A has one instance, reached by name from other POUs; ...`. A program nobody reaches keeps
+both, and its generated C++ is unchanged.
+
+In the C++, a reached program gets one header object, `inline Program_PRG_A __program_PRG_A;` (its
+VAR_EXTERNAL globals as arguments), after its class. Being an inline header object, it is initialised before
+any later static of every translation unit that includes the header, and its address is a constant. The
+configuration holds it by reference (`Program_PRG_A& PA;`), so the task runs the same instance; the debug
+table addresses `__program_PRG_A`, the REPL harness binds `prog_PRG_A` to it, and a test's variable of the
+type binds to it (so its state carries from one test to the next, as globals do). Its constructor still runs
+`__fb_init_globals()` first. A program run by a task and also called by name is the same instance, so its
+body runs once more per cycle for each call: that is what the call asks for. Calls from a POU of another task
+are not synchronised with the task that runs the program.
 
 Pragmas `{...}` (IEC 61131-3 Ed. 3, 6.2) are not a feature: every profile, `iec-3` included, accepts them
 wherever whitespace may appear and skips them with a `Pragma ignored: {...}` warning at the pragma's line

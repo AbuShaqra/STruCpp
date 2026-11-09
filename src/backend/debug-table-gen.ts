@@ -28,6 +28,8 @@ import type {
   VarDeclaration,
 } from "../frontend/ast.js";
 import type { ProjectModel } from "../project-model.js";
+import { getProjectNamespace } from "../project-model.js";
+import { programsReachedByName } from "../semantic/program-access.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import { isElementaryType } from "../semantic/type-registry.js";
 import { evalIntConst, MAX_TYPE_ALIAS_DEPTH } from "../semantic/type-utils.js";
@@ -388,6 +390,7 @@ export function generateDebugTable(
   // and library-loaded entries.
   const programByName = new Map<string, ProgramDeclaration>();
   for (const p of ast.programs) programByName.set(p.name.toUpperCase(), p);
+  const reached = programsReachedByName(ast);
 
   // --- Inputs to the shared member-mangling rule (see member-mangling.ts) ----
   // The table addresses members by the name codegen declared them under, so
@@ -1003,7 +1006,11 @@ export function generateDebugTable(
 
           const instName = instance.instanceName.toUpperCase();
           const basePath = instName;
-          const baseCpp = `${configGlobal}.${instance.instanceName}`;
+          // A reached program's instance is the shared header object; its
+          // address stays a compile-time constant (the configuration holds a reference).
+          const baseCpp = reached.has(prog.name.toUpperCase())
+            ? `::${getProjectNamespace(projectModel)}::__program_${prog.name}`
+            : `${configGlobal}.${instance.instanceName}`;
 
           for (const block of prog.varBlocks) {
             // Exclude VAR_EXTERNAL (points to globals handled separately) and

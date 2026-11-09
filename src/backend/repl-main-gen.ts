@@ -12,6 +12,7 @@ import type { CompilationUnit, VarBlock } from "../frontend/ast.js";
 import type { ProjectModel } from "../project-model.js";
 import type { LineMapEntry } from "../types.js";
 import { getProjectNamespace } from "../project-model.js";
+import { programsReachedByName } from "../semantic/program-access.js";
 import { mangledMemberName, userDefinedTypeNames } from "./member-mangling.js";
 
 /**
@@ -334,9 +335,14 @@ function generateStandalone(
     };
   });
 
-  // Emit static program instances
+  // Emit static program instances; a reached program's is its shared one
+  const reached = programsReachedByName(ast);
   for (const prog of ast.programs) {
-    lines.push(`static Program_${prog.name} prog_${prog.name};`);
+    lines.push(
+      reached.has(prog.name.toUpperCase())
+        ? `static Program_${prog.name}& prog_${prog.name} = __program_${prog.name};`
+        : `static Program_${prog.name} prog_${prog.name};`,
+    );
   }
   lines.push("");
 

@@ -27,6 +27,7 @@ import type {
   TypeDeclaration,
   TypeDefinition,
   TypeReference,
+  ProgramDeclaration,
   VarBlock,
   VarDeclaration,
   VariableExpression,
@@ -41,6 +42,11 @@ import { StdFunctionRegistry } from "./std-function-registry.js";
 import { Scope, SymbolTables } from "./symbol-table.js";
 import type { FunctionSymbol } from "./symbol-table.js";
 import { TypeChecker } from "./type-checker.js";
+import {
+  findProgramReaches,
+  findProgramSelfCalls,
+  type ProgramReach,
+} from "./program-access.js";
 import {
   GlobalListResolver,
   prepareGlobalLists,
@@ -403,6 +409,8 @@ export class SemanticAnalyzer {
 
   /** Track all located variables for duplicate detection */
   private locatedVars: LocatedVarInfo[] = [];
+  /** `PRG_A.x` uses that reach a program from another POU with program_methods on. */
+  private reachedMemberNodes = new Set<VariableExpression>();
 
   /** Language features enabled for this analysis (the dialect's, or the default set). */
   readonly features: ReadonlySet<string>;
@@ -950,8 +958,9 @@ export class SemanticAnalyzer {
   /**
    * A program's methods and actions may be called only inside the program:
    * its body, its methods and its actions. `MAIN.Name()` or `p.Name()` (with
-   * `p : MAIN`) from any other POU is refused — the generated code has no
-   * program instance another POU can reach.
+   * `p : MAIN`) from any other POU is refused. With program_methods on,
+   * `MAIN.Name()` names the program's one instance and is allowed (see
+   * validateProgramAccess); `p.Name()` stays refused.
    */
   private validateProgramMethodCalls(ast: CompilationUnit): void {
     const programs = new Map<string, { name: string; methods: Set<string> }>();
@@ -963,6 +972,7 @@ export class SemanticAnalyzer {
       });
     }
     if (programs.size === 0) return;
+    const byName = this.features.has("program_methods");
 
     const check = (
       callerProgram: string | undefined,
@@ -979,6 +989,8 @@ export class SemanticAnalyzer {
         const target = programs.get(varTypes.get(obj) ?? obj);
         if (!target || !target.methods.has(methodName.toUpperCase())) return;
         if (target.name.toUpperCase() === callerProgram) return;
+        // By name, the call reaches the one instance (validateProgramAccess).
+        if (byName && !varTypes.has(obj)) return;
         this.addError(
           `the methods and actions of PROGRAM ${target.name} can be called only inside ${target.name}`,
           span.startLine,
@@ -1031,6 +1043,192 @@ export class SemanticAnalyzer {
           (b): b is Statement[] => b !== undefined,
         );
         check(undefined, fb.varBlocks, bodies);
+      }
+    }
+  }
+
+  /**
+   * A PROGRAM reached by name from another POU (see program-access.ts). With
+   * program_methods off a body call is refused here (members and methods are
+   * refused by checkInstanceAccess and validateProgramMethodCalls). With it
+   * on, each reach is checked against the program:
+   *
+   *   - VAR_INPUT and VAR are read and written, VAR_OUTPUT and CONSTANT only
+   *     read; VAR_TEMP, VAR_IN_OUT and VAR_EXTERNAL are not reachable
+   *   - a method or action must exist and be PUBLIC
+   *   - a body call is a statement; `:=` names a VAR_INPUT, `=>` a VAR_OUTPUT
+   *
+   * A reached program has one instance: a variable of its type, or a second
+   * CONFIGURATION instance of it, is refused. A program calling its own body
+   * is refused in every mode.
+   */
+  private validateProgramAccess(
+    ast: CompilationUnit,
+    reaches: readonly ProgramReach[],
+  ): void {
+    for (const call of findProgramSelfCalls(ast)) {
+      this.addError(
+        `PROGRAM ${call.program} cannot call itself`,
+        call.span.startLine,
+        call.span.startCol,
+        call.span.file,
+      );
+    }
+    const on = this.features.has("program_methods");
+    const programs = new Map(
+      ast.programs.map((p) => [p.name.toUpperCase(), p]),
+    );
+    const error = (message: string, span: SourceSpan): void =>
+      this.addError(message, span.startLine, span.startCol, span.file);
+    const member = (
+      prog: ProgramDeclaration,
+      name: string,
+    ): { block: VarBlock; decl: VarDeclaration } | undefined => {
+      const upper = name.toUpperCase();
+      for (const block of prog.varBlocks) {
+        for (const decl of block.declarations) {
+          if (decl.names.some((n) => n.toUpperCase() === upper)) {
+            return { block, decl };
+          }
+        }
+      }
+      return undefined;
+    };
+
+    for (const reach of reaches) {
+      const prog = programs.get(reach.program);
+      if (!prog) continue;
+      const P = prog.name;
+      if (!on) {
+        if (reach.kind === "call") {
+          this.requireFeature(
+            "program_methods",
+            `a call of PROGRAM ${P} from another POU`,
+            reach.span,
+          );
+        }
+        continue;
+      }
+      if (reach.kind === "member") {
+        const found = member(prog, reach.member);
+        if (!found) {
+          error(`PROGRAM ${P} has no variable '${reach.member}'`, reach.span);
+          continue;
+        }
+        const bt = found.block.blockType;
+        if (bt !== "VAR" && bt !== "VAR_INPUT" && bt !== "VAR_OUTPUT") {
+          error(
+            `${bt} '${reach.member}' of PROGRAM ${P} cannot be reached from another POU`,
+            reach.span,
+          );
+        } else if (reach.write && found.block.isConstant) {
+          error(
+            `Cannot assign to CONSTANT variable '${P}.${reach.member}'`,
+            reach.span,
+          );
+        } else if (reach.write && bt === "VAR_OUTPUT") {
+          error(
+            `VAR_OUTPUT '${reach.member}' of PROGRAM ${P} is read-only outside ${P}`,
+            reach.span,
+          );
+        }
+      } else if (reach.kind === "method") {
+        const upper = reach.method.toUpperCase();
+        const method = prog.methods.find((m) => m.name.toUpperCase() === upper);
+        if (!method) {
+          error(
+            `PROGRAM ${P} has no method or action '${reach.method}'`,
+            reach.span,
+          );
+        } else if (
+          method.visibility === "PRIVATE" ||
+          method.visibility === "PROTECTED"
+        ) {
+          error(
+            `Cannot call ${method.visibility} method '${reach.method}' of '${P}' from outside '${P}'.`,
+            reach.span,
+          );
+        }
+      } else {
+        if (!reach.statement) {
+          error(
+            `PROGRAM ${P} has no result: call it as a statement`,
+            reach.span,
+          );
+          continue;
+        }
+        const inputs = prog.varBlocks
+          .filter((b) => b.blockType === "VAR_INPUT")
+          .flatMap((b) => b.declarations.flatMap((d) => d.names));
+        let positional = 0;
+        for (const arg of reach.arguments) {
+          const name = arg.name?.toUpperCase();
+          if (name === "EN" || name === "ENO") continue;
+          if (name === undefined) {
+            positional++;
+            continue;
+          }
+          const wanted = arg.isOutput ? "VAR_OUTPUT" : "VAR_INPUT";
+          if (member(prog, name)?.block.blockType !== wanted) {
+            error(`PROGRAM ${P} has no ${wanted} '${arg.name}'`, reach.span);
+          }
+        }
+        if (positional > inputs.length) {
+          error(`too many arguments in the call of PROGRAM ${P}`, reach.span);
+        }
+      }
+    }
+
+    if (!on) return;
+    const reached = new Set(reaches.map((r) => r.program));
+    if (reached.size === 0) return;
+    const oneInstance = (P: string): string =>
+      `PROGRAM ${P} has one instance, reached by name from other POUs`;
+
+    // A variable of a reached program's type would be a second instance.
+    const checkBlocks = (blocks: readonly VarBlock[]): void => {
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          const prog = programs.get(decl.type.name.toUpperCase());
+          if (!prog || !reached.has(prog.name.toUpperCase())) continue;
+          for (const name of decl.names) {
+            error(
+              `${oneInstance(prog.name)}; ${name} cannot declare another`,
+              decl.sourceSpan,
+            );
+          }
+        }
+      }
+    };
+    checkBlocks(ast.globalVarBlocks);
+    for (const prog of ast.programs) {
+      checkBlocks(prog.varBlocks);
+      for (const method of prog.methods) checkBlocks(method.varBlocks);
+    }
+    for (const func of ast.functions) checkBlocks(func.varBlocks);
+    for (const fb of ast.functionBlocks) {
+      checkBlocks(fb.varBlocks);
+      for (const method of fb.methods) checkBlocks(method.varBlocks);
+    }
+    for (const config of ast.configurations) checkBlocks(config.varBlocks);
+
+    // The configuration runs the one instance at most once.
+    const first = new Map<string, string>();
+    for (const config of ast.configurations) {
+      for (const resource of config.resources) {
+        for (const inst of resource.programInstances) {
+          const prog = programs.get(inst.programType.toUpperCase());
+          if (!prog || !reached.has(prog.name.toUpperCase())) continue;
+          const seen = first.get(prog.name.toUpperCase());
+          if (seen === undefined) {
+            first.set(prog.name.toUpperCase(), inst.instanceName);
+            continue;
+          }
+          error(
+            `${oneInstance(prog.name)}; the CONFIGURATION cannot run it as both ${seen} and ${inst.instanceName}`,
+            inst.sourceSpan,
+          );
+        }
       }
     }
   }
@@ -1564,6 +1762,13 @@ export class SemanticAnalyzer {
    * Validate IEC 61131-3 semantic rules.
    */
   private validateSemantics(ast: CompilationUnit): void {
+    const reaches = findProgramReaches(ast);
+    this.reachedMemberNodes = new Set(
+      this.features.has("program_methods")
+        ? reaches.flatMap((r) => (r.kind === "member" ? [r.node] : []))
+        : [],
+    );
+
     // Validate undeclared variable usage
     this.validateUndeclaredVariables(ast);
 
@@ -1590,6 +1795,9 @@ export class SemanticAnalyzer {
 
     // Program methods are callable only inside their program (C12)
     this.validateProgramMethodCalls(ast);
+
+    // A program reached by name from another POU (feature program_methods)
+    this.validateProgramAccess(ast, reaches);
 
     // Validate bit access bounds and ADR l-value targets
     this.validateExpressions(ast);
@@ -4674,6 +4882,9 @@ export class SemanticAnalyzer {
       );
       return;
     }
+
+    // `PRG_A.x` from another POU is validated by validateProgramAccess.
+    if (sym.kind === "program" && this.reachedMemberNodes.has(expr)) return;
 
     let noun: string | null = null;
     if (sym.kind === "functionBlock") noun = "function block";

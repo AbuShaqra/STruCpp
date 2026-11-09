@@ -2,7 +2,8 @@
  * METHODs in a PROGRAM are the dialect feature program_methods: refused with
  * no dialect flag and under `iec-3` (at the METHOD line), accepted with
  * `--feature +program_methods` or a profile that has it. Strict mode is a
- * separate axis. A program's methods are callable only inside the program.
+ * separate axis. A program's methods are callable inside the program and, by
+ * the program's name, from any other POU (see program-access.test.ts).
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
@@ -290,17 +291,17 @@ END_PROGRAM
   const MSG =
     "the methods and actions of PROGRAM MAIN can be called only inside MAIN";
 
-  it("MAIN.Name() from a FUNCTION_BLOCK is refused with the message", () => {
+  it("MAIN.Name() from a FUNCTION_BLOCK reaches MAIN's one instance", () => {
     const src = `${MAIN}FUNCTION_BLOCK Fb
 VAR x : INT; END_VAR
   MAIN.Count();
   x := MAIN.Value();
 END_FUNCTION_BLOCK
 `;
-    expect(lines(compile(src, ON))).toEqual([`13:3: ${MSG}`, `14:8: ${MSG}`]);
+    expect(lines(compile(src, ON))).toEqual([]);
   });
 
-  it("MAIN.Name() from another PROGRAM, a FUNCTION and an FB method is refused", () => {
+  it("MAIN.Name() from another PROGRAM, a FUNCTION and an FB method is allowed", () => {
     const src = `${MAIN}PROGRAM Other
   MAIN.Count();
 END_PROGRAM
@@ -315,13 +316,7 @@ METHOD M
 END_METHOD
 END_FUNCTION_BLOCK
 `;
-    expect(lines(compile(src, ON)).map((l) => l.split(":")[0])).toEqual([
-      "12",
-      "15",
-      "19",
-      "20",
-    ]);
-    expect(compile(src, ON).errors.every((e) => e.message === MSG)).toBe(true);
+    expect(lines(compile(src, ON))).toEqual([]);
   });
 
   it("a call through a program-typed instance in another POU is refused (R16)", () => {
