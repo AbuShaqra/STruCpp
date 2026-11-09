@@ -31,7 +31,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | ARRAY (1D) | Supported | Arbitrary bounds: ARRAY[1..10] OF INT |
 | ARRAY (2D) | Supported | ARRAY[1..3, 1..4] OF REAL |
 | ARRAY (3D) | Supported | ARRAY[1..3, 1..4, 1..5] OF INT |
-| ARRAY OF function block | Supported | Declaration, member access, and element invocation (`units[i](step := 1.0)`). A named TYPE of one (`BeltPair : ARRAY[0..1] OF FB_Belt`) may be a member, a STRUCT field, a global, or a method or interface method parameter. A *method* call on an element (`units[0].M()`) is not yet parsed |
+| ARRAY OF function block | Supported | Declaration, member access, and element invocation (`units[i](step := 1.0)`). A named TYPE of one (`BeltPair : ARRAY[0..1] OF FB_Belt`) may be a member, a STRUCT field, a global, or a method or interface method parameter. A method call on an element (`units[0].M()`) works like any method call through a member chain (see Method call) |
 | ARRAY[*] (VLA) | Supported | Variable-length array parameters |
 | Subranges | Supported | Runtime validation |
 | REF_TO | Supported | IEC reference type (explicit dereference) |
@@ -97,7 +97,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | Reference | `REF()` | Supported |
 | Parentheses | `( )` | Supported |
 | Function call | `name(args)` | Supported (positional + named) |
-| Method call | `obj.method(args)` | Supported. Named arguments (`obj.m(b := 2, a := 1)`, `out => v`) bind by name, in any order, to VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT in declaration order; a missing input takes its default. Also for `THIS.m`, `SUPER.m`, a bare `m(...)` and a program method |
+| Method call | `obj.method(args)` | Supported. Named arguments (`obj.m(b := 2, a := 1)`, `out => v`) bind by name, in any order, to VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT in declaration order; a missing input takes its default. Also for `THIS.m`, `SUPER.m`, a bare `m(...)` and a program method. Through a member chain in every dialect: `a.b.m()`, `a.b.c.m()`, an FB held in a STRUCT field (`s.fb.m()`) or an ARRAY element (`arr[i].m()`, `a.arr[i].fb.m()`), `THIS.f.m()` and `SUPER.f.m()`, as an expression or a statement. The method is resolved on the chain's final type, base FBs included; a chain ending at a non-FB value, an unknown method, an unknown named argument or too many arguments is an error, and a PRIVATE or PROTECTED method is callable through a chain only inside its declaring FB. A FB held in a STRUCT field is not named by the standard's invocation production; it is accepted because an FB instance in a struct is still an FB instance. Not yet: a dereference in the chain (`p^.m()`), a global-list prefix (`GVL.fb.m()`), and invoking an FB body through a chain (`a.b.fb()`) |
 | Array access | `arr[i]`, `arr[i, j]` | Supported — the index count is validated against the declared rank |
 | Field access | `struct.field` | Supported |
 | Typed literals | `INT#5`, `DINT#42`, `REAL#3.14` | Supported |

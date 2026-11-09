@@ -900,6 +900,24 @@ export class TypeChecker {
       this.resolveExprType(arg.value, scope);
     }
 
+    if (
+      expr.object.kind === "VariableExpression" &&
+      this.isMemberChain(expr.object)
+    ) {
+      const owner = this.memberChainOwner(expr.object, scope);
+      const method = this.checkMemberChainCall(expr, expr.object, owner);
+      if (this.strict) {
+        this.checkStrictArguments(
+          this.methodInputsOf(owner?.name, expr.methodName),
+          expr.arguments,
+          scope,
+        );
+      }
+      const chainRet = method ? this.methodReturnType(method) : undefined;
+      if (chainRet) expr.resolvedType = chainRet;
+      return chainRet;
+    }
+
     if (this.strict) {
       this.checkStrictArguments(
         this.methodInputs(objType, expr, scope),
@@ -930,6 +948,231 @@ export class TypeChecker {
     const retType = method ? this.methodReturnType(method) : undefined;
     if (retType) expr.resolvedType = retType;
     return retType;
+  }
+
+  /** The object of `a.b.M()`, `arr[i].M()` or `THIS.f.M()`: a chain, not a bare name. */
+  private isMemberChain(object: VariableExpression): boolean {
+    const root = object.name.toUpperCase();
+    return (
+      (this.hasMemberAccess(object) && root !== "THIS" && root !== "SUPER") ||
+      ((root === "THIS" || root === "SUPER") && object.fieldAccess.length > 0)
+    );
+  }
+
+  /**
+   * The declared type a member chain lands on, starting from the variable,
+   * THIS (the enclosing FB) or SUPER (its base). A REFERENCE TO is used as its
+   * target. Undefined when any step cannot be resolved.
+   */
+  private memberChainOwner(
+    object: VariableExpression,
+    scope: Scope,
+  ): AccessType | undefined {
+    const root = object.name.toUpperCase();
+    let base: AccessType | undefined;
+    if (root === "THIS" || root === "SUPER") {
+      const fbName = this.currentFBName;
+      const name =
+        root === "THIS"
+          ? fbName
+          : this.ast?.functionBlocks.find(
+              (f) => f.name.toUpperCase() === fbName?.toUpperCase(),
+            )?.extends;
+      base = name === undefined ? undefined : { name, referenceKind: "none" };
+    } else {
+      const sym = scope.lookup(object.name);
+      base =
+        sym?.kind === "variable"
+          ? (sym.declaration as VarDeclaration | undefined)?.type
+          : undefined;
+    }
+    if (!base) return undefined;
+    const owner = resolveAccessType(base, object, this.accessLookup);
+    if (owner?.referenceKind === "reference_to" && !owner.referenceChain) {
+      return { name: owner.name, referenceKind: "none" };
+    }
+    return owner;
+  }
+
+  /** Member-chain calls already checked, so an expression visited twice reports once. */
+  private checkedChainCalls = new WeakSet<MethodCallExpression>();
+
+  /**
+   * Check `a.b.M(args)` against the type the chain lands on: it must be a
+   * function block (or interface) instance that has the method, and named or
+   * positional arguments must fit its parameters. Nothing is reported for a
+   * type this compile does not declare. Returns the method when found.
+   */
+  private checkMemberChainCall(
+    expr: MethodCallExpression,
+    object: VariableExpression,
+    owner: AccessType | undefined,
+  ): MethodDeclaration | undefined {
+    if (!owner || !this.ast) return undefined;
+    const report = !this.checkedChainCalls.has(expr);
+    this.checkedChainCalls.add(expr);
+    const error = (message: string, span: SourceSpan): void => {
+      if (report) {
+        this.addError(message, span.startLine, span.startCol, span.file);
+      }
+    };
+    const upper = owner.name.toUpperCase();
+    if (
+      owner.referenceKind === "none" &&
+      this.lookupMember(owner.name, expr.methodName) !== undefined
+    ) {
+      error(
+        `'${this.chainText(object)}.${expr.methodName}' is a member, not a method; invoking a function block through a member chain is not supported`,
+        expr.methodNameSpan ?? expr.sourceSpan,
+      );
+      return undefined;
+    }
+    const isFb = this.ast.functionBlocks.some(
+      (f) => f.name.toUpperCase() === upper,
+    );
+    const isInterface = this.ast.interfaces.some(
+      (i) => i.name.toUpperCase() === upper,
+    );
+    const isPlainValue =
+      owner.referenceKind !== "none" ||
+      owner.arrayDimensions !== undefined ||
+      ELEMENTARY_TYPES[upper] !== undefined ||
+      this.ast.types.some((t) => t.name.toUpperCase() === upper);
+    if ((!isFb && !isInterface) || isPlainValue) {
+      if (isPlainValue) {
+        error(
+          `Cannot call method '${expr.methodName}' on '${this.chainText(object)}': it is not a function block instance`,
+          object.sourceSpan,
+        );
+      }
+      return undefined;
+    }
+
+    const found = this.lookupChainMethod(upper, expr.methodName);
+    if (found === "missing") {
+      error(
+        `${isFb ? "Function block" : "Interface"} '${owner.name}' has no method '${expr.methodName}'`,
+        expr.methodNameSpan ?? expr.sourceSpan,
+      );
+      return undefined;
+    }
+    if (found === undefined || found === "action") return undefined;
+    this.checkChainMethodAccess(found, expr.sourceSpan, error);
+
+    const params = found.varBlocks
+      .filter(
+        (b) =>
+          b.blockType === "VAR_INPUT" ||
+          b.blockType === "VAR_IN_OUT" ||
+          b.blockType === "VAR_OUTPUT",
+      )
+      .flatMap((b) => b.declarations)
+      .flatMap((d) => d.names.map((n) => n.toUpperCase()));
+    const args = stripEnEno(expr.arguments);
+    for (const arg of args) {
+      if (arg.name !== undefined && !params.includes(arg.name.toUpperCase())) {
+        error(
+          `Method '${found.name}' of '${owner.name}' has no parameter named '${arg.name}'`,
+          arg.sourceSpan,
+        );
+      }
+    }
+    const positional = args.filter((a) => a.name === undefined);
+    const extra = positional[params.length];
+    if (extra) {
+      error(
+        `Method '${found.name}' of '${owner.name}' takes ${params.length} argument${params.length === 1 ? "" : "s"}, got ${positional.length}`,
+        extra.sourceSpan,
+      );
+    }
+    return found;
+  }
+
+  /**
+   * A PRIVATE or PROTECTED method reached through a member chain is called on
+   * another instance, which only the declaring function block may do (a
+   * derived block may not; the C++ would not build). Same messages as `inst.M()`.
+   */
+  private checkChainMethodAccess(
+    method: MethodDeclaration,
+    span: SourceSpan,
+    error: (message: string, span: SourceSpan) => void,
+  ): void {
+    if (method.visibility === "PUBLIC" || !this.ast) return;
+    const declaring = this.ast.functionBlocks.find((f) =>
+      f.methods.includes(method),
+    );
+    if (!declaring) return;
+    if (this.currentFBName?.toUpperCase() === declaring.name.toUpperCase()) {
+      return;
+    }
+    error(
+      method.visibility === "PRIVATE"
+        ? `Cannot call PRIVATE method '${method.name}' of '${declaring.name}' from outside '${declaring.name}'.`
+        : `Cannot call PROTECTED method '${method.name}' of '${declaring.name}' from '${this.currentFBName ?? "PROGRAM"}'.`,
+      span,
+    );
+  }
+
+  /**
+   * A method or action of a function block or interface this compile
+   * declares, base types included: "missing" when every type on the way is
+   * declared here and none has it, undefined when a base is not declared here.
+   */
+  private lookupChainMethod(
+    typeName: string,
+    methodName: string,
+    depth = 0,
+  ): MethodDeclaration | "action" | "missing" | undefined {
+    if (!this.ast || depth >= 32) return undefined;
+    const upper = typeName.toUpperCase();
+    const methodUpper = methodName.toUpperCase();
+    const fb = this.ast.functionBlocks.find(
+      (f) => f.name.toUpperCase() === upper,
+    );
+    if (fb) {
+      const own = fb.methods.find((m) => m.name.toUpperCase() === methodUpper);
+      if (own) return own;
+      if (fb.actions.some((a) => a.name.toUpperCase() === methodUpper)) {
+        return "action";
+      }
+      return fb.extends === undefined
+        ? "missing"
+        : this.lookupChainMethod(fb.extends, methodName, depth + 1);
+    }
+    const itf = this.ast.interfaces.find((i) => i.name.toUpperCase() === upper);
+    if (!itf) return undefined;
+    const own = itf.methods.find((m) => m.name.toUpperCase() === methodUpper);
+    if (own) return own;
+    let unknownBase = false;
+    for (const base of itf.extends ?? []) {
+      const found = this.lookupChainMethod(base, methodName, depth + 1);
+      if (found === undefined) unknownBase = true;
+      else if (found !== "missing") return found;
+    }
+    return unknownBase ? undefined : "missing";
+  }
+
+  /** `a.b[...].c^` as written, for messages. */
+  private chainText(object: VariableExpression): string {
+    const steps = object.accessChain ?? [
+      ...(object.subscripts.length > 0
+        ? [{ kind: "subscript" as const, indices: object.subscripts }]
+        : []),
+      ...object.fieldAccess.map((name) => ({ kind: "field" as const, name })),
+    ];
+    return (
+      object.name +
+      steps
+        .map((step) =>
+          step.kind === "field"
+            ? `.${step.name}`
+            : step.kind === "subscript"
+              ? "[...]"
+              : "^",
+        )
+        .join("")
+    );
   }
 
   /** The methods of the FB or PROGRAM named `typeName` (not inherited ones). */
