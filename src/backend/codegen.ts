@@ -3600,7 +3600,7 @@ export class CodeGenerator {
           delete baseVar.accessChain;
         }
       }
-      const baseCode = this.generateExpression(baseVar);
+      const baseCode = this.generateLvalue(baseVar);
       const value = this.generateExpression(stmt.value);
       this.emit(
         `${indent}${baseCode} = (${baseCode} & ~(1ULL << ${bitIdx})) | ((${value} ? 1ULL : 0ULL) << ${bitIdx});`,
@@ -3618,7 +3618,7 @@ export class CodeGenerator {
       const { enExpr, enoVar, filteredArgs } = this.extractEnEno(
         stmt.value.arguments,
       );
-      const target = this.generateExpression(stmt.target);
+      const target = this.generateLvalue(stmt.target);
       const modifiedCall: FunctionCallExpression = {
         ...stmt.value,
         arguments: filteredArgs,
@@ -3644,7 +3644,7 @@ export class CodeGenerator {
       return;
     }
 
-    const target = this.generateExpression(stmt.target);
+    const target = this.generateLvalue(stmt.target);
     const value = this.generateExpression(stmt.value);
 
     // For interface-returning methods, convert assignment to result var into return statement
@@ -3759,7 +3759,6 @@ export class CodeGenerator {
     stmt: Statement,
     indent: string,
   ): VariableExpression[] {
-    if (this.compositeExternals.size === 0) return [];
     const calls = this.findGlobalInOutCalls(stmt);
     if (!calls.some(({ args }) => args.length > 0)) return [];
     this.emit(`${indent}{`);
@@ -3768,15 +3767,31 @@ export class CodeGenerator {
     for (const { args } of calls) {
       for (const arg of args) {
         const tmp = `__gio_${this.tempVarCounter++}`;
-        this.emit(
-          `${inner}auto ${tmp} = ${this.generateVariableExpression(arg)};`,
-        );
+        const copy = this.inOutCopy(arg, tmp);
+        this.emit(`${inner}auto ${tmp} = ${copy.copyIn};`);
         this.globalInOutTemps.set(arg, tmp);
-        this.pendingGlobalCopyOuts.push(this.compositeGlobalStore(arg, tmp));
+        this.pendingGlobalCopyOuts.push(copy.copyOut);
         hoisted.push(arg);
       }
     }
     return hoisted;
+  }
+
+  /**
+   * Copy-in and copy-out of `arg` around a call that binds `tmp`: a composite
+   * global under its lock, a UNION member through its proxy (its value as the
+   * member's field type, so it binds the callee's `T&`).
+   */
+  private inOutCopy(
+    arg: VariableExpression,
+    tmp: string,
+  ): { copyIn: string; copyOut: string } {
+    const read = this.generateVariableExpression(arg);
+    const copyIn = arg.unionMember === true ? `union_value(${read})` : read;
+    const copyOut = this.compositeExternals.has(arg.name.toUpperCase())
+      ? this.compositeGlobalStore(arg, tmp)
+      : `${read} = ${tmp};`;
+    return { copyIn, copyOut };
   }
 
   /** Write the queued copy-outs of the current statement. */
@@ -3794,7 +3809,6 @@ export class CodeGenerator {
    * each in a lambda that copies in, calls and copies out.
    */
   private registerGlobalInOutCallWraps(stmt: Statement): Expression[] {
-    if (this.compositeExternals.size === 0) return [];
     const calls = this.findGlobalInOutCalls(stmt);
     for (const { call, args } of calls) {
       this.globalInOutCallWraps.set(call, args);
@@ -3813,9 +3827,10 @@ export class CodeGenerator {
     const copyOuts: string[] = [];
     for (const arg of args) {
       const tmp = `__gio_${this.tempVarCounter++}`;
-      copyIns.push(`auto ${tmp} = ${this.generateVariableExpression(arg)};`);
+      const copy = this.inOutCopy(arg, tmp);
+      copyIns.push(`auto ${tmp} = ${copy.copyIn};`);
       this.globalInOutTemps.set(arg, tmp);
-      copyOuts.push(this.compositeGlobalStore(arg, tmp));
+      copyOuts.push(copy.copyOut);
     }
     const result = `__gio_${this.tempVarCounter++}`;
     const call = generate();
@@ -3857,10 +3872,12 @@ export class CodeGenerator {
   private globalInOutArgs(
     call: FunctionCallExpression | MethodCallExpression,
   ): VariableExpression[] {
+    // A UNION member has no C++ object of its type to bind, like a composite global.
     const isCompositeGlobal = (e: Expression): e is VariableExpression =>
       e.kind === "VariableExpression" &&
-      !e.isDereference &&
-      this.compositeExternals.has(e.name.toUpperCase()) &&
+      ((!e.isDereference &&
+        this.compositeExternals.has(e.name.toUpperCase())) ||
+        e.unionMember === true) &&
       !/^\d+$/.test(e.fieldAccess[e.fieldAccess.length - 1] ?? "");
     if (!call.arguments.some((a) => isCompositeGlobal(a.value))) return [];
     const varBlocks = this.calleeVarBlocks(call);
@@ -4310,8 +4327,13 @@ export class CodeGenerator {
     switch (expr.kind) {
       case "LiteralExpression":
         return this.generateLiteralExpression(expr);
-      case "VariableExpression":
-        return this.generateVariableExpression(expr);
+      case "VariableExpression": {
+        const code = this.generateVariableExpression(expr);
+        // A UNION member read yields its value; the proxy stays for writes.
+        return expr.unionMember === true && !this.globalInOutTemps.has(expr)
+          ? `union_read(${code})`
+          : code;
+      }
       case "BinaryExpression":
         return this.generateBinaryExpression(expr);
       case "UnaryExpression":
@@ -4427,6 +4449,16 @@ export class CodeGenerator {
       default:
         return String(expr.value);
     }
+  }
+
+  /**
+   * Generate C++ for an expression written to (or whose address is taken): a
+   * UNION member stays its proxy instead of being read (see generateExpression).
+   */
+  private generateLvalue(expr: Expression): string {
+    return expr.kind === "VariableExpression"
+      ? this.generateVariableExpression(expr)
+      : this.generateExpression(expr);
   }
 
   /**
@@ -5382,9 +5414,7 @@ export class CodeGenerator {
 
     // 0. ADR(x) → &(x) (CODESYS address-of operator)
     if (nameUpper === "ADR") {
-      const args = expr.arguments.map((arg) =>
-        this.generateExpression(arg.value),
-      );
+      const args = expr.arguments.map((arg) => this.generateLvalue(arg.value));
       return `&(${args[0] ?? ""})`;
     }
 
@@ -6575,7 +6605,7 @@ export class CodeGenerator {
       this.emit(`${indent}${target.name}->write(${source});`);
       return;
     }
-    this.emit(`${indent}${this.generateExpression(target)} = ${source};`);
+    this.emit(`${indent}${this.generateLvalue(target)} = ${source};`);
   }
 
   /**

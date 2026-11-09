@@ -115,8 +115,15 @@ describeIfGpp("generated debug table compiles", () => {
    * Compile ST, then syntax-check the generated debug table against the
    * generated header. Returns g++'s output, empty when it compiled.
    */
-  function buildDebugTable(source: string, testName: string): string {
-    const result = compile(source, { headerFileName: "generated.hpp" });
+  function buildDebugTable(
+    source: string,
+    testName: string,
+    features: string[] = [],
+  ): string {
+    const result = compile(source, {
+      headerFileName: "generated.hpp",
+      ...(features.length > 0 ? { features } : {}),
+    });
     expect(result.errors.map((e) => e.message)).toEqual([]);
     expect(result.success).toBe(true);
     expect(result.debugTableCpp, "no debug table was generated").toBeTruthy();
@@ -153,6 +160,23 @@ VAR Motor : Motor; plain : BOOL; END_VAR
   Motor(run := plain);
 END_PROGRAM${CFG}`,
         "program_var",
+      ),
+    ).toBe("");
+  });
+
+  it("compiles with a UNION left out of the table (feature union)", () => {
+    expect(
+      buildDebugTable(
+        `TYPE
+  U_A : UNION f : REAL; d : DWORD; END_UNION;
+  ST_W : STRUCT k : INT; u : U_A; END_STRUCT;
+END_TYPE
+PROGRAM Main
+VAR u : U_A; w : ST_W; au : ARRAY[0..1] OF U_A; plain : BOOL; END_VAR
+  u.d := 1; w.u.f := 2.0; au[1] := u;
+END_PROGRAM${CFG}`,
+        "union_skipped",
+        ["+union"],
       ),
     ).toBe("");
   });

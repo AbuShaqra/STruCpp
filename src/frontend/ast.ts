@@ -842,6 +842,8 @@ export interface VariableExpression extends TypedNode {
   selfCaret?: true;
   /** Set when written with a global variable list prefix (`LIST.var`), which was removed. */
   globalList?: string;
+  /** Set by the type checker when the storage reached lies in a UNION's storage (feature union). */
+  unionMember?: true;
 }
 
 /**

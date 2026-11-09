@@ -15,6 +15,7 @@
 #pragma once
 
 #include "iec_var.hpp"
+#include "iec_union.hpp"
 
 namespace strucpp {
 

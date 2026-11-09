@@ -358,7 +358,21 @@ describe("Library System", () => {
           namespace: "ns",
           types: [{ name: "T", kind: "invalid" }],
         }),
-      ).toThrow('types[0].kind must be "struct", "enum", or "alias"');
+      ).toThrow(
+        'types[0].kind must be "struct", "union", "enum", or "alias"',
+      );
+    });
+
+    it("should load a UNION type entry", () => {
+      const manifest = loadLibraryManifest({
+        name: "lib",
+        version: "1.0.0",
+        namespace: "ns",
+        types: [
+          { name: "U_A", kind: "union", fields: [{ name: "F", type: "REAL" }] },
+        ],
+      });
+      expect(manifest.types[0]!.kind).toBe("union");
     });
   });
 

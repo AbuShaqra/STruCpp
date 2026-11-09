@@ -171,13 +171,13 @@ export interface LibraryFBEntry {
 export interface LibraryTypeEntry {
   /** Type name */
   name: string;
-  /** Type kind (struct, enum, alias) */
-  kind: "struct" | "enum" | "alias";
+  /** Type kind (struct, union, enum, alias); `union` is a UNION (feature union). */
+  kind: "struct" | "union" | "enum" | "alias";
   /** Base type (for alias/enum) */
   baseType?: string;
   /** Struct member fields (name + declared type), so a consuming compilation
    *  can type member access on a dependency struct (e.g. `MATH.PI`). Only set
-   *  for `kind: "struct"`; optional for backward compatibility. */
+   *  for `kind: "struct"` and `kind: "union"`; optional for backward compatibility. */
   fields?: Array<{ name: string; type: string }>;
   /** Type-level help text — same lifecycle as `LibraryFBEntry.documentation`,
    *  populated automatically from the structured doc-block slot in CODESYS

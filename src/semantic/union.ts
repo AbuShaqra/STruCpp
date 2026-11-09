@@ -15,10 +15,14 @@
 import type {
   CompilationUnit,
   Expression,
+  FunctionCallExpression,
+  RefAssignStatement,
+  RefExpression,
   StructDefinition,
   StructInitializerExpression,
   TypeDeclaration,
   TypeReference,
+  VarBlock,
   VarDeclaration,
 } from "../frontend/ast.js";
 import { walkAST } from "../ast-utils.js";
@@ -356,4 +360,188 @@ export function validateUnionInitializers(
     if (decl.initialValue) check(decl.type, decl.initialValue);
     return false;
   });
+}
+
+/** What a name not declared in the unit is, for {@link unionLoweringErrors}. */
+export type UnionTypeLookup = (
+  upperName: string,
+) => TypeDeclaration["definition"] | undefined;
+
+/** The type name a reference stores in place (an array's element), or undefined for a pointer. */
+function storedName(ref: TypeReference): string | undefined {
+  if ((ref.referenceKind ?? "none") !== "none") return undefined;
+  if (ref.arrayDimensions) {
+    if ((ref.elementReferenceChain ?? []).length > 0) return undefined;
+    return ref.elementTypeName;
+  }
+  return ref.name;
+}
+
+/** True for a REFERENCE TO, written directly or as the element of an array. */
+function isReferenceTo(ref: TypeReference): boolean {
+  const chain = ref.arrayDimensions
+    ? ref.elementReferenceChain
+    : (ref.referenceChain ?? [ref.referenceKind ?? "none"]);
+  return chain?.[0] === "reference_to";
+}
+
+/**
+ * What compile cannot lower yet although analysis accepts it (feature union),
+ * one message per place: a REF(), REF_LINK() or REF= of a UNION member, a
+ * REFERENCE TO or library STRUCT stored in a UNION, and a RETAIN or
+ * PERSISTENT variable that is or holds a UNION.
+ */
+export function unionLoweringErrors(
+  ast: CompilationUnit,
+  lookup: UnionTypeLookup,
+  report: UnionReporter,
+): void {
+  const index = new UnitIndex(ast);
+  const isUnionName = (name: string): string | undefined => {
+    const decl = index.resolve(name);
+    if (decl) {
+      return isUnionDefinition(decl.definition) ? decl.name : undefined;
+    }
+    const def = lookup(name.toUpperCase());
+    return def !== undefined && isUnionDefinition(def) ? name : undefined;
+  };
+
+  // Members of UNIONs and the STRUCT fields stored in them.
+  const checkStored = (
+    unionName: string,
+    fields: VarDeclaration[],
+    seen: Set<string>,
+  ): void => {
+    for (const field of fields) {
+      const member = field.names[0] ?? "";
+      if (isReferenceTo(field.type)) {
+        report(
+          `Member '${member}' stored in UNION '${unionName}' is a REFERENCE TO: a REFERENCE TO in a UNION is not supported yet`,
+          field.type.sourceSpan,
+        );
+        continue;
+      }
+      const name = storedName(field.type);
+      if (name === undefined) continue;
+      const upper = name.toUpperCase();
+      if (seen.has(upper)) continue;
+      seen.add(upper);
+      const decl = index.resolve(name);
+      const def = decl?.definition;
+      if (def === undefined) {
+        const ext = lookup(upper);
+        if (ext?.kind === "StructDefinition" && ext.isUnion !== true) {
+          report(
+            `Member '${member}' stored in UNION '${unionName}' is of library STRUCT type '${name}': a library STRUCT in a UNION is not supported yet`,
+            field.type.sourceSpan,
+          );
+        }
+        continue;
+      }
+      if (def.kind === "StructDefinition") {
+        checkStored(unionName, def.fields, seen);
+      } else if (def.kind === "ArrayDefinition") {
+        checkStored(unionName, [{ ...field, type: def.elementType }], seen);
+      }
+    }
+  };
+  for (const t of ast.types) {
+    if (!isUnionDefinition(t.definition)) continue;
+    checkStored(t.name, t.definition.fields, new Set([t.name.toUpperCase()]));
+  }
+
+  // The UNION a type is or holds (arrays, aliases, STRUCT fields, FB members).
+  const heldUnion = (
+    ref: TypeReference,
+    seen: Set<string>,
+  ): string | undefined => {
+    const name = storedName(ref);
+    if (name === undefined) return undefined;
+    const upper = name.toUpperCase();
+    if (seen.has(upper)) return undefined;
+    seen.add(upper);
+    const union = isUnionName(name);
+    if (union !== undefined) return union;
+    const decl = index.resolve(name);
+    const def = decl?.definition ?? lookup(upper);
+    let fields: VarDeclaration[] = [];
+    if (def?.kind === "StructDefinition") fields = def.fields;
+    else if (def?.kind === "ArrayDefinition") {
+      return heldUnion(def.elementType, seen);
+    } else if (def?.kind === "TypeReference" && decl !== undefined) {
+      return heldUnion(def, seen);
+    } else {
+      const fb = ast.functionBlocks.find((f) => f.name.toUpperCase() === upper);
+      if (fb) {
+        fields = fb.varBlocks
+          .filter(
+            (b) =>
+              b.blockType !== "VAR_IN_OUT" &&
+              b.blockType !== "VAR_EXTERNAL" &&
+              b.blockType !== "VAR_TEMP",
+          )
+          .flatMap((b) => b.declarations);
+      }
+    }
+    for (const f of fields) {
+      const hit = heldUnion(f.type, seen);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  };
+
+  walkAST(ast, (node) => {
+    if (node.kind === "VarBlock") {
+      const block = node as VarBlock;
+      if (!block.isRetain) return;
+      for (const decl of block.declarations) {
+        const union = heldUnion(decl.type, new Set());
+        if (union === undefined) continue;
+        report(
+          `RETAIN of a UNION is not supported yet: '${decl.names[0] ?? ""}' is or holds UNION '${union}'`,
+          decl.sourceSpan,
+        );
+      }
+      return;
+    }
+    if (node.kind === "RefExpression") {
+      const operand = (node as RefExpression).operand;
+      if (isUnionMemberAccess(operand)) {
+        report(
+          "REF of a UNION member is not supported yet",
+          operand.sourceSpan,
+        );
+      }
+      return;
+    }
+    if (node.kind === "FunctionCallExpression") {
+      const call = node as FunctionCallExpression;
+      const arg = call.arguments[0]?.value;
+      if (
+        call.functionName.toUpperCase() === "REF_LINK" &&
+        arg !== undefined &&
+        isUnionMemberAccess(arg)
+      ) {
+        report("REF of a UNION member is not supported yet", arg.sourceSpan);
+      }
+      return;
+    }
+    if (node.kind === "RefAssignStatement") {
+      const stmt = node as RefAssignStatement;
+      for (const side of [stmt.target, stmt.source]) {
+        if (isUnionMemberAccess(side)) {
+          report(
+            "REF= on a UNION member is not supported yet",
+            side.sourceSpan,
+          );
+        }
+      }
+    }
+    return;
+  });
+}
+
+/** A variable access the type checker found inside a UNION's storage. */
+function isUnionMemberAccess(expr: Expression): boolean {
+  return expr.kind === "VariableExpression" && expr.unionMember === true;
 }
