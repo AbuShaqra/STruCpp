@@ -7,7 +7,13 @@
  * Uses Chevrotain's embedded DSL for grammar definition.
  */
 
-import { CstParser, CstNode, type IToken, type TokenType } from "chevrotain";
+import {
+  CstParser,
+  CstNode,
+  EOF,
+  type IToken,
+  type TokenType,
+} from "chevrotain";
 import * as tokens from "./lexer.js";
 import { resolveErrorMessageProvider } from "./parser-error-message-provider.js";
 
@@ -711,6 +717,11 @@ export class STParser extends CstParser {
     this.OR({
       DEF: [
         { ALT: () => this.SUBRULE(this.structType) },
+        // `UNION ... END_UNION`, recognised by spelling only; gated by the feature union in the analyzer.
+        {
+          ALT: (): CstNode => this.SUBRULE(this.unionType),
+          GATE: (): boolean => this.isUnionTypeAhead(),
+        },
         { ALT: () => this.SUBRULE(this.simpleEnumType) },
         {
           // POINTER TO ARRAY[...] OF T (must come before bare arrayType)
@@ -755,6 +766,20 @@ export class STParser extends CstParser {
       this.SUBRULE(this.varDeclaration);
     });
     this.CONSUME(tokens.END_STRUCT);
+  });
+
+  /**
+   * Union type definition: `UNION <fields> END_UNION`. UNION and END_UNION are
+   * identifiers, not keywords, so they stay usable as names everywhere else.
+   * Entered only when {@link isUnionTypeAhead} holds.
+   */
+  public unionType = this.RULE("unionType", () => {
+    this.CONSUME(tokens.Identifier); // UNION
+    this.MANY({
+      GATE: (): boolean => !this.isWord(this.LA(1), "END_UNION"),
+      DEF: (): CstNode => this.SUBRULE(this.varDeclaration),
+    });
+    this.CONSUME2(tokens.Identifier); // END_UNION
   });
 
   /**
@@ -1237,6 +1262,43 @@ export class STParser extends CstParser {
       tokenType === tokens.Identifier ||
       STParser.CONTEXTUAL_KEYWORDS.includes(tokenType)
     );
+  }
+
+  /** True when `token` is an Identifier spelled `word` (any case). */
+  private isWord(token: IToken, word: string): boolean {
+    return (
+      token.tokenType === tokens.Identifier &&
+      token.image.toUpperCase() === word
+    );
+  }
+
+  /**
+   * Lookahead helper, after the `:` of a TYPE: does `UNION <fields> END_UNION`
+   * start here? `UNION` must be followed by END_UNION or by a field (`name :`,
+   * `name ,` or `name AT`), and END_UNION must come before the next END_TYPE,
+   * so an alias of a type named UNION (`T : Union;`) still parses as an alias.
+   */
+  private isUnionTypeAhead(): boolean {
+    if (!this.isWord(this.LA(1), "UNION")) return false;
+    const second = this.LA(2);
+    if (!this.isWord(second, "END_UNION")) {
+      const third = this.LA(3).tokenType;
+      if (
+        !this.isIdentifierOrKeywordToken(second.tokenType) ||
+        (third !== tokens.Colon &&
+          third !== tokens.Comma &&
+          third !== tokens.AT)
+      ) {
+        return false;
+      }
+    }
+    for (let i = 2; ; i++) {
+      const token = this.LA(i);
+      if (token.tokenType === EOF || token.tokenType === tokens.END_TYPE) {
+        return false;
+      }
+      if (this.isWord(token, "END_UNION")) return true;
+    }
   }
 
   /**

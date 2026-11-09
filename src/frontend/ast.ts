@@ -375,6 +375,11 @@ export interface StructDefinition extends ASTNode {
    * analyzer (feature struct_extends). Absent on a STRUCT without a base.
    */
   inheritedDeclarations?: number;
+  /**
+   * Set on `UNION ... END_UNION` (feature union): the fields share one
+   * storage. Every other pass treats it as a STRUCT with the same fields.
+   */
+  isUnion?: true;
 }
 
 /**

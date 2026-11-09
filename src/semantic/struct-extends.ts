@@ -49,7 +49,7 @@ function cloneAst<T>(value: T): T {
 function describeDefinition(decl: TypeDeclaration): string {
   switch (decl.definition.kind) {
     case "StructDefinition":
-      return "a STRUCT";
+      return decl.definition.isUnion ? "a UNION" : "a STRUCT";
     case "EnumDefinition":
       return "an enumeration";
     case "ArrayDefinition":
@@ -153,7 +153,10 @@ export function flattenStructExtends(
       failed.add(decl);
       return false;
     }
-    if (baseDecl.definition.kind !== "StructDefinition") {
+    if (
+      baseDecl.definition.kind !== "StructDefinition" ||
+      baseDecl.definition.isUnion
+    ) {
       report(
         `STRUCT '${decl.name}' cannot extend '${base.name}', ${describeDefinition(baseDecl)}: the base must be a STRUCT`,
         base.sourceSpan,
@@ -199,6 +202,13 @@ export function flattenStructExtends(
 
   for (const decl of ast.types) {
     if (!decl.extends) continue;
+    // EXTENDS on a UNION is refused in union.ts; the UNION keeps its members.
+    if (
+      decl.definition.kind === "StructDefinition" &&
+      decl.definition.isUnion
+    ) {
+      continue;
+    }
     if (decl.definition.kind !== "StructDefinition") {
       report(
         `EXTENDS on TYPE '${decl.name}' needs a STRUCT definition`,

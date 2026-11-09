@@ -103,6 +103,7 @@ const RULE_DESCRIPTIONS: Record<string, string> = {
   dataType: "parsing a data type",
   singleTypeDeclaration: "parsing a type declaration",
   structType: "parsing a STRUCT type",
+  unionType: "parsing a UNION type",
   simpleEnumType: "parsing an enum type",
   enumMember: "parsing an enum member",
   arrayType: "parsing an ARRAY type",

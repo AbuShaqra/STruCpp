@@ -53,6 +53,11 @@ import {
   ownFields,
 } from "./struct-extends.js";
 import {
+  isUnionDefinition,
+  validateUnionInitializers,
+  validateUnionTypes,
+} from "./union.js";
+import {
   DEFAULT_FEATURES,
   profilesWithFeature,
   type FeatureId,
@@ -439,8 +444,10 @@ export class SemanticAnalyzer {
     // flattened, so its members resolve. Flattening precedes the symbol tables.
     const errorsBeforeStructFeature = this.errors.length;
     this.validateStructExtendsFeature(ast);
-    const structFeatureErrors = this.errors.length - errorsBeforeStructFeature;
     this.flattenStructTypes(ast);
+    // UNION refusals and rules are located and gate nothing either.
+    this.validateUnions(ast);
+    const structFeatureErrors = this.errors.length - errorsBeforeStructFeature;
 
     // Pass 1: Build symbol tables (global lists first: they may rename globals)
     this.globalListDisplayNames.clear();
@@ -653,12 +660,47 @@ export class SemanticAnalyzer {
   private validateStructExtendsFeature(ast: CompilationUnit): void {
     for (const typeDecl of ast.types) {
       if (!typeDecl.extends) continue;
+      // EXTENDS on a UNION is refused by validateUnions.
+      if (isUnionDefinition(typeDecl.definition)) continue;
       this.requireFeature(
         "struct_extends",
         "EXTENDS on a STRUCT",
         typeDecl.extendsKeywordSpan ?? typeDecl.sourceSpan,
       );
     }
+  }
+
+  /**
+   * `UNION ... END_UNION` needs the feature union (reported at UNION); its
+   * rules and initial values are checked in every case (see union.ts).
+   */
+  private validateUnions(ast: CompilationUnit): void {
+    const report = (message: string, span: SourceSpan): void => {
+      this.addError(message, span.startLine, span.startCol, span.file);
+    };
+    for (const typeDecl of ast.types) {
+      if (!isUnionDefinition(typeDecl.definition)) continue;
+      this.requireFeature(
+        "union",
+        `UNION type '${typeDecl.name}'`,
+        typeDecl.definition.sourceSpan,
+      );
+    }
+    validateUnionTypes(
+      ast,
+      (upper) => {
+        if (this.symbolTables.lookupFunctionBlock(upper)) {
+          return { instance: "FUNCTION_BLOCK" };
+        }
+        const def =
+          this.symbolTables.lookupType(upper)?.declaration?.definition;
+        return def?.kind === "StructDefinition"
+          ? { fields: def.fields }
+          : undefined;
+      },
+      report,
+    );
+    validateUnionInitializers(ast, report);
   }
 
   /** Copy the base fields into each derived STRUCT (see struct-extends.ts). */
@@ -4172,7 +4214,10 @@ export class SemanticAnalyzer {
     switch (def.kind) {
       case "StructDefinition":
         for (const field of ownFields(def)) {
-          this.validateSingleTypeReference(field.type, `STRUCT '${typeName}'`);
+          this.validateSingleTypeReference(
+            field.type,
+            `${def.isUnion ? "UNION" : "STRUCT"} '${typeName}'`,
+          );
           this.requireAdrFeatureIn(field.initialValue);
         }
         break;

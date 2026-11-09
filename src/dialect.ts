@@ -21,6 +21,7 @@ export const KNOWN_FEATURES = [
   "postfix_enum_base",
   "named_global_lists",
   "struct_extends",
+  "union",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];
