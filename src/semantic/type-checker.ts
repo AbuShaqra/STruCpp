@@ -58,6 +58,7 @@ import {
 } from "./type-utils.js";
 import { stripEnEno } from "../ast-utils.js";
 import { DEFAULT_FEATURES } from "../dialect.js";
+import { structExtends } from "./struct-extends.js";
 
 // Re-export from type-utils for backward compatibility
 export { ELEMENTARY_TYPES, TYPE_CATEGORIES } from "./type-utils.js";
@@ -771,11 +772,11 @@ export class TypeChecker {
       this.resolveExprType(arg.value, scope);
     }
     this.validateReferenceArguments(expr, scope);
-    this.validateInterfaceArguments(
+    const inputs =
       this.callInputs(expr, scope) ??
-        this.dottedMethodInputs(expr.functionName, scope),
-      expr.arguments,
-    );
+      this.dottedMethodInputs(expr.functionName, scope);
+    this.validateInterfaceArguments(inputs, expr.arguments);
+    this.validateStructArguments(inputs, expr.arguments);
     if (this.strict) {
       this.checkStrictArguments(
         this.callInputs(expr, scope) ??
@@ -919,10 +920,9 @@ export class TypeChecker {
     ) {
       const owner = this.memberChainOwner(expr.object, scope);
       const method = this.checkMemberChainCall(expr, expr.object, owner);
-      this.validateInterfaceArguments(
-        this.methodInputsOf(owner?.name, expr.methodName),
-        expr.arguments,
-      );
+      const chainInputs = this.methodInputsOf(owner?.name, expr.methodName);
+      this.validateInterfaceArguments(chainInputs, expr.arguments);
+      this.validateStructArguments(chainInputs, expr.arguments);
       if (this.strict) {
         this.checkStrictArguments(
           this.methodInputsOf(owner?.name, expr.methodName),
@@ -935,10 +935,9 @@ export class TypeChecker {
       return chainRet;
     }
 
-    this.validateInterfaceArguments(
-      this.methodInputs(objType, expr, scope),
-      expr.arguments,
-    );
+    const methodInputs = this.methodInputs(objType, expr, scope);
+    this.validateInterfaceArguments(methodInputs, expr.arguments);
+    this.validateStructArguments(methodInputs, expr.arguments);
     if (this.strict) {
       this.checkStrictArguments(
         this.methodInputs(objType, expr, scope),
@@ -1556,6 +1555,20 @@ export class TypeChecker {
     }
     if (!targetType || !valueType) return;
 
+    const related = this.structRelation(
+      typeNameUtil(targetType),
+      typeNameUtil(valueType),
+    );
+    if (related !== undefined) {
+      this.addError(
+        `Cannot assign ${typeNameUtil(valueType)} to ${typeNameUtil(targetType)}: ${related}`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+      return;
+    }
+
     if (this.strict && this.checkStrictConversion(targetType, value)) return;
 
     // Integer/real/bool literals without explicit type prefix are polymorphic:
@@ -1748,6 +1761,87 @@ export class TypeChecker {
           t.definition.kind === "StructDefinition",
       ) ?? false;
     if (ELEMENTARY_TYPES[upper] !== undefined || isStruct) fail("");
+  }
+
+  /**
+   * Why a value of STRUCT `source` cannot be stored in STRUCT `target` when one
+   * extends the other (IEC 61131-3 6.4.4.6: only the same type); else undefined.
+   */
+  private structRelation(target: string, source: string): string | undefined {
+    if (!this.ast || target.toUpperCase() === source.toUpperCase()) {
+      return undefined;
+    }
+    const pair = structExtends(this.ast, source, target)
+      ? `${source} EXTENDS ${target}`
+      : structExtends(this.ast, target, source)
+        ? `${target} EXTENDS ${source}`
+        : undefined;
+    return pair === undefined
+      ? undefined
+      : `a structured variable is assignment-compatible only with the same type (${pair})`;
+  }
+
+  /** A TYPE of this unit declared `EXTENDS` (feature struct_extends). */
+  private isDerivedStruct(name: string): boolean {
+    const upper = name.toUpperCase();
+    return (
+      this.ast?.types.some(
+        (t) =>
+          t.name.toUpperCase() === upper &&
+          t.definition.kind === "StructDefinition" &&
+          t.extends !== undefined,
+      ) ?? false
+    );
+  }
+
+  /** A STRUCT TYPE of this unit. */
+  private isStructType(name: string): boolean {
+    const upper = name.toUpperCase();
+    return (
+      this.ast?.types.some(
+        (t) =>
+          t.name.toUpperCase() === upper &&
+          t.definition.kind === "StructDefinition",
+      ) ?? false
+    );
+  }
+
+  /**
+   * An argument of one STRUCT type bound to a VAR_INPUT or VAR_IN_OUT of
+   * another, when either is a derived STRUCT. Other STRUCT pairs are left as before.
+   */
+  private validateStructArguments(
+    inputs: CallInput[] | undefined,
+    args: readonly Argument[],
+  ): void {
+    if (!inputs) return;
+    stripEnEno([...args]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      const valueType = arg.value.resolvedType;
+      if (!input || !valueType) return;
+      const refKind = input.type.referenceKind;
+      if (refKind !== undefined && refKind !== "none") return;
+      if (input.type.arrayDimensions !== undefined) return;
+      const source = typeNameUtil(valueType);
+      const target = input.type.name;
+      if (source.toUpperCase() === target.toUpperCase()) return;
+      if (!this.isStructType(source) || !this.isStructType(target)) return;
+      if (!this.isDerivedStruct(source) && !this.isDerivedStruct(target)) {
+        return;
+      }
+      const related = this.structRelation(target, source);
+      this.addError(
+        `Cannot assign ${source} to parameter '${input.name}' of type ${target}${related === undefined ? "" : `: ${related}`}`,
+        arg.value.sourceSpan.startLine,
+        arg.value.sourceSpan.startCol,
+        arg.value.sourceSpan.file,
+      );
+    });
   }
 
   /** Arguments bound to an interface-typed input are checked like an assignment. */

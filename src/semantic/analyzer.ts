@@ -48,6 +48,11 @@ import {
   type GlobalLists,
 } from "./global-lists.js";
 import {
+  flattenStructExtends,
+  LIBRARY_STRUCT,
+  ownFields,
+} from "./struct-extends.js";
+import {
   DEFAULT_FEATURES,
   profilesWithFeature,
   type FeatureId,
@@ -67,6 +72,7 @@ import {
   type EnumMemberEntry,
   typeNamesHeldByValue,
   typesHoldingFunctionBlocks,
+  ELEMENTARY_TYPES,
 } from "./type-utils.js";
 import {
   isEnArgument,
@@ -429,6 +435,13 @@ export class SemanticAnalyzer {
       );
     }
 
+    // A refused EXTENDS is located and gates nothing; the STRUCT is still
+    // flattened, so its members resolve. Flattening precedes the symbol tables.
+    const errorsBeforeStructFeature = this.errors.length;
+    this.validateStructExtendsFeature(ast);
+    const structFeatureErrors = this.errors.length - errorsBeforeStructFeature;
+    this.flattenStructTypes(ast);
+
     // Pass 1: Build symbol tables (global lists first: they may rename globals)
     this.globalListDisplayNames.clear();
     this.prepareGlobalLists(ast);
@@ -447,7 +460,10 @@ export class SemanticAnalyzer {
     this.validatePostfixEnumBases(ast);
     this.validateConfigurationGlobalsHoldNoFB(ast);
     const typeReferenceErrors =
-      this.errors.length - errorsBeforeTypeReferences - globalListErrors;
+      this.errors.length -
+      errorsBeforeTypeReferences -
+      globalListErrors +
+      structFeatureErrors;
 
     if (this.options.strict === true) this.validateReservedNames(ast);
 
@@ -631,6 +647,43 @@ export class SemanticAnalyzer {
         );
       }
     }
+  }
+
+  /** `TYPE X EXTENDS Base : STRUCT` needs the feature struct_extends. Reported at EXTENDS. */
+  private validateStructExtendsFeature(ast: CompilationUnit): void {
+    for (const typeDecl of ast.types) {
+      if (!typeDecl.extends) continue;
+      this.requireFeature(
+        "struct_extends",
+        "EXTENDS on a STRUCT",
+        typeDecl.extendsKeywordSpan ?? typeDecl.sourceSpan,
+      );
+    }
+  }
+
+  /** Copy the base fields into each derived STRUCT (see struct-extends.ts). */
+  private flattenStructTypes(ast: CompilationUnit): void {
+    const named = (list: readonly { name: string }[], upper: string): boolean =>
+      list.some((d) => d.name.toUpperCase() === upper);
+    const describe = (upper: string): string | undefined => {
+      if (named(ast.functionBlocks, upper)) return "a FUNCTION_BLOCK";
+      if (named(ast.interfaces, upper)) return "an INTERFACE";
+      if (named(ast.functions, upper)) return "a FUNCTION";
+      if (named(ast.programs, upper)) return "a PROGRAM";
+      if (ELEMENTARY_TYPES[upper] !== undefined) return "an elementary type";
+      if (this.symbolTables.lookupFunctionBlock(upper)) {
+        return "a FUNCTION_BLOCK";
+      }
+      const libraryType = this.symbolTables.lookupType(upper);
+      if (!libraryType) return undefined;
+      const isStruct =
+        libraryType.resolvedType?.typeKind === "struct" ||
+        libraryType.declaration?.definition.kind === "StructDefinition";
+      return isStruct ? LIBRARY_STRUCT : "a type from a library";
+    };
+    flattenStructExtends(ast, describe, (message, span) => {
+      this.addError(message, span.startLine, span.startCol, span.file);
+    });
   }
 
   /**
@@ -956,7 +1009,7 @@ export class SemanticAnalyzer {
       if (def.kind === "EnumDefinition") {
         for (const m of def.members) check(m.name, m.sourceSpan);
       } else if (def.kind === "StructDefinition") {
-        for (const field of def.fields) {
+        for (const field of ownFields(def)) {
           for (const n of field.names) check(n, field.sourceSpan);
         }
       }
@@ -1523,7 +1576,7 @@ export class SemanticAnalyzer {
     }
     for (const typeDecl of ast.types) {
       if (typeDecl.definition.kind !== "StructDefinition") continue;
-      for (const field of typeDecl.definition.fields) {
+      for (const field of ownFields(typeDecl.definition)) {
         this.checkDeclarationInitializer(field, ast);
       }
     }
@@ -4118,7 +4171,7 @@ export class SemanticAnalyzer {
   ): void {
     switch (def.kind) {
       case "StructDefinition":
-        for (const field of def.fields) {
+        for (const field of ownFields(def)) {
           this.validateSingleTypeReference(field.type, `STRUCT '${typeName}'`);
           this.requireAdrFeatureIn(field.initialValue);
         }

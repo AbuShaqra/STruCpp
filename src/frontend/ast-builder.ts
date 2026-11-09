@@ -976,8 +976,9 @@ export class ASTBuilder {
    */
   buildSingleTypeDeclaration(node: CstNode): TypeDeclaration {
     const children = node.children as CstChildren;
-    const nameToken = getAllTokens(children.Identifier)[0];
+    const [nameToken, baseToken] = getAllTokens(children.Identifier);
     const name = nameToken?.image ?? "";
+    const extendsToken = getFirstToken(children.EXTENDS);
 
     const definition = this.buildTypeDefinition(node);
 
@@ -995,6 +996,18 @@ export class ASTBuilder {
       name,
       definition,
       ...(defaultValue !== undefined ? { defaultValue } : {}),
+      ...(extendsToken && baseToken
+        ? {
+            extends: {
+              kind: "TypeReference" as const,
+              sourceSpan: tokenToSourceSpan(baseToken),
+              name: baseToken.image,
+              isReference: false,
+              referenceKind: "none" as const,
+            },
+            extendsKeywordSpan: tokenToSourceSpan(extendsToken),
+          }
+        : {}),
     };
   }
 

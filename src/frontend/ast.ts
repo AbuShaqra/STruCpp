@@ -335,6 +335,10 @@ export interface TypeDeclaration extends ASTNode {
    * `applyTypeDefaults` in the AST builder.
    */
   defaultValue?: Expression;
+  /** Base of `TYPE X EXTENDS Base : STRUCT`; needs the feature struct_extends. */
+  extends?: TypeReference;
+  /** The EXTENDS keyword of {@link extends}. */
+  extendsKeywordSpan?: SourceSpan;
   /** Set on a TYPE hoisted from an inline enumeration or subrange. */
   inline?: InlineTypeOrigin;
 }
@@ -364,7 +368,13 @@ export type TypeDefinition =
  */
 export interface StructDefinition extends ASTNode {
   kind: "StructDefinition";
+  /** With a base (`EXTENDS`), the inherited declarations first, then the own ones. */
   fields: VarDeclaration[];
+  /**
+   * Number of leading {@link fields} copied from the base chain by the
+   * analyzer (feature struct_extends). Absent on a STRUCT without a base.
+   */
+  inheritedDeclarations?: number;
 }
 
 /**

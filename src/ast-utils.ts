@@ -462,6 +462,7 @@ function getChildren(node: ASTNode): ASTNode[] {
 
     case "TypeDeclaration": {
       const td = node as TypeDeclaration;
+      if (td.extends) children.push(td.extends);
       children.push(td.definition);
       if (td.defaultValue) children.push(td.defaultValue);
       break;
@@ -469,7 +470,8 @@ function getChildren(node: ASTNode): ASTNode[] {
 
     case "StructDefinition": {
       const sd = node as StructDefinition;
-      children.push(...sd.fields);
+      // Fields as written: the copies inherited through EXTENDS are skipped.
+      children.push(...sd.fields.slice(sd.inheritedDeclarations ?? 0));
       break;
     }
 
