@@ -271,6 +271,8 @@ export interface VarBlock extends ASTNode {
    */
   isNonRetain: boolean;
   declarations: VarDeclaration[];
+  /** Global variable list of a top-level VAR_GLOBAL block (feature named_global_lists). */
+  globalListName?: string;
 }
 
 /**
@@ -279,6 +281,8 @@ export interface VarBlock extends ASTNode {
 export interface VarDeclaration extends ASTNode {
   kind: "VarDeclaration";
   names: string[];
+  /** Global list aliases of these names (`LIST__NAME`), emitted as C++ references (feature named_global_lists). */
+  listAliases?: Array<{ name: string; alias: string }>;
   type: TypeReference;
   initialValue?: Expression;
   /** The `AT` operand verbatim: a `%` location, or an OpenPLC alias name. */
@@ -770,6 +774,8 @@ export interface FunctionCallExpression extends TypedNode {
   instance?: Expression;
   /** Written as `THIS^.M()`; needs the feature self_caret. */
   selfCaret?: true;
+  /** Set when written with a global variable list prefix (`LIST.fb()`), which was removed. */
+  globalList?: string;
 }
 
 /**
@@ -819,6 +825,8 @@ export interface VariableExpression extends TypedNode {
   typedLiteral?: true;
   /** Written as `THIS^.member`; needs the feature self_caret. */
   selfCaret?: true;
+  /** Set when written with a global variable list prefix (`LIST.var`), which was removed. */
+  globalList?: string;
 }
 
 /**

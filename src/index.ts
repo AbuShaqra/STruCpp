@@ -20,6 +20,11 @@ import { transpileILSource } from "./il/il-transpiler.js";
 import { buildProjectModel } from "./project-model.js";
 import { SymbolTables } from "./semantic/symbol-table.js";
 import { SemanticAnalyzer } from "./semantic/analyzer.js";
+import {
+  defaultGlobalListName,
+  isGlobalListName,
+  nameGlobalLists,
+} from "./semantic/global-lists.js";
 import { CodeGenerator } from "./backend/codegen.js";
 import {
   generateDebugTable,
@@ -75,6 +80,17 @@ function validateCompileOptions(options: CompileOptions): void {
       throw new TypeError(
         `pouIncludes entry ${JSON.stringify(include)} is not a valid include filename ` +
           `(allowed characters: alphanumerics, '.', '/', '-', '_', '+').`,
+      );
+    }
+  }
+  const listNames = [
+    options.globalListName,
+    ...(options.additionalSources ?? []).map((s) => s.globalListName),
+  ];
+  for (const name of listNames) {
+    if (name !== undefined && !isGlobalListName(name)) {
+      throw new TypeError(
+        `globalListName ${JSON.stringify(name)} is not an identifier`,
       );
     }
   }
@@ -397,10 +413,15 @@ function runPipeline(
 
   try {
     const globalConstants = mergedOptions.globalConstants;
+    const primaryFileName = mergedOptions.fileName ?? "main.st";
     const primaryAst = buildAST(
       parseResult.cst,
-      mergedOptions.fileName ?? "main.st",
+      primaryFileName,
       globalConstants,
+    );
+    nameGlobalLists(
+      primaryAst,
+      mergedOptions.globalListName ?? defaultGlobalListName(primaryFileName),
     );
     const units: CompilationUnit[] = [primaryAst];
 
@@ -455,13 +476,17 @@ function runPipeline(
         }
         if (addlParseResult.cst) {
           try {
-            units.push(
-              buildAST(
-                addlParseResult.cst,
-                addlSource.fileName,
-                globalConstants,
-              ),
+            const addlAst = buildAST(
+              addlParseResult.cst,
+              addlSource.fileName,
+              globalConstants,
             );
+            nameGlobalLists(
+              addlAst,
+              addlSource.globalListName ??
+                defaultGlobalListName(addlSource.fileName),
+            );
+            units.push(addlAst);
           } catch (e) {
             errors.push({
               message: `AST build failed for ${addlSource.fileName}: ${e instanceof Error ? e.message : String(e)}`,

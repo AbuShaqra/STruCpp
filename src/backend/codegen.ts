@@ -1710,6 +1710,13 @@ export class CodeGenerator {
           } else {
             this.emitHeader(`inline ${cppType} ${name}{};`);
           }
+          // List-qualified names of this global (named_global_lists), as references.
+          for (const a of decl.listAliases ?? []) {
+            if (a.name !== name) continue;
+            this.emitHeader(
+              `${constQualifier}inline ${cppType}& ${a.alias} = ${name};`,
+            );
+          }
           this.emitHeaderChunkMarker("end", "inlineGlobal", name);
         }
       }

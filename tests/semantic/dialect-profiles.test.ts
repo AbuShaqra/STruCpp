@@ -104,6 +104,17 @@ describe("resolveDialect", () => {
     ).toContain("postfix_enum_base");
   });
 
+  it("named_global_lists is known but in neither the default set nor iec-3", () => {
+    expect(KNOWN_FEATURES).toContain("named_global_lists");
+    expect(DEFAULT_FEATURES.has("named_global_lists")).toBe(false);
+    expect(resolveDialect({ dialect: "iec-3" }).features).not.toContain(
+      "named_global_lists",
+    );
+    expect(
+      resolveDialect({ features: ["+named_global_lists"] }).features,
+    ).toContain("named_global_lists");
+  });
+
   it("iec-3 has no features", () => {
     const d = resolveDialect({ dialect: "iec-3" });
     expect(d.id).toBe("iec-3");
@@ -278,7 +289,7 @@ describe("resolveDialect", () => {
 
   it("an unknown --feature is an error", () => {
     expect(errorOf(() => resolveDialect({ features: ["+goto"] })).message).toBe(
-      "unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base)",
+      "unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists)",
     );
   });
 
@@ -290,7 +301,7 @@ describe("resolveDialect", () => {
       ),
     );
     expect(e.message).toBe(
-      "unknown feature 'goto' in dialect file p/x.json (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base)",
+      "unknown feature 'goto' in dialect file p/x.json (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists)",
     );
   });
 
