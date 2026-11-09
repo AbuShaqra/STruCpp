@@ -105,6 +105,7 @@ import {
   exactIntegerLiteralValue,
   IEC_INTEGER_MAX,
   IEC_INTEGER_MIN,
+  integerTypeRange,
 } from "../literal-utils.js";
 
 // =============================================================================
@@ -2188,6 +2189,10 @@ export class SemanticAnalyzer {
       if (node.kind !== "LiteralExpression") return;
       const literal = node as LiteralExpression;
       if (literal.literalType !== "INT") return;
+      if ((literal.typePrefix ?? "") !== "") {
+        this.validateSignedTypedLiteralRange(literal);
+        return;
+      }
       const exact = exactIntegerLiteralValue(literal.rawValue);
       if (exact === undefined) return;
       // A negative literal parses as unary minus over a positive one, so the
@@ -2203,6 +2208,29 @@ export class SemanticAnalyzer {
         span.file,
       );
     });
+  }
+
+  /**
+   * Reject a signed typed integer literal (`SINT#-129`, `USINT#-1`) whose value
+   * its prefix type cannot hold. Only the signed form is checked: an unsigned
+   * payload (`SINT#200`) keeps its existing, unchecked lowering.
+   */
+  private validateSignedTypedLiteralRange(literal: LiteralExpression): void {
+    const raw = literal.rawValue;
+    const payload = raw.substring(raw.indexOf("#") + 1);
+    if (!/^[+-]/.test(payload)) return;
+    const range = integerTypeRange(literal.typePrefix ?? "");
+    const exact = exactIntegerLiteralValue(payload);
+    if (range === undefined || exact === undefined) return;
+    if (exact >= range.min && exact <= range.max) return;
+    const span = literal.sourceSpan;
+    this.addError(
+      `Typed literal '${raw}' is outside the range of ` +
+        `${literal.typePrefix} (${range.min} to ${range.max}).`,
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
   }
 
   /**

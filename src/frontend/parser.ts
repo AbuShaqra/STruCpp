@@ -1354,9 +1354,11 @@ export class STParser extends CstParser {
   private isCaseLabelStart(): boolean {
     const la1Type = this.LA(1).tokenType;
     // Case labels must start with a value expression: integer literal,
-    // identifier, contextual keyword, or typed enum value (E_State#Idle)
+    // identifier, contextual keyword, typed literal (INT#-7) or typed enum
+    // value (E_State#Idle)
     if (
       la1Type !== tokens.IntegerLiteral &&
+      la1Type !== tokens.TypedLiteral &&
       la1Type !== tokens.Minus &&
       la1Type !== tokens.EnumLiteral &&
       !this.isIdentifierOrKeywordToken(la1Type)

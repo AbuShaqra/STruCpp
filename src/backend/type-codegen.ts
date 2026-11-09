@@ -179,6 +179,16 @@ function isReferenceField(typeRef: TypeReference): boolean {
 }
 
 /**
+ * The decimal payload of a typed integer literal (`LINT#-5` → `-5`), or
+ * undefined for an untyped or based one, which keep their existing lowering.
+ */
+function typedDecimalPayload(expr: LiteralExpression): string | undefined {
+  if ((expr.typePrefix ?? "") === "") return undefined;
+  const payload = expr.rawValue.substring(expr.rawValue.indexOf("#") + 1);
+  return /^[+-]?[0-9][0-9_]*$/.test(payload) ? payload : undefined;
+}
+
+/**
  * Type Code Generator for user-defined types
  */
 export class TypeCodeGenerator {
@@ -714,7 +724,10 @@ export class TypeCodeGenerator {
         // Same lowering the expression path uses, so a STRUCT element default
         // and the identical literal in a body can't disagree — and so a 64-bit
         // default keeps every digit (`String(expr.value)` rounds above 2^53).
-        return formatIntegerLiteral(expr.rawValue, expr.value as number);
+        return formatIntegerLiteral(
+          typedDecimalPayload(expr) ?? expr.rawValue,
+          expr.value as number,
+        );
       case "STRING": {
         // IEC STRING literals carry their surrounding single quotes
         // in `rawValue` (`'wide hello'`); strip them before wrapping

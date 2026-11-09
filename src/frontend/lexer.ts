@@ -575,12 +575,12 @@ export const VAR_INST = createToken({
 // Literals
 // =============================================================================
 
-// Time literal: T#1s, T#100ms, TIME#1h2m3s
+// Time literal: T#1s, T#100ms, TIME#1h2m3s, T#-14ms (signed: Ed. 3 Table 8)
 // Note: Each numeric component must have a unit suffix (ms, us, ns, d, h, m, s)
 // Longer suffixes (ms, us, ns) must come before shorter ones (m, s) in the alternation
 export const TimeLiteral = createToken({
   name: "TimeLiteral",
-  pattern: /(?:T|TIME)#(?:[0-9_]+(?:\.[0-9_]+)?(?:ms|us|ns|d|h|m|s))+/i,
+  pattern: /(?:T|TIME)#[+-]?(?:[0-9_]+(?:\.[0-9_]+)?(?:ms|us|ns|d|h|m|s))+/i,
 });
 
 // Date literal: D#2024-01-15, D#1970-9-1 (IEC allows 1- or 2-digit month/day)
@@ -604,12 +604,14 @@ export const DateTimeLiteral = createToken({
     /(?:DT|DATE_AND_TIME)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2}(?:\.[0-9]+)?)?/i,
 });
 
-// Typed literal: BYTE#255, DWORD#16#FF, INT#0, BOOL#1, REAL#1.5E10, etc.
-// Must be before keyword tokens and RealLiteral/IntegerLiteral so that BYTE#255 isn't split
+// Typed literal: BYTE#255, DWORD#16#FF, INT#0, BOOL#1, REAL#1.5E10, INT#-123, etc.
+// Must be before keyword tokens and RealLiteral/IntegerLiteral so that BYTE#255 isn't split.
+// A sign is taken only by a decimal integer or real payload (Ed. 3 Annex A
+// Int_Literal/Real_Literal); bit-string, BOOL and based payloads stay unsigned.
 export const TypedLiteral = createToken({
   name: "TypedLiteral",
   pattern:
-    /(?:BYTE|WORD|DWORD|LWORD|SINT|INT|DINT|LINT|USINT|UINT|UDINT|ULINT|BOOL|REAL|LREAL)#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[0-9][0-9_]*(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)/i,
+    /(?:BYTE|WORD|DWORD|LWORD|BOOL)#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[0-9][0-9_]*(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)|(?:SINT|INT|DINT|LINT|USINT|UINT|UDINT|ULINT|REAL|LREAL)#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[+-]?[0-9][0-9_]*(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)/i,
 });
 
 // Typed enumeration literal: E_State#Idle (IEC 61131-3 type-qualified enum

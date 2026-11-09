@@ -4527,9 +4527,7 @@ export class CodeGenerator {
             );
           }
         } else {
-          this.emit(
-            `${innerIndent}case ${this.generateExpression(label.start)}:`,
-          );
+          this.emit(`${innerIndent}case ${this.caseLabelCpp(label.start)}:`);
         }
       }
       this.recordLineMapping(caseElement.sourceSpan.startLine, caseLabelLine);
@@ -4665,6 +4663,23 @@ export class CodeGenerator {
     } else {
       this.emit(`${indent}return;`);
     }
+  }
+
+  /**
+   * C++ for a single CASE label. A typed integer literal (`INT#-7`) lowers to
+   * its raw type: `IEC_INT` is not a literal type, so it cannot be a case label.
+   */
+  private caseLabelCpp(expr: Expression): string {
+    const prefix =
+      expr.kind === "LiteralExpression" && expr.literalType === "INT"
+        ? (expr.typePrefix ?? "")
+        : "";
+    if (expr.kind === "LiteralExpression" && prefix !== "") {
+      const payload = expr.rawValue.substring(expr.rawValue.indexOf("#") + 1);
+      const value = formatIntegerLiteral(payload, expr.value as number);
+      return `static_cast<${prefix.toUpperCase()}_t>(${value})`;
+    }
+    return this.generateExpression(expr);
   }
 
   /**

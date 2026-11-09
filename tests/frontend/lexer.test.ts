@@ -297,6 +297,35 @@ describe('STLexer', () => {
       expect(timeLiteralTokens).toHaveLength(0);
     });
 
+    it('should tokenize a sign after the type prefix of an integer or real typed literal', () => {
+      for (const lit of ['INT#-123', 'DINT#+5', 'SINT#-128', 'LINT#-9223372036854775808',
+        'ULINT#+7', 'LREAL#-0.9', 'REAL#+1.5E3', 'REAL#-1']) {
+        const result = tokenize(lit);
+        expect(result.errors, lit).toHaveLength(0);
+        expect(result.tokens, lit).toHaveLength(1);
+        expect(result.tokens[0]?.tokenType.name).toBe('TypedLiteral');
+        expect(result.tokens[0]?.image).toBe(lit.toUpperCase());
+      }
+    });
+
+    it('should not take a sign on a bit-string, BOOL or based typed literal', () => {
+      // Table 5 / Annex A: only a decimal integer or real value is signed.
+      for (const lit of ['WORD#-1', 'BYTE#+1', 'BOOL#-1', 'INT#-16#FF', 'DINT#+2#101']) {
+        const result = tokenize(lit);
+        const typed = result.tokens.filter(t => t.tokenType.name === 'TypedLiteral');
+        expect(typed.length > 0 && typed[0]!.image === lit.toUpperCase(), lit).toBe(false);
+      }
+    });
+
+    it('should tokenize a signed duration literal', () => {
+      for (const lit of ['T#-14ms', 'TIME#-14ms', 'T#+1s', 'T#-1h2m3s']) {
+        const result = tokenize(lit);
+        expect(result.errors, lit).toHaveLength(0);
+        expect(result.tokens, lit).toHaveLength(1);
+        expect(result.tokens[0]?.tokenType.name).toBe('TimeLiteral');
+      }
+    });
+
     it('should not match bare T# without number and unit', () => {
       const result = tokenize('T#');
       const timeLiteralTokens = result.tokens.filter(t => t.tokenType.name === 'TimeLiteral');
