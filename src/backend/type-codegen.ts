@@ -24,6 +24,8 @@ import { TypeRegistry, isElementaryType } from "../semantic/type-registry.js";
 import {
   formatArrayType,
   formatIntegerLiteral,
+  isComparison,
+  isComparisonExpr,
   translateIECString,
 } from "./codegen-utils.js";
 import { wrapReferenceChain } from "./reference-types.js";
@@ -756,6 +758,12 @@ export class TypeCodeGenerator {
     };
 
     const cppOp = opMap[expr.operator] ?? expr.operator;
+    // Parenthesise a comparison nested in a comparison (a chain).
+    if (isComparison(expr.operator)) {
+      const l = isComparisonExpr(expr.left) ? `(${left})` : left;
+      const r = isComparisonExpr(expr.right) ? `(${right})` : right;
+      return `${l} ${cppOp} ${r}`;
+    }
     return `${left} ${cppOp} ${right}`;
   }
 

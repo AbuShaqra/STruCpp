@@ -75,6 +75,7 @@ const RULE_DESCRIPTIONS: Record<string, string> = {
   orExpression: "parsing an expression",
   andExpression: "parsing an expression",
   comparisonExpression: "parsing a comparison",
+  relationalExpression: "parsing a comparison",
   addExpression: "parsing an arithmetic expression",
   mulExpression: "parsing an arithmetic expression",
   powerExpression: "parsing an arithmetic expression",
