@@ -704,9 +704,11 @@ export function compileLibrary(
       ...nativeEntries.functionBlocks,
     ],
     types: ast.types.map((t) => {
-      const kind: "struct" | "enum" | "alias" =
+      const kind: "struct" | "union" | "enum" | "alias" =
         t.definition.kind === "StructDefinition"
-          ? "struct"
+          ? t.definition.isUnion === true
+            ? "union"
+            : "struct"
           : t.definition.kind === "EnumDefinition"
             ? "enum"
             : "alias";
@@ -715,8 +717,8 @@ export function compileLibrary(
         kind: typeof kind;
         fields?: Array<{ name: string; type: string }>;
       } = { name: t.name, kind };
-      // Export struct member fields so consumers can type `x.field` access
-      // on a dependency struct.
+      // Export struct (and UNION) member fields so consumers can type
+      // `x.field` access on a dependency struct.
       if (t.definition.kind === "StructDefinition") {
         entry.fields = t.definition.fields.flatMap((decl) =>
           decl.names.map((name) => ({ name, type: decl.type.name })),

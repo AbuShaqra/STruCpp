@@ -58,6 +58,7 @@ All 62 tests should pass:
 | `iec_dt.hpp`      | DT/LDT value classes for combined date-time             |
 | `iec_string.hpp`  | STRING template with fixed-length storage               |
 | `iec_wstring.hpp` | WSTRING template for wide strings (UTF-16)              |
+| `iec_union.hpp`   | UNION storage: member proxies over one byte buffer      |
 | `iec_char.hpp`    | CHAR/WCHAR types with character functions               |
 | `iec_std_lib.hpp` | Standard library functions (math, conversions, etc.)    |
 

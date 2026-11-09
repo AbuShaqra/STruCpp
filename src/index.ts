@@ -42,7 +42,7 @@ import type {
 import { mergeCompilationUnits } from "./merge.js";
 import { lowerInlineTypes } from "./frontend/lower-inline-types.js";
 import { lowerActions } from "./semantic/lower-actions.js";
-import { isUnionDefinition } from "./semantic/union.js";
+import { unionLoweringErrors } from "./semantic/union.js";
 import { walkAST } from "./ast-utils.js";
 import { registerLibrarySymbols } from "./library/library-loader.js";
 import type { StlibArchive } from "./library/library-manifest.js";
@@ -787,8 +787,8 @@ export function compile(
     };
   }
 
-  // UNION is analysed (feature union) but has no C++ lowering yet.
-  const unionErrors = unionCodegenErrors(pipeline.ast);
+  // UNION uses analysis accepts but code generation cannot lower yet.
+  const unionErrors = unionCompileErrors(pipeline.ast, pipeline.symbolTables);
   if (unionErrors.length > 0) {
     return {
       success: false,
@@ -937,17 +937,25 @@ export function compile(
   };
 }
 
-/** One error per UNION declaration: code generation does not lower UNION yet. */
-function unionCodegenErrors(ast: CompilationUnit): CompileError[] {
-  return ast.types
-    .filter((t) => isUnionDefinition(t.definition))
-    .map((t) => ({
-      message: `code generation for UNION is not supported yet (UNION '${t.name}')`,
-      line: t.sourceSpan.startLine,
-      column: t.sourceSpan.startCol,
-      severity: "error" as const,
-      ...(t.sourceSpan.file !== undefined ? { file: t.sourceSpan.file } : {}),
-    }));
+/** The UNION uses compile refuses as not supported yet (see unionLoweringErrors). */
+function unionCompileErrors(
+  ast: CompilationUnit,
+  symbolTables: SymbolTables | undefined,
+): CompileError[] {
+  const errors: CompileError[] = [];
+  unionLoweringErrors(
+    ast,
+    (upper) => symbolTables?.lookupType(upper)?.declaration?.definition,
+    (message, span) =>
+      errors.push({
+        message,
+        line: span.startLine,
+        column: span.startCol,
+        severity: "error",
+        ...(span.file !== undefined ? { file: span.file } : {}),
+      }),
+  );
+  return errors;
 }
 
 /**

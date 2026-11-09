@@ -3,7 +3,8 @@
  * default set nor `iec-3`). Members are reached and type-checked like STRUCT
  * fields; a UNION is assignment-compatible only with itself. Its members must
  * be data, named once, with no initial value, and a UNION takes no EXTENDS.
- * Code generation refuses every UNION for now; analysis accepts valid code.
+ * Code generation lowers it; the uses it cannot lower yet are refused by
+ * compile only, so analysis (--check) accepts them.
  */
 import { describe, it, expect } from "vitest";
 import { analyze, compile, compileStlib } from "../../src/index.js";
@@ -25,8 +26,6 @@ const MODES: { name: string; options: Options }[] = [
   { name: "no dialect", options: {} },
   { name: "iec-3", options: { dialect: "iec-3" } },
 ];
-
-const CODEGEN = "code generation for UNION is not supported yet";
 
 const TYPES = `TYPE
   U_A : UNION f : REAL; d : DWORD; arr : ARRAY[0..3] OF BYTE; END_UNION;
@@ -333,27 +332,25 @@ END_PROGRAM
   });
 });
 
-describe("code generation refuses a UNION", () => {
-  it("fails at each UNION declaration, after a clean analysis", () => {
+describe("code generation lowers a UNION", () => {
+  it("compiles after a clean analysis", () => {
     const source = program("u.f := 1.5;");
     expect(analyze(source, ON).errors).toEqual([]);
     const result = compile(source, ON);
-    expect(result.success).toBe(false);
-    expect(result.cppCode).toBe("");
-    expect(
-      result.errors.map((e) => `${e.line}:${e.column} ${e.message}`),
-    ).toEqual([`2:3 ${CODEGEN} (UNION 'U_A')`, `3:3 ${CODEGEN} (UNION 'U_B')`]);
+    expect(result.errors).toEqual([]);
+    expect(result.success).toBe(true);
+    expect(result.headerCode).toContain("struct U_A {");
   });
 
-  it("refuses a library that declares a UNION", () => {
+  it("builds a library that declares a UNION", () => {
     const result = compileStlib([{ source: TYPES, fileName: "u.st" }], {
       name: "ulib",
       version: "1.0.0",
       namespace: "ulib",
       features: ["+union"],
     });
-    expect(result.success).toBe(false);
-    expect(result.errors.map((e) => e.message).join("\n")).toContain(CODEGEN);
+    expect(result.errors).toEqual([]);
+    expect(result.success).toBe(true);
   });
 
   it("analysis errors come first: with the feature off, compile reports the refusal", () => {

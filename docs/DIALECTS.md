@@ -254,9 +254,27 @@ TYPE
 END_TYPE
 ```
 
-- Code generation does not lower a UNION yet: a compile that reaches it fails at each UNION declaration
-  with `code generation for UNION is not supported yet (UNION 'U_A')`, and so does building a library
-  from sources that declare one. `--check` analyses UNION code fully.
+- Code generation lowers a UNION to one storage shared by all members: a zero-initialised byte buffer
+  sized and aligned for the largest member's plain value (`REAL` as a 4-byte float, not the forceable
+  wrapper a STRUCT field has). Writing one member and reading another reinterprets the bytes in the host
+  byte order; the supported targets are little-endian, so `u.f := 1.0` reads back as `u.d = 16#3F800000`
+  and `u.arr[0]` is the low byte of `u.d`. A STRUCT member is laid out as its plain C++ struct (natural
+  alignment, padding bytes are not written), arrays are contiguous, and a `STRING(n)` / `WSTRING(n)`
+  member is a plain NUL-terminated `char[n+1]` / UTF-16 `char16_t[n+1]`: a read stops at the first NUL or
+  after `n` characters, so bytes written through another member never give a longer string. `SIZEOF` of
+  a UNION is the size of that storage.
+- Members are not forceable, and the debug table leaves a UNION out (also inside a STRUCT, an FB or an
+  array): the build warns `<path> is not debuggable: UNION U_A: its members share one storage, ...`.
+  `ADR(u.f)` is the address of the member's bytes; a member bound to a `VAR_IN_OUT` or `VAR_OUTPUT` of a
+  function or method is copied in before the call and written back after it.
+- Not supported yet, refused by a compile (and a library build) while `--check` accepts the code:
+  `REF()`, `REF_LINK()` or `REF=` of a member (`REF of a UNION member is not supported yet`, `REF= on a
+  UNION member is not supported yet`); a `REFERENCE TO` stored in a UNION (`Member 'R' stored in UNION
+  'U_R' is a REFERENCE TO: a REFERENCE TO in a UNION is not supported yet`); a member of a library STRUCT
+  type; a `RETAIN` or `PERSISTENT` variable that is or holds a UNION (`RETAIN of a UNION is not supported
+  yet: 'U' is or holds UNION 'U_A'`). `POINTER TO` and `REF_TO` members are supported.
+- A library exports a UNION in its manifest as `kind: "union"` with its members, and a consumer uses it
+  like its own.
 - Members are reached and type-checked like STRUCT fields (`u.f`, `u.arr[1]`, `w.u.d`), and a UNION may be
   a variable, an FB or STRUCT member, an array element, a `VAR_INPUT` and a `VAR_IN_OUT`.
 - `UNION` and `END_UNION` are not keywords. A UNION is recognised only right after the `:` of a `TYPE`,

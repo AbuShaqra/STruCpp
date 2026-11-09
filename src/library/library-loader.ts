@@ -85,9 +85,14 @@ function isReferenceKind(
 function buildLibraryTypeDefinition(
   t: LibraryTypeEntry,
 ): StructDefinition | TypeReference {
-  if (t.kind === "struct" && t.fields && t.fields.length > 0) {
+  if (
+    (t.kind === "struct" || t.kind === "union") &&
+    t.fields &&
+    t.fields.length > 0
+  ) {
     return {
       kind: "StructDefinition",
+      ...(t.kind === "union" ? { isUnion: true as const } : {}),
       sourceSpan: createDefaultSourceSpan(),
       fields: t.fields.map((f) => ({
         kind: "VarDeclaration" as const,
@@ -250,10 +255,10 @@ export function loadLibraryManifest(json: unknown): LibraryManifest {
       }
       if (
         typeof t.kind !== "string" ||
-        !["struct", "enum", "alias"].includes(t.kind)
+        !["struct", "union", "enum", "alias"].includes(t.kind)
       ) {
         throw new LibraryManifestError(
-          `Invalid library manifest: types[${i}].kind must be "struct", "enum", or "alias"`,
+          `Invalid library manifest: types[${i}].kind must be "struct", "union", "enum", or "alias"`,
         );
       }
       if (t.fields !== undefined && !Array.isArray(t.fields)) {
@@ -369,7 +374,7 @@ export function registerLibrarySymbols(
     // member types, so member access on a dependency struct (e.g. `MATH.PI`)
     // resolves to the field's type rather than staying untyped.
     const resolvedType: IECType =
-      t.kind === "struct" && t.fields
+      (t.kind === "struct" || t.kind === "union") && t.fields
         ? ({
             typeKind: "struct",
             name: t.name,

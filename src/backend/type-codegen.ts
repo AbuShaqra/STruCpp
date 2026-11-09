@@ -44,6 +44,12 @@ import {
   generateInitializerValue,
   type StructInitEmitter,
 } from "./struct-init-codegen.js";
+import {
+  unionHelperLines,
+  unionStoredTypes,
+  unionTypeLines,
+  type UnionMemberSpelling,
+} from "./union-codegen.js";
 
 /**
  * Options for type code generation
@@ -182,6 +188,8 @@ export class TypeCodeGenerator {
   private knownEnumNames: Set<string> = new Set();
   /** Reverse map: enum member name (upper case) → owning enum type */
   private enumMemberToType: Map<string, EnumMemberEntry> = new Map();
+  /** STRUCTs and UNIONs stored inside a UNION (upper case), see union-codegen.ts. */
+  private unionStored: Set<string> = new Set();
 
   /**
    * Hooks for structure-initializer lowering (a STRUCT element whose own default
@@ -241,6 +249,7 @@ export class TypeCodeGenerator {
           ).members.map((m) => m.name),
         })),
     );
+    this.unionStored = unionStoredTypes(types);
   }
 
   /**
@@ -282,10 +291,34 @@ export class TypeCodeGenerator {
 
     switch (def.kind) {
       case "StructDefinition":
-        this.generateStructType(type.name, def);
+        if (def.isUnion === true) {
+          for (const line of unionTypeLines(
+            type.name,
+            def,
+            this.unionSpelling,
+            this.options.indent,
+          )) {
+            this.emit(line);
+          }
+        } else {
+          this.generateStructType(type.name, def);
+        }
         // Struct fields already contain IECVar leaves — identity alias
         this.emit(`using IEC_${type.name} = ${type.name};`);
         this.emit("");
+        if (
+          def.isUnion === true ||
+          this.unionStored.has(type.name.toUpperCase())
+        ) {
+          for (const line of unionHelperLines(
+            type.name,
+            def,
+            this.unionSpelling,
+            this.options.indent,
+          )) {
+            this.emit(line);
+          }
+        }
         break;
       case "EnumDefinition":
         this.generateEnumType(type.name, def);
@@ -345,6 +378,46 @@ export class TypeCodeGenerator {
     this.emit("");
   }
 
+  /** Member spelling for the UNION lowering (union-codegen.ts). */
+  private readonly unionSpelling: UnionMemberSpelling = {
+    fieldCppType: (type) => this.structFieldCppType(type),
+    memberName: (fieldName, type) => this.structFieldEmitName(fieldName, type),
+  };
+
+  /** The C++ type of a STRUCT or UNION member: IECVar leaves, arrays, references. */
+  private structFieldCppType(type: TypeReference): string {
+    let cppType: string;
+    if (type.arrayDimensions && type.elementTypeName) {
+      // Inline array type: emit Array1D/2D/3D<WrappedElementType, bounds...>
+      const elemCpp = this.arrayElementTypeToCpp(
+        type.elementTypeName,
+        type.elementReferenceChain,
+      );
+      cppType = formatArrayType(elemCpp, type.arrayDimensions);
+    } else {
+      cppType = this.mapStructFieldTypeToCpp(type.name, type.maxLength);
+    }
+    const rawType = type.arrayDimensions
+      ? cppType
+      : this.mapTypeToCpp(type.name);
+    return isReferenceField(type)
+      ? // REF_TO / REFERENCE TO: the same wrapper a variable gets.
+        wrapReferenceChain(type.referenceChain ?? [type.referenceKind], rawType)
+      : rawPointerType(type, cppType, rawType);
+  }
+
+  /**
+   * The C++ name of a STRUCT or UNION member. One rule, shared with the class
+   * definition and the debug table — see member-mangling.ts. Compared against
+   * the ST type name, not the C++ type (which may carry a pointer '*' suffix).
+   * A STRUCT implements no interfaces, so only the type collision can apply.
+   */
+  private structFieldEmitName(fieldName: string, type: TypeReference): string {
+    return mangledMemberName(fieldName, type.name, {
+      isUserDefinedType: this.options.isUserDefinedType,
+    });
+  }
+
   /**
    * Generate a struct type definition
    *
@@ -364,38 +437,9 @@ export class TypeCodeGenerator {
     this.emit(`struct ${name} {`);
 
     for (const field of def.fields) {
-      let cppType: string;
-      if (field.type.arrayDimensions && field.type.elementTypeName) {
-        // Inline array type: emit Array1D/2D/3D<WrappedElementType, bounds...>
-        const elemCpp = this.arrayElementTypeToCpp(
-          field.type.elementTypeName,
-          field.type.elementReferenceChain,
-        );
-        cppType = formatArrayType(elemCpp, field.type.arrayDimensions);
-      } else {
-        cppType = this.mapStructFieldTypeToCpp(
-          field.type.name,
-          field.type.maxLength,
-        );
-      }
-      const rawType = field.type.arrayDimensions
-        ? cppType
-        : this.mapTypeToCpp(field.type.name);
-      cppType = isReferenceField(field.type)
-        ? // REF_TO / REFERENCE TO: the same wrapper a variable gets.
-          wrapReferenceChain(
-            field.type.referenceChain ?? [field.type.referenceKind],
-            rawType,
-          )
-        : rawPointerType(field.type, cppType, rawType);
+      const cppType = this.structFieldCppType(field.type);
       for (const fieldName of field.names) {
-        // One rule, shared with the class definition and the debug table — see
-        // member-mangling.ts. Compare against the ST type name, not cppType
-        // (which may carry a pointer '*' suffix). A STRUCT implements no
-        // interfaces, so only the type collision can apply here.
-        const emitName = mangledMemberName(fieldName, field.type.name, {
-          isUserDefinedType: this.options.isUserDefinedType,
-        });
+        const emitName = this.structFieldEmitName(fieldName, field.type);
         if (field.initialValue) {
           // Routes composite initialisers (array literals, structure
           // initializers) through the shared lowering and everything else

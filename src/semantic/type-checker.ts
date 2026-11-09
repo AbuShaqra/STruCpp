@@ -577,12 +577,16 @@ export class TypeChecker {
       currentTypeName = symbol.declaration?.type?.name;
     }
 
+    // Whether the storage reached so far lies in a UNION (reset by a dereference).
+    let inUnion = false;
+
     // Resolve access chain (accessChain is the preferred path)
     if (expr.accessChain && expr.accessChain.length > 0 && this.ast) {
       for (const step of expr.accessChain) {
         if (!currentTypeName) break;
 
         if (step.kind === "field") {
+          if (this.isUnionStorageType(currentTypeName)) inUnion = true;
           // Resolve struct/FB field (local AST + dependency-library FB members)
           const fieldType = this.resolveFieldTypeAnywhere(
             currentTypeName,
@@ -616,6 +620,7 @@ export class TypeChecker {
             this.resolveExprType(idx, scope);
           }
         } else if (step.kind === "dereference") {
+          inUnion = false;
           if (currentType?.typeKind === "reference") {
             currentType = (currentType as ReferenceType).referencedType;
             if (currentType.typeKind === "elementary") {
@@ -651,6 +656,7 @@ export class TypeChecker {
             currentType = ELEMENTARY_TYPES["BOOL"];
             currentTypeName = "BOOL";
           } else {
+            if (this.isUnionStorageType(currentTypeName)) inUnion = true;
             const fieldType = this.resolveFieldTypeAnywhere(
               currentTypeName,
               field,
@@ -667,10 +673,14 @@ export class TypeChecker {
       }
 
       // Handle dereference
+      if (expr.isDereference) inUnion = false;
       if (expr.isDereference && currentType?.typeKind === "reference") {
         currentType = (currentType as ReferenceType).referencedType;
       }
     }
+
+    if (inUnion) expr.unionMember = true;
+    else delete expr.unionMember;
 
     if (currentType) {
       expr.resolvedType = currentType;
@@ -1805,6 +1815,17 @@ export class TypeChecker {
           t.definition.isUnion === true,
       ) ?? false
     );
+  }
+
+  /**
+   * A UNION, also through aliases or from a library: its members live in the
+   * UNION's storage, so code generation reads and writes them through it.
+   */
+  private isUnionStorageType(name: string): boolean {
+    const target = this.aliasTarget(name);
+    if (this.isUnionType(target)) return true;
+    const def = this.symbolTables.lookupType(target)?.declaration?.definition;
+    return def?.kind === "StructDefinition" && def.isUnion === true;
   }
 
   /**

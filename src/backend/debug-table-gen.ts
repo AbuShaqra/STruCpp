@@ -611,6 +611,17 @@ export function generateDebugTable(
     if (ts) {
       const def = ts.declaration.definition;
       if (def.kind === "StructDefinition") {
+        // A UNION's members are proxies over one plain storage, not IECVar
+        // leaves the dispatch could cast, so the UNION is left out whole.
+        if (def.isUnion === true) {
+          skipped.push({
+            path,
+            reason:
+              `UNION ${typeRef.name}: its members share one storage, which ` +
+              `the debugger cannot address (not supported yet); they cannot be forced.`,
+          });
+          return;
+        }
         visitStructFields(path, cppExpr, def, flags);
         return;
       }

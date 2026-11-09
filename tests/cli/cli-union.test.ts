@@ -2,8 +2,8 @@
 // Copyright (c) 2025 Autonomy®
 /**
  * UNION through the CLI (feature union): `--check` analyses valid UNION code
- * clean with the feature and refuses it without; a compile stops with the
- * code generation refusal and writes no C++; programs that use UNION and
+ * clean with the feature and refuses it without; a compile writes C++, and
+ * stops only at a use it cannot lower yet (a RETAIN UNION); programs that use UNION and
  * END_UNION as names check and compile as before.
  *
  * Runs `dist/node/cli.js` by default; set STRUCPP_CLI to run another entry
@@ -41,6 +41,13 @@ END_PROGRAM
 const LIBRARY_FB_MEMBER = `TYPE U_T : UNION t : TON; d : DWORD; END_UNION; END_TYPE
 PROGRAM Main
 VAR u : U_T; END_VAR
+u.d := 1;
+END_PROGRAM
+`;
+
+const RETAIN_SOURCE = `TYPE U_A : UNION f : REAL; d : DWORD; END_UNION; END_TYPE
+PROGRAM Main
+VAR RETAIN u : U_A; END_VAR
 u.d := 1;
 END_PROGRAM
 `;
@@ -94,6 +101,7 @@ beforeAll(() => {
   writeFileSync(join(DIR, "union.st"), UNION_SOURCE);
   writeFileSync(join(DIR, "libfb.st"), LIBRARY_FB_MEMBER);
   writeFileSync(join(DIR, "names.st"), NAMES_SOURCE);
+  writeFileSync(join(DIR, "retain.st"), RETAIN_SOURCE);
 });
 
 describe("--check with UNION", () => {
@@ -130,12 +138,24 @@ describe("--check with UNION", () => {
 });
 
 describe("compiling UNION", () => {
-  it("stops before code generation and writes no C++", () => {
+  it("writes the C++", () => {
     const out = join(DIR, "union.cpp");
     const r = run(["union.st", "--feature", "+union", "-o", out]);
+    expect(r.err).toBe("");
+    expect(r.status).toBe(0);
+    expect(existsSync(out)).toBe(true);
+  });
+
+  it("refuses a RETAIN UNION at compile and writes no C++; --check accepts it", () => {
+    expect(checkJson(["retain.st", "--feature", "+union"])).toEqual({
+      status: 0,
+      diags: [],
+    });
+    const out = join(DIR, "retain.cpp");
+    const r = run(["retain.st", "--feature", "+union", "-o", out]);
     expect(r.status).toBe(1);
     expect(r.err + r.out).toContain(
-      "union.st:2:3: error: code generation for UNION is not supported yet (UNION 'U_A')",
+      "retain.st:3:12: error: RETAIN of a UNION is not supported yet: 'U' is or holds UNION 'U_A'",
     );
     expect(existsSync(out)).toBe(false);
   });
