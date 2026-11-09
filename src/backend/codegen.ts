@@ -117,6 +117,13 @@ import {
 /** `__VLA_<rank>D_<ElementType>`, the AST builder's name for an `ARRAY [*]`. */
 const VLA_TYPE_NAME = /^__VLA_(\d+)D_(.+)$/;
 
+/** An argument passed to a call by copy-in / copy-out; `cppType` types its
+ *  temporary when that differs from the argument's own type. */
+interface InOutCopyArg {
+  value: VariableExpression;
+  cppType?: string;
+}
+
 /** The parts of a type reference that decide its C++ type. */
 interface TypeShape {
   name: string;
@@ -519,10 +526,9 @@ export class CodeGenerator {
   private pendingGlobalCopyOuts: string[] = [];
 
   /** Calls in a compound statement's header (IF / ELSIF / WHILE / REPEAT
-   *  condition, CASE selector, FOR bounds) whose composite-global arguments
+   *  condition, CASE selector, FOR bounds) whose arguments passed by copy
    *  are copied in and out around the call itself (wrapGlobalInOutCall). */
-  private globalInOutCallWraps: Map<Expression, VariableExpression[]> =
-    new Map();
+  private globalInOutCallWraps: Map<Expression, InOutCopyArg[]> = new Map();
 
   /** Store AST for looking up program bodies when using project model */
   protected ast?: CompilationUnit;
@@ -683,11 +689,28 @@ export class CodeGenerator {
    *  Used to resolve positional arguments in FB invocations. */
   private fbInputParams: Map<string, string[]> = new Map();
 
-  /** Map of UPPER(fbTypeName) → set of VAR_IN_OUT parameter names (UPPER case).
-   *  FB inout params are stored as by-value members with copy-in at the call
-   *  site; this set drives the matching copy-back after the call so a callee's
-   *  mutations propagate to the caller's variable (true inout semantics). */
+  /** Map of UPPER(fbTypeName) → set of its own VAR_IN_OUT parameter names
+   *  (UPPER case). A call binds each by reference (see inOutKind). */
   private fbInoutParams: Map<string, Set<string>> = new Map();
+
+  /** Library FBs (UPPER) built before in-outs were bound by reference: their
+   *  in-outs are by-value members, copied in and back at the call. */
+  private legacyInOutFBs: Set<string> = new Set();
+
+  /** Library FBs already warned about as legacy in-out archives. */
+  private legacyInOutWarned: Set<string> = new Set();
+
+  /** Names (UPPER) in the current scope that are by-reference VAR_IN_OUT
+   *  members of the enclosing function block: read and written as `(*X)`. */
+  private scopeInOutRefs: Set<string> = new Set();
+
+  /** Arguments a method or function call binds to a VAR_IN_OUT by reference
+   *  that render differently from a read (a shared global's storage). */
+  private inOutBindExprs: Set<VariableExpression> = new Set();
+
+  /** Names (UPPER) of the current method or function body that live on the
+   *  C++ stack (its parameters, VAR and VAR_TEMP). */
+  private stackLocals: Set<string> = new Set();
 
   // IEC_TYPE_BITS and IEC_TYPE_CAT removed — use getTypeBits()/getTypeCategory() from type-utils.ts
 
@@ -934,12 +957,16 @@ export class CodeGenerator {
       name: string;
       inputNames: string[];
       inoutNames: string[];
+      inoutByReference: boolean;
       fields: Array<LibraryField>;
     }>,
   ): void {
     for (const fb of fbs) {
       const fbUpper = fb.name.toUpperCase();
       this.knownFBTypes.add(fbUpper);
+      if (fb.inoutNames.length > 0 && !fb.inoutByReference) {
+        this.legacyInOutFBs.add(fbUpper);
+      }
       if (fb.inputNames.length > 0) {
         this.fbInputParams.set(
           fbUpper,
@@ -1011,6 +1038,7 @@ export class CodeGenerator {
             name: fb.name,
             inputNames: fb.inputs.map((i) => i.name),
             inoutNames: fb.inouts.map((i) => i.name),
+            inoutByReference: fb.inoutByReference === true,
             fields: [
               ...fb.inputs.map(mapVar),
               ...fb.outputs.map(mapVar),
@@ -1866,13 +1894,18 @@ export class CodeGenerator {
 
       this.emitHeader(`    ${comment}`);
       for (const decl of block.declarations) {
-        const cppType = this.mapTypeRefToCpp(decl.type);
         const tag = this.elaboratedTagIfShadowed(decl.type.name, fbMemberNames);
+        // A by-reference VAR_IN_OUT holds the caller's variable (IEC_INOUT).
+        const cppType =
+          block.blockType === "VAR_IN_OUT" &&
+          this.inOutTypeKind(decl.type) === "ref"
+            ? `IEC_INOUT<${tag}${this.mapTypeRefToCpp(decl.type)}>`
+            : `${tag}${this.mapTypeRefToCpp(decl.type)}`;
         for (const name of decl.names) {
           const memberName = this.mangleMemberIfNeeded(name, decl.type.name);
           this.emitHeaderLineDirective(decl.sourceSpan.startLine);
           const memberLine = this.currentHeaderLine;
-          this.emitHeader(`    ${tag}${cppType} ${memberName};`);
+          this.emitHeader(`    ${cppType} ${memberName};`);
           this.recordHeaderLineMapping(decl.sourceSpan.startLine, memberLine);
         }
       }
@@ -2423,7 +2456,10 @@ export class CodeGenerator {
     }
 
     // Merge FB scope + method scope so FB member types are visible (same pattern as properties)
-    this.enterScope([...this.currentFBVarBlocks, ...method.varBlocks]);
+    this.enterScope(
+      [...this.currentFBVarBlocks, ...method.varBlocks],
+      method.varBlocks,
+    );
 
     // Declare local variables (VAR, VAR_TEMP)
     for (const block of method.varBlocks) {
@@ -2639,7 +2675,12 @@ export class CodeGenerator {
       }
     }
     for (const block of fb.varBlocks) {
-      if (block.blockType === "VAR_EXTERNAL") continue;
+      // An in-out refers to the caller's variable: nothing to initialise.
+      if (
+        block.blockType === "VAR_EXTERNAL" ||
+        block.blockType === "VAR_IN_OUT"
+      )
+        continue;
       for (const decl of block.declarations) {
         if (decl.initialValue) {
           const cppType = this.mapTypeRefToCpp(decl.type);
@@ -2750,7 +2791,7 @@ export class CodeGenerator {
     const emitFunctionBody = (funcName: string) => {
       this.emit(`    ${retType} ${funcName}_result;`);
       this.currentFunctionName = func.name;
-      this.enterScope(func.varBlocks);
+      this.enterScope(func.varBlocks, func.varBlocks);
 
       // Declare local variables (VAR, VAR_TEMP) — same pattern as method locals
       for (const block of func.varBlocks) {
@@ -3703,11 +3744,12 @@ export class CodeGenerator {
     this.currentStatementIndent = indent;
     this.emitLineDirective(stmt.sourceSpan.startLine);
     const cppStartLine = this.currentLine;
-    // A composite global passed to a VAR_IN_OUT / VAR_OUTPUT of a method or
-    // function: copy-in before the statement (or around the call, in a
-    // compound statement's header), copy-out after it.
+    // Arguments passed by copy (see globalInOutArgs): copy-in before the
+    // statement (or around the call in a compound statement's header),
+    // copy-out after it. In-out bindings of shared globals are per statement.
     const outerCopyOuts = this.pendingGlobalCopyOuts;
     this.pendingGlobalCopyOuts = [];
+    const outerBinds = new Set(this.inOutBindExprs);
     let hoisted: VariableExpression[] = [];
     let wrapped: Expression[] = [];
     if (this.isCompoundStatement(stmt)) {
@@ -3833,6 +3875,7 @@ export class CodeGenerator {
     this.flushGlobalCopyOuts(indent);
     if (hoisted.length > 0) this.emit(`${outerIndent}}`);
     this.pendingGlobalCopyOuts = outerCopyOuts;
+    this.inOutBindExprs = outerBinds;
     for (const arg of hoisted) this.globalInOutTemps.delete(arg);
     for (const call of wrapped) this.globalInOutCallWraps.delete(call);
     if (!isCompound) {
@@ -4020,16 +4063,9 @@ export class CodeGenerator {
   }
 
   // ---------------------------------------------------------------------------
-  // Composite globals passed to a VAR_IN_OUT / VAR_OUTPUT of a method or
-  // function: copy-in / copy-out.
-  //
-  // A composite global's read is `X->with_lock(...)`, a copy that cannot bind
-  // to the callee's `T&`. The argument is read into a temporary under the lock
-  // (copy-in), the call binds the temporary, and the temporary is written back
-  // under the lock (copy-out) — the model the FB VAR_IN_OUT path uses. Each
-  // lock is self-contained, so the call runs under no lock: a callee reaching
-  // the same global through VAR_EXTERNAL cannot deadlock on GlobalVar's
-  // non-recursive mutex, and two globals in one call never nest their locks.
+  // Arguments of a method or function call passed by copy-in / copy-out: a
+  // composite global bound to a VAR_OUTPUT, a UNION member, an in-out
+  // argument of another type. The call binds a temporary; no lock is held.
   // ---------------------------------------------------------------------------
 
   private isCompoundStatement(stmt: Statement): boolean {
@@ -4043,8 +4079,8 @@ export class CodeGenerator {
   }
 
   /**
-   * Simple statement: emit the copy-in of every composite-global VAR_IN_OUT /
-   * VAR_OUTPUT argument of the calls in `stmt` before it, the way `__gwv_`
+   * Simple statement: emit the copy-in of every argument the calls in `stmt`
+   * pass by copy (see globalInOutArgs) before it, the way `__gwv_`
    * reads are hoisted, and queue the copy-outs (written after the statement,
    * or before a composite-global store, see emitCompositeGlobalWrite).
    * Returns the arguments now bound to temporaries. When there are any, the
@@ -4065,10 +4101,10 @@ export class CodeGenerator {
       for (const arg of args) {
         const tmp = `__gio_${this.tempVarCounter++}`;
         const copy = this.inOutCopy(arg, tmp);
-        this.emit(`${inner}auto ${tmp} = ${copy.copyIn};`);
-        this.globalInOutTemps.set(arg, tmp);
+        this.emit(`${inner}${copy.declaration}`);
+        this.globalInOutTemps.set(arg.value, tmp);
         this.pendingGlobalCopyOuts.push(copy.copyOut);
-        hoisted.push(arg);
+        hoisted.push(arg.value);
       }
     }
     return hoisted;
@@ -4080,15 +4116,25 @@ export class CodeGenerator {
    * member's field type, so it binds the callee's `T&`).
    */
   private inOutCopy(
-    arg: VariableExpression,
+    { value: arg, cppType }: InOutCopyArg,
     tmp: string,
-  ): { copyIn: string; copyOut: string } {
+  ): { declaration: string; copyOut: string } {
     const read = this.generateVariableExpression(arg);
     const copyIn = arg.unionMember === true ? `union_value(${read})` : read;
-    const copyOut = this.compositeExternals.has(arg.name.toUpperCase())
+    const upper = arg.name.toUpperCase();
+    const copyOut = this.compositeExternals.has(upper)
       ? this.compositeGlobalStore(arg, tmp)
-      : `${read} = ${tmp};`;
-    return { copyIn, copyOut };
+      : this.programExternals.has(upper) &&
+          arg.fieldAccess.length === 0 &&
+          !arg.isDereference
+        ? `${arg.name}->write(${tmp});`
+        : `${read} = ${tmp};`;
+    // A temporary of the parameter's type when the argument's type differs.
+    const declaration =
+      cppType !== undefined
+        ? `${cppType} ${tmp}; ${tmp} = ${copyIn};`
+        : `auto ${tmp} = ${copyIn};`;
+    return { declaration, copyOut };
   }
 
   /** Write the queued copy-outs of the current statement. */
@@ -4125,25 +4171,25 @@ export class CodeGenerator {
     for (const arg of args) {
       const tmp = `__gio_${this.tempVarCounter++}`;
       const copy = this.inOutCopy(arg, tmp);
-      copyIns.push(`auto ${tmp} = ${copy.copyIn};`);
-      this.globalInOutTemps.set(arg, tmp);
+      copyIns.push(copy.declaration);
+      this.globalInOutTemps.set(arg.value, tmp);
       copyOuts.push(copy.copyOut);
     }
     const result = `__gio_${this.tempVarCounter++}`;
     const call = generate();
-    for (const arg of args) this.globalInOutTemps.delete(arg);
+    for (const arg of args) this.globalInOutTemps.delete(arg.value);
     return `[&]{ ${copyIns.join(" ")} auto ${result} = ${call}; ${copyOuts.join(" ")} return ${result}; }()`;
   }
 
   /**
    * The method and function calls in `root` (not in its nested statements)
-   * with a composite-global argument bound to a VAR_IN_OUT or VAR_OUTPUT, in
-   * evaluation order (arguments before their call).
+   * with an argument passed by copy (see globalInOutArgs), in evaluation
+   * order (arguments before their call).
    */
   private findGlobalInOutCalls(
     root: Statement,
-  ): Array<{ call: Expression; args: VariableExpression[] }> {
-    const found: Array<{ call: Expression; args: VariableExpression[] }> = [];
+  ): Array<{ call: Expression; args: InOutCopyArg[] }> {
+    const found: Array<{ call: Expression; args: InOutCopyArg[] }> = [];
     const visit = (node: ASTNode): boolean => {
       if (node !== root && node.kind.endsWith("Statement")) return false;
       if (
@@ -4164,23 +4210,49 @@ export class CodeGenerator {
     return found;
   }
 
-  /** The arguments of `call` that are composite globals bound to a VAR_IN_OUT
-   *  or VAR_OUTPUT of a callee declared in this unit. */
+  /**
+   * The arguments of `call` (a callee declared in this unit) passed by
+   * copy-in / copy-out: a composite global bound to a VAR_OUTPUT, a UNION
+   * member, or an argument of another type bound to a VAR_IN_OUT, with the
+   * C++ type of its temporary when that is the parameter's. Arguments bound
+   * to a VAR_IN_OUT by reference that render differently from a read (a
+   * shared global, a REFERENCE TO) are registered in inOutBindExprs.
+   */
   private globalInOutArgs(
     call: FunctionCallExpression | MethodCallExpression,
-  ): VariableExpression[] {
-    // A UNION member has no C++ object of its type to bind, like a composite global.
+  ): InOutCopyArg[] {
     const isCompositeGlobal = (e: Expression): e is VariableExpression =>
       e.kind === "VariableExpression" &&
-      ((!e.isDereference &&
-        this.compositeExternals.has(e.name.toUpperCase())) ||
-        e.unionMember === true) &&
+      !e.isDereference &&
+      this.compositeExternals.has(e.name.toUpperCase()) &&
       !/^\d+$/.test(e.fieldAccess[e.fieldAccess.length - 1] ?? "");
-    if (!call.arguments.some((a) => isCompositeGlobal(a.value))) return [];
+    const isUnionMember = (e: Expression): e is VariableExpression =>
+      e.kind === "VariableExpression" && e.unionMember === true;
+    const rendersBound = (e: Expression): e is VariableExpression =>
+      e.kind === "VariableExpression" &&
+      !e.isDereference &&
+      (this.programExternals.has(e.name.toUpperCase()) ||
+        this.currentScopeVarRefKinds.get(e.name.toUpperCase()) ===
+          "reference_to");
+    if (
+      !call.arguments.some(
+        (a) =>
+          isCompositeGlobal(a.value) ||
+          isUnionMember(a.value) ||
+          rendersBound(a.value) ||
+          a.inOutCopy === true,
+      )
+    ) {
+      return [];
+    }
     const varBlocks = this.calleeVarBlocks(call);
     if (!varBlocks) return [];
 
-    const params: Array<{ name: string; blockType: string }> = [];
+    const params: Array<{
+      name: string;
+      blockType: string;
+      type: TypeReference;
+    }> = [];
     for (const block of varBlocks) {
       if (
         block.blockType === "VAR_INPUT" ||
@@ -4192,6 +4264,7 @@ export class CodeGenerator {
             params.push({
               name: name.toUpperCase(),
               blockType: block.blockType,
+              type: decl.type,
             });
           }
         }
@@ -4206,19 +4279,34 @@ export class CodeGenerator {
     );
     const free = params.filter((p) => !claimed.has(p.name));
     let positional = 0;
-    const result: VariableExpression[] = [];
+    const result: InOutCopyArg[] = [];
     for (const arg of call.arguments) {
       const param =
         arg.name !== undefined
           ? params.find((p) => p.name === arg.name!.toUpperCase())
           : free[positional++];
-      if (!param || !isCompositeGlobal(arg.value)) continue;
-      if (
-        arg.isOutput ||
-        param.blockType === "VAR_IN_OUT" ||
-        param.blockType === "VAR_OUTPUT"
+      if (!param) continue;
+      const value = arg.value;
+      if (value.kind !== "VariableExpression") continue;
+      if (param.blockType === "VAR_IN_OUT" && !arg.isOutput) {
+        if (arg.inOutCopy === true) {
+          result.push({
+            value,
+            cppType: this.inOutParamType(this.toParamTypeRef(param.type)),
+          });
+        } else if (value.unionMember === true) {
+          result.push({ value });
+        } else if (rendersBound(value)) {
+          this.inOutBindExprs.add(value);
+          if (this.programExternals.has(value.name.toUpperCase())) {
+            this.warnSharedGlobalInOut(value.name, param.name, call);
+          }
+        }
+      } else if (
+        (arg.isOutput || param.blockType === "VAR_OUTPUT") &&
+        (isCompositeGlobal(value) || isUnionMember(value))
       ) {
-        result.push(arg.value);
+        result.push({ value });
       }
     }
     return result;
@@ -4767,6 +4855,8 @@ export class CodeGenerator {
     // VAR_OUTPUT: the call binds the temporary (hoistGlobalInOutCopies).
     const copyInTemp = this.globalInOutTemps.get(expr);
     if (copyInTemp !== undefined) return copyInTemp;
+    // Bound by reference to a VAR_IN_OUT of a method or function call.
+    if (this.inOutBindExprs.has(expr)) return this.renderInOutBound(expr);
 
     const nameUpper = expr.name.toUpperCase();
 
@@ -4781,15 +4871,9 @@ export class CodeGenerator {
       );
     }
 
-    // Composite shared global (struct / array / function-block) accessed in a
-    // body: reach its canonical value directly through the GlobalVar pointer
-    // (`g->value` / `g->value.field` / `g->value.field.N`). The per-global mutex
-    // is intentionally bypassed for composites — they are shared within a single
-    // (bus-cycle) task, e.g. a SoftMotion AXIS_REF_SM3 driven by its bridge and
-    // the MC_* blocks in the same scan. Cross-task composite sharing (needing a
-    // lock spanning a whole field/call access) remains a follow-up. The base is
-    // set to `g->value` below (see the `result` assignment); field/subscript/bit
-    // access then builds on it.
+    // A shared global is accessed under its own mutex: a scalar by
+    // read()/write(), a composite through with_lock (below). Only a VAR_IN_OUT
+    // binding reaches `g->value` directly, outside the lock (renderInOutBound).
 
     // VAR_EXTERNAL scalar read → lock the shared global and return its value.
     // read() yields the real IEC type, so it stays deduction-friendly in
@@ -4849,6 +4933,9 @@ export class CodeGenerator {
             : field;
           if (i > 0) result += ".";
           result += fieldCppName;
+          if (this.isRefInOutMember(currentType, field)) {
+            result = `(*${result})`;
+          }
           if (!isLast) {
             currentType = fieldType;
           }
@@ -4883,6 +4970,9 @@ export class CodeGenerator {
             : field;
           if (i > 0) result += ".";
           result += fieldCppName;
+          if (this.isRefInOutMember(currentType, field)) {
+            result = `(*${result})`;
+          }
           if (!isLast) {
             currentType = fieldType;
           }
@@ -4914,6 +5004,14 @@ export class CodeGenerator {
       }
     }
 
+    // A by-reference VAR_IN_OUT of the enclosing block: the caller's variable.
+    if (
+      this.scopeInOutRefs.has(nameUpper) &&
+      !this.isCurrentFunctionResult(nameUpper)
+    ) {
+      result = `(*${result})`;
+    }
+
     // Bare enum member: Stopped → Irrigation_State::Stopped
     // Only qualify if the name is NOT a declared variable in the current scope
     // (a local variable named RED should not be rewritten as Color::RED).
@@ -4942,6 +5040,11 @@ export class CodeGenerator {
     }
 
     return this.renderAccessTail(result, expr, nameUpper);
+  }
+
+  /** `nameUpper` names the result variable of the function being generated. */
+  private isCurrentFunctionResult(nameUpper: string): boolean {
+    return this.currentFunctionName?.toUpperCase() === nameUpper;
   }
 
   /**
@@ -5012,6 +5115,9 @@ export class CodeGenerator {
           ? `${field}_`
           : field;
         result += `.${fieldCppName}`;
+        if (this.isRefInOutMember(currentType, field)) {
+          result = `(*${result})`;
+        }
         if (!isLast) {
           currentType = fieldType;
         }
@@ -5075,6 +5181,9 @@ export class CodeGenerator {
             : step.name;
           // Array elements store T directly — always use . for field access
           result += `.${fieldCppName}`;
+          if (this.isRefInOutMember(currentType, step.name)) {
+            result = `(*${result})`;
+          }
           currentType = fieldType;
           break;
         }
@@ -6347,38 +6456,116 @@ export class CodeGenerator {
   }
 
   /**
-   * An FB VAR_IN_OUT of interface type: the member refers to the caller's
-   * instance itself, so there is nothing to copy back after the call.
+   * How a function-block VAR_IN_OUT of `type` refers to the caller's variable:
+   * `ref` an IEC_INOUT member (bound per call, used as `(*X)`), `view` an
+   * ARRAY[*] view (already a reference), `itf` an interface variable (refers
+   * to the caller's instance).
    */
-  private isInterfaceInOut(
-    fbTypeName: string | undefined,
+  private inOutTypeKind(type: {
+    name: string;
+    arrayDimensions?: unknown;
+    referenceKind?: string;
+  }): "ref" | "view" | "itf" {
+    if (VLA_TYPE_NAME.test(type.name)) return "view";
+    if (
+      type.arrayDimensions === undefined &&
+      (type.referenceKind === undefined || type.referenceKind === "none") &&
+      this.isInterfaceType(type.name)
+    ) {
+      return "itf";
+    }
+    return "ref";
+  }
+
+  /**
+   * How a call of FB type `fbType` binds its parameter `name`: as
+   * inOutTypeKind, `legacy` for a library FB whose archive still has by-value
+   * in-out members (copy-in / copy-out), undefined when `name` is no in-out.
+   * Inherited in-outs are found through EXTENDS.
+   */
+  private inOutKind(
+    fbType: string | undefined,
     name: string,
-  ): boolean {
+  ): "ref" | "view" | "itf" | "legacy" | undefined {
     const upper = name.toUpperCase();
-    let current = fbTypeName?.toUpperCase();
+    let current = fbType?.toUpperCase();
     for (let depth = 0; current !== undefined && depth < 32; depth++) {
       const owner: string = current;
       const fb = this.ast?.functionBlocks.find(
         (f) => f.name.toUpperCase() === owner,
       );
-      if (!fb) return false;
+      if (!fb) {
+        if (this.fbInoutParams.get(owner)?.has(upper) !== true)
+          return undefined;
+        if (this.legacyInOutFBs.has(owner)) return "legacy";
+        const typeName = this.libraryFBFieldTypes.get(`${owner}.${upper}`);
+        if (typeName === undefined) return "ref";
+        const shape = this.libraryFBFieldTypeRefs.get(`${owner}.${upper}`);
+        return this.inOutTypeKind({
+          name: typeName,
+          ...(shape?.arrayDimensions
+            ? { arrayDimensions: shape.arrayDimensions }
+            : {}),
+          ...(shape?.referenceKind
+            ? { referenceKind: shape.referenceKind }
+            : {}),
+        });
+      }
       for (const block of fb.varBlocks) {
-        if (block.blockType !== "VAR_IN_OUT") continue;
         const decl = block.declarations.find((d) =>
           d.names.some((n) => n.toUpperCase() === upper),
         );
-        if (decl) {
-          return (
-            !decl.type.arrayDimensions &&
-            (decl.type.referenceKind === undefined ||
-              decl.type.referenceKind === "none") &&
-            this.isInterfaceType(decl.type.name)
-          );
+        if (!decl) continue;
+        return block.blockType === "VAR_IN_OUT"
+          ? this.inOutTypeKind(decl.type)
+          : undefined;
+      }
+      current = fb.extends?.toUpperCase();
+    }
+    return undefined;
+  }
+
+  /** Member `field` of type `typeName` is a by-reference VAR_IN_OUT. */
+  private isRefInOutMember(
+    typeName: string | undefined,
+    field: string,
+  ): boolean {
+    return (
+      typeName !== undefined &&
+      this.knownFBTypes.has(typeName.toUpperCase()) &&
+      this.inOutKind(typeName, field) === "ref"
+    );
+  }
+
+  /** The by-reference in-outs the current FB inherits through EXTENDS. */
+  private inheritedInOutRefs(): Set<string> {
+    const result = new Set<string>();
+    if (this.currentFBName === undefined) return result;
+    const own = this.currentFBName.toUpperCase();
+    let current = this.ast?.functionBlocks
+      .find((f) => f.name.toUpperCase() === own)
+      ?.extends?.toUpperCase();
+    for (let depth = 0; current !== undefined && depth < 32; depth++) {
+      const owner: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === owner,
+      );
+      if (!fb) {
+        for (const name of this.fbInoutParams.get(owner) ?? []) {
+          if (this.inOutKind(owner, name) === "ref") result.add(name);
+        }
+        break;
+      }
+      for (const block of fb.varBlocks) {
+        if (block.blockType !== "VAR_IN_OUT") continue;
+        for (const decl of block.declarations) {
+          if (this.inOutTypeKind(decl.type) !== "ref") continue;
+          for (const n of decl.names) result.add(n.toUpperCase());
         }
       }
       current = fb.extends?.toUpperCase();
     }
-    return false;
+    return result;
   }
 
   /** Base-clause entry for an interface: virtual when it is a shared base. */
@@ -6612,13 +6799,35 @@ export class CodeGenerator {
    */
   private enterScope(
     varBlocks: CompilationUnit["programs"][0]["varBlocks"],
+    stackBlocks: readonly VarBlock[] = [],
   ): void {
+    this.stackLocals = new Set(
+      stackBlocks
+        .filter(
+          (b) => b.blockType !== "VAR_INST" && b.blockType !== "VAR_EXTERNAL",
+        )
+        .flatMap((b) => b.declarations.flatMap((d) => d.names))
+        .map((n) => n.toUpperCase()),
+    );
     this.currentScopeVarTypes.clear();
     this.currentScopeVarRefKinds.clear();
     this.currentScopeVarTypeRefs.clear();
     this.memberMangledNames.clear();
+    this.scopeInOutRefs = this.inheritedInOutRefs();
     for (const block of varBlocks) {
+      const fbInOut =
+        block.blockType === "VAR_IN_OUT" &&
+        this.currentFBName !== undefined &&
+        this.knownFBTypes.has(this.currentFBName.toUpperCase()) &&
+        this.currentFBVarBlocks.includes(block);
       for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          if (fbInOut && this.inOutTypeKind(decl.type) === "ref") {
+            this.scopeInOutRefs.add(name.toUpperCase());
+          } else {
+            this.scopeInOutRefs.delete(name.toUpperCase());
+          }
+        }
         const cppType = this.isUserDefinedType(decl.type.name)
           ? decl.type.name
           : `IEC_${decl.type.name}`;
@@ -6655,6 +6864,8 @@ export class CodeGenerator {
    */
   private exitScope(): void {
     this.currentScopeVarTypes.clear();
+    this.scopeInOutRefs = new Set();
+    this.stackLocals = new Set();
   }
 
   /**
@@ -6923,7 +7134,9 @@ export class CodeGenerator {
         ? this.sharedProgramInstance(program)
         : call.instance !== undefined
           ? this.generateExpression(call.instance)
-          : (this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName);
+          : this.scopeInOutRefs.has(rawName.toUpperCase())
+            ? `(*${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName})`
+            : (this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName);
 
     // Extract implicit EN/ENO parameters
     const { enExpr, enoVar, filteredArgs } = this.extractEnEno(call.arguments);
@@ -6932,36 +7145,88 @@ export class CodeGenerator {
     const fbTypeName =
       program ??
       this.getFBInvocationType(call.functionName, call.instance !== undefined);
-    const inputParamNames =
+    // Parameters a positional argument binds, in declaration order.
+    const positionalParams =
       program !== undefined
         ? this.programInputNames(program)
-        : fbTypeName
-          ? this.fbInputParams.get(fbTypeName.toUpperCase())
-          : undefined;
+        : this.fbPositionalParams(fbTypeName);
 
-    // Assign input parameters (named or positional)
+    // Bind each argument to its parameter (named or positional) before the
+    // call: an input is assigned, an in-out refers to the argument.
+    const bindings: Array<{ arg: Argument; param: string }> = [];
     let positionalIndex = 0;
     for (const arg of filteredArgs) {
       if (arg.isOutput) continue;
-
-      if (arg.name) {
-        // Named argument: assign directly
-        this.emit(
-          `${indent}${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)} = ${this.fbInputArgument(fbTypeName, arg.name, arg.value)};`,
-        );
-      } else if (inputParamNames && positionalIndex < inputParamNames.length) {
-        // Positional argument: map to VAR_INPUT by position
-        const paramName = inputParamNames[positionalIndex];
-        this.emit(
-          `${indent}${instanceName}.${this.fbParamMemberName(paramName!, fbTypeName)} = ${this.fbInputArgument(fbTypeName, paramName!, arg.value)};`,
-        );
-        positionalIndex++;
-      } else {
+      const param = arg.name ?? positionalParams?.[positionalIndex];
+      if (arg.name === undefined) positionalIndex++;
+      if (param === undefined) {
         // Positional argument without type info — emit as warning comment
         this.emit(
-          `${indent}// WARNING: positional argument ${positionalIndex} could not be resolved`,
+          `${indent}// WARNING: positional argument ${positionalIndex - 1} could not be resolved`,
         );
-        positionalIndex++;
+        continue;
+      }
+      bindings.push({ arg, param });
+    }
+
+    // An in-out passed by copy (another type, a UNION member) binds a
+    // temporary that must outlive the call: the call then sits in a block.
+    const kindOf = (param: string): ReturnType<CodeGenerator["inOutKind"]> =>
+      program === undefined ? this.inOutKind(fbTypeName, param) : undefined;
+    const byCopy = (b: { arg: Argument; param: string }): boolean =>
+      kindOf(b.param) === "ref" &&
+      (b.arg.inOutCopy === true ||
+        (b.arg.value.kind === "VariableExpression" &&
+          b.arg.value.unionMember === true));
+    const outerIndent = indent;
+    if (bindings.some(byCopy)) {
+      this.emit(`${indent}{`);
+      indent = indent + this.options.indent;
+    }
+
+    const copyOuts: Array<{ target: Expression; source: string }> = [];
+    const unbinds: string[] = [];
+    for (const binding of bindings) {
+      const { arg, param } = binding;
+      const member = `${instanceName}.${this.fbParamMemberName(param, fbTypeName)}`;
+      const kind = kindOf(param);
+      if (kind === "legacy") {
+        // A library built before by-reference in-outs: copy in and back.
+        this.warnLegacyInOutLibrary(fbTypeName, call);
+        this.emit(
+          `${indent}${member} = ${this.generateExpression(arg.value)};`,
+        );
+        copyOuts.push({ target: arg.value, source: member });
+      } else if (kind === "view") {
+        // ARRAY[*]: the view refers to the caller's array.
+        this.emit(
+          `${indent}${member} = ${this.inOutBindTarget(arg.value, param, call)};`,
+        );
+        if (this.isStackRooted(arg.value)) {
+          unbinds.push(`${member} = decltype(${member})();`);
+        }
+      } else if (kind === "ref" && byCopy(binding)) {
+        const tmp = `__io_${this.tempVarCounter++}`;
+        const read = this.generateLvalue(arg.value);
+        const copyIn =
+          arg.value.kind === "VariableExpression" &&
+          arg.value.unionMember === true
+            ? `union_value(${read})`
+            : read;
+        this.emit(`${indent}decltype(${member})::value_type ${tmp};`);
+        this.emit(`${indent}${tmp} = ${copyIn};`);
+        this.emit(`${indent}${member}.bind(${tmp});`);
+        copyOuts.push({ target: arg.value, source: tmp });
+        unbinds.push(`${member}.unbind();`);
+      } else if (kind === "ref") {
+        this.emit(
+          `${indent}${member}.bind(${this.inOutBindTarget(arg.value, param, call)});`,
+        );
+        if (this.isStackRooted(arg.value)) unbinds.push(`${member}.unbind();`);
+      } else {
+        this.emit(
+          `${indent}${member} = ${this.fbInputArgument(fbTypeName, param, arg.value)};`,
+        );
       }
     }
 
@@ -6979,42 +7244,168 @@ export class CodeGenerator {
       `${instanceName}.ENO`,
     );
 
-    // Copy VAR_IN_OUT parameters back to the caller's variables. FB inout params
-    // are stored as by-value members and copied IN before the call; without this
-    // copy-OUT the callee's mutations would be discarded (true inout semantics
-    // require both directions). Mirrors the graphical-language convention of
-    // tying an inout pin on both sides. A follow-up strucpp branch replaces this
-    // copy-in/copy-out with by-reference (pointer) inout members.
-    const inoutParams = fbTypeName
-      ? this.fbInoutParams.get(fbTypeName.toUpperCase())
-      : undefined;
-    if (inoutParams && inoutParams.size > 0) {
-      for (const arg of filteredArgs) {
-        if (arg.isOutput) continue;
-        if (
-          arg.name &&
-          inoutParams.has(arg.name.toUpperCase()) &&
-          !this.isInterfaceInOut(fbTypeName, arg.name)
-        ) {
-          this.emitCaptureToLvalue(
-            arg.value,
-            `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`,
-            indent,
-          );
-        }
-      }
+    // Copy-outs of in-outs passed by copy, then the bindings that end with
+    // the call (their targets live on this body's stack).
+    for (const { target, source } of copyOuts) {
+      this.emitCaptureToLvalue(target, source, indent);
     }
+    for (const line of unbinds) this.emit(`${indent}${line}`);
+    if (indent !== outerIndent) this.emit(`${outerIndent}}`);
+    indent = outerIndent;
 
     // Capture output arguments (=> syntax), excluding ENO (already handled)
     for (const arg of filteredArgs) {
       if (arg.name && arg.isOutput) {
+        const member = `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`;
         this.emitCaptureToLvalue(
           arg.value,
-          `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`,
+          kindOf(arg.name) === "ref" ? `(*${member})` : member,
           indent,
         );
       }
     }
+  }
+
+  /**
+   * The parameters a positional argument of a call of FB type `fbTypeName`
+   * binds, in order: VAR_INPUT and VAR_IN_OUT in declaration order, inherited
+   * ones first (as the type checker matches them); for a library FB its
+   * inputs, then its in-outs.
+   */
+  private fbPositionalParams(
+    fbTypeName: string | undefined,
+  ): string[] | undefined {
+    if (fbTypeName === undefined) return undefined;
+    const chain: CompilationUnit["functionBlocks"] = [];
+    let current: string | undefined = fbTypeName.toUpperCase();
+    while (current !== undefined && chain.length < 32) {
+      const owner: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === owner,
+      );
+      if (!fb) break;
+      chain.unshift(fb);
+      current = fb.extends?.toUpperCase();
+    }
+    if (chain.length === 0) {
+      const upper = fbTypeName.toUpperCase();
+      const inputs = this.fbInputParams.get(upper) ?? [];
+      const inouts = [...(this.fbInoutParams.get(upper) ?? [])];
+      return inputs.length + inouts.length > 0
+        ? [...inputs, ...inouts]
+        : undefined;
+    }
+    return chain.flatMap((fb) =>
+      fb.varBlocks
+        .filter(
+          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
+        )
+        .flatMap((b) => b.declarations.flatMap((d) => d.names)),
+    );
+  }
+
+  /**
+   * The C++ lvalue a VAR_IN_OUT binds for argument `value`: the variable
+   * itself; a shared global's canonical storage (`g->value`, unlocked — see
+   * warnSharedGlobalInOut); the target of a REFERENCE TO.
+   */
+  private inOutBindTarget(
+    value: Expression,
+    param: string,
+    call: FunctionCallExpression | MethodCallExpression,
+  ): string {
+    if (value.kind !== "VariableExpression")
+      return this.generateExpression(value);
+    if (
+      this.programExternals.has(value.name.toUpperCase()) &&
+      !value.isDereference
+    ) {
+      this.warnSharedGlobalInOut(value.name, param, call);
+    }
+    return this.renderInOutBound(value);
+  }
+
+  /**
+   * An in-out argument as the lvalue the parameter refers to: a shared
+   * global's canonical storage (`g->value`), a REFERENCE TO's target, else
+   * the variable as written.
+   */
+  private renderInOutBound(value: VariableExpression): string {
+    const upper = value.name.toUpperCase();
+    if (this.programExternals.has(upper) && !value.isDereference) {
+      return this.renderAccessTail(
+        `${this.resolveVariableBaseName(value.name)}->value`,
+        value,
+        upper,
+      );
+    }
+    if (
+      this.currentScopeVarRefKinds.get(upper) === "reference_to" &&
+      value.fieldAccess.length === 0 &&
+      value.subscripts.length === 0 &&
+      (value.accessChain?.length ?? 0) === 0 &&
+      !value.isDereference
+    ) {
+      return `${this.resolveVariableBaseName(value.name)}.target()`;
+    }
+    const saved = this.inOutBindExprs.delete(value);
+    const rendered = this.generateLvalue(value);
+    if (saved) this.inOutBindExprs.add(value);
+    return rendered;
+  }
+
+  /**
+   * `value` lives on the C++ stack of the body being generated (a parameter,
+   * VAR or VAR_TEMP of a method or function, or a function result), or is
+   * itself an in-out of the enclosing block (whose target may): a binding to
+   * it must end with the call.
+   */
+  private isStackRooted(value: Expression): boolean {
+    if (value.kind !== "VariableExpression") return false;
+    const upper = value.name.toUpperCase();
+    return (
+      this.stackLocals.has(upper) ||
+      this.scopeInOutRefs.has(upper) ||
+      this.isCurrentFunctionResult(upper)
+    );
+  }
+
+  /**
+   * A CONFIGURATION global bound to a VAR_IN_OUT: the in-out refers to its
+   * storage for the call, outside the global's lock.
+   */
+  private warnSharedGlobalInOut(
+    global: string,
+    param: string,
+    call: FunctionCallExpression | MethodCallExpression,
+  ): void {
+    this.codegenWarnings.push({
+      message:
+        `VAR_IN_OUT '${param}' refers to the shared global '${global}' during the call: ` +
+        `in a build with STRUCPP_THREADED, accesses through it are not serialized by the global's lock, ` +
+        `so another task using '${global}' at the same time races with them`,
+      line: call.sourceSpan.startLine,
+      column: call.sourceSpan.startCol,
+      file: call.sourceSpan.file,
+    });
+  }
+
+  /** A call of a library FB whose archive predates by-reference in-outs. */
+  private warnLegacyInOutLibrary(
+    fbTypeName: string | undefined,
+    call: FunctionCallExpression,
+  ): void {
+    const upper = fbTypeName?.toUpperCase();
+    if (upper === undefined || this.legacyInOutWarned.has(upper)) return;
+    this.legacyInOutWarned.add(upper);
+    this.codegenWarnings.push({
+      message:
+        `Function block '${fbTypeName}' comes from a library built before VAR_IN_OUT was bound by reference: ` +
+        `its in-outs are copied in and back around the call. Rebuild the library with this compiler`,
+      line: call.sourceSpan.startLine,
+      column: call.sourceSpan.startCol,
+      file: call.sourceSpan.file,
+    });
   }
 
   /** VAR_INPUT names of a PROGRAM, in declaration order (positional call arguments). */

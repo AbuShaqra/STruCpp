@@ -607,7 +607,7 @@ describe('Error Handling Tests', () => {
       expect(result.cppCode).toContain('BAG->with_lock([&](auto* __glk){ return (*__glk).ITEMS.at(I).V; })');
     });
 
-    it('passes a composite shared global to an FB VAR_IN_OUT under the lock (in + out)', () => {
+    it('binds an FB VAR_IN_OUT to a composite shared global by reference, with a warning', () => {
       const source = `
         TYPE Axis : STRUCT pos : INT; END_STRUCT END_TYPE
         FUNCTION_BLOCK Mover VAR_IN_OUT a : Axis; END_VAR a.pos := a.pos + 1; END_FUNCTION_BLOCK
@@ -626,10 +626,12 @@ describe('Error Handling Tests', () => {
       `;
       const result = compile(source);
       expect(result.success).toBe(true);
-      // copy-in: locked read of the whole global into the FB's by-value inout member
-      expect(result.cppCode).toContain('MV.A = AX->with_lock([&](auto* __glk){ return (*__glk); });');
-      // copy-out: locked write back
-      expect(result.cppCode).toContain('AX->with_lock([&](auto* __glk){ (*__glk) = MV.A; });');
+      // the in-out refers to the global's storage for the call, outside its lock
+      expect(result.cppCode).toContain('MV.A.bind(AX->value);');
+      expect(result.cppCode).not.toContain('= MV.A;');
+      expect(result.warnings.map((w) => w.message)).toContainEqual(
+        expect.stringContaining("VAR_IN_OUT 'A' refers to the shared global 'AX' during the call"),
+      );
     });
 
     it('never nests two global locks in one statement (reads hoisted before write-lock)', () => {

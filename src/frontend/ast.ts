@@ -820,6 +820,12 @@ export interface Argument extends ASTNode {
   name?: string;
   isOutput: boolean;
   value: Expression;
+  /**
+   * Set by the type checker on an argument bound to a VAR_IN_OUT of another
+   * type (a warning outside the IEC profile): codegen passes it by copy-in /
+   * copy-out instead of by reference.
+   */
+  inOutCopy?: true;
 }
 
 /**

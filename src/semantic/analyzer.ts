@@ -74,6 +74,7 @@ import {
 } from "./fb-init.js";
 import {
   DEFAULT_FEATURES,
+  IEC_PROFILE,
   profilesWithFeature,
   type FeatureId,
   type ResolvedDialect,
@@ -431,6 +432,7 @@ export class SemanticAnalyzer {
       this.options.strict === true,
       this.features,
       (feature, construct) => this.featureMessage(feature, construct),
+      this.options.dialect?.id === IEC_PROFILE.id,
     );
   }
 
@@ -456,6 +458,7 @@ export class SemanticAnalyzer {
         this.options.strict === true,
         this.features,
         (feature, construct) => this.featureMessage(feature, construct),
+        this.options.dialect?.id === IEC_PROFILE.id,
       );
     }
 

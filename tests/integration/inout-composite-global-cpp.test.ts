@@ -2,14 +2,13 @@
  * A composite configuration global (STRUCT, ARRAY, an element or a field of
  * one) passed to a VAR_IN_OUT or VAR_OUTPUT of a method or a FUNCTION.
  *
- * A composite global is read through `X->with_lock(...)`, which yields a copy
- * that cannot bind to the callee's `T&`. The call takes it by copy-in /
- * copy-out instead: a locked read into a temporary before the statement, the
- * call binding the temporary, a locked write-back after it. Each lock is
- * self-contained, so the call itself runs under no lock: a callee that reaches
- * the same global through VAR_EXTERNAL cannot deadlock on GlobalVar's
- * non-recursive mutex under STRUCPP_THREADED. Ends in g++ so the results are
- * the proof.
+ * A VAR_IN_OUT refers to the global's canonical storage for the call
+ * (`X->value`, IEC 61131-3 6.6.1.4): the callee sees and writes the global
+ * itself, so a callee that also reaches it through VAR_EXTERNAL sees its own
+ * writes. No lock is held during the call (GlobalVar's mutex is not
+ * recursive), and the compiler warns that under STRUCPP_THREADED the accesses
+ * through the in-out are not serialized. A VAR_OUTPUT (`=>`) is still copied
+ * out under the lock. Ends in g++ so the results are the proof.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execSync } from "child_process";
@@ -202,9 +201,8 @@ END_PROGRAM`,
         " c.INST.run();\n std::cout << GAX.value.POS.get() << ' ' << c.INST.R.get() << ' ' << GAX2.value.POS.get() << std::endl;",
         "io_method_body",
       );
-      // Twice: Drive(own Ax copy) -> its copy 1; Drive(gAx) -> global 1, returns 1;
-      // then Twice's own copy-out writes its copy (pos 1) back to gAx.
-      expect(out).toBe("1 1 1");
+      // Twice: Drive(its Ax, which is gAx) -> 1; Drive(gAx) -> 2, returns 2.
+      expect(out).toBe("2 2 1");
     });
 
     it("a FUNCTION's VAR_IN_OUT mutates the global", () => {
@@ -281,7 +279,7 @@ END_PROGRAM`,
     });
 
     it("a call in an expression", () => {
-      // The write to gAx.cnt follows the call's copy-out, so it is not lost.
+      // The write to gAx.cnt follows the call, so it is not lost.
       const out = run(
         `PROGRAM MAIN
 VAR_EXTERNAL gAx : ST_Ax; gAx2 : ST_Ax; END_VAR
@@ -302,8 +300,8 @@ END_PROGRAM`,
     });
 
     it("calls in CASE branches (a state machine driving a global axis)", () => {
-      // The copy-in temporaries and the __gwv_ store temporary each sit in a
-      // block of their own, so the next case label does not jump over them.
+      // The __gwv_ store temporary sits in a block of its own, so the next
+      // case label does not jump over it.
       const out = run(
         `PROGRAM MAIN
 VAR_EXTERNAL gAx : ST_Ax; END_VAR
@@ -320,7 +318,7 @@ END_PROGRAM`,
       expect(out).toBe("1 0\n3 3\n3 13 0");
     });
 
-    it("the generated text uses copy-in/copy-out", () => {
+    it("the generated text binds the in-outs to the globals' storage", () => {
       const result = compileOk(
         withConfig(`PROGRAM MAIN
 VAR_EXTERNAL gAx : ST_Ax; gAx2 : ST_Ax; gArr : ARRAY[0..1] OF ST_Ax; END_VAR
@@ -332,26 +330,20 @@ IF m.Drive(Ax := gAx) > 2 THEN r := 0; END_IF;
 END_PROGRAM`),
       );
       const code = result.cppCode;
-      // copy-in before the statement, the call binds the temp, copy-out after
-      expect(code).toMatch(
-        /auto (__gio_\d+) = GAX->with_lock\(\[&\]\(auto\* __glk\)\{ return \(\*__glk\); \}\);/,
-      );
-      const tmp = /auto (__gio_\d+) = GAX->with_lock/.exec(code)![1]!;
-      expect(code).toContain(`M.DRIVE(${tmp})`);
-      expect(code).toContain(
-        `GAX->with_lock([&](auto* __glk){ (*__glk) = ${tmp}; });`,
-      );
-      expect(code).toMatch(
-        /auto (__gio_\d+) = GARR->with_lock\(\[&\]\(auto\* __glk\)\{ return \(\*__glk\)\.at\(I\)\.CNT; \}\);/,
-      );
-      // No with_lock lambda contains a call of the ST callees or another lock.
-      const bodies = withLockBodies(code);
-      expect(bodies.length).toBeGreaterThan(0);
-      for (const body of bodies) {
+      expect(code).toContain("M.DRIVE(GAX->value)");
+      expect(code).toContain("F_BUMP(GAX2->value)");
+      expect(code).toContain("M.SWAP(GAX->value, GAX2->value);");
+      expect(code).toContain("F_INC(GARR->value.at(I).CNT);");
+      // Nothing copied in or out for an in-out, and no call inside a lock.
+      expect(code).not.toContain("__gio_");
+      for (const body of withLockBodies(code)) {
         expect(body).not.toMatch(/with_lock|DRIVE\(|F_BUMP\(|F_INC\(|SWAP\(/);
       }
-      // Never a bare `X->value` in a body.
-      expect(code).not.toMatch(/GAX2?->value|GARR->value/);
+      expect(
+        result.warnings
+          .map((w) => w.message)
+          .filter((m) => m.includes("refers to the shared global")),
+      ).toHaveLength(7); // the six above, and Drive(gAx) in FB_M.Twice
     });
 
     describe("the same program built with -DSTRUCPP_THREADED", () => {
@@ -409,9 +401,8 @@ END_PROGRAM`,
           " c.INST.run(); c.INST.run();\n std::cout << GAX.value.POS.get() << ' ' << c.INST.R.get() << std::endl;",
           "mt_peek",
         );
-        // Inside the call the method sees the global as it was before (its
-        // VAR_IN_OUT is the copy); the copy-out then stores the new value.
-        expect(out).toBe("2 1");
+        // The in-out is the global: the method sees its own write.
+        expect(out).toBe("2 2");
       });
     });
   },

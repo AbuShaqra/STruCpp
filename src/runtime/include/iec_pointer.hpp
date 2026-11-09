@@ -463,6 +463,53 @@ public:
 };
 
 // =============================================================================
+// VAR_IN_OUT of a function block (bound by reference at each call)
+// =============================================================================
+
+/**
+ * A function-block VAR_IN_OUT member: a non-owning reference to the caller's
+ * variable, bound by every call that maps the parameter (IEC 61131-3 Ed. 3
+ * 6.6.1.4, 6.6.3.4). The body reaches the variable as `(*X)`, so field,
+ * subscript and bit access apply to the caller's object itself.
+ *
+ * Unbound until the first call that binds it (and again after `unbind()`);
+ * reaching it unbound raises the NullReference fault, as an unbound
+ * REFERENCE TO does.
+ *
+ * @tparam T The C++ type of the parameter (IECVar<T>, a STRUCT, an array,
+ *           a function-block class, a raw alias, a pointer wrapper, ...)
+ */
+template<typename T>
+class IEC_INOUT {
+    T* ptr_ = nullptr;
+
+public:
+    using value_type = T;
+
+    IEC_INOUT() noexcept = default;
+
+    /** Refer to `target` until the next binding. */
+    void bind(T& target) noexcept { ptr_ = &target; }
+
+    /** Drop the binding (the target's lifetime ends with the call). */
+    void unbind() noexcept { ptr_ = nullptr; }
+
+    bool is_bound() const noexcept { return ptr_ != nullptr; }
+
+    /** The bound variable; raises the NullReference fault when unbound. */
+    T& operator*() const {
+        if (ptr_ == nullptr) {
+#if STRUCPP_HAS_EXCEPTIONS
+            throw NullReferenceException("VAR_IN_OUT");
+#else
+            iec_runtime_fault(IecFault::NullReference, "VAR_IN_OUT");
+#endif
+        }
+        return *ptr_;
+    }
+};
+
+// =============================================================================
 // REF() Function - Get Reference to Variable
 // =============================================================================
 

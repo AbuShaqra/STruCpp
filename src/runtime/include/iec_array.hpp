@@ -20,6 +20,7 @@
 #include <stdexcept>
 #endif
 #include "iec_var.hpp"
+#include "iec_pointer.hpp"
 
 namespace strucpp {
 
@@ -396,6 +397,20 @@ using Array3D = IEC_ARRAY_3D<T, ArrayBounds<L1, U1>, ArrayBounds<L2, U2>, ArrayB
 // Type-erased array views for ARRAY[*] parameters in VAR_IN_OUT
 // =============================================================================
 
+namespace detail {
+/** An access through an unbound view raises the NullReference fault. */
+template<typename T>
+inline void view_unbound_check(const T* data) {
+    if (data == nullptr) {
+#if STRUCPP_HAS_EXCEPTIONS
+        throw NullReferenceException("VAR_IN_OUT");
+#else
+        iec_runtime_fault(IecFault::NullReference, "VAR_IN_OUT");
+#endif
+    }
+}
+}  // namespace detail
+
 // 1D ArrayView - type-erased wrapper for ARRAY[*] OF T
 template<typename T>
 class ArrayView1D {
@@ -404,6 +419,10 @@ class ArrayView1D {
     int64_t upper_;
 
 public:
+    // Unbound: a function-block VAR_IN_OUT before its first call. Empty range;
+    // an element access raises the NullReference fault (see at()).
+    ArrayView1D() noexcept : data_(nullptr), lower_(0), upper_(-1) {}
+
     // Construct from any IEC_ARRAY_1D with matching element type
     template<typename Bounds>
     ArrayView1D(IEC_ARRAY_1D<T, Bounds>& arr)
@@ -423,6 +442,7 @@ public:
     // out-of-range index raises a clean fault instead of corrupting memory.
     T& at(int64_t index) {
         if (index < lower_ || index > upper_) {
+            detail::view_unbound_check(data_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
@@ -434,6 +454,7 @@ public:
 
     const T& at(int64_t index) const {
         if (index < lower_ || index > upper_) {
+            detail::view_unbound_check(data_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
@@ -457,6 +478,10 @@ class ArrayView2D {
     int64_t dim2_;
 
 public:
+    // Unbound (see ArrayView1D's default constructor).
+    ArrayView2D() noexcept
+        : data_(nullptr), lower1_(0), upper1_(-1), lower2_(0), upper2_(-1), dim2_(0) {}
+
     template<typename Bounds1, typename Bounds2>
     ArrayView2D(IEC_ARRAY_2D<T, Bounds1, Bounds2>& arr)
         : data_(arr.data())
@@ -475,6 +500,7 @@ public:
     // Bounds-checked access — codegen emits .at(i, j) for 2D subscripts.
     T& at(int64_t i, int64_t j) {
         if (i < lower1_ || i > upper1_ || j < lower2_ || j > upper2_) {
+            detail::view_unbound_check(data_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
@@ -486,6 +512,7 @@ public:
 
     const T& at(int64_t i, int64_t j) const {
         if (i < lower1_ || i > upper1_ || j < lower2_ || j > upper2_) {
+            detail::view_unbound_check(data_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
