@@ -536,6 +536,12 @@ export class CodeGenerator {
   /** Set of known interface type names (upper case) */
   protected knownInterfaceTypes: Set<string> = new Set();
 
+  /**
+   * Interfaces (upper case) some class reaches through two inheritance paths;
+   * every edge to one is virtual, so the instance has a single, unambiguous base.
+   */
+  private sharedInterfaceBases: Set<string> = new Set();
+
   /** Set of known struct/UDT type names (upper case) */
   protected knownStructTypes: Set<string> = new Set();
 
@@ -859,6 +865,10 @@ export class CodeGenerator {
         elemType,
       );
     }
+    // An interface-typed variable holds a nullable reference to the instance.
+    if (!typeRef.arrayDimensions && this.isInterfaceType(typeRef.name)) {
+      return `IEC_ITF<${baseType}>`;
+    }
     // For STRING(CONSTANT_NAME), emit template with the constant name
     if (typeof typeRef.maxLength === "string") {
       const upper = typeRef.name.toUpperCase();
@@ -1150,6 +1160,8 @@ export class CodeGenerator {
         ifaceMethods,
       );
     }
+
+    this.sharedInterfaceBases = this.findSharedInterfaceBases(ast);
 
     // Build method name map, property name map, and interface method names for FBs
     for (const fb of ast.functionBlocks) {
@@ -1752,7 +1764,7 @@ export class CodeGenerator {
     }
     if (fb.implements) {
       for (const iface of fb.implements) {
-        bases.push(`public ${iface}`);
+        bases.push(this.interfaceBaseSpec(iface));
       }
     }
     const inheritance = bases.length > 0 ? ` : ${bases.join(", ")}` : "";
@@ -2006,9 +2018,7 @@ export class CodeGenerator {
               // (so inline ARRAY params emit Array1D<...>) but we still want
               // STRING/WSTRING maxLength dropped so any string size binds to
               // the &-reference — strip it on a shallow copy of the typeRef.
-              params.push(
-                `${this.mapTypeRefToCpp(this.toParamTypeRef(decl.type))}& ${name}`,
-              );
+              params.push(`${this.inOutParamType(decl.type)}& ${name}`);
             }
           }
         }
@@ -2039,7 +2049,7 @@ export class CodeGenerator {
   ): void {
     const extendsClause =
       iface.extends && iface.extends.length > 0
-        ? ` : ${iface.extends.map((e) => `public ${e}`).join(", ")}`
+        ? ` : ${iface.extends.map((e) => this.interfaceBaseSpec(e)).join(", ")}`
         : "";
 
     this.emitHeaderLineDirective(iface.sourceSpan.startLine);
@@ -2053,7 +2063,9 @@ export class CodeGenerator {
       const isIfaceReturn =
         method.returnType && this.isInterfaceType(method.returnType.name);
       const returnType = method.returnType
-        ? `${this.mapTypeRefToCpp(method.returnType)}${isIfaceReturn ? "&" : ""}`
+        ? isIfaceReturn
+          ? `${this.inOutParamType(method.returnType)}&`
+          : this.mapTypeRefToCpp(method.returnType)
         : "void";
       const params = this.generateMethodParamList(method);
       if (method.sourceSpan) {
@@ -2139,7 +2151,9 @@ export class CodeGenerator {
         const isIfaceReturn =
           method.returnType && this.isInterfaceType(method.returnType.name);
         const returnType = method.returnType
-          ? `${this.mapTypeRefToCpp(method.returnType)}${isIfaceReturn ? "&" : ""}`
+          ? isIfaceReturn
+            ? `${this.inOutParamType(method.returnType)}&`
+            : this.mapTypeRefToCpp(method.returnType)
           : "void";
         const params = this.generateMethodParamList(method);
 
@@ -2197,9 +2211,7 @@ export class CodeGenerator {
             // (so inline ARRAY params emit Array1D<...>) while
             // toParamTypeRef strips STRING/WSTRING maxLength so any
             // string size binds to the &-reference.
-            params.push(
-              `${this.mapTypeRefToCpp(this.toParamTypeRef(decl.type))}& ${name}`,
-            );
+            params.push(`${this.inOutParamType(decl.type)}& ${name}`);
           }
         }
       } else if (block.blockType === "VAR_OUTPUT") {
@@ -2249,7 +2261,9 @@ export class CodeGenerator {
     const isIfaceReturn =
       method.returnType && this.isInterfaceType(method.returnType.name);
     const returnType = method.returnType
-      ? `${this.mapTypeRefToCpp(method.returnType)}${isIfaceReturn ? "&" : ""}`
+      ? isIfaceReturn
+        ? `${this.inOutParamType(method.returnType)}&`
+        : this.mapTypeRefToCpp(method.returnType)
       : "void";
     const params = this.generateMethodParamList(method);
 
@@ -4390,8 +4404,9 @@ export class CodeGenerator {
 
     // Handle THIS reference
     if (nameUpper === "THIS") {
-      // THIS^ (dereference) with no field access → (*this)
-      if (expr.isDereference && expr.fieldAccess.length === 0) {
+      // THIS^, or bare THIS (a reference to the own instance, bound to an
+      // interface variable or input), with no field access → (*this)
+      if (expr.fieldAccess.length === 0) {
         return "(*this)";
       }
       // THIS.member or THIS^.member → this->member
@@ -4760,7 +4775,12 @@ export class CodeGenerator {
       expr.arguments,
       expr.sourceSpan,
     ).join(", ");
-    return `${obj}.${resolvedName}(${args})`;
+    // Through an interface, the call goes to the instance it refers to.
+    const receiver =
+      ownerType !== undefined && this.isInterfaceType(ownerType)
+        ? `itf_ref(${obj})`
+        : obj;
+    return `${receiver}.${resolvedName}(${args})`;
   }
 
   /**
@@ -5253,8 +5273,19 @@ export class CodeGenerator {
       } else if (prefix.toUpperCase() === "SUPER" && this.currentFBExtends) {
         return `${this.currentFBExtends}::${resolvedMethod}(${args.join(", ")})`;
       } else {
-        // instance.method() call
-        return `${prefix}.${resolvedMethod}(${args.join(", ")})`;
+        // instance.method() call; through an interface, on the instance it refers to
+        const receiver =
+          ownerType !== undefined && this.isInterfaceType(ownerType)
+            ? `itf_ref(${this.generateExpression({
+                kind: "VariableExpression",
+                sourceSpan: expr.sourceSpan,
+                name: prefix,
+                subscripts: [],
+                fieldAccess: [],
+                isDereference: false,
+              })})`
+            : prefix;
+        return `${receiver}.${resolvedMethod}(${args.join(", ")})`;
       }
     }
 
@@ -5756,6 +5787,98 @@ export class CodeGenerator {
     if (this.knownFBTypes.has(u)) return "class ";
     if (this.knownStructTypes.has(u)) return "struct ";
     return "";
+  }
+
+  /**
+   * An FB VAR_IN_OUT of interface type: the member refers to the caller's
+   * instance itself, so there is nothing to copy back after the call.
+   */
+  private isInterfaceInOut(
+    fbTypeName: string | undefined,
+    name: string,
+  ): boolean {
+    const upper = name.toUpperCase();
+    let current = fbTypeName?.toUpperCase();
+    for (let depth = 0; current !== undefined && depth < 32; depth++) {
+      const owner: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === owner,
+      );
+      if (!fb) return false;
+      for (const block of fb.varBlocks) {
+        if (block.blockType !== "VAR_IN_OUT") continue;
+        const decl = block.declarations.find((d) =>
+          d.names.some((n) => n.toUpperCase() === upper),
+        );
+        if (decl) {
+          return (
+            !decl.type.arrayDimensions &&
+            (decl.type.referenceKind === undefined ||
+              decl.type.referenceKind === "none") &&
+            this.isInterfaceType(decl.type.name)
+          );
+        }
+      }
+      current = fb.extends?.toUpperCase();
+    }
+    return false;
+  }
+
+  /** Base-clause entry for an interface: virtual when it is a shared base. */
+  private interfaceBaseSpec(name: string): string {
+    return this.sharedInterfaceBases.has(name.toUpperCase())
+      ? `public virtual ${name}`
+      : `public ${name}`;
+  }
+
+  /**
+   * Interfaces that some FB or interface of this compile reaches through more
+   * than one chain of EXTENDS / IMPLEMENTS (a diamond). Without virtual
+   * inheritance the instance would hold two copies and the conversion to the
+   * interface would be ambiguous.
+   */
+  private findSharedInterfaceBases(ast: CompilationUnit): Set<string> {
+    const direct = new Map<string, string[]>();
+    for (const iface of ast.interfaces) {
+      direct.set(
+        iface.name.toUpperCase(),
+        (iface.extends ?? []).map((e) => e.toUpperCase()),
+      );
+    }
+    for (const fb of ast.functionBlocks) {
+      direct.set(fb.name.toUpperCase(), [
+        ...(fb.extends ? [fb.extends.toUpperCase()] : []),
+        ...(fb.implements ?? []).map((i) => i.toUpperCase()),
+      ]);
+    }
+    const shared = new Set<string>();
+    for (const start of direct.keys()) {
+      const paths = new Map<string, number>();
+      const walk = (name: string, depth: number): void => {
+        if (depth >= 32) return;
+        for (const base of direct.get(name) ?? []) {
+          paths.set(base, (paths.get(base) ?? 0) + 1);
+          walk(base, depth + 1);
+        }
+      };
+      walk(start, 0);
+      for (const [name, count] of paths) {
+        if (count > 1 && this.knownInterfaceTypes.has(name)) shared.add(name);
+      }
+    }
+    return shared;
+  }
+
+  /**
+   * The C++ type a VAR_IN_OUT binds by reference: the interface class itself
+   * for an interface type (not its variable wrapper), else the declared type.
+   */
+  private inOutParamType(type: TypeShape): string {
+    return !type.arrayDimensions &&
+      (type.referenceKind === undefined || type.referenceKind === "none") &&
+      this.isInterfaceType(type.name)
+      ? type.name
+      : this.mapTypeRefToCpp(this.toParamTypeRef(type));
   }
 
   /**
@@ -6300,7 +6423,11 @@ export class CodeGenerator {
     if (inoutParams && inoutParams.size > 0) {
       for (const arg of filteredArgs) {
         if (arg.isOutput) continue;
-        if (arg.name && inoutParams.has(arg.name.toUpperCase())) {
+        if (
+          arg.name &&
+          inoutParams.has(arg.name.toUpperCase()) &&
+          !this.isInterfaceInOut(fbTypeName, arg.name)
+        ) {
           this.emitCaptureToLvalue(
             arg.value,
             `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`,

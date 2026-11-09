@@ -3358,12 +3358,13 @@ export class ASTBuilder {
    * THIS.member -> VariableExpression { name: "THIS", fieldAccess: ["member"] }
    * THIS.method(args) -> FunctionCallExpression { functionName: "THIS.method", ... }
    * THIS^.member / THIS^.method(args) -> the same, marked `selfCaret`.
+   * THIS^ and bare THIS -> VariableExpression { name: "THIS" } (THIS^ dereferenced).
    */
   buildThisAccessExpression(node: CstNode): Expression {
     const children = node.children as CstChildren;
     const tailNode = getFirstNode(children.selfMemberTail);
 
-    // THIS^ (dereference - return self)
+    // THIS^ (dereference - return self), or bare THIS
     if (!tailNode) {
       return {
         kind: "VariableExpression",
@@ -3371,7 +3372,7 @@ export class ASTBuilder {
         name: "THIS",
         subscripts: [],
         fieldAccess: [],
-        isDereference: true,
+        isDereference: children.Caret !== undefined,
       };
     }
 
