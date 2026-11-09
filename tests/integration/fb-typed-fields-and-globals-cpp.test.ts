@@ -92,9 +92,9 @@ END_PROGRAM
       ).toBe("15");
     });
 
-    // A call through more than one selector (`o.inner.belt()`, `a.b[1]()`) does
-    // not parse today, so the deeper cases read the instance: its initial value
-    // proves the FB was constructed in place.
+    // Invoking an FB through more than one selector (`o.inner.belt()`,
+    // `a.b[1]()`) is not supported, so the deeper cases read the instance: its
+    // initial value proves the FB was constructed in place.
     it("a struct holding a struct holding an FB, used as an FB member", () => {
       const source = `FUNCTION_BLOCK FB_Cell
 VAR o : ST_Outer; END_VAR

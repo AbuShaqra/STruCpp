@@ -1028,6 +1028,12 @@ export class STParser extends CstParser {
   public statement = this.RULE("statement", () => {
     this.OR({
       DEF: [
+        // `a.b.M();` — before the THIS/SUPER and assignment alternatives,
+        // which would claim the chain's first tokens.
+        {
+          ALT: () => this.SUBRULE(this.memberChainCallStatement),
+          GATE: () => this.isMemberChainCallAhead(),
+        },
         {
           ALT: () => this.SUBRULE(this.refAssignStatement),
           GATE: () => this.isRefAssignAhead(),
@@ -1316,6 +1322,51 @@ export class STParser extends CstParser {
   }
 
   /**
+   * Lookahead helper: does a method call through a member chain start here?
+   * The chain has at least two field or subscript steps and ends in
+   * `.Name(`: `a.b.M(`, `arr[i].M(`, `THIS.f.M(`, `SUPER^.f.M(`. One step
+   * (`a.M(`, `THIS.M(`) and `arr[i](` stay with their own rules. A THIS or
+   * SUPER root takes field steps only.
+   */
+  private isMemberChainCallAhead(): boolean {
+    const first = this.LA(1).tokenType;
+    const selfRoot = first === tokens.THIS || first === tokens.SUPER;
+    if (!selfRoot && !this.isIdentifierOrKeywordToken(first)) return false;
+    let i = 2;
+    if (selfRoot && this.LA(2).tokenType === tokens.Caret) i = 3;
+    let steps = 0;
+    let lastWasField = false;
+    // 256 tokens covers any realistic chain, subscripts included.
+    const MAX_LOOKAHEAD = 256;
+    while (i <= MAX_LOOKAHEAD) {
+      const t = this.LA(i)?.tokenType;
+      if (t === undefined) return false;
+      if (
+        t === tokens.Dot &&
+        this.isIdentifierOrKeywordToken(this.LA(i + 1).tokenType)
+      ) {
+        steps++;
+        lastWasField = true;
+        i += 2;
+      } else if (!selfRoot && t === tokens.LBracket) {
+        let depth = 0;
+        for (; i <= MAX_LOOKAHEAD; i++) {
+          const inner = this.LA(i)?.tokenType;
+          if (inner === undefined || inner === tokens.Semicolon) return false;
+          if (inner === tokens.LBracket) depth++;
+          else if (inner === tokens.RBracket && --depth === 0) break;
+        }
+        steps++;
+        lastWasField = false;
+        i++;
+      } else {
+        return t === tokens.LParen && lastWasField && steps >= 2;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Lookahead helper: does an invocation of a subscripted function block
    * instance start here (`units[0](…)`, `grid[i, j]()`)?
    *
@@ -1363,6 +1414,40 @@ export class STParser extends CstParser {
       this.SUBRULE(this.chainedMethodCall);
     });
     this.CONSUME(tokens.Semicolon);
+  });
+
+  /** `a.b.M(args);` — a method call through a member chain as a statement. */
+  public memberChainCallStatement = this.RULE(
+    "memberChainCallStatement",
+    () => {
+      this.SUBRULE(this.memberChainCall);
+      this.CONSUME(tokens.Semicolon);
+    },
+  );
+
+  /**
+   * A method call through a member chain: `a.b.M(args)`, `arr[i].M(args)`,
+   * `THIS.f.M(args)`, `SUPER.f.M(args)`. The `variable` holds
+   * the chain with the method name as its last field.
+   */
+  public memberChainCall = this.RULE("memberChainCall", () => {
+    this.OPTION(() => {
+      this.OR([
+        { ALT: () => this.CONSUME(tokens.THIS) },
+        { ALT: () => this.CONSUME(tokens.SUPER) },
+      ]);
+      this.OPTION2(() => this.CONSUME(tokens.Caret));
+      this.CONSUME(tokens.Dot);
+    });
+    this.SUBRULE(this.variable);
+    this.CONSUME(tokens.LParen);
+    this.OPTION3(() => {
+      this.SUBRULE(this.argumentList);
+    });
+    this.CONSUME(tokens.RParen);
+    this.MANY(() => {
+      this.SUBRULE(this.chainedMethodCall);
+    });
   });
 
   /**
@@ -1816,6 +1901,10 @@ export class STParser extends CstParser {
         {
           ALT: () => this.SUBRULE(this.newExpression),
           GATE: () => this.LA(1).tokenType === tokens.__NEW,
+        },
+        {
+          ALT: () => this.SUBRULE(this.memberChainCall),
+          GATE: () => this.isMemberChainCallAhead(),
         },
         {
           ALT: () => this.SUBRULE(this.thisAccess),

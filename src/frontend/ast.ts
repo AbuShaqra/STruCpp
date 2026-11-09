@@ -777,6 +777,8 @@ export interface MethodCallExpression extends TypedNode {
   object: Expression; // The expression to call the method on
   methodName: string;
   arguments: Argument[];
+  /** Where the method name is written; set for a call through a member chain. */
+  methodNameSpan?: SourceSpan;
 }
 
 /**

@@ -1925,6 +1925,17 @@ export class ASTBuilder {
         getFirstNode(children.methodCallStatement)!,
       );
     }
+    if (children.memberChainCallStatement) {
+      const stmtNode = getFirstNode(children.memberChainCallStatement)!;
+      const callNode = getFirstNode(
+        (stmtNode.children as CstChildren).memberChainCall,
+      )!;
+      return {
+        kind: "FunctionCallStatement",
+        sourceSpan: nodeToSourceSpan(stmtNode),
+        call: this.buildMemberChainCall(callNode),
+      };
+    }
     if (children.thisStatement) {
       return this.buildThisStatement(getFirstNode(children.thisStatement)!);
     }
@@ -2715,6 +2726,11 @@ export class ASTBuilder {
       );
     }
 
+    // Method call through a member chain: a.b.method(args)
+    if (children.memberChainCall) {
+      return this.buildMemberChainCall(getFirstNode(children.memberChainCall)!);
+    }
+
     // Check for method call expression: instance.method(args)
     if (children.methodCall) {
       return this.buildMethodCallExpression(getFirstNode(children.methodCall)!);
@@ -3472,6 +3488,86 @@ export class ASTBuilder {
       result = this.buildChainedCall(chainNode, result, node);
     }
 
+    return result;
+  }
+
+  /**
+   * Build a method call through a member chain (`a.b.M(args)`, `arr[i].M()`,
+   * `THIS.f.M()`): the chain without its last field is the object, the last
+   * field is the method name. Fluent `.N(args)` calls wrap the result.
+   */
+  buildMemberChainCall(node: CstNode): MethodCallExpression {
+    const children = node.children as CstChildren;
+    const variableNode = getFirstNode(children.variable);
+    const chain = variableNode
+      ? this.buildVariableExpression(variableNode)
+      : this.createDummyVariable(node);
+    const selfRoot = children.THIS ? "THIS" : children.SUPER ? "SUPER" : "";
+    // A THIS/SUPER root makes the variable's own name the first field.
+    const steps: AccessStep[] = selfRoot
+      ? [{ kind: "field", name: chain.name }, ...(chain.accessChain ?? [])]
+      : [...(chain.accessChain ?? [])];
+    const last = steps.pop();
+    const methodName = last?.kind === "field" ? last.name : "";
+    const idOrKwNodes = variableNode
+      ? getAllNodes((variableNode.children as CstChildren).identifierOrKeyword)
+      : [];
+    const methodNode = idOrKwNodes[idOrKwNodes.length - 1];
+
+    // The object ends just before the `.` that introduces the method name.
+    const callSpan = nodeToSourceSpan(node);
+    const dots = variableNode
+      ? getAllTokens((variableNode.children as CstChildren).Dot)
+      : [];
+    const lastDot = dots.reduce<IToken | undefined>(
+      (latest, dot) =>
+        latest === undefined || dot.startOffset > latest.startOffset
+          ? dot
+          : latest,
+      undefined,
+    );
+    const objectSpan: SourceSpan = lastDot
+      ? {
+          ...callSpan,
+          endLine: lastDot.startLine ?? callSpan.endLine,
+          endCol: (lastDot.startColumn ?? callSpan.endCol + 1) - 1,
+        }
+      : callSpan;
+
+    const fieldAccess = steps.flatMap((step) =>
+      step.kind === "field" ? [step.name] : [],
+    );
+    const object: VariableExpression = {
+      kind: "VariableExpression",
+      sourceSpan: objectSpan,
+      name: selfRoot || chain.name,
+      subscripts: chain.subscripts,
+      fieldAccess,
+      isDereference: steps.some((step) => step.kind === "dereference"),
+    };
+    if (!selfRoot && steps.length > 0) object.accessChain = steps;
+    if (selfRoot === "THIS" && children.Caret) object.selfCaret = true;
+
+    const args: Argument[] = [];
+    const argListNode = getFirstNode(children.argumentList);
+    if (argListNode) {
+      const argListChildren = argListNode.children as CstChildren;
+      for (const argNode of getAllNodes(argListChildren.argument)) {
+        args.push(this.buildArgument(argNode));
+      }
+    }
+
+    let result: MethodCallExpression = {
+      kind: "MethodCallExpression",
+      sourceSpan: callSpan,
+      object,
+      methodName,
+      arguments: args,
+      ...(methodNode ? { methodNameSpan: nodeToSourceSpan(methodNode) } : {}),
+    };
+    for (const chainNode of getAllNodes(children.chainedMethodCall)) {
+      result = this.buildChainedCall(chainNode, result, node);
+    }
     return result;
   }
 
@@ -4269,12 +4365,20 @@ function setFileOnSpans(node: unknown, fileName: string): void {
     (obj.sourceSpan as Record<string, unknown>).file = fileName;
   }
 
-  for (const value of Object.values(obj)) {
+  for (const [key, value] of Object.entries(obj)) {
     if (Array.isArray(value)) {
       for (const item of value) {
         setFileOnSpans(item, fileName);
       }
     } else if (typeof value === "object" && value !== null) {
+      // Secondary spans such as methodNameSpan carry their own file field.
+      if (
+        key !== "sourceSpan" &&
+        key.endsWith("Span") &&
+        "file" in (value as Record<string, unknown>)
+      ) {
+        (value as Record<string, unknown>).file = fileName;
+      }
       setFileOnSpans(value, fileName);
     }
   }

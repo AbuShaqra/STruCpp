@@ -3829,17 +3829,10 @@ export class CodeGenerator {
     call: FunctionCallExpression | MethodCallExpression,
   ): VarBlock[] | undefined {
     if (call.kind === "MethodCallExpression") {
-      if (
-        call.object.kind !== "VariableExpression" ||
-        call.object.fieldAccess.length > 0 ||
-        call.object.subscripts.length > 0
-      ) {
-        return undefined;
-      }
-      const ownerType = this.currentScopeVarTypes.get(
-        call.object.name.toUpperCase(),
-      );
-      return this.findMethodDeclaration(ownerType, call.methodName)?.varBlocks;
+      return this.findMethodDeclaration(
+        this.methodCallOwnerType(call.object),
+        call.methodName,
+      )?.varBlocks;
     }
     const name = call.functionName;
     if (name.includes(".")) {
@@ -4757,21 +4750,10 @@ export class CodeGenerator {
   private generateMethodCallExpression(expr: MethodCallExpression): string {
     const obj = this.generateExpression(expr.object);
     // Try type-specific resolution first (avoids collisions when two FBs share a method name)
-    let resolvedName: string;
-    if (expr.object.kind === "VariableExpression") {
-      const varType = this.currentScopeVarTypes.get(
-        expr.object.name.toUpperCase(),
-      );
-      resolvedName = varType
-        ? this.resolveMethodName(varType, expr.methodName)
-        : this.resolveMethodNameGlobal(expr.methodName);
-    } else {
-      resolvedName = this.resolveMethodNameGlobal(expr.methodName);
-    }
-    const ownerType =
-      expr.object.kind === "VariableExpression"
-        ? this.currentScopeVarTypes.get(expr.object.name.toUpperCase())
-        : undefined;
+    const ownerType = this.methodCallOwnerType(expr.object);
+    const resolvedName = ownerType
+      ? this.resolveMethodName(ownerType, expr.methodName)
+      : this.resolveMethodNameGlobal(expr.methodName);
     const args = this.generateMethodCallArgs(
       ownerType,
       expr.methodName,
@@ -4779,6 +4761,39 @@ export class CodeGenerator {
       expr.sourceSpan,
     ).join(", ");
     return `${obj}.${resolvedName}(${args})`;
+  }
+
+  /**
+   * The type that owns the method of a method call on `object`: a variable's
+   * declared type, or the type a member chain lands on (`a.b`, `arr[i]`,
+   * `THIS.f`, `SUPER.f`). Undefined for any other object or an unresolved step.
+   */
+  private methodCallOwnerType(object: Expression): string | undefined {
+    if (object.kind !== "VariableExpression") return undefined;
+    const root = object.name.toUpperCase();
+    let type: string | undefined =
+      root === "THIS" && object.fieldAccess.length > 0
+        ? this.currentFBName
+        : root === "SUPER" && object.fieldAccess.length > 0
+          ? this.currentFBExtends
+          : this.currentScopeVarTypes.get(root);
+    const steps: AccessStep[] = object.accessChain ?? [
+      ...(object.subscripts.length > 0
+        ? [{ kind: "subscript" as const, indices: object.subscripts }]
+        : []),
+      ...object.fieldAccess.map((name) => ({ kind: "field" as const, name })),
+    ];
+    for (const step of steps) {
+      if (type === undefined) return undefined;
+      if (step.kind === "field") {
+        type = this.resolveMemberType(type, step.name);
+      } else if (step.kind === "subscript") {
+        type = this.ast
+          ? resolveArrayElementTypeUtil(type, this.ast)
+          : undefined;
+      }
+    }
+    return type;
   }
 
   // ===========================================================================
