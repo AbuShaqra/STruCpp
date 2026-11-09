@@ -3312,15 +3312,43 @@ export class ASTBuilder {
   }
 
   /**
+   * Member name, call flag and arguments of a `selfMemberTail` or
+   * `superMemberTail` CST node (`.member` or `.method(args)`).
+   */
+  private buildMemberTail(node: CstNode): {
+    name: string;
+    isCall: boolean;
+    args: Argument[];
+  } {
+    const children = node.children as CstChildren;
+    const idOrKw = getFirstNode(children.identifierOrKeyword);
+    const args: Argument[] = [];
+    const argListNode = getFirstNode(children.argumentList);
+    if (argListNode) {
+      const argListChildren = argListNode.children as CstChildren;
+      for (const argNode of getAllNodes(argListChildren.argument)) {
+        args.push(this.buildArgument(argNode));
+      }
+    }
+    return {
+      name: idOrKw ? getIdentifierOrKeywordImage(idOrKw) : "",
+      isCall: children.LParen !== undefined,
+      args,
+    };
+  }
+
+  /**
    * Build a THIS access expression from a thisAccess CST node.
    * THIS.member -> VariableExpression { name: "THIS", fieldAccess: ["member"] }
    * THIS.method(args) -> FunctionCallExpression { functionName: "THIS.method", ... }
+   * THIS^.member / THIS^.method(args) -> the same, marked `selfCaret`.
    */
   buildThisAccessExpression(node: CstNode): Expression {
     const children = node.children as CstChildren;
+    const tailNode = getFirstNode(children.selfMemberTail);
 
     // THIS^ (dereference - return self)
-    if (children.Caret) {
+    if (!tailNode) {
       return {
         kind: "VariableExpression",
         sourceSpan: nodeToSourceSpan(node),
@@ -3331,52 +3359,41 @@ export class ASTBuilder {
       };
     }
 
-    const idOrKwNodes = getAllNodes(children.identifierOrKeyword);
-    const memberName =
-      idOrKwNodes.length > 0
-        ? getIdentifierOrKeywordImage(idOrKwNodes[0]!)
-        : "";
-
-    // If there's a LParen, it's a method call
-    if (children.LParen) {
-      const args: Argument[] = [];
-      const argListNode = getFirstNode(children.argumentList);
-      if (argListNode) {
-        const argListChildren = argListNode.children as CstChildren;
-        for (const argNode of getAllNodes(argListChildren.argument)) {
-          args.push(this.buildArgument(argNode));
-        }
-      }
+    const tail = this.buildMemberTail(tailNode);
+    const caret = children.Caret ? { selfCaret: true as const } : {};
+    if (tail.isCall) {
       return {
         kind: "FunctionCallExpression",
         sourceSpan: nodeToSourceSpan(node),
-        functionName: `THIS.${memberName}`,
-        arguments: args,
+        functionName: `THIS.${tail.name}`,
+        arguments: tail.args,
+        ...caret,
       };
     }
 
-    // Otherwise it's member access
     return {
       kind: "VariableExpression",
       sourceSpan: nodeToSourceSpan(node),
       name: "THIS",
       subscripts: [],
-      fieldAccess: [memberName],
+      fieldAccess: [tail.name],
       isDereference: false,
+      ...caret,
     };
   }
 
   /**
-   * Build a SUPER access expression from a superAccess CST node.
+   * Build a SUPER access expression from a superAccess CST node (dot or caret form).
    * SUPER.method(args) -> FunctionCallExpression { functionName: "SUPER.method", ... }
    * SUPER.member -> VariableExpression { name: "SUPER", fieldAccess: ["member"] }
+   * SUPER^() -> FunctionCallExpression { functionName: "SUPER", ... }
    */
   buildSuperAccessExpression(node: CstNode): Expression {
     const children = node.children as CstChildren;
-    const idOrKwNodes = getAllNodes(children.identifierOrKeyword);
+    const tailNode = getFirstNode(children.superMemberTail);
 
     // SUPER^() — parent body call (no method name)
-    if (idOrKwNodes.length === 0) {
+    if (!tailNode) {
       const args: Argument[] = [];
       const argListNode = getFirstNode(children.argumentList);
       if (argListNode) {
@@ -3393,33 +3410,25 @@ export class ASTBuilder {
       };
     }
 
-    const memberName = getIdentifierOrKeywordImage(idOrKwNodes[0]!);
+    const tail = this.buildMemberTail(tailNode);
 
-    // SUPER^.method(args) — parent method call
-    if (children.LParen) {
-      const args: Argument[] = [];
-      const argListNode = getFirstNode(children.argumentList);
-      if (argListNode) {
-        const argListChildren = argListNode.children as CstChildren;
-        for (const argNode of getAllNodes(argListChildren.argument)) {
-          args.push(this.buildArgument(argNode));
-        }
-      }
+    // SUPER.method(args) — parent method call
+    if (tail.isCall) {
       return {
         kind: "FunctionCallExpression",
         sourceSpan: nodeToSourceSpan(node),
-        functionName: `SUPER.${memberName}`,
-        arguments: args,
+        functionName: `SUPER.${tail.name}`,
+        arguments: tail.args,
       };
     }
 
-    // SUPER^.member — parent member access
+    // SUPER.member — parent member access
     return {
       kind: "VariableExpression",
       sourceSpan: nodeToSourceSpan(node),
       name: "SUPER",
       subscripts: [],
-      fieldAccess: [memberName],
+      fieldAccess: [tail.name],
       isDereference: false,
     };
   }
@@ -3664,8 +3673,10 @@ export class ASTBuilder {
   }
 
   /**
-   * Build a THIS statement: THIS.member := expr; or THIS.method(args);
-   * Assignment maps to AssignmentStatement; method call maps to FunctionCallStatement.
+   * Build a THIS statement: THIS.member := expr; THIS.member REF= var; or
+   * THIS.method(args); (each also as THIS^., marked `selfCaret`).
+   * Assignments map to AssignmentStatement / RefAssignStatement; a method call
+   * maps to FunctionCallStatement.
    */
   buildThisStatement(node: CstNode): Statement {
     const children = node.children as CstChildren;
@@ -3674,6 +3685,30 @@ export class ASTBuilder {
       idOrKwNodes.length > 0
         ? getIdentifierOrKeywordImage(idOrKwNodes[0]!)
         : "";
+    const caret = children.Caret ? { selfCaret: true as const } : {};
+
+    const target: VariableExpression = {
+      kind: "VariableExpression",
+      sourceSpan: nodeToSourceSpan(node),
+      name: "THIS",
+      subscripts: [],
+      fieldAccess: [memberName],
+      isDereference: false,
+      ...caret,
+    };
+
+    // THIS.member REF= variable;
+    if (children.RefAssign) {
+      const sourceNode = getFirstNode(children.variable);
+      return {
+        kind: "RefAssignStatement",
+        sourceSpan: nodeToSourceSpan(node),
+        target,
+        source: sourceNode
+          ? this.buildVariableExpression(sourceNode)
+          : this.createDummyVariable(node),
+      };
+    }
 
     // Check if it's an assignment (has Assign token)
     if (children.Assign) {
@@ -3681,15 +3716,6 @@ export class ASTBuilder {
       const value = exprNode
         ? (this.buildExpression(exprNode) ?? this.createDummyLiteral(node))
         : this.createDummyLiteral(node);
-
-      const target: VariableExpression = {
-        kind: "VariableExpression",
-        sourceSpan: nodeToSourceSpan(node),
-        name: "THIS",
-        subscripts: [],
-        fieldAccess: [memberName],
-        isDereference: false,
-      };
 
       return {
         kind: "AssignmentStatement",
@@ -3717,29 +3743,29 @@ export class ASTBuilder {
         sourceSpan: nodeToSourceSpan(node),
         functionName: `THIS.${memberName}`,
         arguments: args,
+        ...caret,
       },
     } as FunctionCallStatement;
   }
 
   /**
-   * Build a SUPER call statement: SUPER^(); or SUPER^.method(args);
+   * Build a SUPER call statement: SUPER.method(args); SUPER^(); or SUPER^.method(args);
    * Body call → functionName = "SUPER"; method call → functionName = "SUPER.method"
    */
   buildSuperCallStatement(node: CstNode): FunctionCallStatement {
     const children = node.children as CstChildren;
-    const idOrKwNodes = getAllNodes(children.identifierOrKeyword);
-
-    const args: Argument[] = [];
-    const argListNode = getFirstNode(children.argumentList);
-    if (argListNode) {
-      const argListChildren = argListNode.children as CstChildren;
-      for (const argNode of getAllNodes(argListChildren.argument)) {
-        args.push(this.buildArgument(argNode));
-      }
-    }
+    const tailNode = getFirstNode(children.superMemberTail);
 
     // SUPER^() — parent body call (no method name)
-    if (idOrKwNodes.length === 0) {
+    if (!tailNode) {
+      const args: Argument[] = [];
+      const argListNode = getFirstNode(children.argumentList);
+      if (argListNode) {
+        const argListChildren = argListNode.children as CstChildren;
+        for (const argNode of getAllNodes(argListChildren.argument)) {
+          args.push(this.buildArgument(argNode));
+        }
+      }
       return {
         kind: "FunctionCallStatement",
         sourceSpan: nodeToSourceSpan(node),
@@ -3752,16 +3778,16 @@ export class ASTBuilder {
       };
     }
 
-    // SUPER^.method(args) — parent method call
-    const methodName = getIdentifierOrKeywordImage(idOrKwNodes[0]!);
+    // SUPER.method(args) — parent method call
+    const tail = this.buildMemberTail(tailNode);
     return {
       kind: "FunctionCallStatement",
       sourceSpan: nodeToSourceSpan(node),
       call: {
         kind: "FunctionCallExpression",
         sourceSpan: nodeToSourceSpan(node),
-        functionName: `SUPER.${methodName}`,
-        arguments: args,
+        functionName: `SUPER.${tail.name}`,
+        arguments: tail.args,
       },
     };
   }

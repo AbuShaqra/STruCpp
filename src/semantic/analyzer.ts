@@ -2675,6 +2675,14 @@ export class SemanticAnalyzer {
       this.checkBitAccess(expr, varTypeMap, ast, expr.subscripts.length > 0);
     }
 
+    if (
+      (expr.kind === "VariableExpression" ||
+        expr.kind === "FunctionCallExpression") &&
+      expr.selfCaret === true
+    ) {
+      this.requireFeature("self_caret", "THIS^.member", expr.sourceSpan);
+    }
+
     // Validate standard function argument counts and ADR l-value requirement
     if (
       expr.kind === "FunctionCallExpression" &&

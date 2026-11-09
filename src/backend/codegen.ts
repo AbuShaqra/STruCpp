@@ -3909,7 +3909,10 @@ export class CodeGenerator {
       target.isDereference ||
       (target.accessChain !== undefined && target.accessChain.length > 0);
     if (!hasAccess) return this.currentScopeVarRefKinds.get(nameUpper);
-    const base = this.currentScopeVarTypeRefs.get(nameUpper);
+    const base =
+      nameUpper === "THIS" && this.currentFBName
+        ? { name: this.currentFBName, referenceKind: "none" as const }
+        : this.currentScopeVarTypeRefs.get(nameUpper);
     if (base === undefined) return undefined;
     return resolveAccessType(base, target, this.accessLookup)?.referenceKind;
   }

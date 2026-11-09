@@ -69,6 +69,7 @@ the root. A profile without `extends` has only its own features.
 | `pointer_to`      | `POINTER TO`, `ADR()` and `^` on a pointer |
 | `reference_to`    | `REFERENCE TO`                             |
 | `ref_assign`      | the reference assignment `REF=`            |
+| `self_caret`      | `THIS^.member` and `THIS^.M()`             |
 
 ## Refusals
 
@@ -81,12 +82,20 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `REFERENCE TO <type>` and `REFERENCE_TO`    | `reference_to`    | `REFERENCE TO needs the feature reference_to`           |
 | `r REF= x`                                  | `ref_assign`      | `REF= needs the feature ref_assign`                     |
 | `METHOD` inside a `PROGRAM`                 | `program_methods` | `METHOD in a PROGRAM needs the feature program_methods` |
+| `THIS^.member`, `THIS^.M()`                 | `self_caret`      | `THIS^.member needs the feature self_caret`             |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
 included, and `ADR` both in statements and in a declaration's initial value. IEC
-`REF_TO`, `REF()`, `^`, `THIS^` and `SUPER^` need no feature. `--test` files are analysed with the default
-set, so they are not refused under `iec-3`.
+`REF_TO`, `REF()` and `^` need no feature. `--test` files are analysed with the default set, so they are
+not refused under `iec-3`.
+
+`self_caret` is in neither the default set nor `iec-3`. IEC writes THIS and SUPER with a dot: `THIS.x`,
+`THIS.M()`, `SUPER.x` and `SUPER.M()` need no feature, and `SUPER.M()` reaches the nearest base that
+declares `M`. `THIS^.x` means the same as `THIS.x`. `REF=` on a THIS member (`THIS.r REF= x`) needs
+`ref_assign`, and `self_caret` as well when written `THIS^.r`. Bare `THIS^` and the forms `SUPER^.M()`,
+`SUPER^.x` and `SUPER^()` are not IEC either, but they were accepted before profiles and still are, in every
+dialect.
 
 `program_methods` is not in the default set: a `METHOD` in a `PROGRAM` is refused with no dialect flag too
 (before profiles it did not parse at all). `--strict` does not change any feature. A refused method is still

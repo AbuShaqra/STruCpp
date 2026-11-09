@@ -8,6 +8,7 @@ import {
   profilesWithFeature,
   DialectError,
   DEFAULT_FEATURES,
+  KNOWN_FEATURES,
   IEC_PROFILE,
   type DialectRequest,
   type ResolvedDialect,
@@ -74,6 +75,14 @@ describe("resolveDialect", () => {
     );
     expect(d.features).toEqual(new Set(DEFAULT_FEATURES));
     expect(d.loaded).toEqual([]);
+  });
+
+  it("self_caret is known but in neither the default set nor iec-3", () => {
+    expect(KNOWN_FEATURES).toContain("self_caret");
+    expect(DEFAULT_FEATURES.has("self_caret")).toBe(false);
+    expect(resolveDialect({ features: ["+self_caret"] }).features).toContain(
+      "self_caret",
+    );
   });
 
   it("iec-3 has no features", () => {
@@ -250,7 +259,7 @@ describe("resolveDialect", () => {
 
   it("an unknown --feature is an error", () => {
     expect(errorOf(() => resolveDialect({ features: ["+goto"] })).message).toBe(
-      "unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign)",
+      "unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret)",
     );
   });
 
@@ -262,7 +271,7 @@ describe("resolveDialect", () => {
       ),
     );
     expect(e.message).toBe(
-      "unknown feature 'goto' in dialect file p/x.json (known: program_methods, pointer_to, reference_to, ref_assign)",
+      "unknown feature 'goto' in dialect file p/x.json (known: program_methods, pointer_to, reference_to, ref_assign, self_caret)",
     );
   });
 

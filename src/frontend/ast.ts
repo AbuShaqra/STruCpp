@@ -764,6 +764,8 @@ export interface FunctionCallExpression extends TypedNode {
    * emitted against.
    */
   instance?: Expression;
+  /** Written as `THIS^.M()`; needs the feature self_caret. */
+  selfCaret?: true;
 }
 
 /**
@@ -809,6 +811,8 @@ export interface VariableExpression extends TypedNode {
   accessChain?: AccessStep[];
   /** Written as a typed enumeration value (`E_State#Idle`). */
   typedLiteral?: true;
+  /** Written as `THIS^.member`; needs the feature self_caret. */
+  selfCaret?: true;
 }
 
 /**
