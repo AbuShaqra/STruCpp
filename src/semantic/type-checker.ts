@@ -1758,6 +1758,8 @@ export class TypeChecker {
       return;
     }
 
+    if (this.isSameStructuredType(targetType, valueType)) return;
+
     if (this.strict && this.checkStrictConversion(targetType, value)) return;
 
     // Integer/real/bool literals without explicit type prefix are polymorphic:
@@ -2051,6 +2053,29 @@ export class TypeChecker {
     );
   }
 
+  /**
+   * Two names for one STRUCT or UNION: an alias (`TYPE T_A : ST_A;`, also
+   * chained) names the same type, so either side may stand for the other.
+   */
+  private isSameStructuredType(a: IECType, b: IECType): boolean {
+    const target = this.aliasTarget(typeNameUtil(a));
+    if (
+      target.toUpperCase() !== this.aliasTarget(typeNameUtil(b)).toUpperCase()
+    )
+      return false;
+    return this.isStructType(target);
+  }
+
+  /** {@link isSameStructuredType} for two declared types without reference levels. */
+  private isSameStructuredAccess(a: AccessType, b: AccessType): boolean {
+    if ((referenceShapeOf(a)?.chain ?? []).length > 0) return false;
+    if ((referenceShapeOf(b)?.chain ?? []).length > 0) return false;
+    const target = this.aliasTarget(a.name);
+    if (target.toUpperCase() !== this.aliasTarget(b.name).toUpperCase())
+      return false;
+    return this.isStructType(target);
+  }
+
   /** The type a chain of plain aliases (`TYPE T : U;`) of this unit ends on. */
   private aliasTarget(name: string): string {
     const seen = new Set<string>();
@@ -2073,7 +2098,7 @@ export class TypeChecker {
     }
   }
 
-  /** A STRUCT TYPE of this unit. */
+  /** A STRUCT (or UNION) TYPE of this unit. */
   private isStructType(name: string): boolean {
     const upper = name.toUpperCase();
     return (
@@ -2380,6 +2405,7 @@ export class TypeChecker {
       );
     };
     if (!simple(param) || !simple(arg)) return undefined;
+    if (this.isSameStructuredAccess(param, arg)) return undefined;
     const describe = (t: AccessType): string => {
       const levels = referenceShapeOf(t)?.chain ?? [];
       const length = (t as { maxLength?: number | string }).maxLength;
