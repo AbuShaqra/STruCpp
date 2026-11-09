@@ -59,6 +59,13 @@ import {
 import { stripEnEno } from "../ast-utils.js";
 import { DEFAULT_FEATURES } from "../dialect.js";
 import { structExtends } from "./struct-extends.js";
+import {
+  fbIndex,
+  fbInitArgumentScope,
+  fbInitChain,
+  fbInitInput,
+  storedInstance,
+} from "./fb-init.js";
 
 // Re-export from type-utils for backward compatibility
 export { ELEMENTARY_TYPES, TYPE_CATEGORIES } from "./type-utils.js";
@@ -276,6 +283,17 @@ export class TypeChecker {
     this.strictReported.clear();
     this.ast = ast;
 
+    // Init arguments of global FB instances (feature fb_init)
+    if (this.features.has("fb_init")) {
+      this.checkVarBlocks(
+        ast.globalVarBlocks.map((b) => ({
+          ...b,
+          declarations: b.declarations.filter((d) => d.fbInitArguments),
+        })),
+        this.symbolTables.globalScope,
+      );
+    }
+
     // Walk all programs
     for (const prog of ast.programs) {
       const scope = this.symbolTables.getProgramScope(prog.name);
@@ -319,7 +337,13 @@ export class TypeChecker {
       this.currentFBName = fb.name;
       if (scope) {
         // FB body
-        this.checkVarBlocks(fb.varBlocks, scope);
+        this.checkVarBlocks(
+          fb.varBlocks,
+          scope,
+          this.features.has("fb_init")
+            ? fbInitArgumentScope(this.symbolTables, fbIndex(ast), fb, scope)
+            : scope,
+        );
         this.checkStatements(fb.body, scope);
 
         // Method bodies (use method scope for local variable resolution)
@@ -1253,9 +1277,17 @@ export class TypeChecker {
    * assignment statements — no separate compatibility rules — so anything
    * the standard considers an implicit assignment also passes here.
    */
-  private checkVarBlocks(blocks: VarBlock[], scope: Scope): void {
+  private checkVarBlocks(
+    blocks: VarBlock[],
+    scope: Scope,
+    /** Where init arguments resolve, when not `scope` (an FB's members). */
+    argumentScope: Scope = scope,
+  ): void {
     for (const block of blocks) {
       for (const decl of block.declarations) {
+        if (decl.fbInitArguments) {
+          this.checkFbInitArguments(decl, argumentScope);
+        }
         if (!decl.initialValue) continue;
         const outerKind = decl.type.referenceKind;
         if (
@@ -1304,6 +1336,42 @@ export class TypeChecker {
             isDereference: false,
           },
           decl.initialValue,
+        );
+      }
+    }
+  }
+
+  /**
+   * Resolve each named init argument of an FB instance (feature fb_init) and
+   * check it against every FB_init input of that name in the chain; the
+   * other init argument rules are the analyzer's (fb-init.ts).
+   */
+  private checkFbInitArguments(decl: VarDeclaration, scope: Scope): void {
+    if (!this.features.has("fb_init") || !this.ast) return;
+    const stored = storedInstance(this.ast, decl.type);
+    const inits = stored ? fbInitChain(fbIndex(this.ast), stored.name) : [];
+    for (const arg of decl.fbInitArguments ?? []) {
+      const valueType = this.resolveExprType(arg.value, scope);
+      if (arg.name === undefined || arg.isOutput || !valueType) continue;
+      const name = arg.name.toUpperCase();
+      for (const { method } of inits) {
+        const input = fbInitInput(method, name);
+        if (!input) continue;
+        const target =
+          ELEMENTARY_TYPES[input.type.name.toUpperCase()] ??
+          this.symbolTables.lookupType(input.type.name)?.resolvedType;
+        this.validateAssignment(
+          target,
+          valueType,
+          {
+            kind: "VariableExpression",
+            sourceSpan: arg.sourceSpan,
+            name,
+            fieldAccess: [],
+            subscripts: [],
+            isDereference: false,
+          },
+          arg.value,
         );
       }
     }

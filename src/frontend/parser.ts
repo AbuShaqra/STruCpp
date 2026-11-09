@@ -582,6 +582,11 @@ export class STParser extends CstParser {
         },
       },
     ]);
+    // Init arguments of an FB instance, `fb : FB_A(p := 1)` (feature fb_init).
+    this.OPTION7({
+      GATE: () => this.LA(1).tokenType === tokens.LParen,
+      DEF: () => this.SUBRULE(this.fbInitArguments),
+    });
     // Non-standard but widely-used: AT directive after the type.
     this.OPTION3(() => {
       this.CONSUME2(tokens.AT);
@@ -595,6 +600,16 @@ export class STParser extends CstParser {
       this.SUBRULE(this.initializerExpression);
     });
     this.CONSUME(tokens.Semicolon);
+  });
+
+  /**
+   * Init arguments after an FB instance's type: `(p := 1, q := x)`. Positional
+   * and `=>` arguments parse too, so the analyzer can refuse them by name.
+   */
+  public fbInitArguments = this.RULE("fbInitArguments", () => {
+    this.CONSUME(tokens.LParen);
+    this.SUBRULE(this.argumentList);
+    this.CONSUME(tokens.RParen);
   });
 
   /**

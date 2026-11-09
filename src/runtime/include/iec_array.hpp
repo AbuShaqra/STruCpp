@@ -499,4 +499,24 @@ public:
     int64_t upper_bound(int dim) const noexcept { return dim == 1 ? upper1_ : upper2_; }
 };
 
+/**
+ * Call f on every element of a (possibly nested) array, row-major, or on x
+ * itself when it is not an array. Used for start-up FB_init calls (feature
+ * fb_init): an element is an FB instance, which has no begin().
+ */
+template<typename T, typename F>
+void for_each_element(T& x, F&& f, long) {
+    f(x);
+}
+
+template<typename T, typename F>
+auto for_each_element(T& x, F&& f, int) -> decltype(x.begin(), void()) {
+    for (auto& e : x) for_each_element(e, f, 0);
+}
+
+template<typename T, typename F>
+void for_each_element(T& x, F&& f) {
+    for_each_element(x, f, 0);
+}
+
 }  // namespace strucpp

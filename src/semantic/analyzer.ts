@@ -58,6 +58,15 @@ import {
   validateUnionTypes,
 } from "./union.js";
 import {
+  fbChain,
+  fbIndex,
+  fbInitArgumentScope,
+  fbInitAssignedNames,
+  fbInitInputs,
+  prepareFbInit,
+  validateFbInitArguments,
+} from "./fb-init.js";
+import {
   DEFAULT_FEATURES,
   profilesWithFeature,
   type FeatureId,
@@ -447,6 +456,8 @@ export class SemanticAnalyzer {
     this.flattenStructTypes(ast);
     // UNION refusals and rules are located and gate nothing either.
     this.validateUnions(ast);
+    // So are the fb_init refusal, warning and FB_init signature rules.
+    this.applyFbInitFeature(ast);
     const structFeatureErrors = this.errors.length - errorsBeforeStructFeature;
 
     // Pass 1: Build symbol tables (global lists first: they may rename globals)
@@ -466,6 +477,14 @@ export class SemanticAnalyzer {
     this.validateInterfaceProperties(ast);
     this.validatePostfixEnumBases(ast);
     this.validateConfigurationGlobalsHoldNoFB(ast);
+    if (this.features.has("fb_init")) {
+      validateFbInitArguments(
+        ast,
+        (upper) => this.symbolTables.lookupFunctionBlock(upper) !== undefined,
+        (message, span) =>
+          this.addError(message, span.startLine, span.startCol, span.file),
+      );
+    }
     const typeReferenceErrors =
       this.errors.length -
       errorsBeforeTypeReferences -
@@ -654,6 +673,21 @@ export class SemanticAnalyzer {
         );
       }
     }
+  }
+
+  /** Init arguments and FB_init with the feature off or on (see fb-init.ts). */
+  private applyFbInitFeature(ast: CompilationUnit): void {
+    const at = (span: SourceSpan): [number, number, string | undefined] => [
+      span.startLine,
+      span.startCol,
+      span.file,
+    ];
+    prepareFbInit(ast, this.features.has("fb_init"), {
+      error: (message, span) => this.addError(message, ...at(span)),
+      warning: (message, span) => this.addWarning(message, ...at(span)),
+      needFeature: (construct, span) =>
+        this.requireFeature("fb_init", construct, span),
+    });
   }
 
   /** `TYPE X EXTENDS Base : STRUCT` needs the feature struct_extends. Reported at EXTENDS. */
@@ -4256,6 +4290,83 @@ export class SemanticAnalyzer {
     this.forEachPouBody(ast, (body, scope, ctx) =>
       this.walkStatementsForUndeclaredVars(body, scope, ctx),
     );
+    if (this.features.has("fb_init")) this.validateFbInitArgumentNames(ast);
+  }
+
+  /** Init argument values (feature fb_init) name only what their declaring scope declares. */
+  private validateFbInitArgumentNames(ast: CompilationUnit): void {
+    const check = (
+      blocks: VarBlock[],
+      scope: Scope | undefined,
+      ctx: UndeclaredVarContext,
+    ): void => {
+      if (!scope) return;
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          for (const arg of decl.fbInitArguments ?? []) {
+            this.checkExpressionForUndeclaredVars(arg.value, scope, ctx);
+          }
+        }
+      }
+    };
+    check(ast.globalVarBlocks, this.symbolTables.globalScope, {});
+    for (const prog of ast.programs) {
+      check(prog.varBlocks, this.symbolTables.getProgramScope(prog.name), {});
+    }
+    const fbs = fbIndex(ast);
+    for (const fb of ast.functionBlocks) {
+      const fbScope = this.symbolTables.getFBScope(fb.name);
+      if (!fbScope) continue;
+      check(
+        fb.varBlocks,
+        fbInitArgumentScope(this.symbolTables, fbs, fb, fbScope),
+        { fbName: fb.name },
+      );
+      this.warnFbInitMemberReads(fbs, fb);
+    }
+  }
+
+  /**
+   * Warn when a member's init argument reads a variable of its holder that
+   * the holder's FB_init assigns directly: the member's FB_init runs first.
+   * An input of the holder's FB_init shadows the variable; calls are not followed.
+   */
+  private warnFbInitMemberReads(
+    fbs: Map<string, FunctionBlockDeclaration>,
+    fb: FunctionBlockDeclaration,
+  ): void {
+    const assigned = fbInitAssignedNames(fbs, fb.name);
+    if (assigned.size === 0) return;
+    const inputs = new Set(
+      fbInitInputs(fbs, fb.name).map((d) => (d.names[0] ?? "").toUpperCase()),
+    );
+    const members = new Set<string>();
+    for (const owner of fbChain(fbs, fb.name)) {
+      for (const block of owner.varBlocks) {
+        for (const decl of block.declarations) {
+          for (const n of decl.names) members.add(n.toUpperCase());
+        }
+      }
+    }
+    for (const block of fb.varBlocks) {
+      for (const decl of block.declarations) {
+        for (const arg of decl.fbInitArguments ?? []) {
+          walkAST(arg.value, (node) => {
+            if (node.kind !== "VariableExpression") return;
+            const read = node as VariableExpression;
+            const name = read.name.toUpperCase();
+            if (inputs.has(name) || !members.has(name)) return;
+            if (!assigned.has(name)) return;
+            this.addWarning(
+              `${decl.names[0] ?? ""}'s FB_init runs before ${fb.name}.FB_init, so '${name}' still has its initial value here`,
+              read.sourceSpan.startLine,
+              read.sourceSpan.startCol,
+              read.sourceSpan.file,
+            );
+          });
+        }
+      }
+    }
   }
 
   /**

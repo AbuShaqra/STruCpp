@@ -43,6 +43,7 @@ import { mergeCompilationUnits } from "./merge.js";
 import { lowerInlineTypes } from "./frontend/lower-inline-types.js";
 import { lowerActions } from "./semantic/lower-actions.js";
 import { unionLoweringErrors } from "./semantic/union.js";
+import { fbInitLoweringErrors } from "./semantic/fb-init.js";
 import { walkAST } from "./ast-utils.js";
 import { registerLibrarySymbols } from "./library/library-loader.js";
 import type { StlibArchive } from "./library/library-manifest.js";
@@ -291,6 +292,8 @@ interface PipelineResult {
   warnings: CompileError[];
   allArchives: StlibArchive[];
   mergedOptions: CompileOptions;
+  /** True when the resolved dialect has the feature fb_init. */
+  fbInit: boolean;
 }
 
 /**
@@ -316,6 +319,7 @@ function runPipeline(
   const allArchives: StlibArchive[] = [];
 
   let dialect: ResolvedDialect;
+  let fbInit = false;
   try {
     dialect = resolveDialect(
       dialectRequestFromOptions(mergedOptions),
@@ -333,8 +337,10 @@ function runPipeline(
       warnings,
       allArchives,
       mergedOptions,
+      fbInit,
     };
   }
+  fbInit = dialect.features.has("fb_init");
 
   // Phase 0: IL→ST transpilation (if source contains IL bodies)
   let effectiveSource = source;
@@ -361,6 +367,7 @@ function runPipeline(
           warnings,
           allArchives,
           mergedOptions,
+          fbInit,
         };
       }
     }
@@ -389,6 +396,7 @@ function runPipeline(
         warnings,
         allArchives,
         mergedOptions,
+        fbInit,
       };
     }
   }
@@ -409,6 +417,7 @@ function runPipeline(
       warnings,
       allArchives,
       mergedOptions,
+      fbInit,
     };
   }
 
@@ -510,6 +519,7 @@ function runPipeline(
         warnings,
         allArchives,
         mergedOptions,
+        fbInit,
       };
     }
 
@@ -527,6 +537,7 @@ function runPipeline(
         warnings,
         allArchives,
         mergedOptions,
+        fbInit,
       };
     }
   } catch (e) {
@@ -545,6 +556,7 @@ function runPipeline(
         warnings,
         allArchives,
         mergedOptions,
+        fbInit,
       };
     }
     // In analyze mode, AST building failure is non-fatal — continue with
@@ -562,6 +574,7 @@ function runPipeline(
       warnings,
       allArchives,
       mergedOptions,
+      fbInit,
     };
   }
   try {
@@ -601,6 +614,7 @@ function runPipeline(
         warnings,
         allArchives,
         mergedOptions,
+        fbInit,
       };
     }
     // In analyze mode, project model failure is non-fatal
@@ -615,6 +629,7 @@ function runPipeline(
       warnings,
       allArchives,
       mergedOptions,
+      fbInit,
     };
   }
 
@@ -631,6 +646,7 @@ function runPipeline(
       warnings,
       allArchives,
       mergedOptions,
+      fbInit,
     };
   }
 
@@ -738,6 +754,7 @@ function runPipeline(
     warnings,
     allArchives,
     mergedOptions,
+    fbInit,
   };
 }
 
@@ -787,8 +804,13 @@ export function compile(
     };
   }
 
-  // UNION uses analysis accepts but code generation cannot lower yet.
-  const unionErrors = unionCompileErrors(pipeline.ast, pipeline.symbolTables);
+  // UNION and FB_init uses analysis accepts but code generation cannot lower yet.
+  const unionErrors = [
+    ...unionCompileErrors(pipeline.ast, pipeline.symbolTables),
+    ...(pipeline.fbInit
+      ? fbInitCompileErrors(pipeline.ast, pipeline.symbolTables)
+      : []),
+  ];
   if (unionErrors.length > 0) {
     return {
       success: false,
@@ -830,6 +852,7 @@ export function compile(
     ...(pipeline.mergedOptions.emitChunkMarkers
       ? { emitChunkMarkers: true }
       : {}),
+    ...(pipeline.fbInit ? { fbInit: true } : {}),
   });
   codegen.setProjectModel(pipeline.projectModel!);
 
@@ -946,6 +969,27 @@ function unionCompileErrors(
   unionLoweringErrors(
     ast,
     (upper) => symbolTables?.lookupType(upper)?.declaration?.definition,
+    (message, span) =>
+      errors.push({
+        message,
+        line: span.startLine,
+        column: span.startCol,
+        severity: "error",
+        ...(span.file !== undefined ? { file: span.file } : {}),
+      }),
+  );
+  return errors;
+}
+
+/** The FB_init uses compile refuses as not supported yet (see fbInitLoweringErrors). */
+function fbInitCompileErrors(
+  ast: CompilationUnit,
+  symbolTables: SymbolTables | undefined,
+): CompileError[] {
+  const errors: CompileError[] = [];
+  fbInitLoweringErrors(
+    ast,
+    (upper) => symbolTables?.lookupFunctionBlock(upper) !== undefined,
     (message, span) =>
       errors.push({
         message,

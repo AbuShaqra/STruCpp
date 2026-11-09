@@ -75,6 +75,7 @@ the root. A profile without `extends` has only its own features.
 | `named_global_lists` | a global qualified by its list name, `GVL_A.x`               |
 | `struct_extends`     | a STRUCT that inherits another's fields, `ST_B EXTENDS ST_A` |
 | `union`              | a UNION type, `TYPE U_A : UNION ... END_UNION END_TYPE`      |
+| `fb_init`            | init arguments `fb : FB_A(p := 1)`, and FB_init at start-up  |
 
 ## Refusals
 
@@ -93,6 +94,7 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `GVL_A.x` (list-qualified global)           | `named_global_lists` | `Global variable list access 'GVL_A.X' needs the feature named_global_lists`         |
 | `TYPE ST_B EXTENDS ST_A : STRUCT`           | `struct_extends`     | `EXTENDS on a STRUCT needs the feature struct_extends`                               |
 | `TYPE U_A : UNION ... END_UNION`            | `union`              | `UNION type 'U_A' needs the feature union`                                           |
+| `fb : FB_A(p := 1);` (init arguments)       | `fb_init`            | `The init argument list of 'FB' needs the feature fb_init` (at `(`)                  |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
@@ -303,6 +305,84 @@ END_TYPE
   a TYPE default, an FB input's, also inside a structure initializer or an array literal): `An initial
   value for UNION 'U_A' is not supported yet`.
 - The language server outlines a UNION with the detail `UNION` and shows `UNION ... END_UNION` on hover.
+
+`fb_init` is in neither the default set nor `iec-3`. IEC 61131-3 Ed. 3 initialises an instance with `:=`
+followed by a parenthesised list that sets its inputs, outputs or public variables (6.6.3.3, Table 41,
+Annex A `FB_Decl_Init`): `fb : FB_A := (p := 3);` needs no feature and is unchanged in every dialect. Ed. 3
+has no initialisation method. With the feature on, an instance declaration may pass init arguments after
+its type, and a METHOD named FB_init on a FUNCTION_BLOCK runs at start-up:
+
+```
+FUNCTION_BLOCK FB_A
+VAR v : INT; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; p : INT; END_VAR
+v := p;
+END_METHOD
+END_FUNCTION_BLOCK
+
+VAR_GLOBAL g : FB_A(p := 1); END_VAR
+PROGRAM Main
+VAR f : FB_A(p := 2) := (v := 0); arr : ARRAY[0..2] OF FB_A(p := 3); END_VAR
+END_PROGRAM
+```
+
+- With the feature off, init arguments are refused at `(` (see Refusals), and every FB_init of a
+  FUNCTION_BLOCK gets the warning `FB_init is not run unless the feature fb_init is on` at its name. The
+  method is still compiled as an ordinary method; only the warning is new.
+- FB_init's inputs are the two BOOL flags `bInitRetains` and `bInCopyCode` plus the VAR_INPUTs it
+  declares. A flag it does not declare is declared for it (a BOOL VAR_INPUT before its own); a declared
+  flag must be a BOOL VAR_INPUT: `'BINITRETAINS' of FB_init must be a BOOL VAR_INPUT`. Both flags are
+  always FALSE: this compiler has no warm start and no online change. FB_init returns BOOL or nothing
+  (the value is ignored): `FB_init must return BOOL or nothing, not INT`. It declares no VAR_OUTPUT or
+  VAR_IN_OUT: `FB_init cannot declare VAR_OUTPUT: nothing is passed to it or read from it at start-up`.
+- Init arguments set FB_init inputs by name, `:=` only, and are type-checked like an assignment (`Cannot
+  assign STRING to INT`, at the value). An input no argument sets takes its declared initial value. They
+  are evaluated where the instance is declared: constants, globals and, for a member of a FUNCTION_BLOCK,
+  the holder's variables and the inputs of the holder's FB_init (any level of its chain). Any other name
+  is `Undeclared variable 'Q'`.
+- **Passing on the holder's inputs (this compiler's rule).** A member's init argument that names an input
+  of its holder's FB_init gets the value the holder was given: the holder's own init argument, or that
+  input's declared initial value. So `inner : FB_Inner(itf := itfIn)` in FB_Outer, with
+  `outer : FB_Outer(itfIn := impl)`, gives inner's FB_init `impl`, through any number of levels. An
+  FB_init input shadows a holder variable or a global of the same name, as it does in the FB_init body.
+  The flags cannot be passed on.
+- A holder variable, in contrast, still has its initial value when a member's FB_init runs, because the
+  holder's FB_init runs after its members. When a member's init argument reads a holder variable that an
+  FB_init of the holder's chain assigns directly (`x := ...` in its body; calls are not followed), the
+  analysis warns at the read: `INNER's FB_init runs before FB_OUTER.FB_init, so 'ITFSTORED' still has its
+  initial value here`. Errors: `'FB_A' has no FB_init input 'X'`, `'FB_Z' has
+  no FB_init method to take init arguments`, `'BINITRETAINS' is set by the compiler and cannot be an init
+  argument`, `Duplicate init argument 'P'`, `Init arguments must be named: write 'input := value'`,
+  `Init argument 'P' must use ':=': init arguments set FB_init inputs`, `Init arguments need a
+  FUNCTION_BLOCK instance, but 'I' is of type 'INT'`, and `Init arguments are not allowed in VAR_IN_OUT`
+  (or `VAR_EXTERNAL`). An array of instances passes the same arguments to every element. `fb : FB_A(p :=
+  1) := (v := 0)` is allowed: the IEC initial values are set first.
+- **Start-up order (this compiler's rule).** FB_init runs once per instance, after every variable has its
+  initial value and before the first cycle. Global instances run first, in declaration order (sources in
+  input order); then each PROGRAM instance's instances, in the order the programs are constructed, which
+  for a CONFIGURATION is the order of its PROGRAM declarations. Within an instance, its member instances
+  (VAR, VAR_INPUT and VAR_OUTPUT, in declaration order, the bases' members first) run before it, and array
+  elements run in index order (row-major). An explicit call `fb.FB_init(...)` in a body is an ordinary
+  method call.
+- **Inheritance (this compiler's rule).** For an instance of a derived FB, every FB_init of its EXTENDS
+  chain runs once, base first, like constructors; a level without its own FB_init is skipped. An init
+  argument sets the input of that name in every FB_init of the chain that declares one; it must name an
+  input of at least one of them. Because the base's FB_init runs on its own, an FB_init that calls
+  `SUPER.FB_init(...)` (or `SUPER^.FB_init(...)`) is refused by compile: `FB_init of the base runs
+  automatically; remove the explicit call SUPER.FB_init`.
+- Not supported yet (refused by compile only, so `--check` accepts them): an instance whose type has
+  FB_init work (an FB_init in it or in a member) when it is local to a FUNCTION or METHOD (`FB_init of
+  'L' is not supported yet: it is local to FUNCTION 'F_X'`), in VAR_TEMP (`... it is in VAR_TEMP`), held
+  in a STRUCT (`... it is held in STRUCT 'ST_S'`, also for init arguments on a STRUCT field: `... it is a
+  field of STRUCT 'ST_S'`), and init arguments on a library FB, whose FB_init is not known (`FB_init of
+  'T' is not supported yet: 'TON' comes from a library`). `__NEW` does not run FB_init. A CONFIGURATION
+  `VAR_GLOBAL` cannot hold a FUNCTION_BLOCK, as before.
+- In the generated C++, the global instances' work is the once-only `__fb_init_globals()`, which every
+  PROGRAM constructor calls first; a FUNCTION_BLOCK with member work gets `__fb_init_members(...)`, whose parameters are its chain's
+  FB_init inputs, called with the values the instance's FB_init then receives; each level
+  of the chain is called non-virtually (`x.FB_B0::FB_INIT(false, false, ...)`). Code without FB_init and
+  init arguments generates the same C++ as before.
 
 `program_methods` is not in the default set: a `METHOD` in a `PROGRAM` is refused with no dialect flag too
 (before profiles it did not parse at all). `--strict` does not change any feature. A refused method is still
