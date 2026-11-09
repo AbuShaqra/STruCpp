@@ -35,7 +35,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | ARRAY[*] (VLA) | Supported | Variable-length array parameters |
 | Subranges | Supported | Runtime validation |
 | REF_TO | Supported | IEC reference type (explicit dereference) |
-| REFERENCE_TO | Supported | Vendor reference type (implicit dereference); a vendor spelling: the feature `reference_to`, refused under `--dialect iec-3` |
+| REFERENCE_TO | Supported | Vendor reference type (implicit dereference); a vendor spelling: the feature `reference_to`, refused under `--dialect iec-3`. A `REFERENCE TO` VAR_INPUT of a function block, function or method is bound to its argument at the call (named or positional), so reads and writes through it reach the argument; an FB input keeps its binding until the next call that passes it. The argument must be a variable (a local, global, member, array element, STRUCT field, `p^` or another `REFERENCE TO`) of the referenced type or an alias of it: an expression, a constant, another type or a subrange variable is an error. Reading or writing an unbound `REFERENCE TO` raises the null-reference fault, as a NULL REF_TO dereference does. Not supported yet at compile: binding a `REFERENCE TO` (input or `REF=`) to a variable of an alias type |
 | POINTER TO | Supported | Vendor pointer type with dereference via ^; a vendor spelling: the feature `pointer_to`, refused under `--dialect iec-3` |
 
 ### Partially Implemented

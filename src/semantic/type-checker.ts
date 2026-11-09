@@ -811,6 +811,7 @@ export class TypeChecker {
       this.dottedMethodInputs(expr.functionName, scope);
     this.validateInterfaceArguments(inputs, expr.arguments);
     this.validateStructArguments(inputs, expr.arguments);
+    this.validateReferenceToArguments(inputs, expr.arguments, scope);
     if (this.strict) {
       this.checkStrictArguments(
         this.callInputs(expr, scope) ??
@@ -957,6 +958,7 @@ export class TypeChecker {
       const chainInputs = this.methodInputsOf(owner?.name, expr.methodName);
       this.validateInterfaceArguments(chainInputs, expr.arguments);
       this.validateStructArguments(chainInputs, expr.arguments);
+      this.validateReferenceToArguments(chainInputs, expr.arguments, scope);
       if (this.strict) {
         this.checkStrictArguments(
           this.methodInputsOf(owner?.name, expr.methodName),
@@ -972,6 +974,7 @@ export class TypeChecker {
     const methodInputs = this.methodInputs(objType, expr, scope);
     this.validateInterfaceArguments(methodInputs, expr.arguments);
     this.validateStructArguments(methodInputs, expr.arguments);
+    this.validateReferenceToArguments(methodInputs, expr.arguments, scope);
     if (this.strict) {
       this.checkStrictArguments(
         this.methodInputs(objType, expr, scope),
@@ -1451,6 +1454,23 @@ export class TypeChecker {
               ? base
               : (resolveAccessType(base, stmt.target, this.accessLookup) ??
                 base);
+          if (stmt.source.kind === "VariableExpression") {
+            delete stmt.source.aliasReferenceBinding;
+          }
+          const targetShape = declared ? referenceShapeOf(declared) : undefined;
+          const sourceShape = this.declaredReferenceShape(stmt.source, scope);
+          if (
+            targetShape?.chain.length === 1 &&
+            targetShape.chain[0] === "reference_to" &&
+            sourceShape !== undefined &&
+            stmt.source.kind === "VariableExpression"
+          ) {
+            this.markAliasReferenceBinding(
+              targetShape,
+              sourceShape,
+              stmt.source,
+            );
+          }
           if (declared) {
             const refKind = declared.referenceKind;
             if (refKind !== "ref_to" && refKind !== "reference_to") {
@@ -1995,6 +2015,139 @@ export class TypeChecker {
         arg.value.sourceSpan.file,
       );
     });
+  }
+
+  /**
+   * An argument bound to a REFERENCE TO input becomes what the input refers
+   * to, so it must be a variable (not an expression or a constant) of exactly
+   * the referenced type, or a REFERENCE TO that type. Types are compared by
+   * name, so an alias or subrange of INT is not INT. Only types this compile
+   * knows are compared; an array or an unresolved argument is left alone.
+   */
+  private validateReferenceToArguments(
+    inputs: CallInput[] | undefined,
+    args: readonly Argument[],
+    scope: Scope,
+  ): void {
+    if (!inputs) return;
+    stripEnEno([...args]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (!input || input.inOut) return;
+      const target = referenceShapeOf(input.type);
+      if (target?.chain.length !== 1 || target.chain[0] !== "reference_to") {
+        return;
+      }
+      const value = arg.value;
+      if (value.kind === "VariableExpression") {
+        delete value.aliasReferenceBinding;
+      }
+      const fail = (message: string): void =>
+        this.addError(
+          message,
+          value.sourceSpan.startLine,
+          value.sourceSpan.startCol,
+          value.sourceSpan.file,
+        );
+      if (value.kind !== "VariableExpression") {
+        fail(
+          `REFERENCE TO input '${input.name}' needs a variable to refer to, not an expression`,
+        );
+        return;
+      }
+      if (scope.lookup(value.name)?.kind === "constant") {
+        fail(
+          `REFERENCE TO input '${input.name}' needs a variable to refer to, not a constant`,
+        );
+        return;
+      }
+      const source = this.declaredReferenceShape(value, scope);
+      if (!source) return;
+      const levelsOk =
+        source.chain.length === 0 ||
+        (source.chain.length === 1 && source.chain[0] === "reference_to");
+      if (levelsOk) {
+        if (
+          !this.isReferableType(target.base) ||
+          !this.isReferableType(source.base)
+        ) {
+          return;
+        }
+        if (
+          canonicalElementaryName(this.aliasBase(target.base)) ===
+          canonicalElementaryName(this.aliasBase(source.base))
+        ) {
+          this.markAliasReferenceBinding(target, source, value);
+          return;
+        }
+      }
+      fail(
+        `${describeReferenceShape(target)} cannot refer to a ${describeReferenceShape(source)} variable${levelsOk ? this.referenceMismatchReason(this.aliasBase(source.base)) : ""}`,
+      );
+    });
+  }
+
+  /**
+   * The type an alias chain (`TYPE A : B; END_TYPE`, plain, no reference or
+   * array) ends at, upper case; `name` itself when it is not an alias.
+   */
+  private aliasBase(name: string): string {
+    let upper = name.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const current = upper;
+      const def = this.ast?.types.find(
+        (td) => td.name.toUpperCase() === current,
+      )?.definition;
+      if (
+        def?.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        (def.referenceKind !== undefined && def.referenceKind !== "none")
+      ) {
+        return upper;
+      }
+      upper = def.name.toUpperCase();
+    }
+    return upper;
+  }
+
+  /**
+   * An alias-typed variable is not stored as its base type, so compile cannot
+   * bind a REFERENCE TO to it yet: mark it for compile to refuse (analysis accepts).
+   */
+  private markAliasReferenceBinding(
+    target: { chain: string[]; base: string },
+    source: { chain: string[]; base: string },
+    value: VariableExpression,
+  ): void {
+    if (source.chain.length !== 0) return;
+    const alias = source.base.toUpperCase();
+    if (this.aliasBase(alias) === alias) return;
+    value.aliasReferenceBinding = `binding a ${describeReferenceShape(target)} to a variable of alias type '${alias}' is not supported yet`;
+  }
+
+  /** Why a variable of declared type `name` cannot back a REFERENCE TO of another name. */
+  private referenceMismatchReason(name: string): string {
+    const upper = name.toUpperCase();
+    const def = this.ast?.types.find(
+      (td) => td.name.toUpperCase() === upper,
+    )?.definition;
+    if (def?.kind === "SubrangeDefinition") {
+      return ": writes through the reference would not be checked against the subrange";
+    }
+    return "";
+  }
+
+  /** A type a REFERENCE TO argument check can compare: known, or a TYPE declared here. */
+  private isReferableType(name: string): boolean {
+    if (this.isExactlyKnownType(name)) return true;
+    const upper = name.toUpperCase();
+    return (
+      this.ast?.types.some((td) => td.name.toUpperCase() === upper) ?? false
+    );
   }
 
   /** Arguments bound to an interface-typed input are checked like an assignment. */

@@ -323,17 +323,18 @@ public:
 };
 
 // =============================================================================
-// REFERENCE_TO Type (Implicit Dereference - CODESYS Compatibility)
+// REFERENCE_TO Type (Implicit Dereference)
 // =============================================================================
 
 /**
- * REFERENCE_TO type with implicit dereferencing (CODESYS compatibility).
+ * REFERENCE_TO type with implicit dereferencing.
  * Unlike REF_TO, this type automatically dereferences on value access.
  *
  * Conceptually always bound; default-constructs unbound (nullptr) only so
  * the variable can be declared before being bound. Must be bound (via the
- * REF= operator / bind()) before any read or write — accessing it unbound
- * is undefined behaviour, mirroring CODESYS.
+ * REF= operator / bind(), or by the call for a VAR_INPUT) before any read or
+ * write — accessing it unbound raises the NullReference fault, as a NULL
+ * REF_TO dereference does.
  *
  * @tparam T The underlying value type (e.g., INT_t, REAL_t)
  */
@@ -353,12 +354,12 @@ public:
      * IEC 61131-3 REFERENCE TO is conceptually "always bound", but a
      * variable of this type must still be *declarable* before it is bound
      * (e.g. an uninitialized FB member or local that is bound later via the
-     * REF= operator inside the POU body). The generated code default-
-     * constructs such members, so a usable default ctor is required.
+     * REF= operator inside the POU body, or an FB input bound by a call).
+     * The generated code default-constructs such members, so a usable
+     * default ctor is required.
      *
-     * As with CODESYS, reading or writing an unbound REFERENCE TO is
-     * undefined behaviour — generated code is expected to bind it (REF=)
-     * before first access. (Use REF_TO if you need explicit NULL checks.)
+     * Reading or writing an unbound REFERENCE TO raises the NullReference
+     * fault (see bound()).
      */
     IEC_REFERENCE_TO() noexcept : ptr_(nullptr) {}
 
@@ -379,21 +380,48 @@ public:
     void bind(IECVar<T>& var) noexcept { ptr_ = &var; }
 
     /**
+     * Bind to what another reference is bound to (REF= from a reference).
+     */
+    void bind(const IEC_REFERENCE_TO& other) noexcept { ptr_ = other.ptr_; }
+
+    /**
+     * Check if the reference is unbound
+     */
+    bool is_null() const noexcept { return ptr_ == nullptr; }
+
+    /**
      * Implicit value access (get) - reads from target
      */
-    T get() const noexcept { return ptr_->get(); }
+    T get() const { return bound().get(); }
 
     /**
      * Implicit value assignment (set) - writes to target
      * Respects target's forcing state
      */
-    void set(const T& value) noexcept { ptr_->set(value); }
+    void set(const T& value) { bound().set(value); }
 
     /**
      * Get underlying IECVar reference
      */
-    IECVar<T>& target() noexcept { return *ptr_; }
-    const IECVar<T>& target() const noexcept { return *ptr_; }
+    IECVar<T>& target() { return bound(); }
+    const IECVar<T>& target() const { return bound(); }
+
+private:
+    /**
+     * The bound target; an unbound reference raises the NullReference fault
+     */
+    IECVar<T>& bound() const {
+        if (ptr_ == nullptr) {
+#if STRUCPP_HAS_EXCEPTIONS
+            throw NullReferenceException("REFERENCE TO");
+#else
+            iec_runtime_fault(IecFault::NullReference, "REFERENCE TO");
+#endif
+        }
+        return *ptr_;
+    }
+
+public:
 
     // =========================================================================
     // Operators
@@ -402,7 +430,7 @@ public:
     /**
      * Assignment operator writes through to target
      */
-    IEC_REFERENCE_TO& operator=(const T& value) noexcept {
+    IEC_REFERENCE_TO& operator=(const T& value) {
         set(value);
         return *this;
     }
@@ -410,25 +438,25 @@ public:
     /**
      * Implicit conversion to value type for reading
      */
-    operator T() const noexcept { return get(); }
+    operator T() const { return get(); }
 
     // Arithmetic compound assignment operators (write through to target)
-    IEC_REFERENCE_TO& operator+=(const T& v) noexcept {
+    IEC_REFERENCE_TO& operator+=(const T& v) {
         set(get() + v);
         return *this;
     }
 
-    IEC_REFERENCE_TO& operator-=(const T& v) noexcept {
+    IEC_REFERENCE_TO& operator-=(const T& v) {
         set(get() - v);
         return *this;
     }
 
-    IEC_REFERENCE_TO& operator*=(const T& v) noexcept {
+    IEC_REFERENCE_TO& operator*=(const T& v) {
         set(get() * v);
         return *this;
     }
 
-    IEC_REFERENCE_TO& operator/=(const T& v) noexcept {
+    IEC_REFERENCE_TO& operator/=(const T& v) {
         set(get() / v);
         return *this;
     }
@@ -676,5 +704,18 @@ template<typename I>
 inline I& itf_ref(const IEC_ITF<I>& p) { return p.deref(); }
 template<typename T>
 inline T& itf_ref(T& obj) noexcept { return obj; }
+
+/**
+ * The binding a REFERENCE TO input receives at a call: a reference to the
+ * argument variable, or the argument's own binding when it is a reference.
+ */
+template<typename T>
+inline IEC_REFERENCE_TO<T> ref_bind(IECVar<T>& var) noexcept {
+    return IEC_REFERENCE_TO<T>(var);
+}
+template<typename T>
+inline IEC_REFERENCE_TO<T> ref_bind(const IEC_REFERENCE_TO<T>& ref) noexcept {
+    return ref;
+}
 
 }  // namespace strucpp

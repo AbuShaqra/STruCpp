@@ -38,6 +38,7 @@ import type {
   InterfaceDeclaration,
   TypeReference,
   ASTNode,
+  VariableExpression,
 } from "./frontend/ast.js";
 import { mergeCompilationUnits } from "./merge.js";
 import { lowerInlineTypes } from "./frontend/lower-inline-types.js";
@@ -804,9 +805,10 @@ export function compile(
     };
   }
 
-  // UNION and FB_init uses analysis accepts but code generation cannot lower yet.
+  // UNION, FB_init and alias-variable REFERENCE TO uses analysis accepts but code generation cannot lower yet.
   const unionErrors = [
     ...unionCompileErrors(pipeline.ast, pipeline.symbolTables),
+    ...aliasReferenceCompileErrors(pipeline.ast),
     ...(pipeline.fbInit
       ? fbInitCompileErrors(pipeline.ast, pipeline.symbolTables)
       : []),
@@ -978,6 +980,25 @@ function unionCompileErrors(
         ...(span.file !== undefined ? { file: span.file } : {}),
       }),
   );
+  return errors;
+}
+
+/** REFERENCE TO bindings to alias-typed variables, refused by compile (see aliasReferenceBinding). */
+function aliasReferenceCompileErrors(ast: CompilationUnit): CompileError[] {
+  const errors: CompileError[] = [];
+  walkAST(ast, (node) => {
+    if (node.kind !== "VariableExpression") return;
+    const message = (node as VariableExpression).aliasReferenceBinding;
+    if (message === undefined) return;
+    const span = node.sourceSpan;
+    errors.push({
+      message,
+      line: span.startLine,
+      column: span.startCol,
+      severity: "error",
+      ...(span.file !== undefined ? { file: span.file } : {}),
+    });
+  });
   return errors;
 }
 

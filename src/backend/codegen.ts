@@ -181,6 +181,14 @@ function physicalLineCount(line: string): number {
   return count;
 }
 
+/** A VAR_INPUT declared REFERENCE TO: the call binds it to its argument. */
+function isReferenceInput(block: VarBlock, decl: VarDeclaration): boolean {
+  return (
+    block.blockType === "VAR_INPUT" &&
+    decl.type.referenceKind === "reference_to"
+  );
+}
+
 /**
  * Placeholder for a `#line` reset back to the generated file. Its number and
  * file name depend on the file the line ends up in (each `cppFiles` entry, the
@@ -5772,38 +5780,46 @@ export class CodeGenerator {
     });
 
     // Pad missing trailing VAR_OUTPUT/VAR_IN_OUT params with temp variables
-    if (this.ast) {
-      const funcDecl = this.ast.functions.find(
-        (f) => f.name.toUpperCase() === nameUpper,
-      );
-      if (funcDecl) {
-        const paramInfo: Array<{ blockType: string; typeName: string }> = [];
-        for (const block of funcDecl.varBlocks) {
-          if (
-            block.blockType === "VAR_INPUT" ||
-            block.blockType === "VAR_IN_OUT" ||
-            block.blockType === "VAR_OUTPUT"
-          ) {
-            for (const decl of block.declarations) {
-              for (let ni = 0; ni < decl.names.length; ni++) {
-                paramInfo.push({
-                  blockType: block.blockType,
-                  typeName: decl.type.name,
-                });
-              }
+    const funcDecl = this.ast?.functions.find(
+      (f) => f.name.toUpperCase() === nameUpper,
+    );
+    const suppliedArgs = args.length;
+    if (funcDecl) {
+      const paramInfo: Array<{
+        blockType: string;
+        typeName: string;
+        refInput?: TypeReference;
+      }> = [];
+      for (const block of funcDecl.varBlocks) {
+        if (
+          block.blockType === "VAR_INPUT" ||
+          block.blockType === "VAR_IN_OUT" ||
+          block.blockType === "VAR_OUTPUT"
+        ) {
+          for (const decl of block.declarations) {
+            for (let ni = 0; ni < decl.names.length; ni++) {
+              paramInfo.push({
+                blockType: block.blockType,
+                typeName: decl.type.name,
+                ...(isReferenceInput(block, decl)
+                  ? { refInput: decl.type }
+                  : {}),
+              });
             }
           }
         }
-        while (args.length < paramInfo.length) {
-          const param = paramInfo[args.length]!;
-          if (
-            param.blockType === "VAR_OUTPUT" ||
-            param.blockType === "VAR_IN_OUT"
-          ) {
-            args.push(this.emitOutputTempVar(param.typeName));
-          } else {
-            args.push(this.getTypeDefaultValue(param.typeName));
-          }
+      }
+      while (args.length < paramInfo.length) {
+        const param = paramInfo[args.length]!;
+        if (
+          param.blockType === "VAR_OUTPUT" ||
+          param.blockType === "VAR_IN_OUT"
+        ) {
+          args.push(this.emitOutputTempVar(param.typeName));
+        } else if (param.refInput) {
+          args.push(`${this.mapTypeRefToCpp(param.refInput)}()`);
+        } else {
+          args.push(this.getTypeDefaultValue(param.typeName));
         }
       }
     }
@@ -5812,6 +5828,20 @@ export class CodeGenerator {
     const paramTypes = this.getParamTypes(nameUpper);
     if (paramTypes) {
       this.coerceUserFuncArgs(args, expr.arguments, paramTypes);
+    }
+
+    // Positional arguments bound to REFERENCE TO inputs (a function, or a
+    // method of the enclosing block called bare).
+    const calleeBlocks =
+      funcDecl?.varBlocks ??
+      this.findMethodDeclaration(
+        this.currentFBName ?? this.currentProgramName,
+        nameUpper,
+      )?.varBlocks;
+    if (calleeBlocks) {
+      const supplied = args.slice(0, suppliedArgs);
+      this.bindPositionalReferenceInputs(supplied, calleeBlocks);
+      args.splice(0, suppliedArgs, ...supplied);
     }
 
     return `${expr.functionName}(${args.join(", ")})`;
@@ -5899,18 +5929,46 @@ export class CodeGenerator {
     callArgs: Argument[],
     callSpan: SourceSpan,
   ): string[] {
-    if (callArgs.some((a) => a.name !== undefined)) {
-      const method = this.findMethodDeclaration(ownerType, methodName);
-      if (method) {
-        return this.bindArgumentsByName(
-          method.varBlocks,
-          callArgs,
-          `method '${method.name}'`,
-          callSpan,
-        );
+    const method = this.findMethodDeclaration(ownerType, methodName);
+    if (method && callArgs.some((a) => a.name !== undefined)) {
+      return this.bindArgumentsByName(
+        method.varBlocks,
+        callArgs,
+        `method '${method.name}'`,
+        callSpan,
+      );
+    }
+    const args = callArgs.map((a) => this.generateExpression(a.value));
+    if (method) this.bindPositionalReferenceInputs(args, method.varBlocks);
+    return args;
+  }
+
+  /**
+   * Wrap the positional arguments that land on a REFERENCE TO input in
+   * `ref_bind(...)`, so the input refers to the argument for the call.
+   * `varBlocks` is the callee's declaration (its C++ parameter order).
+   */
+  private bindPositionalReferenceInputs(
+    args: string[],
+    varBlocks: VarBlock[],
+  ): void {
+    let index = 0;
+    for (const block of varBlocks) {
+      if (
+        block.blockType !== "VAR_INPUT" &&
+        block.blockType !== "VAR_IN_OUT" &&
+        block.blockType !== "VAR_OUTPUT"
+      ) {
+        continue;
+      }
+      for (const decl of block.declarations) {
+        for (let n = 0; n < decl.names.length; n++, index++) {
+          if (index < args.length && isReferenceInput(block, decl)) {
+            args[index] = `ref_bind(${args[index]})`;
+          }
+        }
       }
     }
-    return callArgs.map((a) => this.generateExpression(a.value));
   }
 
   /**
@@ -5931,6 +5989,7 @@ export class CodeGenerator {
       typeName: string;
       blockType: string;
       defaultExpr?: string;
+      refInput?: TypeReference;
     }> = [];
     for (const block of varBlocks) {
       if (
@@ -5945,11 +6004,13 @@ export class CodeGenerator {
               typeName: string;
               blockType: string;
               defaultExpr?: string;
+              refInput?: TypeReference;
             } = {
               name: name.toUpperCase(),
               typeName: decl.type.name,
               blockType: block.blockType,
             };
+            if (isReferenceInput(block, decl)) entry.refInput = decl.type;
             if (decl.initialValue) {
               entry.defaultExpr = this.generateInitializer(
                 decl.initialValue,
@@ -6044,6 +6105,17 @@ export class CodeGenerator {
       const named = namedArgs.get(param.name);
       if (named !== undefined) {
         result[i] = named.expr;
+      }
+    }
+
+    // A REFERENCE TO input binds to its argument; an omitted one stays unbound.
+    for (let i = 0; i < params.length; i++) {
+      const refType = params[i]!.refInput;
+      if (refType === undefined) continue;
+      if (result[i] !== undefined) {
+        result[i] = `ref_bind(${result[i]})`;
+      } else if (params[i]!.defaultExpr === undefined) {
+        result[i] = `${this.mapTypeRefToCpp(refType)}()`;
       }
     }
 
@@ -6715,13 +6787,13 @@ export class CodeGenerator {
       if (arg.name) {
         // Named argument: assign directly
         this.emit(
-          `${indent}${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)} = ${this.generateExpression(arg.value)};`,
+          `${indent}${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)} = ${this.fbInputArgument(fbTypeName, arg.name, arg.value)};`,
         );
       } else if (inputParamNames && positionalIndex < inputParamNames.length) {
         // Positional argument: map to VAR_INPUT by position
         const paramName = inputParamNames[positionalIndex];
         this.emit(
-          `${indent}${instanceName}.${this.fbParamMemberName(paramName!, fbTypeName)} = ${this.generateExpression(arg.value)};`,
+          `${indent}${instanceName}.${this.fbParamMemberName(paramName!, fbTypeName)} = ${this.fbInputArgument(fbTypeName, paramName!, arg.value)};`,
         );
         positionalIndex++;
       } else {
@@ -6782,6 +6854,26 @@ export class CodeGenerator {
         );
       }
     }
+  }
+
+  /**
+   * The C++ value an FB call assigns to input `paramName`: the argument, or
+   * for a REFERENCE TO input `ref_bind(arg)`, so the assignment rebinds the
+   * input to the argument instead of writing through it.
+   */
+  private fbInputArgument(
+    fbTypeName: string | undefined,
+    paramName: string,
+    value: Expression,
+  ): string {
+    const generated = this.generateExpression(value);
+    if (fbTypeName === undefined) return generated;
+    const inout = this.fbInoutParams.get(fbTypeName.toUpperCase());
+    if (inout?.has(paramName.toUpperCase()) === true) return generated;
+    const field = this.accessLookup.field(fbTypeName, paramName);
+    return field?.type.referenceKind === "reference_to"
+      ? `ref_bind(${generated})`
+      : generated;
   }
 
   /**
