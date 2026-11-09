@@ -76,6 +76,7 @@ the root. A profile without `extends` has only its own features.
 | `struct_extends`     | a STRUCT that inherits another's fields, `ST_B EXTENDS ST_A` |
 | `union`              | a UNION type, `TYPE U_A : UNION ... END_UNION END_TYPE`      |
 | `fb_init`            | init arguments `fb : FB_A(p := 1)`, and FB_init at start-up  |
+| `trunc_dint`         | `TRUNC(x)` returns DINT for an LREAL too (not only a REAL)   |
 
 ## Refusals
 
@@ -392,6 +393,15 @@ END_PROGRAM
   of the chain is called non-virtually (`x.FB_B0::FB_INIT(false, false, ...)`). Code without FB_init and
   init arguments generates the same C++ as before.
 
+`trunc_dint` is in neither the default set nor `iec-3`, and refuses nothing: it changes a result type.
+IEC 61131-3 Ed. 3 gives `TRUNC` of a REAL a DINT and of an LREAL a LINT, and so does the compiler without
+the feature. With it, `TRUNC(x)` returns DINT for every ANY_REAL argument: `d : DINT := TRUNC(lr)` passes
+`--strict`, `l : LINT := TRUNC(lr)` still passes as a widening, and `f : INT := TRUNC(lr)` keeps its
+narrowing warning, which then names DINT instead of LINT (under `--strict` the error asks for
+`DINT_TO_INT` instead of `LINT_TO_INT`). The value is truncated toward zero and saturated at the DINT range
+(`TRUNC(LREAL#3.0E10)` is 2147483647), as `TRUNC_DINT` does. A REAL argument is unchanged, and the typed
+forms (`TRUNC_LINT`, `LREAL_TRUNC_LINT`) keep their own result types.
+
 `program_methods` is not in the default set: a `METHOD` in a `PROGRAM` is refused with no dialect flag too
 (before profiles it did not parse at all). `--strict` does not change any feature. A refused method is still
 registered and checked, so a call to it adds no second error. Program methods go before the body, interleaved with the VAR blocks
@@ -424,7 +434,7 @@ is one line on stderr, `error: <message>`, and exit code 1:
 - `dialect file <path>: <JSON parse message>`
 - `dialect file <path>: id '<x>' does not match the file name` (`--dialect-path` only)
 - `dialect file <path>: semantics key '<k>' is not known`
-- `unknown feature '<id>' in <where> (known: program_methods, pointer_to, reference_to, ref_assign)`
+- `unknown feature '<id>' in <where> (known: <every feature in the table above>)`
 - `unknown dialect '<id>' (known: iec-3, ...)`
 - `dialect '<id>': extends '<p>', which is not loaded`
 - either of the two above for the id `iec` ends with `; the IEC 61131-3 Ed. 3 profile is 'iec-3'`

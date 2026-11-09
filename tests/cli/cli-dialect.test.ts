@@ -10,6 +10,7 @@ import { tmpdir } from "os";
 import { compile } from "../../src/index.js";
 import { compileStlib } from "../../src/library/library-compiler.js";
 import { nodeDialectIO } from "../../src/node/dialect-io.js";
+import { DEFAULT_FEATURES, KNOWN_FEATURES } from "../../src/dialect.js";
 
 const CLI_PATH = resolve(__dirname, "../../dist/node/cli.js");
 const TMP_BASE = join(tmpdir(), "strucpp-cli-dialect-tests");
@@ -43,6 +44,34 @@ beforeAll(() => {
     throw new Error(`CLI not built: ${CLI_PATH} not found.`);
   }
   mkdirSync(TMP_BASE, { recursive: true });
+});
+
+describe("--help", () => {
+  it("lists every known feature and the default set, within 80 columns", () => {
+    const r = run(["--help"]);
+    expect(r.status).toBe(0);
+    const lines = r.out.split("\n");
+    const start = lines.findIndex((l) => l.startsWith("  --feature "));
+    const end = lines.findIndex((l, i) => i > start && l.startsWith("  --"));
+    const featureHelp = lines.slice(start, end).join(" ").replace(/\s+/g, " ");
+    for (const f of KNOWN_FEATURES) {
+      expect(featureHelp).toMatch(new RegExp(`[ :,]${f}[,]?(?: |$)`));
+    }
+    const dStart = lines.findIndex((l) => l.startsWith("  --dialect "));
+    const dialectHelp = lines
+      .slice(dStart, dStart + 4)
+      .join(" ")
+      .replace(/\s+/g, " ");
+    expect(dialectHelp).toContain(
+      `the features ${[...DEFAULT_FEATURES].join(", ")})`,
+    );
+    for (const l of [
+      ...lines.slice(start, end),
+      ...lines.slice(dStart, dStart + 4),
+    ]) {
+      expect(l.length).toBeLessThanOrEqual(80);
+    }
+  });
 });
 
 describe("--print-dialect", () => {
@@ -131,7 +160,7 @@ describe("bad dialect input", () => {
       /^error: dialect file .*bad-semantics\.json: semantics key 'trunc_result' is not known$/,
     );
     expect(msg("unknown-feature")).toMatch(
-      /^error: unknown feature 'no_such_feature' in dialect file .*bad-feature\.json \(known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init\)$/,
+      /^error: unknown feature 'no_such_feature' in dialect file .*bad-feature\.json \(known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint\)$/,
     );
     expect(msg("wrong-id")).toMatch(
       /^error: dialect file .*bad-id\.json: id 'another-id' does not match the file name$/,
@@ -145,7 +174,7 @@ describe("bad dialect input", () => {
     const f = run(["--feature", "+goto", "--print-dialect"]);
     expect(f.status).toBe(1);
     expect(f.err.trim()).toBe(
-      "error: unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init)",
+      "error: unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint)",
     );
   });
 

@@ -156,7 +156,9 @@ All IEC 61131-3 standard functions are implemented in the C++ runtime:
 zero), saturate at the target's range and give 0 for NaN, instead of the undefined behaviour of a plain C++
 cast. `*_TO_BOOL` still rounds first (0.4 is FALSE). `TRUNC` returns an integer, as the standard says: DINT for
 REAL and LINT for LREAL (truncating toward zero, saturating). Under `--strict` an assignment of `TRUNC(r)` to an
-INT needs `DINT_TO_INT`; without it the narrowing is accepted, as library code expects.
+INT needs `DINT_TO_INT`; without it the narrowing is accepted, as library code expects. The extension
+feature `trunc_dint` (off by default and under `iec-3`) makes `TRUNC` of an LREAL a DINT as well (saturating
+at the DINT range); see [DIALECTS.md](DIALECTS.md).
 
 **Typed truncation** (IEC 61131-3 Ed. 3, Table 22) is supported in every dialect for every ANY_REAL x ANY_INT
 pair: `TRUNC_<int>` (e.g. `TRUNC_INT`) takes a REAL or an LREAL, `REAL_TRUNC_<int>` and `LREAL_TRUNC_<int>`

@@ -51,7 +51,12 @@ import { resolve, basename, dirname, join, relative, sep } from "path";
 import { tmpdir, platform } from "os";
 import { execFileSync } from "child_process";
 import { analyze, compile, getVersion, compileStlib } from "../index.js";
-import { DialectError, resolveDialect } from "../dialect.js";
+import {
+  DEFAULT_FEATURES,
+  DialectError,
+  KNOWN_FEATURES,
+  resolveDialect,
+} from "../dialect.js";
 import { isGlobalListName } from "../semantic/global-lists.js";
 import { nodeDialectIO } from "./dialect-io.js";
 import {
@@ -392,6 +397,29 @@ function withGlobalListName<T extends object>(
   return name === undefined ? entry : { ...entry, globalListName: name };
 }
 
+/** Help column of option descriptions, and the width they wrap at. */
+const HELP_INDENT = 28;
+const HELP_WIDTH = 80;
+
+/** `text` word-wrapped into the help's description column (no lead indent). */
+function wrapHelp(text: string): string {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    if (
+      line !== "" &&
+      HELP_INDENT + line.length + 1 + word.length > HELP_WIDTH
+    ) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = line === "" ? word : `${line} ${word}`;
+    }
+  }
+  lines.push(line);
+  return lines.join(`\n${" ".repeat(HELP_INDENT)}`);
+}
+
 function showHelp(): void {
   console.log(`
 STruC++ - IEC 61131-3 Structured Text to C++ Compiler
@@ -408,16 +436,12 @@ Options:
                             reject: implicit conversions, BOOL/bit-string
                             arithmetic, reserved names, duplicate CASE labels...
   --dialect <id>            Compile under a dialect profile: the built-in iec-3,
-                            a --dialect-file profile or <dir>/<id>.json in a
-                            --dialect-path folder (default: no profile, the
-                            features pointer_to, reference_to, ref_assign)
+                            ${wrapHelp(`a --dialect-file profile or <dir>/<id>.json in a --dialect-path folder (default: no profile, the features ${[...DEFAULT_FEATURES].join(", ")})`)}
   --dialect-file <path>     Load a dialect profile (repeatable); one file and
                             no --dialect selects it
   --dialect-path <dir>      Load and check every *.json profile in a folder
                             (repeatable)
-  --feature <+id|-id>       Enable (+id or id) or disable (-id) a feature after
-                            the profile (repeatable): program_methods,
-                            pointer_to, reference_to, ref_assign
+  --feature <+id|-id>       ${wrapHelp(`Enable (+id or id) or disable (-id) a feature after the profile (repeatable): ${KNOWN_FEATURES.join(", ")}`)}
   --global-list <file>=<name>
                             Name the global variable list of input <file>
                             (default: its file stem; repeatable). Used by
