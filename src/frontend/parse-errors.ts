@@ -13,6 +13,11 @@
 import type { IToken } from "chevrotain";
 import type { CompileError } from "../types.js";
 import { suggestionForParseError } from "./parser-error-message-provider.js";
+import {
+  isConditionalPragma,
+  pragmaSourceText,
+  shortPragmaText,
+} from "./lexer.js";
 
 /** The fields of a Chevrotain lexer error or recognition exception we read. */
 interface RawFrontendError {
@@ -96,4 +101,38 @@ export function toCompileErrors(
     }
     return entry;
   });
+}
+
+/**
+ * One "pragma ignored" warning per skipped pragma, at its position, quoting
+ * its (shortened) text. Pragma contents are implementer-specific
+ * (IEC 61131-3 Ed.3, 6.2) and this compiler interprets none of them.
+ *
+ * @param pragmas - Pragma tokens from `parse()` / `parseTestSource()`
+ * @param source - The source the pragmas were lexed from
+ * @param file - Source file name to attach, when known
+ * @returns One warning per pragma that is not a conditional one, in order
+ */
+export function pragmaWarnings(
+  pragmas: ReadonlyArray<IToken>,
+  source: string,
+  file?: string,
+): CompileError[] {
+  const out: CompileError[] = [];
+  for (const tok of pragmas) {
+    const text = pragmaSourceText(tok, source);
+    // Conditional pragmas are already lexer errors.
+    if (isConditionalPragma(text)) continue;
+    const entry: CompileError = {
+      message: `Pragma ignored: ${shortPragmaText(text)}`,
+      line: tok.startLine ?? 1,
+      column: tok.startColumn ?? 1,
+      severity: "warning",
+    };
+    if (tok.endLine !== undefined) entry.endLine = tok.endLine;
+    if (tok.endColumn !== undefined) entry.endColumn = tok.endColumn;
+    if (file !== undefined) entry.file = file;
+    out.push(entry);
+  }
+  return out;
 }

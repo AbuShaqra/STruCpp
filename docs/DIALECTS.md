@@ -103,6 +103,14 @@ vtable is the same as without methods. It sees the program's VARs and reaches it
 lowered to a parameterless method of its owner that is exempt from `program_methods`, and the same
 inside-the-program rule applies to a program's actions.
 
+Pragmas `{...}` (IEC 61131-3 Ed. 3, 6.2) are not a feature: every profile, `iec-3` included, accepts them
+wherever whitespace may appear and skips them with a `Pragma ignored: {...}` warning at the pragma's line
+and column (listed by `--check --json`, exit 0). Their contents are not interpreted, apart from
+`{external ...}`. Conditional-compilation pragmas (`{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`,
+`{define ...}`, `{undefine ...}`, any case) are an error, `Conditional compilation pragmas are not
+supported: {...}`, because skipping them would compile every branch. A pragma ends at the first `}`; an
+unclosed `{` is the error `Unterminated pragma: '{' has no closing '}'`.
+
 ## Checks
 
 Profiles are input, not trusted code. Every profile read (each `--dialect-file`, and every `*.json` in each

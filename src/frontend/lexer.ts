@@ -7,7 +7,12 @@
  * This module defines all tokens used by the ST grammar.
  */
 
-import { createToken, Lexer } from "chevrotain";
+import {
+  createToken,
+  Lexer,
+  type ILexingResult,
+  type IToken,
+} from "chevrotain";
 
 // =============================================================================
 // Token Categories
@@ -139,6 +144,63 @@ export const ExternalPragma = createToken({
   pattern: matchExternalPragma,
   line_breaks: true, // Content can span multiple lines
 });
+
+/** True if `{` at `startOffset` opens an `{external ...}` pragma. */
+function opensExternalPragma(text: string, startOffset: number): boolean {
+  let i = startOffset + 1;
+  while (i < text.length && /\s/.test(text.charAt(i))) i++;
+  return text.substring(i, i + 8).toLowerCase() === "external";
+}
+
+/**
+ * Custom pattern matcher for a general pragma `{ ... }` (IEC 61131-3 Ed.3,
+ * 6.2): everything up to the first `}`. Pragmas do not nest. `{external ...}`
+ * is left to {@link ExternalPragma}; an unclosed `{` does not match.
+ *
+ * @param text - The full source text
+ * @param startOffset - The current position in the text
+ * @returns A RegExpExecArray-compatible result or null if no match
+ */
+function matchPragma(
+  text: string,
+  startOffset: number,
+): RegExpExecArray | null {
+  if (text.charAt(startOffset) !== "{") return null;
+  if (opensExternalPragma(text, startOffset)) return null;
+  const close = text.indexOf("}", startOffset + 1);
+  if (close < 0) return null;
+  return createMatchResult(text.substring(startOffset, close + 1), startOffset);
+}
+
+/** Lexer group that collects pragma tokens; see {@link Pragma}. */
+export const PRAGMA_GROUP = "pragmas";
+
+/**
+ * General pragma `{ ... }`. Kept out of the token stream (trivia) and
+ * collected in `groups.pragmas`, so the parser never sees it and the
+ * compiler can warn that it was ignored.
+ */
+export const Pragma = createToken({
+  name: "Pragma",
+  pattern: matchPragma,
+  line_breaks: true,
+  start_chars_hint: ["{"],
+  group: PRAGMA_GROUP,
+});
+
+/** Conditional-compilation pragma keywords, matched case-insensitively. */
+const CONDITIONAL_PRAGMA = /^\{\s*(IF|ELSIF|ELSE|END_IF|DEFINE|UNDEFINE)\b/i;
+
+/**
+ * True if a pragma's text is a conditional-compilation directive
+ * (`{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`,
+ * `{undefine ...}`).
+ *
+ * @param image - The pragma text, braces included
+ */
+export function isConditionalPragma(image: string): boolean {
+  return CONDITIONAL_PRAGMA.test(image);
+}
 
 // =============================================================================
 // Nested Comment Support
@@ -787,8 +849,9 @@ export const allTokens = [
   WhiteSpace,
   Comment,
 
-  // External code pragma
+  // External code pragma, then any other pragma (trivia)
   ExternalPragma,
+  Pragma,
 
   // Multi-character operators (before single-character)
   DoubleDot,
@@ -1271,6 +1334,75 @@ export function uppercaseSource(source: string): string {
 }
 
 /**
+ * Pragma diagnostics on a lexer result, in place: a conditional-compilation
+ * pragma is an error (ignoring it would compile every branch), and the
+ * generic error at an unclosed `{` or a stray `}` gets a clear message.
+ * Errors end up sorted by offset.
+ *
+ * @param result - The Chevrotain lexer result to amend
+ * @param source - The original source, quoted in messages
+ * @param lexed - The text that was lexed (`source` with keywords uppercased)
+ */
+function checkPragmas(
+  result: ILexingResult,
+  source: string,
+  lexed: string,
+): void {
+  for (const err of result.errors) {
+    const ch = lexed.charAt(err.offset);
+    if (ch === "{" && err.message.startsWith("unexpected character")) {
+      err.message = "Unterminated pragma: '{' has no closing '}'";
+    } else if (ch === "}" && err.message.startsWith("unexpected character")) {
+      err.message =
+        "Unexpected '}' outside a pragma (pragmas do not nest; the first '}' ends one)";
+    }
+  }
+  for (const tok of result.groups[PRAGMA_GROUP] ?? []) {
+    const image = pragmaSourceText(tok, source);
+    if (!isConditionalPragma(image)) continue;
+    result.errors.push({
+      offset: tok.startOffset,
+      line: tok.startLine,
+      column: tok.startColumn,
+      length: image.length,
+      message: `Conditional compilation pragmas are not supported: ${shortPragmaText(image)}`,
+    });
+  }
+  result.errors.sort((a, b) => a.offset - b.offset);
+}
+
+/**
+ * A pragma token's text as written in `source` (the lexer sees uppercased
+ * text). Falls back to the token image if the offsets do not line up.
+ *
+ * @param tok - A {@link Pragma} token
+ * @param source - The original source the token was lexed from
+ */
+export function pragmaSourceText(tok: IToken, source: string): string {
+  const slice = source.substring(
+    tok.startOffset,
+    tok.startOffset + tok.image.length,
+  );
+  return slice.toUpperCase() === tok.image.toUpperCase() ? slice : tok.image;
+}
+
+/** Longest pragma text quoted in a diagnostic before it is shortened. */
+const PRAGMA_TEXT_MAX = 60;
+
+/**
+ * A pragma's text for a diagnostic: whitespace runs collapsed, and cut to
+ * {@link PRAGMA_TEXT_MAX} characters with `...` when longer.
+ *
+ * @param image - The pragma text, braces included
+ */
+export function shortPragmaText(image: string): string {
+  const flat = image.replace(/\s+/g, " ");
+  return flat.length <= PRAGMA_TEXT_MAX
+    ? flat
+    : `${flat.substring(0, PRAGMA_TEXT_MAX - 4)}...}`;
+}
+
+/**
  * Tokenize ST source code.
  *
  * @param source - The ST source code to tokenize
@@ -1295,6 +1427,7 @@ export function tokenize(source: string): ReturnType<typeof STLexer.tokenize> {
     });
   }
 
+  checkPragmas(result, source, upperSource);
   return result;
 }
 
@@ -1325,5 +1458,6 @@ export function tokenizeTest(
     });
   }
 
+  checkPragmas(result, source, upperSource);
   return result;
 }

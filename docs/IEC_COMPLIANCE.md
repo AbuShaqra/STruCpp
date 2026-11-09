@@ -194,16 +194,15 @@ edges on `CU` and `CD` leave `CV` unchanged. CODESYS does not document that case
 | TASK ... WITH INTERVAL | Supported | |
 | Program instances | Supported | `name : programType` with task assignment |
 | VAR_GLOBAL in configuration | Supported | Not of a function block type, nor of a STRUCT or ARRAY holding one (refused at the declaration; declare it in a global variable list or a PROGRAM) |
-| Namespace configuration | Supported | Via pragmas |
+| Library namespace | Supported | Set when compiling a library (`--lib-namespace`, `namespace` in the library API); no pragma sets it |
 
 ## Language Extensions
 
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Nested comments `(* (* *) *)` | Supported | Arbitrary nesting depth |
-| Pragmas `{...}` | Supported | Including `{external}` for inline C++ |
-| Inline C++ | Supported | Via `{external ...}` pragma blocks |
-| Inline function calls | Supported | Via `{call ...}` pragma |
+| Pragmas `{...}` (6.2, Table 4) | Supported | Lexed wherever whitespace may appear (not in string literals or comments) and skipped with a `Pragma ignored: {...}` warning, in every dialect; no pragma is interpreted except `{external}`. Conditional-compilation pragmas are errors (see Not Yet Implemented). A pragma ends at the first `}` (no nesting); an unclosed `{` is an error |
+| Inline C++ | Supported | `{external ...}` as a statement in a POU body (braces inside it may nest); refused elsewhere, e.g. in a VAR block |
 | Global constants (`-D`) | Supported | CLI `-D NAME=VALUE`, emits `constexpr` |
 | Dynamic memory | Supported | `__NEW(type)`, `__DELETE(ptr)` |
 | POINTER TO, `ADR()` | Supported | Full pointer type with dereference; the feature `pointer_to` (`ADR` and `POINTER TO` are refused under `--dialect iec-3`; IEC `REF_TO`, `REF()`, `^`, `THIS^` and `SUPER^` stay accepted) |
@@ -220,4 +219,4 @@ edges on `CU` and `CD` leave `CV` unchanged. CODESYS does not document that case
 | Bit access (var.%X0) | Individual bit addressing |
 | TRY/CATCH/FINALLY | Exception handling |
 | Generics | Parameterized types |
-| Conditional compilation | Preprocessor-style conditionals |
+| Conditional compilation | The pragmas `{IF}`, `{ELSIF}`, `{ELSE}`, `{END_IF}`, `{define}`, `{undefine}` (any case) are errors, since skipping them would compile every branch |
