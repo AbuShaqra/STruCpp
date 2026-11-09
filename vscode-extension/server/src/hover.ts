@@ -174,7 +174,8 @@ function formatVariable(sym: VariableSymbol, symbolTables: SymbolTables | undefi
             `  ${f.names.map(rc).join(", ")} : ${rc(f.type.name)}`,
           )
           .join("\n");
-        result += `\n\n**${rc(typStr)}**\n\`\`\`\nSTRUCT\n${fieldLines}\nEND_STRUCT\n\`\`\``;
+        const kw = typeSym.declaration.definition.isUnion ? "UNION" : "STRUCT";
+        result += `\n\n**${rc(typStr)}**\n\`\`\`\n${kw}\n${fieldLines}\nEND_${kw}\n\`\`\``;
       }
     }
   }
@@ -280,7 +281,8 @@ function formatType(sym: TypeSymbol, rc: RestoreFn): string {
         `  ${f.names.map(rc).join(", ")} : ${rc(f.type.name)}`,
       )
       .join("\n");
-    return `\`\`\`\nTYPE ${rc(sym.name)} : STRUCT\n${fieldLines}\nEND_STRUCT\n\`\`\``;
+    const kw = sym.declaration.definition.isUnion ? "UNION" : "STRUCT";
+    return `\`\`\`\nTYPE ${rc(sym.name)} : ${kw}\n${fieldLines}\nEND_${kw}\n\`\`\``;
   }
 
   if (defKind === "EnumDefinition") {

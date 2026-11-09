@@ -227,7 +227,7 @@ function buildTypeSymbol(type: TypeDeclaration): DocumentSymbol {
         .map((f) => buildFieldSymbol(f));
       return DocumentSymbol.create(
         type.name,
-        "STRUCT",
+        sd.isUnion ? "UNION" : "STRUCT",
         SymbolKind.Struct,
         range,
         range,

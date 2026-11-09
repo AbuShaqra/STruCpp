@@ -1052,6 +1052,12 @@ export class ASTBuilder {
       return this.buildStructDefinition(structNode);
     }
 
+    // `UNION ... END_UNION`: a STRUCT whose fields share storage.
+    const unionNode = getFirstNode(children.unionType);
+    if (unionNode) {
+      return { ...this.buildStructDefinition(unionNode), isUnion: true };
+    }
+
     // Check for simple enum type: (RED, YELLOW, GREEN)
     const simpleEnumNode = getFirstNode(children.simpleEnumType);
     if (simpleEnumNode) {
@@ -1093,7 +1099,7 @@ export class ASTBuilder {
   }
 
   /**
-   * Build a StructDefinition from a structType CST node.
+   * Build a StructDefinition from a structType (or unionType) CST node.
    */
   buildStructDefinition(node: CstNode): StructDefinition {
     const children = node.children as CstChildren;

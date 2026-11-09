@@ -1794,6 +1794,61 @@ export class TypeChecker {
     );
   }
 
+  /** A UNION TYPE of this unit (feature union). */
+  private isUnionType(name: string): boolean {
+    const upper = name.toUpperCase();
+    return (
+      this.ast?.types.some(
+        (t) =>
+          t.name.toUpperCase() === upper &&
+          t.definition.kind === "StructDefinition" &&
+          t.definition.isUnion === true,
+      ) ?? false
+    );
+  }
+
+  /**
+   * A UNION is assignment-compatible only with the same UNION: an argument of
+   * another type for a UNION input, or a UNION for an elementary or STRUCT one.
+   * Generic inputs (ANY...) are left alone. Names are known to differ.
+   */
+  private isUnionArgumentMismatch(
+    sourceName: string,
+    targetName: string,
+  ): boolean {
+    const source = this.aliasTarget(sourceName);
+    const target = this.aliasTarget(targetName);
+    if (source.toUpperCase() === target.toUpperCase()) return false;
+    if (this.isUnionType(target)) return true;
+    if (!this.isUnionType(source)) return false;
+    return (
+      ELEMENTARY_TYPES[target.toUpperCase()] !== undefined ||
+      this.isStructType(target)
+    );
+  }
+
+  /** The type a chain of plain aliases (`TYPE T : U;`) of this unit ends on. */
+  private aliasTarget(name: string): string {
+    const seen = new Set<string>();
+    let current = name;
+    for (;;) {
+      const upper = current.toUpperCase();
+      if (seen.has(upper)) return current;
+      seen.add(upper);
+      const def = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === upper,
+      )?.definition;
+      if (
+        def?.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        (def.referenceKind ?? "none") !== "none"
+      ) {
+        return current;
+      }
+      current = def.name;
+    }
+  }
+
   /** A STRUCT TYPE of this unit. */
   private isStructType(name: string): boolean {
     const upper = name.toUpperCase();
@@ -1830,6 +1885,15 @@ export class TypeChecker {
       const source = typeNameUtil(valueType);
       const target = input.type.name;
       if (source.toUpperCase() === target.toUpperCase()) return;
+      if (this.isUnionArgumentMismatch(source, target)) {
+        this.addError(
+          `Cannot assign ${source} to parameter '${input.name}' of type ${target}`,
+          arg.value.sourceSpan.startLine,
+          arg.value.sourceSpan.startCol,
+          arg.value.sourceSpan.file,
+        );
+        return;
+      }
       if (!this.isStructType(source) || !this.isStructType(target)) return;
       if (!this.isDerivedStruct(source) && !this.isDerivedStruct(target)) {
         return;

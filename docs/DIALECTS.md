@@ -74,6 +74,7 @@ the root. A profile without `extends` has only its own features.
 | `postfix_enum_base`  | an enumeration base type after the value list, `(A, B) DINT` |
 | `named_global_lists` | a global qualified by its list name, `GVL_A.x`               |
 | `struct_extends`     | a STRUCT that inherits another's fields, `ST_B EXTENDS ST_A` |
+| `union`              | a UNION type, `TYPE U_A : UNION ... END_UNION END_TYPE`      |
 
 ## Refusals
 
@@ -91,6 +92,7 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `TYPE E : (A, B) DINT;` (base after list)   | `postfix_enum_base`  | `an enum base type written after the value list needs the feature postfix_enum_base` |
 | `GVL_A.x` (list-qualified global)           | `named_global_lists` | `Global variable list access 'GVL_A.X' needs the feature named_global_lists`         |
 | `TYPE ST_B EXTENDS ST_A : STRUCT`           | `struct_extends`     | `EXTENDS on a STRUCT needs the feature struct_extends`                               |
+| `TYPE U_A : UNION ... END_UNION`            | `union`              | `UNION type 'U_A' needs the feature union`                                           |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
@@ -237,6 +239,52 @@ END_TYPE
   of its type and the debug table therefore work as for any STRUCT, and the two types stay unrelated in C++
   too. Inherited fields keep the base declaration's source position, so diagnostics and hover point there;
   the language server's outline lists each STRUCT's own fields.
+
+`union` is in neither the default set nor `iec-3`: IEC 61131-3 Ed. 3 has no UNION (its overlay form is
+`STRUCT OVERLAP`, 6.4.4.7, not supported yet). With the feature on, a `TYPE` may be a UNION, whose members
+share one storage:
+
+```
+TYPE
+  U_A : UNION
+    f : REAL;
+    d : DWORD;
+    arr : ARRAY[0..3] OF BYTE;
+  END_UNION;
+END_TYPE
+```
+
+- Code generation does not lower a UNION yet: a compile that reaches it fails at each UNION declaration
+  with `code generation for UNION is not supported yet (UNION 'U_A')`, and so does building a library
+  from sources that declare one. `--check` analyses UNION code fully.
+- Members are reached and type-checked like STRUCT fields (`u.f`, `u.arr[1]`, `w.u.d`), and a UNION may be
+  a variable, an FB or STRUCT member, an array element, a `VAR_INPUT` and a `VAR_IN_OUT`.
+- `UNION` and `END_UNION` are not keywords. A UNION is recognised only right after the `:` of a `TYPE`,
+  when `UNION` is followed by a member (or `END_UNION`) and `END_UNION` comes before the next `END_TYPE`.
+  Everywhere else, and in every dialect, they stay ordinary names: a variable `union`, an enumeration
+  member `Union`, a STRUCT named `UNION` and its alias `T : Union;` mean what they meant before.
+- The refusal with the feature off is reported at `UNION`, once per type; the type is still a UNION, so
+  its uses add no second error.
+- A UNION is assignment-compatible only with the same UNION (or an alias of it): `Cannot assign U_B to
+  U_A`, also from or to a STRUCT or an elementary type. An argument for a UNION `VAR_INPUT` or
+  `VAR_IN_OUT` must have the same UNION type, and a UNION is refused for an elementary or STRUCT input:
+  `Cannot assign U_B to parameter 'P' of type U_A`.
+- Each member must be data: an elementary type (`STRING` and `WSTRING` included), an enumeration,
+  subrange or alias, a fixed-size ARRAY, STRUCT or UNION of such members, or any `POINTER TO`, `REF_TO`
+  or `REFERENCE TO`. Refused at the member's type: `Member 'FB' of UNION 'U_A' is of FUNCTION_BLOCK type
+  'FB_X': a UNION member must be data, not a function block, interface or program instance` (a library
+  FB such as `TON` too, and also through an ARRAY or a STRUCT: `... is of type 'ST_H', which holds
+  FUNCTION_BLOCK type 'FB_X': ...`); `Member 'V' of UNION 'U_A' is a variable-length ARRAY[*]: the
+  members of a UNION share one storage, so each must have a fixed size`.
+- Other errors: `Duplicate member 'F' in UNION 'U_A'` (names compare case-insensitively); `UNION 'U_E'
+  declares no members: a UNION needs at least one`; at EXTENDS, `UNION 'U_X' cannot use EXTENDS: only a
+  STRUCT may extend another type`; and a STRUCT cannot extend a UNION: `STRUCT 'ST_Y' cannot extend
+  'U_A', a UNION: the base must be a STRUCT`.
+- Initial values are not supported yet: `Member 'F' of UNION 'U_A' has an initial value: initial values in
+  a UNION are not supported yet`, and any initial value that sets a UNION (a variable's, a STRUCT field's,
+  a TYPE default, an FB input's, also inside a structure initializer or an array literal): `An initial
+  value for UNION 'U_A' is not supported yet`.
+- The language server outlines a UNION with the detail `UNION` and shows `UNION ... END_UNION` on hover.
 
 `program_methods` is not in the default set: a `METHOD` in a `PROGRAM` is refused with no dialect flag too
 (before profiles it did not parse at all). `--strict` does not change any feature. A refused method is still

@@ -38,11 +38,11 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | REFERENCE_TO | Supported | Vendor reference type (implicit dereference); a vendor spelling: the feature `reference_to`, refused under `--dialect iec-3` |
 | POINTER TO | Supported | Vendor pointer type with dereference via ^; a vendor spelling: the feature `pointer_to`, refused under `--dialect iec-3` |
 
-### Not Implemented
+### Partially Implemented
 
 | Type | Notes |
 |------|-------|
-| UNION | CODESYS extension |
+| UNION | An extension (IEC 61131-3 Ed. 3 has no UNION; its overlay form is `STRUCT OVERLAP`, 6.4.4.7, not supported): the feature `union` (refused with no dialect flag and under `--dialect iec-3`). Parsed and analysed (`--check`); code generation refuses it for now. Members must be data and take no initial value yet; a UNION is assignment-compatible only with itself, see [DIALECTS.md](DIALECTS.md) |
 
 ## Program Organization Units
 
@@ -216,7 +216,7 @@ edges on `CU` and `CD` leave `CV` unchanged. CODESYS does not document that case
 
 | Feature | Notes |
 |---------|-------|
-| UNION | CODESYS union type |
+| UNION | C++ code generation (analysis is supported, see above) |
 | FB_Init / FB_Exit | Constructor/destructor lifecycle methods |
 | __QUERYINTERFACE | Runtime interface query |
 | Bit access (var.%X0) | Individual bit addressing |

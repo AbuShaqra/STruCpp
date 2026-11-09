@@ -42,6 +42,7 @@ import type {
 import { mergeCompilationUnits } from "./merge.js";
 import { lowerInlineTypes } from "./frontend/lower-inline-types.js";
 import { lowerActions } from "./semantic/lower-actions.js";
+import { isUnionDefinition } from "./semantic/union.js";
 import { walkAST } from "./ast-utils.js";
 import { registerLibrarySymbols } from "./library/library-loader.js";
 import type { StlibArchive } from "./library/library-manifest.js";
@@ -786,6 +787,21 @@ export function compile(
     };
   }
 
+  // UNION is analysed (feature union) but has no C++ lowering yet.
+  const unionErrors = unionCodegenErrors(pipeline.ast);
+  if (unionErrors.length > 0) {
+    return {
+      success: false,
+      cppFiles: [],
+      cppCode: "",
+      headerCode: "",
+      lineMap: new Map(),
+      headerLineMap: new Map(),
+      errors: unionErrors,
+      warnings: pipeline.warnings,
+    };
+  }
+
   // Phase 6: Generate C++ code
   // Collect library headers for #include directives
   const libraryHeaders: string[] = [];
@@ -919,6 +935,19 @@ export function compile(
     ...(debugTableCpp !== undefined ? { debugTableCpp } : {}),
     ...(debugMap !== undefined ? { debugMap } : {}),
   };
+}
+
+/** One error per UNION declaration: code generation does not lower UNION yet. */
+function unionCodegenErrors(ast: CompilationUnit): CompileError[] {
+  return ast.types
+    .filter((t) => isUnionDefinition(t.definition))
+    .map((t) => ({
+      message: `code generation for UNION is not supported yet (UNION '${t.name}')`,
+      line: t.sourceSpan.startLine,
+      column: t.sourceSpan.startCol,
+      severity: "error" as const,
+      ...(t.sourceSpan.file !== undefined ? { file: t.sourceSpan.file } : {}),
+    }));
 }
 
 /**
