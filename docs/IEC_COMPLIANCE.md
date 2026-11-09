@@ -130,7 +130,8 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | FINAL | Supported | Sealed FB and methods |
 | OVERRIDE | Supported | Method override with C++ override specifier |
 | PUBLIC/PRIVATE/PROTECTED | Supported | Access modifiers |
-| THIS | Supported | Self-reference in methods |
+| THIS | Supported | Self-reference in methods: `THIS.member`, `THIS.m()`, and `THIS.r REF= x` (the feature `ref_assign`). `THIS^.member` and `THIS^.m()` are a vendor extension, the feature `self_caret` (refused with no dialect flag and under `--dialect iec-3`). Bare `THIS^` (the own instance) is a vendor form that is still accepted in every dialect |
+| SUPER | Supported | `SUPER.m()` and `SUPER.member` reach the base FB's method or member, through any number of EXTENDS levels, in every dialect. The caret forms `SUPER^.m()`, `SUPER^.member` and `SUPER^()` are vendor forms that are still accepted in every dialect |
 
 ## Standard Functions
 
@@ -205,7 +206,7 @@ edges on `CU` and `CD` leave `CV` unchanged. CODESYS does not document that case
 | Inline C++ | Supported | `{external ...}` as a statement in a POU body (braces inside it may nest); refused elsewhere, e.g. in a VAR block |
 | Global constants (`-D`) | Supported | CLI `-D NAME=VALUE`, emits `constexpr` |
 | Dynamic memory | Supported | `__NEW(type)`, `__DELETE(ptr)` |
-| POINTER TO, `ADR()` | Supported | Full pointer type with dereference; the feature `pointer_to` (`ADR` and `POINTER TO` are refused under `--dialect iec-3`; IEC `REF_TO`, `REF()`, `^`, `THIS^` and `SUPER^` stay accepted) |
+| POINTER TO, `ADR()` | Supported | Full pointer type with dereference; the feature `pointer_to` (`ADR` and `POINTER TO` are refused under `--dialect iec-3`; IEC `REF_TO`, `REF()` and `^` stay accepted, as do the vendor forms bare `THIS^` and `SUPER^`) |
 | Typed literals | Supported | `INT#5`, `DINT#42`, `REAL#3.14` |
 | Dialect profiles | Supported | `--dialect`, `--dialect-file`, `--dialect-path`, `--feature`: named feature sets; `iec-3` enables none, no flag keeps the default set (see [DIALECTS.md](DIALECTS.md)) |
 

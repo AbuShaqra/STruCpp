@@ -307,6 +307,7 @@ export class TypeChecker {
     // Walk all function blocks
     for (const fb of ast.functionBlocks) {
       const scope = this.symbolTables.getFBScope(fb.name);
+      this.currentFBName = fb.name;
       if (scope) {
         // FB body
         this.checkVarBlocks(fb.varBlocks, scope);
@@ -335,6 +336,7 @@ export class TypeChecker {
           if (prop.setter) this.checkStatements(prop.setter, scope);
         }
       }
+      this.currentFBName = undefined;
     }
 
     return {
@@ -1083,8 +1085,13 @@ export class TypeChecker {
             sym?.kind === "variable"
               ? (sym.declaration as VarDeclaration | undefined)?.type
               : undefined;
-          const declared =
-            base === undefined || !this.hasMemberAccess(stmt.target)
+          const declared = this.isSelfMember(stmt.target)
+            ? resolveAccessType(
+                { name: this.currentFBName!, referenceKind: "none" },
+                stmt.target,
+                this.accessLookup,
+              )
+            : base === undefined || !this.hasMemberAccess(stmt.target)
               ? base
               : (resolveAccessType(base, stmt.target, this.accessLookup) ??
                 base);
@@ -1530,6 +1537,15 @@ export class TypeChecker {
     )?.declaration;
   };
 
+  /** `THIS.member` (or `THIS^.member`) inside a function block. */
+  private isSelfMember(expr: VariableExpression): boolean {
+    return (
+      expr.name.toUpperCase() === "THIS" &&
+      expr.fieldAccess.length > 0 &&
+      this.currentFBName !== undefined
+    );
+  }
+
   /** The expression reaches into a member: `s.r`, `a[1]`, `p^`. */
   private hasMemberAccess(expr: VariableExpression): boolean {
     return (
@@ -1737,6 +1753,9 @@ export class TypeChecker {
 
   /** The function or method whose body is being checked (strict return values). */
   private currentReturn: { name: string; type: TypeReference } | undefined;
+
+  /** The FUNCTION_BLOCK whose body, method or property is being checked (`THIS.member`). */
+  private currentFBName: string | undefined;
 
   /** The PROGRAM whose body or method is being checked (bare method calls). */
   private currentProgram: ProgramDeclaration | undefined;

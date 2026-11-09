@@ -16,6 +16,7 @@ export const KNOWN_FEATURES = [
   "pointer_to",
   "reference_to",
   "ref_assign",
+  "self_caret",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];
