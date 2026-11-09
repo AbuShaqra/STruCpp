@@ -52,7 +52,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | FUNCTION | Supported | With return type, all parameter modes |
 | FUNCTION_BLOCK | Supported | Instantiation, invocation, member access |
 | INTERFACE | Supported | Method prototypes. PROPERTY prototypes (explicit `GET END_GET` / `SET END_SET`) are not in Ed. 3, where an interface holds method prototypes only: a vendor extension, the feature `property` (refused with no dialect flag and under `--dialect iec-3`; see [DIALECTS.md](DIALECTS.md)) |
-| ACTION | Supported | ACTION blocks of PROGRAMs and FUNCTION_BLOCKs, called as Name() inside the owner and inst.Name() on an instance; no SFC action qualifiers. Extensions: calling an action directly from ST, and the top-level `ACTION Owner.Name` form; IEC declares actions inside the POU and controls them from SFC steps. Both forms parse (`ACTION Name[:]` after the body, `ACTION Owner.Name[:]` at top level; `ACTION` is contextual, `END_ACTION` reserved); each action is lowered to a parameterless PUBLIC method of its owner, needs no dialect feature, cannot override or be overridden, and never implements an INTERFACE method. A program's actions can be called only inside the program |
+| ACTION | Supported | ACTION blocks of PROGRAMs and FUNCTION_BLOCKs, called as Name() inside the owner and inst.Name() on an instance; no SFC action qualifiers. Extensions: calling an action directly from ST, and the top-level `ACTION Owner.Name` form; IEC declares actions inside the POU and controls them from SFC steps. Both forms parse (`ACTION Name[:]` after the body, `ACTION Owner.Name[:]` at top level; `ACTION` is contextual, `END_ACTION` reserved); each action is lowered to a parameterless PUBLIC method of its owner, needs no dialect feature, cannot override or be overridden, and never implements an INTERFACE method. A program's actions can be called only inside the program, or by its name from any POU with the feature `program_methods` |
 
 ## Variable Declarations
 
@@ -123,7 +123,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Methods | Supported | On FUNCTION_BLOCK, with return types. On a PROGRAM: a vendor extension, the feature `program_methods` (refused with no dialect flag and under `--dialect iec-3`); parsed and checked, callable only inside the program; generated as non-virtual members of the program class |
+| Methods | Supported | On FUNCTION_BLOCK, with return types. On a PROGRAM: a vendor extension, the feature `program_methods` (refused with no dialect flag and under `--dialect iec-3`); parsed and checked, callable inside the program; with the feature, a program's methods, actions, variables and body are reached by its name from any POU (an extension: Ed. 3 6.6.4 gives programs no such access), on its one shared instance; generated as non-virtual members of the program class |
 | Properties (GET/SET) | Supported | Virtual getter/setter methods in C++. Not in Ed. 3; a FUNCTION_BLOCK PROPERTY is accepted in every dialect. In an INTERFACE: the feature `property`, with the IMPLEMENTS contract checked and access through an interface variable dispatched to the instance |
 | Inheritance (EXTENDS) | Supported | Single inheritance |
 | Interfaces (IMPLEMENTS) | Supported | Multiple interfaces, generates C++ abstract classes. An interface may EXTEND several interfaces; an interface reached through two inheritance paths (a shared base) is a virtual C++ base, so the instance holds it once |

@@ -430,8 +430,13 @@ class TestFunctionGenerator {
     for (const varBlock of setup.varBlocks) {
       for (const decl of varBlock.declarations) {
         const cppType = this.testCodegen.resolveType(decl.type);
+        const shared = this.testCodegen.sharedInstanceOfType(decl.type.name);
         for (const name of decl.names) {
-          lines.push(`    ${cppType} ${name};`);
+          lines.push(
+            shared !== undefined
+              ? `    ${cppType}& ${name} = ${shared};`
+              : `    ${cppType} ${name};`,
+          );
         }
       }
     }
@@ -565,9 +570,13 @@ class TestFunctionGenerator {
 
   private generateVarDeclaration(lines: string[], decl: VarDeclaration): void {
     const cppType = this.testCodegen.resolveType(decl.type);
+    // A reached PROGRAM has one instance: the test's variable names it.
+    const shared = this.testCodegen.sharedInstanceOfType(decl.type.name);
 
     for (const name of decl.names) {
-      if (decl.initialValue) {
+      if (shared !== undefined) {
+        lines.push(`${this.indent}${cppType}& ${name} = ${shared};`);
+      } else if (decl.initialValue) {
         // A SETUP/TEST var is a declaration, so `p : Point := (x := 1.0)` is the
         // legal form and must go through the initializer lowering — the plain
         // expression emitter has no target type and cannot lower it.

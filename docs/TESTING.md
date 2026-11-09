@@ -93,6 +93,8 @@ END_TEST
 
 Each TEST block is an isolated test case. Tests can declare local variables in a VAR block. Any ST statement is valid inside a test (assignments, function calls, FB invocations, control flow).
 
+All TEST blocks of a run share one process, and nothing is reset between them: global variables keep the values the previous test left. So does a PROGRAM reached by name from another POU (feature `program_methods`, see [DIALECTS.md](DIALECTS.md)): it has one instance, a test's variable of its type (`p : PRG_A`) names that instance, and its state carries from one test to the next. Reset what a test depends on in SETUP or at the start of the test. A program nobody reaches by name is still a fresh instance per test variable.
+
 ## Assertions
 
 All assertions accept an optional trailing message argument for custom failure output.

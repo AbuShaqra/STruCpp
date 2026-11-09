@@ -22,6 +22,7 @@ import type { POUInfo } from "./test-main-gen.js";
 import { CodeGenerator } from "./codegen.js";
 import type { CodeGenOptions } from "./codegen.js";
 import { buildEnumMemberMap } from "../semantic/type-utils.js";
+import { programsReachedByName } from "../semantic/program-access.js";
 
 export class TestCodeGenerator extends CodeGenerator {
   private pouMap: Map<string, POUInfo>;
@@ -107,6 +108,7 @@ export class TestCodeGenerator extends CodeGenerator {
     for (const prog of ast.programs) {
       this.knownProgramTypes.add(prog.name.toUpperCase());
     }
+    this.reachedPrograms = programsReachedByName(ast);
     for (const func of ast.functions) {
       this.userFunctionNames.add(func.name.toUpperCase());
     }

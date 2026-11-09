@@ -603,16 +603,28 @@ export class TypeChecker {
       return undefined;
     }
 
-    if (symbol.kind !== "variable" && symbol.kind !== "constant") {
+    // `PRG_A.x`: a member of the program's one instance (feature program_methods)
+    const programMember =
+      symbol.kind === "program" &&
+      this.features.has("program_methods") &&
+      (expr.accessChain?.[0]?.kind === "field" ||
+        (expr.accessChain === undefined && expr.fieldAccess.length > 0));
+    if (
+      symbol.kind !== "variable" &&
+      symbol.kind !== "constant" &&
+      !programMember
+    ) {
       return undefined;
     }
 
-    let currentType: IECType | undefined = symbol.type;
-    let currentTypeName: string | undefined;
+    let currentType: IECType | undefined =
+      symbol.kind === "program" ? undefined : symbol.type;
+    let currentTypeName: string | undefined =
+      symbol.kind === "program" ? symbol.name : undefined;
 
     if (currentType?.typeKind === "elementary") {
       currentTypeName = (currentType as ElementaryType).name;
-    } else if (currentType) {
+    } else if (currentType && symbol.kind !== "program") {
       // For non-elementary types, use the declaration type name
       currentTypeName = symbol.declaration?.type?.name;
     }
@@ -838,6 +850,14 @@ export class TypeChecker {
     }
 
     const nameUpper = expr.functionName.toUpperCase();
+
+    // `PRG_A.M(...)`: a method of a program's one instance (program_methods)
+    const reachedMethod = this.reachedProgramMethod(expr.functionName, scope);
+    if (reachedMethod) {
+      const retType = this.methodReturnType(reachedMethod);
+      if (retType) expr.resolvedType = retType;
+      return retType;
+    }
 
     // A bare call inside a PROGRAM to one of its own methods (the method
     // shadows a FUNCTION of the same name, as a C++ member does)
@@ -1261,6 +1281,23 @@ export class TypeChecker {
       this.ast?.functionBlocks.find((f) => f.name.toUpperCase() === upper)
         ?.methods ??
       this.ast?.programs.find((p) => p.name.toUpperCase() === upper)?.methods
+    );
+  }
+
+  /** The method `PRG_A.M` names when `PRG_A` is a program (feature program_methods). */
+  private reachedProgramMethod(
+    name: string,
+    scope: Scope,
+  ): MethodDeclaration | undefined {
+    const parts = name.split(".");
+    if (parts.length !== 2 || !this.features.has("program_methods")) {
+      return undefined;
+    }
+    const sym = scope.lookup(parts[0]!);
+    if (sym?.kind !== "program") return undefined;
+    const upper = parts[1]!.toUpperCase();
+    return this.methodsOfType(sym.name)?.find(
+      (m) => m.name.toUpperCase() === upper,
     );
   }
 
@@ -3094,6 +3131,12 @@ export class TypeChecker {
     } else if (expr.object.kind === "VariableExpression") {
       const sym = scope.lookup(expr.object.name);
       if (sym?.kind === "variable") typeName = sym.declaration?.type?.name;
+      else if (
+        sym?.kind === "program" &&
+        this.features.has("program_methods")
+      ) {
+        typeName = sym.name;
+      }
     }
     return this.methodInputsOf(typeName, expr.methodName);
   }
@@ -3106,6 +3149,9 @@ export class TypeChecker {
     const parts = functionName.split(".");
     if (parts.length !== 2) return undefined;
     const sym = scope.lookup(parts[0]!);
+    if (sym?.kind === "program" && this.features.has("program_methods")) {
+      return this.methodInputsOf(sym.name, parts[1]!);
+    }
     if (sym?.kind !== "variable") return undefined;
     return this.methodInputsOf(sym.declaration?.type?.name, parts[1]!);
   }

@@ -64,6 +64,7 @@ import {
   parseTodLiteralToNs,
 } from "../project-model.js";
 import { isElementaryType, TypeRegistry } from "../semantic/type-registry.js";
+import { programsReachedByName } from "../semantic/program-access.js";
 import {
   FB_INIT_FLAGS,
   FbInitPlan,
@@ -648,6 +649,9 @@ export class CodeGenerator {
   /** True once the header defines `__fb_init_globals()`. */
   private fbInitGlobalsEmitted = false;
 
+  /** Upper-case PROGRAMs reached by name from another POU: one shared instance each. */
+  protected reachedPrograms: ReadonlySet<string> = new Set();
+
   /** Topologically sorted function blocks (computed once in generate(), used by header + impl) */
   private sortedFBs: CompilationUnit["functionBlocks"] = [];
 
@@ -1148,6 +1152,7 @@ export class CodeGenerator {
     this.fbInitPlan =
       this.options.fbInit === true ? new FbInitPlan(ast) : undefined;
     this.fbInitGlobalsEmitted = false;
+    this.reachedPrograms = programsReachedByName(ast);
 
     // Build set of known FB types from AST (library FB types already registered
     // via registerLibraryFBTypes() before generate() is called)
@@ -1552,6 +1557,7 @@ export class CodeGenerator {
           `Program_${prog.name}`,
         );
         this.generateProgramHeaderFromModel(prog);
+        this.emitSharedProgramInstance(prog.name, prog.varExternal);
         this.emitHeaderChunkMarker(
           "end",
           "functionBlock",
@@ -1567,6 +1573,7 @@ export class CodeGenerator {
           `Program_${prog.name}`,
         );
         this.generateProgramHeaderDeclaration(prog);
+        this.emitSharedProgramInstance(prog.name, []);
         this.emitHeaderChunkMarker(
           "end",
           "functionBlock",
@@ -3311,6 +3318,51 @@ export class CodeGenerator {
    * bodies can name the globals. Also registers located VAR_GLOBALs so the
    * runtime binds them to the I/O image.
    */
+  /** C++ name of the one shared instance of a reached PROGRAM. */
+  protected sharedProgramInstance(name: string): string {
+    return `__program_${name}`;
+  }
+
+  /** The shared instance a variable of type `typeName` binds to, when that is a reached PROGRAM. */
+  sharedInstanceOfType(typeName: string): string | undefined {
+    const upper = typeName.toUpperCase();
+    return this.reachedPrograms.has(upper)
+      ? this.sharedProgramInstance(upper)
+      : undefined;
+  }
+
+  /** The reached PROGRAM `name` names when no local variable shadows it. */
+  protected reachedProgramNamed(name: string): string | undefined {
+    const upper = name.toUpperCase();
+    if (!this.reachedPrograms.has(upper)) return undefined;
+    if (this.currentScopeVarTypes.has(upper)) return undefined;
+    return (
+      this.ast?.programs.find((p) => p.name.toUpperCase() === upper)?.name ??
+      upper
+    );
+  }
+
+  /**
+   * Header: the one instance of a PROGRAM reached by name from another POU.
+   * An inline object in the header is initialised before any later static
+   * of every TU that includes it (the runtime's configuration, a harness),
+   * and its address is a constant the debug table can take.
+   */
+  private emitSharedProgramInstance(
+    name: string,
+    externals: readonly { name: string }[],
+  ): void {
+    if (!this.reachedPrograms.has(name.toUpperCase())) return;
+    const args = externals.map((ext) => `&${ext.name}`).join(", ");
+    this.emitHeader(
+      `// The one instance of PROGRAM ${name}, reached by name from other POUs`,
+    );
+    this.emitHeader(
+      `inline Program_${name} ${this.sharedProgramInstance(name)}${args ? `(${args})` : ""};`,
+    );
+    this.emitHeader("");
+  }
+
   /**
    * Forward-declare every interface, function block, program and configuration
    * class. Emitted twice: once ahead of the user-defined types, which may name a
@@ -3415,8 +3467,12 @@ export class CodeGenerator {
     if (allInstances.length > 0) {
       this.emitHeader("    // Program instances");
       for (const inst of allInstances) {
+        // A reached program's instance is the shared one, held by reference.
+        const ref = this.reachedPrograms.has(inst.programType.toUpperCase())
+          ? "&"
+          : "";
         this.emitHeader(
-          `    Program_${inst.programType} ${inst.instanceName};`,
+          `    Program_${inst.programType}${ref} ${inst.instanceName};`,
         );
       }
       this.emitHeader("");
@@ -3479,7 +3535,11 @@ export class CodeGenerator {
       const prog = this.projectModel?.programs.get(
         inst.programType.toUpperCase(),
       );
-      if (prog && prog.varExternal.length > 0) {
+      if (prog && this.reachedPrograms.has(prog.name.toUpperCase())) {
+        inits.push(
+          `${inst.instanceName}(${this.sharedProgramInstance(prog.name)})`,
+        );
+      } else if (prog && prog.varExternal.length > 0) {
         // Pass a pointer to each canonical GlobalVar<V> member.
         const args = prog.varExternal.map((ext) => `&${ext.name}`).join(", ");
         inits.push(`${inst.instanceName}(${args})`);
@@ -3681,7 +3741,13 @@ export class CodeGenerator {
             stmt.call.functionName,
             stmt.call.instance !== undefined,
           );
-          if (fbType) {
+          const calledProgram =
+            stmt.call.instance === undefined
+              ? this.reachedProgramNamed(stmt.call.functionName)
+              : undefined;
+          if (calledProgram !== undefined) {
+            this.generateFBInvocation(stmt.call, indent, calledProgram);
+          } else if (fbType) {
             this.generateFBInvocation(stmt.call, indent);
           } else if (
             stmt.call.kind === "FunctionCallExpression" &&
@@ -4704,6 +4770,17 @@ export class CodeGenerator {
 
     const nameUpper = expr.name.toUpperCase();
 
+    // `PRG_A.x`: a member of a reached program's one shared instance.
+    const reachedProgram = this.reachedProgramNamed(expr.name);
+    if (reachedProgram !== undefined) {
+      return this.renderAccessTail(
+        this.sharedProgramInstance(reachedProgram),
+        expr,
+        nameUpper,
+        reachedProgram,
+      );
+    }
+
     // Composite shared global (struct / array / function-block) accessed in a
     // body: reach its canonical value directly through the GlobalVar pointer
     // (`g->value` / `g->value.field` / `g->value.field.N`). The per-global mutex
@@ -4878,12 +4955,18 @@ export class CodeGenerator {
     base: string,
     expr: VariableExpression,
     nameUpper: string,
+    baseType?: string,
   ): string {
     let result = base;
 
     // Use ordered access chain when available (preserves interleaving)
     if (expr.accessChain && expr.accessChain.length > 0) {
-      return this.generateAccessChain(result, expr.accessChain, nameUpper);
+      return this.generateAccessChain(
+        result,
+        expr.accessChain,
+        nameUpper,
+        baseType,
+      );
     }
 
     // Legacy path: flat subscripts/fieldAccess/dereference (no interleaving)
@@ -4903,7 +4986,7 @@ export class CodeGenerator {
 
     // Field access (struct members) — detect property reads and bit access on last field
     if (expr.fieldAccess.length > 0) {
-      let currentType = this.currentScopeVarTypes.get(nameUpper);
+      let currentType = baseType ?? this.currentScopeVarTypes.get(nameUpper);
       for (let i = 0; i < expr.fieldAccess.length; i++) {
         const field = expr.fieldAccess[i]!;
         const isLast = i === expr.fieldAccess.length - 1;
@@ -4959,9 +5042,10 @@ export class CodeGenerator {
     base: string,
     chain: AccessStep[],
     baseNameUpper: string,
+    baseType?: string,
   ): string {
     let result = base;
-    let currentType = this.currentScopeVarTypes.get(baseNameUpper);
+    let currentType = baseType ?? this.currentScopeVarTypes.get(baseNameUpper);
 
     for (let i = 0; i < chain.length; i++) {
       const step = chain[i]!;
@@ -5141,7 +5225,8 @@ export class CodeGenerator {
         ? this.currentFBName
         : root === "SUPER" && object.fieldAccess.length > 0
           ? this.currentFBExtends
-          : this.currentScopeVarTypes.get(root);
+          : (this.currentScopeVarTypes.get(root) ??
+            this.reachedProgramNamed(root));
     const steps: AccessStep[] = object.accessChain ?? [
       ...(object.subscripts.length > 0
         ? [{ kind: "subscript" as const, indices: object.subscripts }]
@@ -5652,9 +5737,12 @@ export class CodeGenerator {
         expr.arguments,
         expr.sourceSpan,
       );
+      const reachedProgram = this.reachedProgramNamed(prefix);
       const resolvedMethod = varType
         ? this.resolveMethodName(varType, methodName)
-        : this.resolveMethodNameGlobal(methodName);
+        : reachedProgram !== undefined
+          ? this.resolveMethodName(reachedProgram, methodName)
+          : this.resolveMethodNameGlobal(methodName);
 
       if (
         prefix.toUpperCase() === "THIS" ||
@@ -5677,7 +5765,9 @@ export class CodeGenerator {
                 fieldAccess: [],
                 isDereference: false,
               })})`
-            : prefix;
+            : reachedProgram !== undefined
+              ? this.sharedProgramInstance(reachedProgram)
+              : prefix;
         return `${receiver}.${resolvedMethod}(${args.join(", ")})`;
       }
     }
@@ -5920,7 +6010,10 @@ export class CodeGenerator {
       return this.currentFBName ?? this.currentProgramName;
     }
     if (prefixUpper === "SUPER") return this.currentFBExtends;
-    return this.currentScopeVarTypes.get(prefixUpper);
+    return (
+      this.currentScopeVarTypes.get(prefixUpper) ??
+      this.reachedProgramNamed(prefix)
+    );
   }
 
   /**
@@ -6802,6 +6895,7 @@ export class CodeGenerator {
   private generateFBInvocation(
     call: FunctionCallExpression,
     indent: string,
+    program?: string,
   ): void {
     const rawName = this.resolveVariableBaseName(call.functionName);
 
@@ -6823,22 +6917,27 @@ export class CodeGenerator {
     // is the subscripted expression, and the FB type is the array's element
     // type. Everything below (input assignment, the call, inout copy-back,
     // output capture) then works against that expression unchanged.
+    // `PRG_A(...)`: the body of a reached program's one shared instance.
     const instanceName =
-      call.instance !== undefined
-        ? this.generateExpression(call.instance)
-        : (this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName);
+      program !== undefined
+        ? this.sharedProgramInstance(program)
+        : call.instance !== undefined
+          ? this.generateExpression(call.instance)
+          : (this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName);
 
     // Extract implicit EN/ENO parameters
     const { enExpr, enoVar, filteredArgs } = this.extractEnEno(call.arguments);
 
     // Resolve FB type for positional argument mapping
-    const fbTypeName = this.getFBInvocationType(
-      call.functionName,
-      call.instance !== undefined,
-    );
-    const inputParamNames = fbTypeName
-      ? this.fbInputParams.get(fbTypeName.toUpperCase())
-      : undefined;
+    const fbTypeName =
+      program ??
+      this.getFBInvocationType(call.functionName, call.instance !== undefined);
+    const inputParamNames =
+      program !== undefined
+        ? this.programInputNames(program)
+        : fbTypeName
+          ? this.fbInputParams.get(fbTypeName.toUpperCase())
+          : undefined;
 
     // Assign input parameters (named or positional)
     let positionalIndex = 0;
@@ -6874,7 +6973,8 @@ export class CodeGenerator {
       enExpr,
       enoVar,
       (bi) => {
-        this.emitPOUCallLine(instanceName, call.functionName, bi);
+        if (program !== undefined) this.emit(`${bi}${instanceName}.run();`);
+        else this.emitPOUCallLine(instanceName, call.functionName, bi);
       },
       `${instanceName}.ENO`,
     );
@@ -6915,6 +7015,15 @@ export class CodeGenerator {
         );
       }
     }
+  }
+
+  /** VAR_INPUT names of a PROGRAM, in declaration order (positional call arguments). */
+  private programInputNames(program: string): string[] {
+    const upper = program.toUpperCase();
+    const prog = this.ast?.programs.find((p) => p.name.toUpperCase() === upper);
+    return (prog?.varBlocks ?? [])
+      .filter((b) => b.blockType === "VAR_INPUT")
+      .flatMap((b) => b.declarations.flatMap((d) => d.names));
   }
 
   /**
