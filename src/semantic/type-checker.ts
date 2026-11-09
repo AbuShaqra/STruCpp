@@ -34,6 +34,7 @@ import type {
   VarBlock,
   UnterminatedEnd,
   VarDeclaration,
+  AccessStep,
 } from "../frontend/ast.js";
 import type { SymbolTables, Scope } from "./symbol-table.js";
 import type { StdFunctionRegistry } from "./std-function-registry.js";
@@ -284,6 +285,8 @@ export class TypeChecker {
       construct: string,
     ) => string = (feature, construct) =>
       `${construct} needs the feature ${feature}`,
+    /** The IEC profile is selected: in-out binding forms that compile elsewhere are errors. */
+    private readonly inOutErrors = false,
   ) {}
 
   /**
@@ -840,6 +843,13 @@ export class TypeChecker {
     this.validateInterfaceArguments(inputs, expr.arguments);
     this.validateStructArguments(inputs, expr.arguments);
     this.validateReferenceToArguments(inputs, expr.arguments, scope);
+    this.validateInOutArguments(
+      inputs,
+      expr.arguments,
+      scope,
+      this.isFBInstanceCall(expr, scope),
+      expr,
+    );
     if (this.strict) {
       this.checkStrictArguments(
         this.callInputs(expr, scope) ??
@@ -1001,6 +1011,13 @@ export class TypeChecker {
       this.validateInterfaceArguments(chainInputs, expr.arguments);
       this.validateStructArguments(chainInputs, expr.arguments);
       this.validateReferenceToArguments(chainInputs, expr.arguments, scope);
+      this.validateInOutArguments(
+        chainInputs,
+        expr.arguments,
+        scope,
+        false,
+        expr,
+      );
       if (this.strict) {
         this.checkStrictArguments(
           this.methodInputsOf(owner?.name, expr.methodName),
@@ -1017,6 +1034,13 @@ export class TypeChecker {
     this.validateInterfaceArguments(methodInputs, expr.arguments);
     this.validateStructArguments(methodInputs, expr.arguments);
     this.validateReferenceToArguments(methodInputs, expr.arguments, scope);
+    this.validateInOutArguments(
+      methodInputs,
+      expr.arguments,
+      scope,
+      false,
+      expr,
+    );
     if (this.strict) {
       this.checkStrictArguments(
         this.methodInputs(objType, expr, scope),
@@ -1486,6 +1510,7 @@ export class TypeChecker {
           targetType =
             ELEMENTARY_TYPES[this.currentReturn.type.name.toUpperCase()];
         }
+        this.validateInOutMemberWrite(stmt.target, scope);
         const errorsBefore = this.errors.length;
         this.validateAssignment(targetType, valueType, stmt.target, stmt.value);
         // One error per mistake: the REF_TO check only adds what the general one missed.
@@ -2179,6 +2204,264 @@ export class TypeChecker {
         `${describeReferenceShape(target)} cannot refer to a ${describeReferenceShape(source)} variable${levelsOk ? this.referenceMismatchReason(this.aliasBase(source.base)) : ""}`,
       );
     });
+  }
+
+  /** A call of a function-block instance (`fb(...)`, `arr[i](...)`). */
+  private isFBInstanceCall(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): boolean {
+    if (expr.instance !== undefined) return true;
+    if (this.ownProgramMethod(expr.functionName)) return false;
+    if (this.findUserFunction(expr.functionName)) return false;
+    return scope.lookup(expr.functionName)?.kind === "variable";
+  }
+
+  /**
+   * A binding form IEC forbids but that compiles: an error under the IEC
+   * profile, else a warning that says what the generated code does instead.
+   */
+  private inOutDiagnostic(
+    message: string,
+    fallback: string,
+    node: { sourceSpan: SourceSpan },
+  ): void {
+    const span = node.sourceSpan;
+    if (this.inOutErrors) {
+      this.addError(message, span.startLine, span.startCol, span.file);
+    } else {
+      this.addWarning(
+        `${message}; ${fallback}`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    }
+  }
+
+  /**
+   * Arguments bound to VAR_IN_OUT parameters (IEC 61131-3 6.6.1.4.1 rule 2,
+   * 6.6.1.6): each in-out is assigned in the call, to a writable variable of
+   * its own type. A non-variable (expression, literal, bit of a variable)
+   * cannot be referred to and is always an error. The other forms compile
+   * (by copy, or with the previous binding) and are diagnosed by
+   * inOutDiagnostic.
+   */
+  private validateInOutArguments(
+    inputs: CallInput[] | undefined,
+    args: readonly Argument[],
+    scope: Scope,
+    fbCall: boolean,
+    call: { sourceSpan: SourceSpan },
+  ): void {
+    if (inputs?.some((p) => p.inOut) !== true) return;
+    const userArgs = stripEnEno([...args]);
+    const bound = new Set<string>();
+    userArgs.forEach((arg, i) => {
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (!input) return;
+      bound.add(input.name.toUpperCase());
+      if (!input.inOut || arg.isOutput) return;
+      this.validateInOutArgument(input, arg, scope);
+    });
+    for (const input of inputs) {
+      if (!input.inOut || bound.has(input.name.toUpperCase())) continue;
+      this.inOutDiagnostic(
+        `VAR_IN_OUT '${input.name}' is not assigned in this call`,
+        fbCall
+          ? "the call keeps the binding of the previous call"
+          : "a temporary is passed in its place",
+        call,
+      );
+    }
+  }
+
+  /** One argument bound to an in-out (see validateInOutArguments). */
+  private validateInOutArgument(
+    input: CallInput,
+    arg: Argument,
+    scope: Scope,
+  ): void {
+    delete arg.inOutCopy;
+    const value = arg.value;
+    const fail = (what: string): void =>
+      this.addError(
+        `VAR_IN_OUT '${input.name}' must be bound to a variable, not ${what}`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+    if (value.kind !== "VariableExpression") {
+      fail(value.kind === "LiteralExpression" ? "a literal" : "an expression");
+      return;
+    }
+    const steps =
+      value.accessChain?.map((s) => (s.kind === "field" ? s.name : "")) ??
+      value.fieldAccess;
+    if (/^\d+$/.test(steps[steps.length - 1] ?? "")) {
+      fail("a bit of a variable");
+      return;
+    }
+    const upper = value.name.toUpperCase();
+    if (upper === "THIS" || upper === "SUPER") return;
+    const sym = scope.lookup(value.name);
+    if (!sym) {
+      if (value.resolvedType?.typeKind === "enum") fail("an enumeration value");
+      return;
+    }
+    if (sym.kind === "constant") {
+      fail(
+        (sym.declaration as VarDeclaration | undefined) !== undefined
+          ? `the constant '${value.name}'`
+          : "a constant value",
+      );
+      return;
+    }
+    if (sym.kind !== "variable") return;
+    if (
+      sym.isInput &&
+      !sym.isGlobal &&
+      !sym.isExternal &&
+      (sym.declaration as VarDeclaration | undefined)?.type.referenceKind !==
+        "reference_to"
+    ) {
+      this.inOutDiagnostic(
+        `VAR_IN_OUT '${input.name}' is bound to the input '${value.name}', which this POU may not modify`,
+        "the callee writes the input",
+        value,
+      );
+    }
+    const declared = sym.declaration as VarDeclaration | undefined;
+    if (!declared) return;
+    const argType = this.hasMemberAccess(value)
+      ? resolveAccessType(declared.type, value, this.accessLookup)
+      : declared.type;
+    if (!argType) return;
+    const mismatch = this.inOutTypeMismatch(input.type, argType);
+    if (mismatch === undefined) return;
+    this.inOutDiagnostic(
+      `VAR_IN_OUT '${input.name}' of type ${mismatch.param} is bound to a variable of type ${mismatch.arg}`,
+      "it is passed by copy-in / copy-out, not by reference",
+      value,
+    );
+    arg.inOutCopy = true;
+  }
+
+  /**
+   * The two type names when an in-out of type `param` cannot refer to a
+   * variable of type `arg`: elementary, STRING / WSTRING (with length), enum
+   * and alias types compared by name, reference levels included. Arrays,
+   * STRUCTs, FBs, interfaces and types this unit cannot see are left alone.
+   */
+  private inOutTypeMismatch(
+    param: AccessType,
+    arg: AccessType,
+  ): { param: string; arg: string } | undefined {
+    if (
+      param.arrayDimensions !== undefined ||
+      arg.arrayDimensions !== undefined
+    ) {
+      return undefined;
+    }
+    const simple = (t: AccessType): boolean => {
+      const upper = t.name.toUpperCase();
+      if (ELEMENTARY_TYPES[canonicalElementaryName(upper)]) return true;
+      const def = this.ast?.types.find(
+        (td) => td.name.toUpperCase() === upper,
+      )?.definition;
+      return (
+        def?.kind === "EnumDefinition" ||
+        (def?.kind === "TypeReference" && def.arrayDimensions === undefined) ||
+        def?.kind === "SubrangeDefinition"
+      );
+    };
+    if (!simple(param) || !simple(arg)) return undefined;
+    const describe = (t: AccessType): string => {
+      const levels = referenceShapeOf(t)?.chain ?? [];
+      const length = (t as { maxLength?: number | string }).maxLength;
+      const base =
+        length !== undefined ? `${t.name}(${String(length)})` : t.name;
+      return describeReferenceShape({ chain: levels, base });
+    };
+    const key = (t: AccessType): string =>
+      describe({ ...t, name: canonicalElementaryName(t.name.toUpperCase()) });
+    if (key(param) === key(arg)) return undefined;
+    return {
+      param: describe(param).toUpperCase(),
+      arg: describe(arg).toUpperCase(),
+    };
+  }
+
+  /**
+   * `inst.x := v` where `x` is a VAR_IN_OUT of the instance's block: written
+   * from outside the block (IEC 61131-3 Figure 13, 6b).
+   */
+  private validateInOutMemberWrite(target: Expression, scope: Scope): void {
+    if (target.kind !== "VariableExpression") return;
+    const upper = target.name.toUpperCase();
+    if (upper === "THIS" || upper === "SUPER") return;
+    const sym = scope.lookup(target.name);
+    if (sym?.kind !== "variable") return;
+    const declared = sym.declaration as VarDeclaration | undefined;
+    if (!declared) return;
+    const steps: AccessStep[] = target.accessChain ?? [
+      ...(target.subscripts.length > 0
+        ? [{ kind: "subscript" as const, indices: target.subscripts }]
+        : []),
+      ...target.fieldAccess.map((name) => ({ kind: "field" as const, name })),
+    ];
+    let current: AccessType | undefined = declared.type;
+    for (const step of steps) {
+      if (current === undefined) return;
+      if (step.kind === "field") {
+        if (this.isInOutMemberOf(current.name, step.name)) {
+          this.inOutDiagnostic(
+            `'${step.name}' is a VAR_IN_OUT of '${current.name}' and cannot be written from outside the function block`,
+            "the write goes to the variable the last call bound",
+            target,
+          );
+          return;
+        }
+        current = this.accessLookup.field(current.name, step.name)?.type;
+      } else if (step.kind === "subscript") {
+        current =
+          this.accessLookup.arrayElement(current.name) ??
+          (current.elementTypeName !== undefined
+            ? { name: current.elementTypeName, referenceKind: "none" }
+            : undefined);
+      } else {
+        return;
+      }
+    }
+  }
+
+  /** `field` is declared VAR_IN_OUT by function block `typeName` or a base of it. */
+  private isInOutMemberOf(typeName: string, field: string): boolean {
+    const upper = field.toUpperCase();
+    let current: string | undefined = typeName.toUpperCase();
+    for (let depth = 0; current !== undefined && depth < 32; depth++) {
+      const owner: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === owner,
+      );
+      if (!fb) {
+        const lib = this.symbolTables.lookupFunctionBlock(owner);
+        return lib?.inouts.some((m) => m.name.toUpperCase() === upper) ?? false;
+      }
+      for (const block of fb.varBlocks) {
+        for (const decl of block.declarations) {
+          if (decl.names.some((n) => n.toUpperCase() === upper)) {
+            return block.blockType === "VAR_IN_OUT";
+          }
+        }
+      }
+      current = fb.extends?.toUpperCase();
+    }
+    return false;
   }
 
   /**

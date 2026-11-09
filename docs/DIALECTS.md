@@ -280,7 +280,7 @@ END_TYPE
 - Members are not forceable, and the debug table leaves a UNION out (also inside a STRUCT, an FB or an
   array): the build warns `<path> is not debuggable: UNION U_A: its members share one storage, ...`.
   `ADR(u.f)` is the address of the member's bytes; a member bound to a `VAR_IN_OUT` or `VAR_OUTPUT` of a
-  function or method is copied in before the call and written back after it.
+  function block, function or method is copied in before the call and written back after it.
 - Not supported yet, refused by a compile (and a library build) while `--check` accepts the code:
   `REF()`, `REF_LINK()` or `REF=` of a member (`REF of a UNION member is not supported yet`, `REF= on a
   UNION member is not supported yet`); a `REFERENCE TO` stored in a UNION (`Member 'R' stored in UNION

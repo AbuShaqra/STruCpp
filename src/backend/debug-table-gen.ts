@@ -710,7 +710,8 @@ export function generateDebugTable(
     // .stlib manifest). The two paths intentionally surface different
     // amounts of state:
     //
-    //   • Library FBs — only the public interface (inputs/outputs/inouts).
+    //   • Library FBs — only the public inputs and outputs (an in-out
+    //     refers to the caller's variable and has no address of its own).
     //     Locals are implementation details that stay inside the
     //     compiled archive; the debugger treats library FBs as black
     //     boxes. The library loader leaves `locals` empty for this
@@ -721,7 +722,7 @@ export function generateDebugTable(
     //     locals. The analyzer leaves the symbol's flat arrays empty
     //     and keeps the declarations in `declaration.varBlocks`, so we
     //     fall through to the AST walk and surface VAR alongside the
-    //     interface blocks. VAR_TEMP / VAR_EXTERNAL are excluded —
+    //     interface blocks. VAR_TEMP / VAR_EXTERNAL / VAR_IN_OUT are excluded —
     //     those are not persistent state.
     const fbSym = symbolTables.lookupFunctionBlock(name);
     if (fbSym) {
@@ -733,7 +734,9 @@ export function generateDebugTable(
       // `name` is the FB type declaring these members, so it is the owner for
       // both mangling collisions.
       if (interfaceVars.length > 0) {
-        for (const v of interfaceVars) {
+        // A VAR_IN_OUT refers to the caller's variable (bound per call), so
+        // it has no address of its own to list.
+        for (const v of [...fbSym.inputs, ...fbSym.outputs]) {
           visitTypeRef(
             `${path}.${v.name.toUpperCase()}`,
             `${cppExpr}.${libraryMemberCppName(v, name)}`,
@@ -789,8 +792,7 @@ export function generateDebugTable(
           if (
             block.blockType === "VAR" ||
             block.blockType === "VAR_INPUT" ||
-            block.blockType === "VAR_OUTPUT" ||
-            block.blockType === "VAR_IN_OUT"
+            block.blockType === "VAR_OUTPUT"
           ) {
             // A `VAR CONSTANT` inside a function block is read-only for every
             // instance of it, and a `VAR RETAIN` member is retained in every

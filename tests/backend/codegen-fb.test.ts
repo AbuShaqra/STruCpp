@@ -337,11 +337,10 @@ describe("Codegen - Function Blocks", () => {
     });
   });
 
-  describe("VAR_IN_OUT copy-back", () => {
-    // FB inout params are by-value members with copy-in at the call site; the
-    // codegen must also emit a copy-OUT after the call so the callee's mutations
-    // reach the caller's variable (true inout semantics).
-    it("copies a scalar inout back to the caller after the call", () => {
+  describe("VAR_IN_OUT by reference", () => {
+    // An FB in-out member refers to the caller's variable (IEC_INOUT), bound by
+    // each call; the body uses it as (*X), and nothing is copied back.
+    it("binds a scalar inout to the caller's variable", () => {
       const result = compileAndCheck(`
         FUNCTION_BLOCK Bumper
           VAR_IN_OUT v : INT; END_VAR
@@ -352,12 +351,13 @@ describe("Codegen - Function Blocks", () => {
           fb(v := x);
         END_PROGRAM
       `);
-      // copy-in, call, copy-out
-      expect(result.cppCode).toContain("FB.V = X;");
-      expect(result.cppCode).toContain("X = FB.V;");
+      expect(result.headerCode).toContain("IEC_INOUT<IEC_INT> V;");
+      expect(result.cppCode).toContain("FB.V.bind(X);");
+      expect(result.cppCode).toContain("(*V) = (*V) + 1;");
+      expect(result.cppCode).not.toContain("X = FB.V;");
     });
 
-    it("copies a struct inout back to the caller", () => {
+    it("binds a struct inout to the caller's variable", () => {
       const result = compileAndCheck(`
         TYPE PointT : STRUCT a : INT; END_STRUCT END_TYPE
         FUNCTION_BLOCK Setter
@@ -369,11 +369,12 @@ describe("Codegen - Function Blocks", () => {
           fb(p := mypt);
         END_PROGRAM
       `);
-      expect(result.cppCode).toContain("FB.P = MYPT;");
-      expect(result.cppCode).toContain("MYPT = FB.P;");
+      expect(result.cppCode).toContain("FB.P.bind(MYPT);");
+      expect(result.cppCode).toContain("(*P).A = 7;");
+      expect(result.cppCode).not.toContain("MYPT = FB.P;");
     });
 
-    it("copies a nested struct-field inout back through both FB levels", () => {
+    it("binds a nested struct-field inout through both FB levels", () => {
       const result = compileAndCheck(`
         TYPE Inner : STRUCT w : INT; END_STRUCT END_TYPE
         TYPE Outer : STRUCT inr : Inner; END_STRUCT END_TYPE
@@ -388,10 +389,12 @@ describe("Codegen - Function Blocks", () => {
           m(o := top);
         END_PROGRAM
       `);
-      // inner FB writes back to the struct field...
-      expect(result.cppCode).toContain("O.INR = W.A;");
-      // ...and the outer FB writes back to the program variable
-      expect(result.cppCode).toContain("TOP = M.O;");
+      // the inner FB refers to the field of what the outer one refers to,
+      // released after the call (its target is itself a binding)...
+      expect(result.cppCode).toContain("W.A.bind((*O).INR);");
+      expect(result.cppCode).toContain("W.A.unbind();");
+      // ...and the outer FB refers to the program variable
+      expect(result.cppCode).toContain("M.O.bind(TOP);");
     });
   });
 });

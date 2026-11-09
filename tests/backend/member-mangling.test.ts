@@ -252,7 +252,7 @@ END_PROGRAM`);
     expect(cpp).toContain("S.GAIN = 2.0;");
   });
 
-  it("mangles the VAR_IN_OUT copy-back and the => output capture", () => {
+  it("mangles the => output capture next to a VAR_IN_OUT binding", () => {
     const { cpp } = build(`${READING}
 FUNCTION_BLOCK Sensor
 VAR_INPUT gain : REAL; END_VAR
@@ -265,8 +265,8 @@ PROGRAM Main
 VAR s : Sensor; tally : Reading; got : Reading; END_VAR
   s(gain := 1.0, acc := tally, Reading => got);
 END_PROGRAM`);
-    // copy-out of the inout, and the => capture, both name the mangled member
-    expect(cpp).toContain("TALLY = S.ACC;");
+    // the in-out binding and the => capture name the right members
+    expect(cpp).toContain("S.ACC.bind(TALLY);");
     expect(cpp).toContain("GOT = S.READING_;");
   });
 

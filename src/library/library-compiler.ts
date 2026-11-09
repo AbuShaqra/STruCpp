@@ -682,6 +682,9 @@ export function compileLibrary(
           tagCategory(
             {
               ...buildFBEntry(fb),
+              ...(fb.varBlocks.some((b) => b.blockType === "VAR_IN_OUT")
+                ? { inoutByReference: true as const }
+                : {}),
               // The block's own VAR members, declared the same way the
               // interface arrays above are. A RETAINed instance retains these
               // too; without them a retained TON keeps Q and ET and loses the

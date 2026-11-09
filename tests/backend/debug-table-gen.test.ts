@@ -90,6 +90,33 @@ END_CONFIGURATION
     expect(blink.size).toBe(1);
   });
 
+  it("lists no leaf for a function-block VAR_IN_OUT (it refers to the caller's variable)", () => {
+    const source = `
+FUNCTION_BLOCK FB_I
+  VAR_INPUT k : INT; END_VAR
+  VAR_IN_OUT x : INT; END_VAR
+  x := x + k;
+END_FUNCTION_BLOCK
+PROGRAM main
+  VAR f : FB_I; a : INT; END_VAR
+  f(k := 1, x := a);
+END_PROGRAM
+
+CONFIGURATION Config0
+  RESOURCE Res0 ON PLC
+    TASK task0(INTERVAL := T#20ms, PRIORITY := 1);
+    PROGRAM instance0 WITH task0 : main;
+  END_RESOURCE
+END_CONFIGURATION
+`;
+    const result = compile(source);
+    expect(result.success).toBe(true);
+    const paths = result.debugMap!.leaves.map((l) => l.path);
+    expect(paths).toContain("INSTANCE0.F.K");
+    expect(paths).toContain("INSTANCE0.A");
+    expect(paths).not.toContain("INSTANCE0.F.X");
+  });
+
   it("emits a debug leaf for a __XWORD variable (does not crash visitTypeRef)", () => {
     // Regression: __XWORD is a builtin elementary type with no type-symbol
     // declaration, so the debug walker must treat it as a leaf via the

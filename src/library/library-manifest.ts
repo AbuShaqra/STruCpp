@@ -136,6 +136,13 @@ export interface LibraryFBEntry {
   /** In-out variables */
   inouts: LibraryVarType[];
   /**
+   * Set by a compiler whose function-block VAR_IN_OUT members are bound by
+   * reference at each call (`IEC_INOUT<T>`). Absent on an archive built
+   * before that (by-value members): a consumer then copies the argument in
+   * and back around the call, and warns that the library should be rebuilt.
+   */
+  inoutByReference?: true;
+  /**
    * `VAR` members — the block's own internal state, declared exactly as the
    * interface arrays are.
    *
