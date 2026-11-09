@@ -58,6 +58,7 @@ import {
 } from "../../shared/protocol.js";
 import { parseTestJson } from "../../shared/test-result.js";
 import { DocumentManager } from "./document-manager.js";
+import { parseDialectSettings } from "./dialect-settings.js";
 import { NodeWorkspaceFs } from "./node-workspace-fs.js";
 import { registerAnalysisHandlers } from "./register-analysis-handlers.js";
 import { lspPositionToCompiler } from "./lsp-utils.js";
@@ -80,6 +81,8 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   autoAnalyze: true,
   analyzeDelay: 400,
   formatOnSave: false,
+  dialect: null,
+  features: null,
 };
 
 let currentSettings: ExtensionSettings = { ...DEFAULT_SETTINGS };
@@ -108,12 +111,33 @@ async function fetchSettings(): Promise<void> {
         autoAnalyze: config.autoAnalyze ?? DEFAULT_SETTINGS.autoAnalyze,
         analyzeDelay: config.analyzeDelay ?? DEFAULT_SETTINGS.analyzeDelay,
         formatOnSave: config.formatOnSave ?? DEFAULT_SETTINGS.formatOnSave,
+        dialect: currentSettings.dialect,
+        features: currentSettings.features,
       };
       analysisDebounceMs = currentSettings.analyzeDelay;
+      const section = config as Record<string, unknown>;
+      applyDialectSettings(section["dialect"], section["features"]);
     }
   } catch {
     // Use defaults if config fetch fails
   }
+}
+
+/**
+ * Adopt the `dialect` / `features` settings if the compiler accepts them.
+ * A rejected value keeps the previous selection and is reported to the user.
+ */
+function applyDialectSettings(dialect: unknown, features: unknown): void {
+  const parsed = parseDialectSettings(dialect, features);
+  if (!parsed.ok) {
+    const message = `STruC++: dialect profile rejected: ${parsed.message}`;
+    connection.console.error(message);
+    void connection.window.showErrorMessage(message);
+    return;
+  }
+  currentSettings.dialect = parsed.settings.dialect ?? null;
+  currentSettings.features = parsed.settings.features ?? null;
+  docManager.setDialect(parsed.settings);
 }
 
 /**
@@ -364,6 +388,7 @@ connection.onRequest(CompileRequest, (params): CompileResponse => {
     ...(Object.keys(currentSettings.globalConstants).length > 0
       ? { globalConstants: currentSettings.globalConstants }
       : {}),
+    ...docManager.getDialectOptions(),
   };
 
   const result = compile(source, options);
@@ -435,6 +460,7 @@ connection.onRequest(BuildRequest, (params): BuildResponse => {
     ...(Object.keys(currentSettings.globalConstants).length > 0
       ? { globalConstants: currentSettings.globalConstants }
       : {}),
+    ...docManager.getDialectOptions(),
   };
 
   const result = compile(source, options);
@@ -538,6 +564,7 @@ connection.onRequest(DebugBuildRequest, (params): DebugBuildResponse => {
     ...(Object.keys(currentSettings.globalConstants).length > 0
       ? { globalConstants: currentSettings.globalConstants }
       : {}),
+    ...docManager.getDialectOptions(),
   };
 
   const result = compile(source, options);
@@ -682,6 +709,7 @@ connection.onRequest(CompileLibRequest, (params): CompileLibResponse => {
     ...(Object.keys(currentSettings.globalConstants).length > 0
       ? { globalConstants: currentSettings.globalConstants }
       : {}),
+    ...docManager.getDialectOptions(),
   });
 
   if (!result.success) {
@@ -758,6 +786,7 @@ connection.onRequest(RunTestsRequest, async (params: RunTestsParams): Promise<Ru
     isTestBuild: true,
     ...(additionalSources.length > 0 ? { additionalSources } : {}),
     ...(libraries.length > 0 ? { libraries } : {}),
+    ...docManager.getDialectOptions(),
   });
 
   if (!compileResult.success) {

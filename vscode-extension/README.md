@@ -93,6 +93,8 @@ Errors and warnings appear as you type. The compiler runs in the background, hig
 | `strucpp.autoAnalyze` | `true` | Analyze files on change |
 | `strucpp.analyzeDelay` | `400` | Debounce delay (ms) before re-analyzing |
 | `strucpp.formatOnSave` | `false` | Format ST files on save |
+| `strucpp.dialect` | `null` | Dialect profile object for diagnostics and builds (`null`: compiler default) |
+| `strucpp.features` | `null` | Feature overrides (`+id`, `-id`) applied after the dialect profile |
 
 ## Commands
 
