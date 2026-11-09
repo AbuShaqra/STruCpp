@@ -9,6 +9,7 @@
  */
 
 import { parseTestSource } from "../frontend/parser.js";
+import { toCompileErrors } from "../frontend/parse-errors.js";
 import { buildTestAST } from "../frontend/ast-builder.js";
 import { lowerTestInlineTypes } from "../frontend/lower-inline-types.js";
 import type { TestFile } from "./test-model.js";
@@ -31,22 +32,7 @@ export function parseTestFile(
   const parseResult = parseTestSource(source);
 
   if (parseResult.errors.length > 0) {
-    for (const err of parseResult.errors) {
-      const errObj = err as {
-        message?: string;
-        token?: { startLine?: number; startColumn?: number };
-        offset?: number;
-        line?: number;
-        column?: number;
-      };
-      errors.push({
-        message: errObj.message ?? "Parse error",
-        line: errObj.token?.startLine ?? errObj.line ?? 0,
-        column: errObj.token?.startColumn ?? errObj.column ?? 0,
-        severity: "error",
-        file: fileName,
-      });
-    }
+    errors.push(...toCompileErrors(parseResult.errors, fileName));
     return { errors };
   }
 

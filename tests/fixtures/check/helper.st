@@ -1,0 +1,6 @@
+FUNCTION AddOne : INT
+VAR_INPUT
+  a : INT;
+END_VAR
+AddOne := a + 1;
+END_FUNCTION

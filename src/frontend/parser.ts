@@ -2306,8 +2306,12 @@ export const testParser = new STParser(tokens.allTestTokens);
 /**
  * Parse ST source code into a CST.
  *
+ * The lexer skips characters it cannot match and still yields the other
+ * tokens, so a lexer error does not stop parsing: the result carries the
+ * lexer errors followed by the parser's, and the CST of what was recognised.
+ *
  * @param source - The ST source code to parse
- * @returns Parse result with CST and any errors
+ * @returns Parse result with CST and any errors (lexer errors first)
  */
 export function parse(source: string): {
   cst: CstNode | null;
@@ -2315,24 +2319,18 @@ export function parse(source: string): {
 } {
   const lexResult = tokens.tokenize(source);
 
-  if (lexResult.errors.length > 0) {
-    return {
-      cst: null,
-      errors: lexResult.errors,
-    };
-  }
-
   parser.input = lexResult.tokens;
   const cst = parser.compilationUnit();
 
   return {
     cst,
-    errors: parser.errors,
+    errors: [...lexResult.errors, ...parser.errors],
   };
 }
 
 /**
- * Parse a test file into a CST using the test lexer/parser.
+ * Parse a test file into a CST using the test lexer/parser. Like
+ * {@link parse}, it keeps parsing after lexer errors.
  *
  * @param source - The test file source code to parse
  * @returns Parse result with CST and any errors
@@ -2343,18 +2341,11 @@ export function parseTestSource(source: string): {
 } {
   const lexResult = tokens.tokenizeTest(source);
 
-  if (lexResult.errors.length > 0) {
-    return {
-      cst: null,
-      errors: lexResult.errors,
-    };
-  }
-
   testParser.input = lexResult.tokens;
   const cst = testParser.testFile();
 
   return {
     cst,
-    errors: testParser.errors,
+    errors: [...lexResult.errors, ...testParser.errors],
   };
 }

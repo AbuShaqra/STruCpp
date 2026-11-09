@@ -1,0 +1,7 @@
+PROGRAM Main
+VAR
+  x : INT;
+  p : POINTER TO INT;
+END_VAR
+p := ADR(x);
+END_PROGRAM

@@ -48,7 +48,7 @@ The default compile mode (ST to C++) has no external dependencies.
 
 ## Modes
 
-The CLI operates in one of five mutually exclusive modes, detected by flag presence:
+The CLI operates in one of these mutually exclusive modes, detected by flag presence:
 
 ### Compile (default)
 
@@ -60,6 +60,64 @@ strucpp file1.st file2.st -o output.cpp    # Multi-file
 ```
 
 Produces two files: `output.cpp` (implementation) and `output.hpp` (declarations).
+
+### Check
+
+Parse and analyse ST without generating C++, writing any file or needing `g++`:
+
+```bash
+strucpp --check main.st utils.st
+strucpp --check --json main.st utils.st --dialect iec
+```
+
+It runs the same parse and semantic analysis as compile mode, with the same libraries (bundled and
+`-L`), `-D` defines, `--strict` and dialect flags (`--dialect`, `--dialect-file`, `--dialect-path`,
+`--feature`). It accepts several input files. Each diagnostic names its file by the path given on the
+command line. It cannot be combined with `-o`, `--build`, `--test`, `--compile-lib`,
+`--decompile-lib` or `--import-lib`.
+
+| Exit code | Meaning                                                                  |
+| --------- | ------------------------------------------------------------------------ |
+| 0         | No errors (warnings may be present)                                      |
+| 1         | At least one error                                                       |
+| 2         | The check could not run: usage error, unreadable file or dialect problem |
+
+Without `--json`, errors and warnings go to stderr in the [error format](#error-output), ordered by
+file (in argument order), line and column, followed by a `N error(s), M warning(s)` line on stdout.
+
+With `--json`, stdout carries exactly one JSON document, also for exit code 2:
+
+```json
+{
+  "dialect": "iec",
+  "files": ["main.st", "lib/utils.st"],
+  "diagnostics": [
+    {
+      "file": "main.st",
+      "line": 5,
+      "column": 6,
+      "severity": "error",
+      "message": "Undeclared variable 'MISSINGVAR'",
+      "pouName": "MAIN",
+      "pouKind": "PROGRAM",
+      "section": "body",
+      "bodyLine": 1
+    }
+  ],
+  "summary": { "errors": 1, "warnings": 0 }
+}
+```
+
+- `dialect` is the resolved profile id, or `null` without a profile.
+- `files` lists the inputs as given.
+- Each diagnostic has `file` (`null` when the diagnostic has no file), `line`, `column` (1-based;
+  `0` when there is no position), `severity` (`error` or `warning`) and `message`. When known it also
+  has `endLine`, `endColumn`, `code`, `suggestion` and the POU context fields `pouName`, `pouKind`,
+  `section`, `bodyLine` and `variableName`.
+- For exit code 2 the one diagnostic is the reason, with `line` and `column` 0.
+
+The check runs analysis only. A program that passes it can still fail later: in C++ code generation
+or in `g++` (for example an interface-typed `VAR_INPUT` today).
 
 ### Build
 
@@ -184,7 +242,8 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 With no `--dialect` and no `--dialect-file` the compiler runs with the default features
 `pointer_to`, `reference_to` and `ref_assign` (its behaviour before profiles). `--dialect iec`
 enables no feature. The flags apply in every mode that compiles ST (compile, build, `--test`,
-`--compile-lib`, `--import-lib`); a bad profile prints one `error:` line and exits 1. The
+`--compile-lib`, `--import-lib`, `--check`); a bad profile prints one `error:` line and exits 1
+(2 with `--check`). The
 profile format and the features are in [DIALECTS.md](DIALECTS.md).
 
 ```bash
@@ -221,6 +280,11 @@ Compilation failed:
 ```
 
 All errors include file, line, column, severity, and message. Compilation aborts on errors but continues on warnings.
+Warnings are printed when compilation fails too.
+
+Lexer errors (a character that starts no token) carry the real line and column, and parsing continues
+after them, so the rest of the file is still checked. A file with a lexer error never compiles.
+A syntax error at the end of the file is placed just after the last token.
 
 ## Examples
 

@@ -8,6 +8,7 @@
  */
 
 import type {
+  LibraryCompileError,
   LibraryCompileResult,
   StlibCompileResult,
   StlibArchive,
@@ -323,7 +324,7 @@ function compileNativeEntries(
   },
 ): {
   functionBlocks: LibraryFBEntry[];
-  errors: Array<{ message: string; file?: string; line?: number }>;
+  errors: LibraryCompileError[];
 } {
   // Native blocks are always FUNCTION_BLOCKs — `projectNativeHeaderToSt`
   // rejects FUNCTION and PROGRAM — so there is no function list to return.
@@ -333,7 +334,7 @@ function compileNativeEntries(
   const projected: string[] = [];
   const languageByName = new Map<string, NativeSource>();
   const docByFile = new Map<string, string>();
-  const errors: Array<{ message: string; file?: string; line?: number }> = [];
+  const errors: LibraryCompileError[] = [];
 
   for (const source of native) {
     const outcome = projectNativeHeaderToSt(source);
@@ -366,7 +367,7 @@ function compileNativeEntries(
     return {
       ...empty,
       errors: result.errors.map((e) => {
-        const entry: { message: string; file?: string; line?: number } = {
+        const entry: LibraryCompileError = {
           message: `native block header: ${e.message}`,
           line: e.line,
         };
@@ -538,6 +539,7 @@ export function compileLibrary(
   const additionalSources = stSources.slice(1);
 
   const compileOpts: Partial<import("../types.js").CompileOptions> = {
+    fileName: primarySource.fileName,
     additionalSources,
     // Always emit chunk markers when compiling a library — the
     // archive's `chunks[]` is derived from them. The markers are
@@ -577,9 +579,10 @@ export function compileLibrary(
       headerCode: "",
       cppCode: "",
       errors: result.errors.map((e) => {
-        const entry: { message: string; file?: string; line?: number } = {
+        const entry: LibraryCompileError = {
           message: e.message,
           line: e.line,
+          column: e.column,
         };
         if (e.file !== undefined) {
           entry.file = e.file;

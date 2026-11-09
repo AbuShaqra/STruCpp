@@ -719,7 +719,7 @@ connection.onRequest(CompileLibRequest, (params): CompileLibResponse => {
       errors: result.errors.map((e) => ({
         message: e.message,
         line: e.line ?? 0,
-        column: 0,
+        column: e.column ?? 0,
         severity: "error",
         ...(e.file ? { file: e.file } : {}),
       })),
