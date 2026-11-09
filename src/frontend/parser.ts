@@ -409,15 +409,25 @@ export class STParser extends CstParser {
     this.CONSUME(tokens.Identifier);
     this.CONSUME(tokens.Colon);
     this.SUBRULE(this.dataType);
-    // GET and/or SET blocks
-    this.MANY(() => {
-      this.OR2({
-        DEF: [
-          { ALT: () => this.SUBRULE(this.propertyGetter) },
-          { ALT: () => this.SUBRULE(this.propertySetter) },
-        ],
-        IGNORE_AMBIGUITIES: true,
-      });
+    // GET and/or SET blocks; GET and SET are identifiers, accessors only here
+    this.MANY({
+      GATE: () =>
+        this.isWord(this.LA(1), "GET") || this.isWord(this.LA(1), "SET"),
+      DEF: () => {
+        this.OR2({
+          DEF: [
+            {
+              GATE: () => this.isWord(this.LA(1), "GET"),
+              ALT: () => this.SUBRULE(this.propertyGetter),
+            },
+            {
+              GATE: () => this.isWord(this.LA(1), "SET"),
+              ALT: () => this.SUBRULE(this.propertySetter),
+            },
+          ],
+          IGNORE_AMBIGUITIES: true,
+        });
+      },
     });
     this.CONSUME(tokens.END_PROPERTY);
   });
@@ -426,7 +436,7 @@ export class STParser extends CstParser {
    * Property GET accessor
    */
   public propertyGetter = this.RULE("propertyGetter", () => {
-    this.CONSUME(tokens.GET);
+    this.CONSUME(tokens.Identifier); // GET
     this.OPTION(() => {
       this.SUBRULE(this.statementList);
     });
@@ -437,7 +447,7 @@ export class STParser extends CstParser {
    * Property SET accessor
    */
   public propertySetter = this.RULE("propertySetter", () => {
-    this.CONSUME(tokens.SET);
+    this.CONSUME(tokens.Identifier); // SET
     this.OPTION(() => {
       this.SUBRULE(this.statementList);
     });
@@ -450,15 +460,13 @@ export class STParser extends CstParser {
 
   /**
    * Identifier or contextual keyword.
-   * Allows SET, GET, ON, OVERRIDE, ABSTRACT, FINAL to be used as
+   * Allows ON, OVERRIDE, ABSTRACT, FINAL to be used as
    * variable/parameter/function names in contexts where they are unambiguous.
    */
   public identifierOrKeyword = this.RULE("identifierOrKeyword", () => {
     this.OR({
       DEF: [
         { ALT: () => this.CONSUME(tokens.Identifier) },
-        { ALT: () => this.CONSUME(tokens.SET) },
-        { ALT: () => this.CONSUME(tokens.GET) },
         { ALT: () => this.CONSUME(tokens.ON) },
         { ALT: () => this.CONSUME(tokens.OVERRIDE) },
         { ALT: () => this.CONSUME(tokens.ABSTRACT) },
@@ -1252,8 +1260,6 @@ export class STParser extends CstParser {
    * Keep in sync with the identifierOrKeyword rule alternatives.
    */
   private static readonly CONTEXTUAL_KEYWORDS: TokenType[] = [
-    tokens.SET,
-    tokens.GET,
     tokens.ON,
     tokens.OVERRIDE,
     tokens.ABSTRACT,

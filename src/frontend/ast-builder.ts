@@ -278,7 +278,7 @@ function getNodeStartOffset(node: CstNode): number {
 /**
  * Extract the identifier string from an identifierOrKeyword CST node.
  * The node contains either an Identifier token or one of the contextual keyword tokens
- * (SET, GET, ON, OVERRIDE, ABSTRACT, FINAL).
+ * (ON, OVERRIDE, ABSTRACT, FINAL, ...).
  */
 function getIdentifierOrKeywordImage(node: CstNode): string {
   const children = node.children as CstChildren;
@@ -287,8 +287,6 @@ function getIdentifierOrKeywordImage(node: CstNode): string {
   if (identToken) return identToken.image;
   // Check each contextual keyword token
   for (const key of [
-    "SET",
-    "GET",
     "ON",
     "OVERRIDE",
     "ABSTRACT",

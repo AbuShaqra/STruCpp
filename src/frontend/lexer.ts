@@ -553,9 +553,9 @@ export const END_PROPERTY = createToken({
   name: "END_PROPERTY",
   pattern: /END_PROPERTY/i,
 });
-export const GET = createToken({ name: "GET", pattern: /GET/i });
+// GET and SET are not tokens: they lex as Identifier and are accessor keywords
+// only inside a PROPERTY (see STParser.propertyGetter), names everywhere else.
 export const END_GET = createToken({ name: "END_GET", pattern: /END_GET/i });
-export const SET = createToken({ name: "SET", pattern: /SET/i });
 export const END_SET = createToken({ name: "END_SET", pattern: /END_SET/i });
 export const ABSTRACT = createToken({ name: "ABSTRACT", pattern: /ABSTRACT/i });
 export const FINAL = createToken({ name: "FINAL", pattern: /FINAL/i });
@@ -820,9 +820,7 @@ const keywordTokens = [
   SUPER,
   PROPERTY,
   END_PROPERTY,
-  GET,
   END_GET,
-  SET,
   END_SET,
   ABSTRACT,
   FINAL,
@@ -956,8 +954,6 @@ export const allTokens = [
   THIS,
   SUPER,
   PROPERTY,
-  GET,
-  SET,
   ABSTRACT,
   FINAL,
   OVERRIDE,
