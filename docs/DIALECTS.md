@@ -77,6 +77,7 @@ the root. A profile without `extends` has only its own features.
 | `union`              | a UNION type, `TYPE U_A : UNION ... END_UNION END_TYPE`      |
 | `fb_init`            | init arguments `fb : FB_A(p := 1)`, and FB_init at start-up  |
 | `trunc_dint`         | `TRUNC(x)` returns DINT for an LREAL too (not only a REAL)   |
+| `interface_zero`     | `itf := 0` stores NULL in an interface variable              |
 
 ## Refusals
 
@@ -96,6 +97,7 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `TYPE ST_B EXTENDS ST_A : STRUCT`           | `struct_extends`     | `EXTENDS on a STRUCT needs the feature struct_extends`                               |
 | `TYPE U_A : UNION ... END_UNION`            | `union`              | `UNION type 'U_A' needs the feature union`                                           |
 | `fb : FB_A(p := 1);` (init arguments)       | `fb_init`            | `The init argument list of 'FB' needs the feature fb_init` (at `(`)                  |
+| `itf := 0` (interface variable)             | `interface_zero`     | `Assigning 0 to interface I_A needs the feature interface_zero` (at the `0`)         |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
@@ -401,6 +403,15 @@ narrowing warning, which then names DINT instead of LINT (under `--strict` the e
 `DINT_TO_INT` instead of `LINT_TO_INT`). The value is truncated toward zero and saturated at the DINT range
 (`TRUNC(LREAL#3.0E10)` is 2147483647), as `TRUNC_DINT` does. A REAL argument is unchanged, and the typed
 forms (`TRUNC_LINT`, `LREAL_TRUNC_LINT`) keep their own result types.
+
+`interface_zero` is in neither the default set nor `iec-3`: in IEC 61131-3 Ed. 3 an interface variable is
+cleared with `NULL`. With the feature, an untyped integer literal `0` stored in an interface variable is
+NULL: in an assignment (`itf := 0`, `fb.itf := 0`), as an initial value (`itf : I_A := 0;`) and as the
+argument of an interface input of a FUNCTION, FB or METHOD (`F(0)`, `fb(i := 0)`, `fb.M(x := 0)`); the C++
+gets `IEC_NULL`. Without it each of these is refused with the message above, at the `0`. Any other integer
+(`itf := 1`, `INT#0`) is refused in every dialect as before (`Cannot assign INT to I_A`). Comparing an
+interface with `0` (`itf = 0`, `itf <> 0`) needs no feature and is accepted in every dialect, as before
+profiles.
 
 `program_methods` is not in the default set: a `METHOD` in a `PROGRAM` is refused with no dialect flag too
 (before profiles it did not parse at all). `--strict` does not change any feature. A refused method is still

@@ -863,6 +863,8 @@ export interface LiteralExpression extends TypedNode {
   value: string | number | boolean;
   rawValue: string;
   typePrefix?: string;
+  /** Set by the type checker: a `0` stored in an interface (feature interface_zero), emitted as NULL. */
+  asNull?: boolean;
 }
 
 /**

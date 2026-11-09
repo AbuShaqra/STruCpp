@@ -4615,6 +4615,7 @@ export class CodeGenerator {
    * Generate C++ for a literal expression.
    */
   private generateLiteralExpression(expr: LiteralExpression): string {
+    if (expr.asNull === true) return "IEC_NULL";
     // Handle typed literals: BYTE#255 → static_cast<IEC_BYTE>(255)
     if (expr.typePrefix) {
       const cppType = `IEC_${expr.typePrefix}`;
@@ -5178,6 +5179,10 @@ export class CodeGenerator {
    * variable type map. Returns the IEC type name (upper case) or undefined.
    */
   private inferExprType(expr: Expression): string | undefined {
+    // A 0 stored in an interface (interface_zero) is NULL, untyped like it
+    if (expr.kind === "LiteralExpression" && expr.asNull === true) {
+      return undefined;
+    }
     // Use pre-computed type from semantic analysis when available
     if (expr.resolvedType) {
       const name = typeNameUtil(expr.resolvedType);

@@ -57,7 +57,7 @@ import {
   type AccessType,
 } from "./type-utils.js";
 import { stripEnEno } from "../ast-utils.js";
-import { DEFAULT_FEATURES } from "../dialect.js";
+import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
 import { structExtends } from "./struct-extends.js";
 import {
   fbIndex,
@@ -173,6 +173,16 @@ function isNullInitializer(expr: Expression): boolean {
   );
 }
 
+/** An untyped integer literal 0 (`0`, `16#0`), not `INT#0`. */
+function isUntypedZero(expr: Expression): expr is LiteralExpression {
+  return (
+    expr.kind === "LiteralExpression" &&
+    expr.literalType === "INT" &&
+    expr.typePrefix === undefined &&
+    expr.value === 0
+  );
+}
+
 /** The reference levels and target type of a declared type; undefined for an array. */
 function referenceShapeOf(
   type: AccessType,
@@ -268,6 +278,12 @@ export class TypeChecker {
     private strict = false,
     /** Language features enabled by the dialect. */
     readonly features: ReadonlySet<string> = DEFAULT_FEATURES,
+    /** The refusal text for `construct` when `feature` is off (adds the profiles hint). */
+    private readonly featureMessage: (
+      feature: FeatureId,
+      construct: string,
+    ) => string = (feature, construct) =>
+      `${construct} needs the feature ${feature}`,
   ) {}
 
   /**
@@ -1314,6 +1330,13 @@ export class TypeChecker {
         }
         if (
           this.isInterfaceDeclType(decl.type) &&
+          isUntypedZero(decl.initialValue)
+        ) {
+          this.checkInterfaceZero(decl.type.name, decl.initialValue);
+          continue;
+        }
+        if (
+          this.isInterfaceDeclType(decl.type) &&
           !(
             decl.initialValue.kind === "LiteralExpression" &&
             decl.initialValue.literalType === "NULL"
@@ -1823,6 +1846,10 @@ export class TypeChecker {
     valueType: IECType | undefined,
     value: Expression,
   ): void {
+    if (isUntypedZero(value)) {
+      this.checkInterfaceZero(target, value);
+      return;
+    }
     let source: string | undefined;
     if (valueType === undefined) {
       const bareThis =
@@ -1865,6 +1892,26 @@ export class TypeChecker {
           t.definition.kind === "StructDefinition",
       ) ?? false;
     if (ELEMENTARY_TYPES[upper] !== undefined || isStruct) fail("");
+  }
+
+  /**
+   * A `0` stored in interface `target`: NULL with the feature interface_zero
+   * (marked for codegen), else refused naming the feature.
+   */
+  private checkInterfaceZero(target: string, value: LiteralExpression): void {
+    if (this.features.has("interface_zero")) {
+      value.asNull = true;
+      return;
+    }
+    this.addError(
+      this.featureMessage(
+        "interface_zero",
+        `Assigning 0 to interface ${target}`,
+      ),
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
   }
 
   /**

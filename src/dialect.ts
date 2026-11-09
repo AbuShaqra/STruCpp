@@ -24,6 +24,7 @@ export const KNOWN_FEATURES = [
   "union",
   "fb_init",
   "trunc_dint",
+  "interface_zero",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];
