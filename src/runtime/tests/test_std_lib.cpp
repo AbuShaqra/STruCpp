@@ -14,6 +14,8 @@
 #include "iec_string.hpp"
 #include "iec_wstring.hpp"
 #include "iec_char.hpp"
+#include "iec_force.hpp"
+#include "debug_dispatch.hpp"
 
 using namespace strucpp;
 
@@ -372,34 +374,48 @@ TEST(CharTest, Conversions) {
 TEST(TimeVarTest, Forcing) {
     // IEC_TIME is just `IECVar<TIME_t>`, so debugger forcing works the
     // same way it does for any other elementary type — no per-type
-    // wrapper.  This pins that the IECVar surface is enough.
+    // wrapper. The force table holds the value and writes it back at each
+    // cycle boundary.
+    force::clear_all();
     IEC_TIME tv(10LL * NS_PER_S);
     EXPECT_EQ(TIME_TO_S(tv), 10);
 
-    tv.force(99LL * NS_PER_S);
-    EXPECT_TRUE(tv.is_forced());
+    const TIME_t forced = 99LL * NS_PER_S;
+    force::set(&tv, &forced, sizeof forced);
+    EXPECT_TRUE(force::is_forced(&tv));
     EXPECT_EQ(TIME_TO_S(tv), 99);
 
     tv.set(20LL * NS_PER_S);
-    EXPECT_EQ(TIME_TO_S(tv), 99);  // forced value still wins
-    EXPECT_EQ(tv.get_underlying() / NS_PER_S, 20);
+    EXPECT_EQ(TIME_TO_S(tv), 20);  // the write lands inside the cycle
+    force::apply_all();
+    EXPECT_EQ(TIME_TO_S(tv), 99);  // and the force wins at the boundary
 
-    tv.unforce();
+    force::clear(&tv);
+    tv.set(20LL * NS_PER_S);
+    force::apply_all();
     EXPECT_EQ(TIME_TO_S(tv), 20);
 }
 
 TEST(StringVarTest, Forcing) {
+    // A STRING force goes through the debug dispatch's string op, whose
+    // apply function stores the forced text through the wrapper.
+    force::clear_all();
     STRING_VAR sv("Hello");
     EXPECT_STREQ(sv.get().c_str(), "Hello");
-    
-    sv.force("Forced");
-    EXPECT_TRUE(sv.is_forced());
+
+    const unsigned char wire[1 + 6] = {6, 'F', 'o', 'r', 'c', 'e', 'd'};
+    EXPECT_EQ(debug::force_string(&sv, wire, 0), debug::STATUS_OK);
+    EXPECT_TRUE(force::is_forced(&sv));
     EXPECT_STREQ(sv.get().c_str(), "Forced");
-    
+    EXPECT_EQ(sv.get().length(), 6u);
+
     sv.set("World");
+    EXPECT_STREQ(sv.get().c_str(), "World");
+    force::apply_all();
     EXPECT_STREQ(sv.get().c_str(), "Forced");
-    EXPECT_STREQ(sv.get_underlying().c_str(), "World");
-    
-    sv.unforce();
+
+    force::clear(&sv);
+    sv.set("World");
+    force::apply_all();
     EXPECT_STREQ(sv.get().c_str(), "World");
 }

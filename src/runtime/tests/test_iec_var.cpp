@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 #include "iec_var.hpp"
+#include "iec_force.hpp"
 #include "iec_traits.hpp"
 
 using namespace strucpp;
@@ -13,13 +14,13 @@ using namespace strucpp;
 TEST(IECVarTest, DefaultConstruction) {
     IEC_INT var;
     EXPECT_EQ(var.get(), 0);
-    EXPECT_FALSE(var.is_forced());
+    EXPECT_FALSE(force::is_forced(&var));
 }
 
 TEST(IECVarTest, ValueConstruction) {
     IEC_INT var(42);
     EXPECT_EQ(var.get(), 42);
-    EXPECT_FALSE(var.is_forced());
+    EXPECT_FALSE(force::is_forced(&var));
 }
 
 TEST(IECVarTest, SetAndGet) {
@@ -38,22 +39,27 @@ TEST(IECVarTest, ImplicitConversion) {
 }
 
 TEST(IECVarTest, Forcing) {
+    // Forcing lives in the force table: the value is written in at once and
+    // again at each cycle boundary; a write inside the cycle lands meanwhile.
+    force::clear_all();
     IEC_INT var(10);
     EXPECT_EQ(var.get(), 10);
-    EXPECT_FALSE(var.is_forced());
-    
-    var.force(99);
-    EXPECT_TRUE(var.is_forced());
+    EXPECT_FALSE(force::is_forced(&var));
+
+    const INT_t forced = 99;
+    EXPECT_EQ(force::set(&var, &forced, sizeof forced), force::Status::Ok);
+    EXPECT_TRUE(force::is_forced(&var));
     EXPECT_EQ(var.get(), 99);
-    EXPECT_EQ(var.get_underlying(), 10);
-    EXPECT_EQ(var.get_forced_value(), 99);
-    
+
     var.set(20);
+    EXPECT_EQ(var.get(), 20);
+    force::apply_all();
     EXPECT_EQ(var.get(), 99);
-    EXPECT_EQ(var.get_underlying(), 20);
-    
-    var.unforce();
-    EXPECT_FALSE(var.is_forced());
+
+    EXPECT_TRUE(force::clear(&var));
+    EXPECT_FALSE(force::is_forced(&var));
+    var.set(20);
+    force::apply_all();
     EXPECT_EQ(var.get(), 20);
 }
 
@@ -154,12 +160,16 @@ TEST(IECVarTest, IncrementDecrement) {
 }
 
 TEST(IECVarTest, ForcingWithArithmetic) {
+    force::clear_all();
     IEC_INT var(10);
-    var.force(50);
-    
+    const INT_t forced = 50;
+    force::set(&var, &forced, sizeof forced);
+
     var += 5;
+    EXPECT_EQ(var.get(), 55);
+    force::apply_all();
     EXPECT_EQ(var.get(), 50);
-    EXPECT_EQ(var.get_underlying(), 55);
+    force::clear_all();
 }
 
 TEST(IECVarTest, RealTypes) {
@@ -180,11 +190,16 @@ TEST(IECVarTest, BoolType) {
     boolVar = false;
     EXPECT_FALSE(boolVar.get());
     
-    boolVar.force(true);
+    force::clear_all();
+    const BOOL_t forced = true;
+    force::set(&boolVar, &forced, sizeof forced);
     EXPECT_TRUE(boolVar.get());
-    
+
     boolVar = false;
+    EXPECT_FALSE(boolVar.get());
+    force::apply_all();
     EXPECT_TRUE(boolVar.get());
+    force::clear_all();
 }
 
 TEST(IECVarTest, TimeTypes) {

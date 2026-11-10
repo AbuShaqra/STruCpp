@@ -39,18 +39,20 @@ namespace strucpp { namespace debug {
 const Entry* const debug_arrays[]    = { g_arr_0 };
 const uint16_t     debug_array_counts[] = { sizeof(g_arr_0) / sizeof(g_arr_0[0]) };
 const uint8_t      debug_array_count    = 1;
+const uint8_t      debug_array_kind[]   = { DEBUG_ARRAY_PROGRAM };
 } }
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 static void reset_vars() {
-    t_bool.unforce();  t_bool  = false;
-    t_int.unforce();   t_int   = 0;
-    t_dint.unforce();  t_dint  = 0;
-    t_lint.unforce();  t_lint  = 0;
-    t_real.unforce();  t_real  = 0.0f;
-    t_lreal.unforce(); t_lreal = 0.0;
+    strucpp::force::clear_all();
+    t_bool  = false;
+    t_int   = 0;
+    t_dint  = 0;
+    t_lint  = 0;
+    t_real  = 0.0f;
+    t_lreal = 0.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,19 +133,25 @@ TEST(DebugDispatch, ForceAndReadReturnsForced) {
     std::memcpy(bytes, &new_val, sizeof(new_val));
 
     EXPECT_EQ(sd::handle_set(0, 1, true, bytes, sizeof(bytes)), sd::STATUS_OK);
-    EXPECT_TRUE(t_int.is_forced());
+    EXPECT_TRUE(strucpp::force::is_forced(&t_int));
 
-    // PLC logic writing via = is ignored while forced
-    t_int = 42;
-    EXPECT_TRUE(t_int.is_forced());
     EXPECT_EQ(t_int.get(), 9999);
 
-    // Debug read also reflects the forced value
+    // PLC logic writing inside a cycle lands until the cycle boundary
+    t_int = 42;
+    EXPECT_TRUE(strucpp::force::is_forced(&t_int));
+    EXPECT_EQ(t_int.get(), 42);
+
+    // ...but the debug read reflects the forced value throughout
     uint8_t buf[2] = {0, 0};
     sd::handle_read(0, 1, buf);
     INT_t got;
     std::memcpy(&got, buf, sizeof(got));
     EXPECT_EQ(got, 9999);
+
+    // ...and the boundary writes it back
+    strucpp::force::apply_all();
+    EXPECT_EQ(t_int.get(), 9999);
 }
 
 TEST(DebugDispatch, UnforceRestoresPlcWrites) {
@@ -153,10 +161,10 @@ TEST(DebugDispatch, UnforceRestoresPlcWrites) {
     std::memcpy(bytes, &forced, sizeof(forced));
 
     sd::handle_set(0, 1, true, bytes, sizeof(bytes));
-    EXPECT_TRUE(t_int.is_forced());
+    EXPECT_TRUE(strucpp::force::is_forced(&t_int));
 
     EXPECT_EQ(sd::handle_set(0, 1, false, nullptr, 0), sd::STATUS_OK);
-    EXPECT_FALSE(t_int.is_forced());
+    EXPECT_FALSE(strucpp::force::is_forced(&t_int));
 
     t_int = 123;
     EXPECT_EQ(t_int.get(), 123);
@@ -166,7 +174,7 @@ TEST(DebugDispatch, ForceBool) {
     reset_vars();
     uint8_t bytes[1] = { 1 };
     EXPECT_EQ(sd::handle_set(0, 0, true, bytes, 1), sd::STATUS_OK);
-    EXPECT_TRUE(t_bool.is_forced());
+    EXPECT_TRUE(strucpp::force::is_forced(&t_bool));
     EXPECT_EQ(t_bool.get(), true);
 
     bytes[0] = 0;
@@ -180,7 +188,7 @@ TEST(DebugDispatch, ForceReal) {
     uint8_t bytes[4];
     std::memcpy(bytes, &v, sizeof(v));
     EXPECT_EQ(sd::handle_set(0, 4, true, bytes, sizeof(bytes)), sd::STATUS_OK);
-    EXPECT_TRUE(t_real.is_forced());
+    EXPECT_TRUE(strucpp::force::is_forced(&t_real));
     EXPECT_FLOAT_EQ(t_real.get(), -2.5f);
 }
 
@@ -205,4 +213,37 @@ TEST(DebugDispatch, SetWithInsufficientDataReturnsError) {
     reset_vars();
     uint8_t bytes[1] = {0};  // need 2 for INT
     EXPECT_EQ(sd::handle_set(0, 1, true, bytes, 1), sd::STATUS_DATA_TOO_LARGE);
+}
+
+// ---------------------------------------------------------------------------
+// Force table interaction
+// ---------------------------------------------------------------------------
+TEST(DebugDispatch, SoftWriteIgnoredWhileForced) {
+    reset_vars();
+    INT_t forced = 7, other = 8;
+    uint8_t bytes[2];
+    std::memcpy(bytes, &forced, sizeof(forced));
+    sd::handle_set(0, 1, true, bytes, sizeof(bytes));
+    std::memcpy(bytes, &other, sizeof(other));
+    EXPECT_EQ(sd::handle_write(0, 1, bytes, sizeof(bytes)), sd::STATUS_OK);
+    EXPECT_EQ(t_int.get(), 7);
+    sd::handle_set(0, 1, false, nullptr, 0);
+    EXPECT_EQ(sd::handle_write(0, 1, bytes, sizeof(bytes)), sd::STATUS_OK);
+    EXPECT_EQ(t_int.get(), 8);
+}
+
+TEST(DebugDispatch, ForceRefusedWhenTableFull) {
+    reset_vars();
+    static uint8_t fillers[STRUCPP_FORCE_SLOTS];
+    const uint8_t one = 1;
+    for (int i = 0; i < STRUCPP_FORCE_SLOTS; ++i) {
+        ASSERT_EQ(strucpp::force::set(&fillers[i], &one, 1), strucpp::force::Status::Ok);
+    }
+    INT_t v = 5;
+    uint8_t bytes[2];
+    std::memcpy(bytes, &v, sizeof(v));
+    EXPECT_EQ(sd::handle_set(0, 1, true, bytes, sizeof(bytes)), sd::STATUS_FORCE_TABLE_FULL);
+    EXPECT_FALSE(strucpp::force::is_forced(&t_int));
+    EXPECT_EQ(t_int.get(), 0);
+    reset_vars();
 }
