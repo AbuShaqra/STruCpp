@@ -159,6 +159,13 @@ extern const Entry* const debug_arrays[]       STRUCPP_DEBUG_FLASH;
 extern const uint16_t     debug_array_counts[] STRUCPP_DEBUG_FLASH;
 extern const uint8_t      debug_array_count;
 
+// What each debug array holds, by index: the variables of one program
+// instance, or configuration globals. Lets the force table tell a global's
+// force (applied by every task) from one a single program instance owns.
+constexpr uint8_t DEBUG_ARRAY_PROGRAM = 0;
+constexpr uint8_t DEBUG_ARRAY_GLOBAL  = 1;
+extern const uint8_t      debug_array_kind[]   STRUCPP_DEBUG_FLASH;
+
 // ---------------------------------------------------------------------------
 // Retain table.
 //

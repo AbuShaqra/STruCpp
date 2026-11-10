@@ -38,6 +38,7 @@ import {
 } from "../project-model.js";
 import {
   buildEnumMemberMap,
+  implicitEnumBaseName,
   type EnumMemberEntry,
 } from "../semantic/type-utils.js";
 import {
@@ -491,10 +492,10 @@ export class TypeCodeGenerator {
   /**
    * Generate an enum type definition
    *
-   * Simple enum:
+   * Simple enum (stored as INT, or DINT when its values need it):
    *   TrafficLight : (RED, YELLOW, GREEN);
    * C++:
-   *   enum class TrafficLight { RED, YELLOW, GREEN };
+   *   enum class TrafficLight : INT_t { RED, YELLOW, GREEN };
    *
    * Typed enum with explicit values:
    *   State : INT (IDLE := 0, RUNNING := 1, STOPPED := 2);
@@ -502,9 +503,11 @@ export class TypeCodeGenerator {
    *   enum class State : INT_t { IDLE = 0, RUNNING = 1, STOPPED = 2 };
    */
   private generateEnumType(name: string, def: EnumDefinition): void {
-    const baseType = def.baseType
-      ? ` : ${this.mapTypeToCpp(def.baseType.name)}`
-      : "";
+    // No declared base: INT (DINT when the values need it), as the debug
+    // table assumes; C++ would otherwise pick a 4-byte int.
+    const baseType = ` : ${this.mapTypeToCpp(
+      def.baseType?.name ?? implicitEnumBaseName(def.members),
+    )}`;
 
     const members = def.members.map((member) => {
       if (member.value) {

@@ -1387,6 +1387,7 @@ export class CodeGenerator {
     this.emitHeader("");
     this.emitHeader('#include "iec_types.hpp"');
     this.emitHeader('#include "iec_var.hpp"');
+    this.emitHeader('#include "iec_force.hpp"');
     this.emitHeader('#include "iec_global.hpp"');
     this.emitHeader('#include "iec_array.hpp"');
     this.emitHeader('#include "iec_located.hpp"');
@@ -2726,6 +2727,7 @@ export class CodeGenerator {
 
     // Run method
     this.emit(`void Program_${prog.name}::run() {`);
+    this.emitForceScope();
     this.currentProgramName = prog.name;
     this.enterScope(prog.varBlocks);
     if (prog.body.length > 0) {
@@ -3318,6 +3320,7 @@ export class CodeGenerator {
 
     // Run method
     this.emit(`void Program_${prog.name}::run() {`);
+    this.emitForceScope();
     // VAR_EXTERNAL names for this program: body access to these is rewritten to
     // go through the GlobalVar pointer (g->read()/write()/with_lock).
     this.programExternals = new Set(
@@ -8783,6 +8786,15 @@ export class CodeGenerator {
     );
     this.emit("#endif  // STRUCPP_THREADED");
     this.emit("");
+  }
+
+  /**
+   * Open a PROGRAM's run() with a force::Scope (iec_force.hpp): forced values
+   * are written in when the cycle starts and again when it ends, on every
+   * return path and on a fault.
+   */
+  private emitForceScope(): void {
+    this.emit("    force::Scope __force_scope(this, sizeof(*this));");
   }
 
   /**

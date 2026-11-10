@@ -133,8 +133,12 @@ larger values (8 of 256; 1 of 127 on AVR). All three are overridable with `-D`.
 Under `STRUCPP_THREADED` a mutex guards the table, and a `Scope` applies only
 the forces inside its own program instance plus those marked `FLAG_GLOBAL`.
 
-The table is not yet used by generated code or by the debugger; until it is,
-forcing still goes through `IECVar` (above).
+Generated code opens every PROGRAM's `run()` with
+`force::Scope __force_scope(this, sizeof(*this));`. The debugger and the REPL
+do not use the table yet; until they do, forcing still goes through `IECVar`
+(above). The generated debug table carries `debug_array_kind[]`
+(`DEBUG_ARRAY_GLOBAL` / `DEBUG_ARRAY_PROGRAM` per array) so a force can be
+marked `FLAG_GLOBAL`.
 
 ## Type Traits (`iec_traits.hpp`)
 
@@ -232,7 +236,7 @@ Uses `malloc`/`free` with placement new. Sets pointer to `nullptr` after deletio
 ## Composite Types
 
 - **Structs** (`iec_struct.hpp`): Plain C++ structs with IECVar-wrapped fields
-- **Enums** (`iec_enum.hpp`): C++ `enum class` with configurable underlying type
+- **Enums** (`iec_enum.hpp`): C++ `enum class` with configurable underlying type; without a declared base it is `INT_t` (`DINT_t` when a value is outside the INT range or not a foldable constant)
 - **Subranges** (`iec_subrange.hpp`): Runtime range validation on assignment
 
 ## Time Types (`iec_time.hpp`, `iec_date.hpp`, `iec_dt.hpp`, `iec_tod.hpp`)
