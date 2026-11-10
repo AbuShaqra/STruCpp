@@ -461,6 +461,158 @@ export class TypeChecker {
   }
 
   /**
+   * Report `a := b` where one side is a plain array and the other a plain
+   * elementary or STRING variable or literal (no POINTER or reference
+   * levels). Returns whether it reported.
+   */
+  private checkArrayScalarAssignment(
+    target: Expression,
+    value: Expression,
+    scope: Scope,
+  ): boolean {
+    const kind = (expr: Expression): "array" | "scalar" | undefined => {
+      if (expr.kind === "LiteralExpression") {
+        return expr.literalType === "INT" ||
+          expr.literalType === "REAL" ||
+          expr.literalType === "BOOL"
+          ? "scalar"
+          : undefined;
+      }
+      if (expr.kind !== "VariableExpression" || !this.ast) return undefined;
+      const sym = scope.lookup(expr.name);
+      if (sym?.kind !== "variable" && sym?.kind !== "constant") {
+        return undefined;
+      }
+      const declared = (sym.declaration as VarDeclaration | undefined)?.type;
+      if (!declared) return undefined;
+      const type = this.hasMemberAccess(expr)
+        ? resolveAccessType(declared, expr, this.accessLookup)
+        : declared;
+      if (
+        !type ||
+        type.referenceKind !== "none" ||
+        type.referenceChain !== undefined
+      ) {
+        return undefined;
+      }
+      if (type.arrayDimensions !== undefined) return "array";
+      const upper = this.aliasBase(type.name);
+      if (/^__(INLINE_ARRAY_|VLA_)/.test(upper)) return "array";
+      const def = this.ast.types.find(
+        (t) => t.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind === "ArrayDefinition") return "array";
+      return def === undefined &&
+        upper !== "__XWORD" &&
+        ELEMENTARY_TYPES[canonicalElementaryName(upper)] !== undefined
+        ? "scalar"
+        : undefined;
+    };
+    const t = kind(target);
+    const v = kind(value);
+    if (t === undefined || v === undefined || t === v) return false;
+    const span = value.sourceSpan;
+    this.addError(
+      t === "array"
+        ? "Cannot assign a single value to an array"
+        : "Cannot assign an array to a single value",
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
+    return true;
+  }
+
+  /** Unknown-member reports already made, so an expression visited twice reports once. */
+  private unknownMemberReported = new Set<string>();
+
+  /**
+   * Report `v.name` when `ownerName` is a type whose members are all known
+   * here and none is `name`: an elementary or STRING value, a STRUCT whose
+   * EXTENDS chain is declared here, or a function block whose EXTENDS chain is
+   * declared here (methods, actions and properties count as members).
+   */
+  private reportUnknownMember(
+    ownerName: string,
+    name: string,
+    expr: VariableExpression,
+    scope: Scope,
+  ): void {
+    if (!this.ast || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return;
+    const memberUpper = name.toUpperCase();
+    if (memberUpper === "EN" || memberUpper === "ENO") return;
+    const upper = this.aliasBase(ownerName);
+    if (this.resolveFieldTypeAnywhere(upper, name) !== undefined) return;
+    let what: string | undefined;
+    if (ELEMENTARY_TYPES[canonicalElementaryName(upper)] !== undefined) {
+      // `w.C_BIT`: a bit selected by a named constant, not a member.
+      const sym = scope.lookup(name);
+      if (sym?.kind === "constant" || sym?.kind === "variable") return;
+      what = `A value of type '${upper}'`;
+    } else if (this.isClosedStruct(upper)) {
+      what = `STRUCT '${upper}'`;
+    } else if (this.isClosedFunctionBlock(upper, memberUpper)) {
+      what = `Function block '${upper}'`;
+    }
+    if (what === undefined) return;
+    const span = expr.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}:${memberUpper}`;
+    if (this.unknownMemberReported.has(key)) return;
+    this.unknownMemberReported.add(key);
+    this.addError(
+      `${what} has no member '${name}'`,
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
+  }
+
+  /** A STRUCT (not a UNION) whose whole EXTENDS chain this compile declares. */
+  private isClosedStruct(upper: string): boolean {
+    const seen = new Set<string>();
+    let current: string | undefined = upper;
+    while (current !== undefined) {
+      if (seen.has(current)) return false;
+      seen.add(current);
+      const name: string = current;
+      const decl = this.ast?.types.find((t) => t.name.toUpperCase() === name);
+      if (decl?.definition.kind !== "StructDefinition") return false;
+      if (decl.definition.isUnion) return false;
+      current = decl.extends?.name.toUpperCase();
+    }
+    return true;
+  }
+
+  /**
+   * A function block whose whole EXTENDS chain this compile declares and no
+   * block of which has a method, action or property named `memberUpper`.
+   */
+  private isClosedFunctionBlock(upper: string, memberUpper: string): boolean {
+    const seen = new Set<string>();
+    let current: string | undefined = upper;
+    while (current !== undefined) {
+      if (seen.has(current)) return false;
+      seen.add(current);
+      const name: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name,
+      );
+      if (!fb) return false;
+      const named = (n: { name: string }): boolean =>
+        n.name.toUpperCase() === memberUpper;
+      if (
+        fb.methods.some(named) ||
+        fb.actions.some(named) ||
+        fb.properties.some(named)
+      ) {
+        return false;
+      }
+      current = fb.extends?.toUpperCase();
+    }
+    return true;
+  }
+
+  /**
    * Resolve a type *name* to its IECType: an elementary type, else a registered
    * type (struct/FB/enum from the local AST or a dependency library), else a
    * minimal elementary placeholder. Using the registered type (rather than always
@@ -656,6 +808,14 @@ export class TypeChecker {
               currentType = ELEMENTARY_TYPES["BOOL"];
               currentTypeName = "BOOL";
             } else {
+              if (currentType?.typeKind !== "reference") {
+                this.reportUnknownMember(
+                  currentTypeName,
+                  step.name,
+                  expr,
+                  scope,
+                );
+              }
               currentType = undefined;
               currentTypeName = undefined;
             }
@@ -720,6 +880,9 @@ export class TypeChecker {
               currentTypeName = fieldType;
               currentType = this.resolveNamedType(fieldType);
             } else {
+              if (currentType?.typeKind !== "reference") {
+                this.reportUnknownMember(currentTypeName, field, expr, scope);
+              }
               currentType = undefined;
               currentTypeName = undefined;
             }
@@ -1627,6 +1790,9 @@ export class TypeChecker {
         }
         this.validateInOutMemberWrite(stmt.target, scope);
         if (this.isAddressIntoPointer(stmt.target, valueType, scope)) break;
+        if (this.checkArrayScalarAssignment(stmt.target, stmt.value, scope)) {
+          break;
+        }
         const errorsBefore = this.errors.length;
         this.validateAssignment(targetType, valueType, stmt.target, stmt.value);
         // One error per mistake: the REF_TO check only adds what the general one missed.
