@@ -121,6 +121,10 @@ declares `M`. `THIS^.x` means the same as `THIS.x`. `REF=` on a THIS member (`TH
 `SUPER^.x` and `SUPER^()` are not IEC either, but they were accepted before profiles and still are, in every
 dialect.
 
+`=` and `<>` on two STRUCT values (compared field by field) are not IEC 61131-3 Ed. 3 either, whose
+comparison functions take elementary values. They were accepted by analysis before they compiled and still
+are, in every dialect, `iec-3` included; refusing them under `iec-3` is a candidate for the iec-3 audit.
+
 `property` is in neither the default set nor `iec-3`: IEC 61131-3 Ed. 3 has no PROPERTY, and its interfaces
 hold method prototypes only. A `PROPERTY` in a `FUNCTION_BLOCK` (with GET/SET bodies) needs no feature and is
 accepted in every dialect. In an `INTERFACE`, a property prototype names its accessors explicitly, with no

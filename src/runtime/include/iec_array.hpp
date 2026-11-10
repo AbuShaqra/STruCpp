@@ -527,6 +527,19 @@ public:
 };
 
 /**
+ * Element-by-element equality of two arrays of the same shape (a STRUCT
+ * `=` / `<>` comparing an ARRAY member): `eq(x, y)` for each element pair.
+ */
+template<typename A, typename F>
+inline bool iec_equal_each(const A& a, const A& b, F&& eq) {
+    auto j = b.begin();
+    for (auto i = a.begin(); i != a.end(); ++i, ++j) {
+        if (!eq(*i, *j)) return false;
+    }
+    return true;
+}
+
+/**
  * Call f on every element of a (possibly nested) array, row-major, or on x
  * itself when it is not an array. Used for start-up FB_init calls (feature
  * fb_init): an element is an FB instance, which has no begin().
