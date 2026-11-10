@@ -42,9 +42,9 @@
  * Returning `T` here would make a scalar global the one operand kind that differs,
  * and `ADD(aGlobal, aLocal)` would fail to deduce — implicit conversions are not
  * considered during template argument deduction, so `operator T()` cannot rescue it.
- * Forcing is preserved: the copy handed back is built through the canonical's
- * get(), so it carries the effective forced value (with the force flag cleared, as
- * a detached snapshot should); located globals additionally honor the image
+ * Forcing is not part of the value: a forced global is written by the force
+ * table (iec_force.hpp) at cycle boundaries, so a copy carries no force, as a
+ * detached snapshot should; located globals additionally honor the image
  * forced-slot bitmap.
  */
 #ifndef STRUCPP_IEC_GLOBAL_HPP
@@ -76,7 +76,7 @@ class GlobalVar {
     GlobalVar(const GlobalVar&) = delete;
     GlobalVar& operator=(const GlobalVar&) = delete;
 
-    /** Scalar read: returns the real IEC value type (forcing-aware),
+    /** Scalar read: returns the real IEC value type,
      *  deduction-friendly. Only instantiated for scalar globals (codegen uses
      *  with_lock() for structs / arrays / FB instances).
      *
@@ -94,7 +94,7 @@ class GlobalVar {
         return value;
     }
 
-    /** Scalar write (forcing-aware via set()). */
+    /** Scalar write. */
     template <typename T>
     void write(T v) {
 #ifdef STRUCPP_THREADED

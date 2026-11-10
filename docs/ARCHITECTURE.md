@@ -155,7 +155,7 @@ Generates two files per compilation: `.hpp` (declarations) and `.cpp` (implement
 | REF_TO INT          | `IEC_REF_TO<int16_t>`     | -                      |
 | User struct         | `struct Name { ... }`     | `IECVar<Name>`         |
 
-All program/function variables are wrapped in `IECVar<T>` which provides transparent variable forcing support. Struct fields use IECVar-wrapped elementary types for per-field forcing.
+All program/function variables are wrapped in `IECVar<T>`. Forcing is held beside them in the runtime's force table (`iec_force.hpp`) and applied at the boundaries of every PROGRAM cycle, so every elementary leaf, struct fields included, can be forced on its own.
 
 ### POU Generation
 

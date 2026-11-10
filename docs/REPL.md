@@ -62,7 +62,7 @@ Bit-string types (BYTE, WORD, DWORD, LWORD) are displayed in hex. Forced variabl
 | `force program.var value` | Force a variable to a fixed value (persists across scans) |
 | `unforce program.var` | Remove forcing, return to normal operation |
 
-Forcing overrides the program's logic -- a forced variable ignores all writes from the ST program and always returns the forced value. This is useful for simulating sensor inputs or testing edge cases.
+Forcing overrides the program's logic at cycle boundaries, as on a PLC: the forced value is written in when a cycle starts and again when it ends. Inside the cycle a program that writes the variable reads its own write, and `set` on a forced variable is ignored. This is useful for simulating sensor inputs or testing edge cases. A bounded number of variables can be forced at once; past it, `force` answers `ERR: Force table full`.
 
 ```
 strucpp[0]> force Main.sensor_input 100
