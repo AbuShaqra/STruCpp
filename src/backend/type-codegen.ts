@@ -40,6 +40,7 @@ import {
   buildEnumMemberMap,
   implicitEnumBaseName,
   type EnumMemberEntry,
+  enumBehindAlias,
 } from "../semantic/type-utils.js";
 import {
   generateInitializerValue,
@@ -249,7 +250,12 @@ export class TypeCodeGenerator {
    */
   useTypeScope(types: readonly TypeDeclaration[]): void {
     const enums = types.filter((t) => t.definition.kind === "EnumDefinition");
-    this.knownEnumNames = new Set(enums.map((t) => t.name.toUpperCase()));
+    // An alias of an enumeration is declared with the enumeration's wrapper.
+    this.knownEnumNames = new Set(
+      types
+        .filter((t) => enumBehindAlias(types, t) !== undefined)
+        .map((t) => t.name.toUpperCase()),
+    );
     this.enumMemberToType = buildEnumMemberMap(
       enums
         .filter((t) => t.inline?.owner === undefined)
@@ -364,6 +370,12 @@ export class TypeCodeGenerator {
     if (isElementaryType(baseName)) {
       // Alias to elementary type - use the existing IEC_ wrapper
       this.emit(`using IEC_${name} = IEC_${baseName};`);
+    } else if (
+      this.knownEnumNames.has(name.toUpperCase()) &&
+      def.referenceKind === "none"
+    ) {
+      // Alias of an enumeration - the wrapper an enumeration variable gets
+      this.emit(`using IEC_${name} = IEC_ENUM<${name}>;`);
     } else {
       // Alias to user-defined type - use IECVar wrapper
       this.emit(`using IEC_${name} = IECVar<${name}>;`);

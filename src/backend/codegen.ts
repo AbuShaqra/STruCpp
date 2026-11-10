@@ -113,6 +113,7 @@ import {
   typesHoldingFunctionBlocks,
   ELEMENTARY_TYPES,
   canonicalElementaryName,
+  enumBehindAlias,
 } from "../semantic/type-utils.js";
 import {
   generateInitializerValue,
@@ -1316,6 +1317,15 @@ export class CodeGenerator {
         this.enumTypeMembers.set(td.name.toUpperCase(), members);
         if (td.inline?.owner === undefined) {
           enumDescriptors.push({ name: td.name, members: memberNames });
+        }
+      } else {
+        // An alias of an enumeration is an enumeration type of the same members.
+        const base = enumBehindAlias(ast.types, td);
+        if (base?.definition.kind === "EnumDefinition") {
+          this.enumTypeMembers.set(
+            td.name.toUpperCase(),
+            new Set(base.definition.members.map((m) => m.name.toUpperCase())),
+          );
         }
       }
     }

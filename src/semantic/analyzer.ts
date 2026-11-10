@@ -97,6 +97,7 @@ import {
   typeNamesHeldByValue,
   typesHoldingFunctionBlocks,
   ELEMENTARY_TYPES,
+  enumBehindAlias,
 } from "./type-utils.js";
 import {
   isEnArgument,
@@ -1350,12 +1351,14 @@ export class SemanticAnalyzer {
     for (const typeDecl of ast.types) {
       try {
         // Use enum typeKind for EnumDefinition so CASE and type checks work correctly
+        // An alias of an enumeration is that enumeration.
+        const aliased = enumBehindAlias(ast.types, typeDecl);
         const resolvedType: EnumType | ElementaryType =
-          typeDecl.definition.kind === "EnumDefinition"
+          aliased !== undefined && aliased.definition.kind === "EnumDefinition"
             ? {
                 typeKind: "enum" as const,
-                name: typeDecl.name,
-                values: typeDecl.definition.members.map((m) => m.name),
+                name: aliased.name,
+                values: aliased.definition.members.map((m) => m.name),
               }
             : {
                 typeKind: "elementary" as const,
