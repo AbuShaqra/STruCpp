@@ -100,6 +100,7 @@ template<size_t MaxLen> class IECString;
 template<size_t MaxLen> class IECWString;
 template<size_t MaxLen> class IECStringVar;
 template<size_t MaxLen> class IECWStringVar;
+template<typename EnumType> class IEC_ENUM_Var;
 
 namespace detail {
 /**
@@ -115,11 +116,18 @@ template<size_t N> struct stored_directly<IECWStringVar<N>> : std::false_type {}
 template<typename U> struct stored_directly<IEC_REF_TO<U>> : std::false_type {};
 template<typename U> struct stored_directly<IEC_REFERENCE_TO<U>> : std::false_type {};
 template<typename U> struct stored_directly<IEC_Ptr<U>> : std::false_type {};
+template<typename E> struct stored_directly<IEC_ENUM_Var<E>> : std::false_type {};
 
-/** The variable holding a T: T itself when stored directly, else IECVar<T>. */
-template<typename T> struct value_target {
+/**
+ * The variable holding a T: T itself when stored directly, IECStringVar /
+ * IECWStringVar for a string, IEC_ENUM_Var for an enumeration, else IECVar<T>.
+ */
+template<typename T, bool IsEnum = std::is_enum<T>::value> struct value_target {
     using type = typename std::conditional<stored_directly<T>::value, T, IECVar<T>>::type;
 };
+template<typename T> struct value_target<T, true> { using type = IEC_ENUM_Var<T>; };
+template<size_t N> struct value_target<IECString<N>, false> { using type = IECStringVar<N>; };
+template<size_t N> struct value_target<IECWString<N>, false> { using type = IECWStringVar<N>; };
 
 /**
  * The object a REF_TO T points at. A value lives in an IECVar<T>, a STRUCT or
@@ -580,6 +588,28 @@ inline IEC_REF_TO<IEC_Ptr<T>> REF(IEC_Ptr<T>& ptr) noexcept {
 template<typename T, typename std::enable_if<detail::stored_directly<T>::value, int>::type = 0>
 inline IEC_REF_TO<T> REF(T& var) noexcept {
     return IEC_REF_TO<T>(&var);
+}
+
+/**
+ * REF() of a STRING or WSTRING variable, which is an IECStringVar /
+ * IECWStringVar rather than an IECVar.
+ */
+template<size_t N>
+inline IEC_REF_TO<IECString<N>> REF(IECStringVar<N>& var) noexcept {
+    return IEC_REF_TO<IECString<N>>(&var);
+}
+
+template<size_t N>
+inline IEC_REF_TO<IECWString<N>> REF(IECWStringVar<N>& var) noexcept {
+    return IEC_REF_TO<IECWString<N>>(&var);
+}
+
+/**
+ * REF() of an enumeration variable, which is an IEC_ENUM_Var.
+ */
+template<typename E>
+inline IEC_REF_TO<E> REF(IEC_ENUM_Var<E>& var) noexcept {
+    return IEC_REF_TO<E>(&var);
 }
 
 // Note: REF() for array elements and struct fields works automatically
