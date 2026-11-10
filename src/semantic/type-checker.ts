@@ -57,7 +57,7 @@ import {
   type AccessLookup,
   type AccessType,
 } from "./type-utils.js";
-import { stripEnEno } from "../ast-utils.js";
+import { stripEnEno, walkAST } from "../ast-utils.js";
 import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
 import { structExtends } from "./struct-extends.js";
 import {
@@ -301,6 +301,7 @@ export class TypeChecker {
     this.warnings = [];
     this.strictReported.clear();
     this.ast = ast;
+    this.checkAllInitializerElements(ast);
 
     // Init arguments of global FB instances (feature fb_init)
     if (this.features.has("fb_init")) {
@@ -565,6 +566,87 @@ export class TypeChecker {
       span.startCol,
       span.file,
     );
+  }
+
+  /**
+   * Check every declaration's structure initializers. A type-level default
+   * (`TYPE T : ST := (...)`) is not: g++ only sees it once a variable uses it.
+   */
+  private checkAllInitializerElements(ast: CompilationUnit): void {
+    walkAST(ast, (node) => {
+      if (node.kind !== "VarDeclaration") return;
+      const decl = node as VarDeclaration;
+      if (decl.initialValue) {
+        this.checkInitializerElements(decl.type, decl.initialValue);
+      }
+    });
+  }
+
+  /**
+   * Report an element a structure initializer names that its STRUCT or
+   * function block does not have, at any depth: `(zz := 1)`, `[(zz := 1)]`,
+   * `(p := (zz := 1))`. Only types whose whole EXTENDS chain is declared here.
+   */
+  private checkInitializerElements(
+    type: AccessType | undefined,
+    value: Expression,
+  ): void {
+    if (
+      !this.ast ||
+      !type ||
+      type.referenceKind !== "none" ||
+      type.referenceChain !== undefined
+    ) {
+      return;
+    }
+    if (value.kind === "ArrayLiteralExpression") {
+      const element: AccessType | undefined =
+        type.arrayDimensions !== undefined
+          ? type.elementTypeName !== undefined &&
+            type.elementReferenceChain === undefined
+            ? { name: type.elementTypeName, referenceKind: "none" }
+            : undefined
+          : resolveArrayElementAccessType(type.name, this.ast);
+      for (const e of value.elements) this.checkInitializerElements(element, e);
+      return;
+    }
+    if (
+      value.kind !== "StructInitializerExpression" ||
+      type.arrayDimensions !== undefined
+    ) {
+      return;
+    }
+    const upper = this.aliasBase(type.name);
+    for (const el of value.elements) {
+      const field = resolveFieldDeclaration(upper, el.name, this.ast);
+      if (field) {
+        this.checkInitializerElements(field.type, el.value);
+        continue;
+      }
+      if (this.resolveFieldTypeAnywhere(upper, el.name) !== undefined) continue;
+      const memberUpper = el.name.toUpperCase();
+      let what: string | undefined;
+      if (this.isClosedStruct(upper)) {
+        what = `STRUCT '${upper}'`;
+      } else if (
+        memberUpper !== "EN" &&
+        memberUpper !== "ENO" &&
+        this.isClosedFunctionBlock(upper, memberUpper)
+      ) {
+        what = `Function block '${upper}'`;
+      }
+      if (what === undefined) continue;
+      const span = el.sourceSpan;
+      const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}:${memberUpper}`;
+      if (this.unknownMemberReported.has(key)) continue;
+      this.unknownMemberReported.add(key);
+      this.addError(
+        `${what} has no member '${el.name}'`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    }
   }
 
   /** A STRUCT (not a UNION) whose whole EXTENDS chain this compile declares. */
