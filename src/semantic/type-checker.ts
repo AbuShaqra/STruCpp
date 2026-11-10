@@ -202,6 +202,15 @@ function isNullInitializer(expr: Expression): boolean {
   );
 }
 
+/** `ADR(x)`. */
+function isAddressOf(expr: Expression): expr is FunctionCallExpression {
+  return (
+    expr.kind === "FunctionCallExpression" &&
+    expr.functionName.toUpperCase() === "ADR" &&
+    expr.instance === undefined
+  );
+}
+
 /** An untyped integer literal 0 (`0`, `16#0`), not `INT#0`. */
 function isUntypedZero(expr: Expression): expr is LiteralExpression {
   return (
@@ -348,6 +357,9 @@ export class TypeChecker {
     this.ast = ast;
     this.checkAllInitializerElements(ast);
 
+    // Globals are created in declaration order.
+    this.checkAddressInitialOrder(ast.globalVarBlocks);
+
     // Init arguments of global FB instances (feature fb_init)
     if (this.features.has("fb_init")) {
       this.checkVarBlocks(
@@ -372,6 +384,7 @@ export class TypeChecker {
             method.name,
           );
           this.checkVarBlocks(method.varBlocks, methodScope ?? scope);
+          this.checkAddressInitialOrder(method.varBlocks);
           if (method.returnType) {
             this.currentReturn = {
               name: method.name,
@@ -390,6 +403,7 @@ export class TypeChecker {
       const scope = this.symbolTables.getFunctionScope(func.name);
       if (scope) {
         this.checkVarBlocks(func.varBlocks, scope);
+        this.checkAddressInitialOrder(func.varBlocks);
         this.currentReturn = { name: func.name, type: func.returnType };
         this.checkStatements(func.body, scope);
         this.currentReturn = undefined;
@@ -418,6 +432,7 @@ export class TypeChecker {
             method.name,
           );
           this.checkVarBlocks(method.varBlocks, methodScope ?? scope);
+          this.checkAddressInitialOrder(method.varBlocks);
           if (method.returnType) {
             this.currentReturn = {
               name: method.name,
@@ -2007,6 +2022,60 @@ export class TypeChecker {
    * assignment statements — no separate compatibility rules — so anything
    * the standard considers an implicit assignment also passes here.
    */
+  /**
+   * Where variables are created one after another (the locals of a FUNCTION
+   * or METHOD, the globals), `p : POINTER TO T := ADR(x);` cannot take the
+   * address of a variable of the same blocks declared after `p`. Parameters
+   * exist before any local. Members of a PROGRAM or FB are not checked: a
+   * member's address is known before the member is initialised.
+   */
+  private checkAddressInitialOrder(blocks: readonly VarBlock[]): void {
+    const declared = new Set<string>();
+    const created = new Set<string>();
+    for (const block of blocks) {
+      const parameter =
+        block.blockType === "VAR_INPUT" ||
+        block.blockType === "VAR_OUTPUT" ||
+        block.blockType === "VAR_IN_OUT";
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          declared.add(name.toUpperCase());
+          if (parameter) created.add(name.toUpperCase());
+        }
+      }
+    }
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        const value = decl.initialValue;
+        const operand =
+          value !== undefined &&
+          decl.type.referenceKind === "pointer_to" &&
+          isAddressOf(value)
+            ? value.arguments[0]?.value
+            : undefined;
+        const target =
+          operand?.kind === "VariableExpression"
+            ? operand.name.toUpperCase()
+            : undefined;
+        if (
+          target !== undefined &&
+          operand !== undefined &&
+          declared.has(target) &&
+          !created.has(target)
+        ) {
+          const name = (decl.names[0] ?? "").toUpperCase();
+          this.addError(
+            `The initial value of '${name}' takes the address of '${target}', which is declared after it; declare '${target}' first or assign '${name}' in the body`,
+            operand.sourceSpan.startLine,
+            operand.sourceSpan.startCol,
+            operand.sourceSpan.file,
+          );
+        }
+        for (const name of decl.names) created.add(name.toUpperCase());
+      }
+    }
+  }
+
   private checkVarBlocks(
     blocks: VarBlock[],
     scope: Scope,
@@ -2022,7 +2091,8 @@ export class TypeChecker {
         const outerKind = decl.type.referenceKind;
         if (
           (outerKind === "ref_to" || outerKind === "pointer_to") &&
-          !isNullInitializer(decl.initialValue)
+          !isNullInitializer(decl.initialValue) &&
+          !(outerKind === "pointer_to" && isAddressOf(decl.initialValue))
         ) {
           const kindText = outerKind === "ref_to" ? "REF_TO" : "POINTER TO";
           this.addError(
@@ -2031,6 +2101,11 @@ export class TypeChecker {
             decl.initialValue.sourceSpan.startCol,
             decl.initialValue.sourceSpan.file,
           );
+          continue;
+        }
+        // `p : POINTER TO T := ADR(x);` takes an address of any target type.
+        if (outerKind === "pointer_to" && isAddressOf(decl.initialValue)) {
+          this.resolveExprType(decl.initialValue, scope);
           continue;
         }
         if (
