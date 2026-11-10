@@ -1999,7 +1999,7 @@ export class CodeGenerator {
     // (matches the standard: ENO defaults to TRUE when EN is omitted).
     // Only emitted on the leaf FB; if it extends another FB, the parent
     // already provides ENO.
-    if (!fb.extends) {
+    if (!fb.extends && this.declaredEnoType(fb.name) === undefined) {
       this.emitHeader("");
       this.emitHeader("    // Implicit IEC 61131-3 ENO pin (mirrors EN)");
       this.emitHeader("    IEC_BOOL ENO = true;");
@@ -2221,9 +2221,11 @@ export class CodeGenerator {
     // program (or the test framework that wraps a program as a UUT and
     // invokes it like an FB) resolves. Default true matches the
     // standard's "ENO defaults to TRUE when EN is omitted".
-    this.emitHeader("    // Implicit IEC 61131-3 ENO pin (mirrors EN)");
-    this.emitHeader("    IEC_BOOL ENO = true;");
-    this.emitHeader("");
+    if (this.declaredEnoType(prog.name) === undefined) {
+      this.emitHeader("    // Implicit IEC 61131-3 ENO pin (mirrors EN)");
+      this.emitHeader("    IEC_BOOL ENO = true;");
+      this.emitHeader("");
+    }
     this.emitHeader("    // Constructor");
     this.emitHeader(`    Program_${prog.name}();`);
     this.emitHeader("");
@@ -3220,9 +3222,11 @@ export class CodeGenerator {
     this.emitHeader("");
     // Implicit IEC 61131-3 ENO pin (see generateProgramHeaderDeclaration
     // for the rationale; this is the project-model code path, same shape).
-    this.emitHeader("    // Implicit IEC 61131-3 ENO pin (mirrors EN)");
-    this.emitHeader("    IEC_BOOL ENO = true;");
-    this.emitHeader("");
+    if (this.declaredEnoType(prog.name) === undefined) {
+      this.emitHeader("    // Implicit IEC 61131-3 ENO pin (mirrors EN)");
+      this.emitHeader("    IEC_BOOL ENO = true;");
+      this.emitHeader("");
+    }
     this.emitHeader("    // Constructor");
     if (prog.varExternal.length > 0) {
       // Constructor takes a pointer to each canonical GlobalVar<V> (the
@@ -6664,6 +6668,37 @@ export class CodeGenerator {
    * interface, walking the base chain of function blocks. Undefined when the
    * type is not declared in this compilation unit (a library block).
    */
+  /**
+   * The type name (upper case) of the ENO an FB, its bases included, or a
+   * PROGRAM declares; undefined when it has only the implicit one.
+   */
+  private declaredEnoType(typeName: string): string | undefined {
+    const seen = new Set<string>();
+    let current: string | undefined = typeName.toUpperCase();
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      const upper: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === upper,
+      );
+      const owner =
+        fb ?? this.ast?.programs.find((p) => p.name.toUpperCase() === upper);
+      if (!owner) return undefined;
+      for (const block of owner.varBlocks) {
+        for (const decl of block.declarations) {
+          if (decl.names.some((n) => n.toUpperCase() === "ENO")) {
+            const plain =
+              decl.type.arrayDimensions === undefined &&
+              decl.type.referenceKind === "none";
+            return plain ? decl.type.name.toUpperCase() : "";
+          }
+        }
+      }
+      current = fb?.extends?.toUpperCase();
+    }
+    return undefined;
+  }
+
   private findMethodDeclaration(
     typeName: string | undefined,
     methodName: string,
@@ -7824,7 +7859,32 @@ export class CodeGenerator {
     enoVar: string | null,
     emitBody: (bodyIndent: string) => void,
     instanceEnoTarget: string | null = null,
+    instanceEnoDeclared = false,
   ): void {
+    // A declared BOOL ENO: TRUE before the body, which may clear it; the
+    // caller's ENO => target then reads it.
+    if (instanceEnoDeclared && instanceEnoTarget !== null) {
+      const copyOut = (atIndent: string, value: string): void => {
+        if (enoVar !== null) this.emit(`${atIndent}${enoVar} = ${value};`);
+      };
+      const run = (atIndent: string): void => {
+        this.emit(`${atIndent}${instanceEnoTarget} = true;`);
+        emitBody(atIndent);
+        copyOut(atIndent, instanceEnoTarget);
+      };
+      if (enExpr === null) {
+        run(indent);
+        return;
+      }
+      const bodyIndent = indent + this.options.indent;
+      this.emit(`${indent}if (${enExpr}) {`);
+      run(bodyIndent);
+      this.emit(`${indent}} else {`);
+      this.emit(`${bodyIndent}${instanceEnoTarget} = false;`);
+      copyOut(bodyIndent, "false");
+      this.emit(`${indent}}`);
+      return;
+    }
     const targets = [enoVar, instanceEnoTarget].filter(
       (t): t is string => t !== null,
     );
@@ -8002,6 +8062,7 @@ export class CodeGenerator {
         }
       },
       `${instanceName}.ENO`,
+      fbTypeName !== undefined && this.declaredEnoType(fbTypeName) === "BOOL",
     );
 
     // Copy-outs of in-outs passed by copy, then the bindings that end with
