@@ -903,9 +903,9 @@ export class CodeGenerator {
             typeRef.elementReferenceChain,
             this.rawReferencedType(typeRef.elementTypeName),
           )
-        : this.isUserDefinedType(typeRef.elementTypeName)
-          ? typeRef.elementTypeName
-          : this.mapVarTypeToCpp(typeRef.elementTypeName);
+        : // An enumeration element is the variable a scalar gets (IEC_E), as in a
+          // STRUCT field or named ARRAY type, so REF/ADR of it see one type.
+          this.mapVarTypeToCpp(typeRef.elementTypeName);
       baseType = formatArrayType(elemCpp, typeRef.arrayDimensions);
     } else if (
       typeRef.elementReferenceChain &&
