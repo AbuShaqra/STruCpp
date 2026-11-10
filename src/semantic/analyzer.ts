@@ -39,6 +39,7 @@ import type {
 import type { CompileError, SourceSpan } from "../types.js";
 import { describeInlineType } from "../frontend/lower-inline-types.js";
 import { StdFunctionRegistry } from "./std-function-registry.js";
+import { RUNTIME_CALLABLE_NAMES } from "./runtime-functions.js";
 import { Scope, SymbolTables } from "./symbol-table.js";
 import type { FunctionSymbol } from "./symbol-table.js";
 import { TypeChecker } from "./type-checker.js";
@@ -384,6 +385,8 @@ interface LocatedVarInfo {
 interface UndeclaredVarContext {
   functionName?: string;
   fbName?: string;
+  /** The PROGRAM whose body or method is walked. */
+  programName?: string;
   methodName?: string;
   propertyName?: string;
   /** Test bodies only (the type checker never sees them): report a CONTINUE outside a loop. */
@@ -399,6 +402,8 @@ export class SemanticAnalyzer {
   private enumMemberMap: Map<string, EnumMemberEntry> = new Map();
   /** Uppercase names of the TYPEs hoisted from the test file being analyzed. */
   private testTypeNames = new Set<string>();
+  /** The unit being checked holds an `{external}` block (inline C++). */
+  private hasExternalCode = false;
   private errors: CompileError[] = [];
   private warnings: CompileError[] = [];
 
@@ -4544,6 +4549,10 @@ export class SemanticAnalyzer {
    * Validate that all variable references in POU bodies refer to declared variables.
    */
   private validateUndeclaredVariables(ast: CompilationUnit): void {
+    this.hasExternalCode = false;
+    walkAST(ast, (node) => {
+      if (node.kind === "ExternalCodePragma") this.hasExternalCode = true;
+    });
     this.forEachPouBody(ast, (body, scope, ctx) =>
       this.walkStatementsForUndeclaredVars(body, scope, ctx),
     );
@@ -4638,13 +4647,16 @@ export class SemanticAnalyzer {
     for (const prog of ast.programs) {
       const scope = this.symbolTables.getProgramScope(prog.name);
       if (scope) {
-        visit(prog.body, scope, {});
+        visit(prog.body, scope, { programName: prog.name });
         for (const method of prog.methods) {
           const methodScope = this.symbolTables.getMethodScope(
             prog.name,
             method.name,
           );
-          visit(method.body, methodScope ?? scope, { methodName: method.name });
+          visit(method.body, methodScope ?? scope, {
+            programName: prog.name,
+            methodName: method.name,
+          });
         }
       }
     }
@@ -4831,7 +4843,9 @@ export class SemanticAnalyzer {
         if (expr.instance) {
           this.checkExpressionForUndeclaredVars(expr.instance, scope, ctx);
         }
-        // Don't check non-dotted function names — they're function/FB symbols
+        if (!expr.functionName.includes(".") && !expr.instance) {
+          this.checkCalleeDeclared(expr.functionName, scope, ctx, expr);
+        }
         for (const arg of expr.arguments) {
           this.checkExpressionForUndeclaredVars(arg.value, scope, ctx);
         }
@@ -4968,6 +4982,65 @@ export class SemanticAnalyzer {
       return true;
     }
     return (upper === "THIS" || upper === "SUPER") && ctx.fbName !== undefined;
+  }
+
+  /**
+   * A method (or action) of the enclosing PROGRAM, or of the enclosing
+   * function block or one of its bases: callable bare. A library base
+   * counts as having it.
+   */
+  private isOwnMethod(upper: string, ctx: UndeclaredVarContext): boolean {
+    const has = (methods: readonly { name: string }[]): boolean =>
+      methods.some((m) => m.name.toUpperCase() === upper);
+    if (ctx.programName !== undefined) {
+      const prog = this.symbolTables.globalScope.lookup(ctx.programName);
+      if (prog?.kind === "program" && has(prog.declaration.methods)) {
+        return true;
+      }
+    }
+    const seen = new Set<string>();
+    let fbName = ctx.fbName;
+    while (fbName !== undefined && !seen.has(fbName.toUpperCase())) {
+      seen.add(fbName.toUpperCase());
+      const fb = this.symbolTables.globalScope.lookup(fbName);
+      // A library or unresolved block: its methods are not known here
+      if (fb?.kind !== "functionBlock" || fb.libraryName !== undefined) {
+        return true;
+      }
+      if (has(fb.declaration.methods)) return true;
+      fbName = fb.declaration.extends;
+    }
+    return false;
+  }
+
+  /**
+   * Error on a bare call whose name is no function, function block instance,
+   * method, standard function or other declared callable in scope (C++
+   * would see an undeclared name).
+   */
+  private checkCalleeDeclared(
+    name: string,
+    scope: Scope,
+    ctx: UndeclaredVarContext,
+    call: { sourceSpan: SourceSpan },
+  ): void {
+    const upper = name.toUpperCase();
+    const hit = scope.lookup(upper);
+    if (hit && hit.kind !== "enumValue") return;
+    if (this.isContextName(upper, ctx)) return;
+    if (this.isOwnMethod(upper, ctx)) return;
+    if (this.stdRegistry.isStandardFunction(upper)) return;
+    if (this.symbolTables.lookupFunction(upper) !== undefined) return;
+    if (RUNTIME_CALLABLE_NAMES.has(upper)) return;
+    // Inline C++ may declare the name (a macro, a lambda)
+    if (this.hasExternalCode) return;
+    const span = call.sourceSpan;
+    this.addError(
+      `Undeclared function '${upper}'`,
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
   }
 
   /**
