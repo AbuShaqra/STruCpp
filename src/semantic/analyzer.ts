@@ -4557,6 +4557,100 @@ export class SemanticAnalyzer {
       this.walkStatementsForUndeclaredVars(body, scope, ctx),
     );
     if (this.features.has("fb_init")) this.validateFbInitArgumentNames(ast);
+    this.validateInitialValueNames(ast);
+  }
+
+  /**
+   * Initial values (`x : INT := zz;`) name only what their declaring scope
+   * declares, inside structure initializers and array literals too. A STRUCT
+   * field default that names a sibling field is not checked.
+   */
+  private validateInitialValueNames(ast: CompilationUnit): void {
+    const check = (
+      blocks: VarBlock[],
+      scope: Scope | undefined,
+      ctx: UndeclaredVarContext,
+    ): void => {
+      if (!scope) return;
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          if (decl.initialValue) {
+            this.checkInitialValueNames(decl.initialValue, scope, ctx);
+          }
+        }
+      }
+    };
+    const global = this.symbolTables.globalScope;
+    check(ast.globalVarBlocks, global, {});
+    for (const prog of ast.programs) {
+      const scope = this.symbolTables.getProgramScope(prog.name);
+      check(prog.varBlocks, scope, { programName: prog.name });
+      for (const method of prog.methods) {
+        check(
+          method.varBlocks,
+          this.symbolTables.getMethodScope(prog.name, method.name) ?? scope,
+          { programName: prog.name, methodName: method.name },
+        );
+      }
+    }
+    for (const func of ast.functions) {
+      check(func.varBlocks, this.symbolTables.getFunctionScope(func.name), {
+        functionName: func.name,
+      });
+    }
+    for (const fb of ast.functionBlocks) {
+      const scope = this.symbolTables.getFBScope(fb.name);
+      check(fb.varBlocks, scope, { fbName: fb.name });
+      for (const method of fb.methods) {
+        check(
+          method.varBlocks,
+          this.symbolTables.getMethodScope(fb.name, method.name) ?? scope,
+          { fbName: fb.name, methodName: method.name },
+        );
+      }
+    }
+    for (const type of ast.types) {
+      if (type.definition.kind !== "StructDefinition") continue;
+      const fields = new Set(
+        type.definition.fields.flatMap((f) =>
+          f.names.map((n) => n.toUpperCase()),
+        ),
+      );
+      for (const field of type.definition.fields) {
+        if (!field.initialValue) continue;
+        let namesSibling = false;
+        walkAST(field.initialValue, (node) => {
+          if (
+            node.kind === "VariableExpression" &&
+            fields.has((node as VariableExpression).name.toUpperCase())
+          ) {
+            namesSibling = true;
+          }
+        });
+        if (!namesSibling) {
+          this.checkInitialValueNames(field.initialValue, global, {});
+        }
+      }
+    }
+  }
+
+  /** Check one initial value's names; structure initializer element names are not values. */
+  private checkInitialValueNames(
+    expr: Expression,
+    scope: Scope,
+    ctx: UndeclaredVarContext,
+  ): void {
+    if (expr.kind === "StructInitializerExpression") {
+      for (const el of expr.elements) {
+        this.checkInitialValueNames(el.value, scope, ctx);
+      }
+    } else if (expr.kind === "ArrayLiteralExpression") {
+      for (const el of expr.elements) {
+        this.checkInitialValueNames(el, scope, ctx);
+      }
+    } else {
+      this.checkExpressionForUndeclaredVars(expr, scope, ctx);
+    }
   }
 
   /** Init argument values (feature fb_init) name only what their declaring scope declares. */
