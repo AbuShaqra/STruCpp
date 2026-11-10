@@ -296,8 +296,8 @@ END_TYPE
   });
 });
 
-describe("an initial value that sets a UNION is not supported yet", () => {
-  it("on a variable, a STRUCT field, an array, an FB input and a TYPE default (reported once)", () => {
+describe("an initial value that sets a UNION names one member", () => {
+  it("on a variable, a STRUCT field, an array, an FB input and a TYPE default", () => {
     expect(
       check(`TYPE
   U_A : UNION f : REAL; d : DWORD; END_UNION;
@@ -320,14 +320,47 @@ VAR
 END_VAR
 END_PROGRAM
 `),
+    ).toEqual([]);
+  });
+
+  it("refuses more than one member, an unknown member and a value that is not a structure initializer", () => {
+    expect(
+      check(`TYPE
+  U_A : UNION f : REAL; d : DWORD; END_UNION;
+  U_D : UNION a : INT; b : INT; END_UNION := (a := 1, b := 2);
+  U_N : UNION inner : U_A; l : LWORD; END_UNION;
+  ST_W : STRUCT u : U_A; k : INT; END_STRUCT;
+END_TYPE
+PROGRAM P
+VAR
+  u : U_A := (f := 1.0, d := 2);
+  v : U_A := (zz := 1.0);
+  x : U_A := u;
+  n : U_N := (inner := (f := 1.0, d := 1));
+  w : ST_W := (k := 1, u := (f := 2.0, d := 3));
+  arr : ARRAY[0..1] OF U_A := [(f := 1.0), (f := 2.0, d := 1)];
+  d1 : U_D; d2 : U_D;
+END_VAR
+END_PROGRAM
+`),
     ).toEqual([
-      "12:14 An initial value for UNION 'U_A' is not supported yet",
-      "13:15 An initial value for UNION 'U_A' is not supported yet",
-      "14:31 An initial value for UNION 'U_A' is not supported yet",
-      "15:31 An initial value for UNION 'U_A' is not supported yet",
-      "16:16 An initial value for UNION 'U_A' is not supported yet",
-      "3:37 An initial value for UNION 'U_D' is not supported yet",
-      "5:28 An initial value for UNION 'U_A' is not supported yet",
+      "9:14 The initial value for UNION 'U_A' names 2 members: a UNION initial value sets one member",
+      "10:14 UNION 'U_A' has no member 'ZZ'",
+      "11:14 An initial value for UNION 'U_A' is not supported yet: name one member, as in (F := value)",
+      "12:24 The initial value for UNION 'U_A' names 2 members: a UNION initial value sets one member",
+      "13:29 The initial value for UNION 'U_A' names 2 members: a UNION initial value sets one member",
+      "14:44 The initial value for UNION 'U_A' names 2 members: a UNION initial value sets one member",
+      "3:46 The initial value for UNION 'U_D' names 2 members: a UNION initial value sets one member",
+    ]);
+  });
+
+  it("still refuses an initial value on a member in the UNION declaration", () => {
+    expect(
+      check(`TYPE U_A : UNION f : REAL := 1.0; d : DWORD; END_UNION; END_TYPE
+PROGRAM P VAR u : U_A; END_VAR END_PROGRAM
+`),
+    ).toEqual([
+      "1:30 Member 'F' of UNION 'U_A' has an initial value: initial values in a UNION are not supported yet",
     ]);
   });
 });
