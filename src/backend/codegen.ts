@@ -1972,6 +1972,8 @@ export class CodeGenerator {
       this.generatePropertyDeclarations(fb.properties);
     }
 
+    this.emitInheritedInterfaceOverrides(fb);
+
     if (this.fbInitPlan?.needsMembers(fb) === true) {
       this.emitHeader("");
       this.emitHeader("    // Start-up FB_init of the member instances");
@@ -1997,6 +1999,127 @@ export class CodeGenerator {
     this.emitHeader("};");
     this.emitHeaderLineReset();
     this.emitHeader("");
+  }
+
+  /**
+   * Interface methods and property accessors an FB provides only through a
+   * base FB that does not implement that interface: C++ needs an override in
+   * this class, which calls the base's.
+   */
+  private emitInheritedInterfaceOverrides(
+    fb: CompilationUnit["functionBlocks"][number],
+  ): void {
+    const ast = this.ast;
+    if (!ast || !fb.implements || fb.isAbstract) return;
+    const fbNamed = (
+      name: string | undefined,
+    ): CompilationUnit["functionBlocks"][number] | undefined =>
+      name === undefined
+        ? undefined
+        : ast.functionBlocks.find(
+            (f) => f.name.toUpperCase() === name.toUpperCase(),
+          );
+    const ancestors: CompilationUnit["functionBlocks"] = [];
+    for (
+      let a = fbNamed(fb.extends);
+      a !== undefined && !ancestors.includes(a) && a !== fb;
+      a = fbNamed(a.extends)
+    ) {
+      ancestors.push(a);
+    }
+    if (ancestors.length === 0) return;
+    // Interfaces reached from IMPLEMENTS lists, with their EXTENDS bases
+    const reach = (roots: readonly string[]): Set<string> => {
+      const out = new Set<string>();
+      const visit = (name: string): void => {
+        const upper = name.toUpperCase();
+        if (out.has(upper)) return;
+        out.add(upper);
+        const iface = ast.interfaces.find(
+          (i) => i.name.toUpperCase() === upper,
+        );
+        for (const base of iface?.extends ?? []) visit(base);
+      };
+      roots.forEach(visit);
+      return out;
+    };
+    const inherited = reach(ancestors.flatMap((a) => a.implements ?? []));
+    const lines: string[] = [];
+    const done = new Set<string>();
+    for (const ifaceName of reach(fb.implements)) {
+      if (inherited.has(ifaceName)) continue;
+      const iface = ast.interfaces.find(
+        (i) => i.name.toUpperCase() === ifaceName,
+      );
+      if (!iface) continue;
+      for (const m of iface.methods) {
+        const key = m.name.toUpperCase();
+        if (done.has(key)) continue;
+        if (fb.methods.some((x) => x.name.toUpperCase() === key)) continue;
+        for (const a of ancestors) {
+          const base = a.methods.find(
+            (x) => x.name.toUpperCase() === key && x.fromAction !== true,
+          );
+          if (!base) continue;
+          if (!base.isAbstract && !base.isFinal) {
+            done.add(key);
+            lines.push(this.forwardingMethod(base, a.name));
+          }
+          break;
+        }
+      }
+      for (const p of iface.properties) {
+        const key = `.${p.name.toUpperCase()}`;
+        if (done.has(key)) continue;
+        if (fb.properties.some((x) => `.${x.name.toUpperCase()}` === key)) {
+          continue;
+        }
+        const owner = ancestors.find((a) =>
+          a.properties.some((x) => `.${x.name.toUpperCase()}` === key),
+        );
+        const base = owner?.properties.find(
+          (x) => `.${x.name.toUpperCase()}` === key,
+        );
+        if (!owner || !base) continue;
+        done.add(key);
+        const type = this.mapTypeRefToCpp(base.type);
+        if (p.getter && base.getter) {
+          lines.push(
+            `    ${type} get_${base.name}() const override { return ${owner.name}::get_${base.name}(); }`,
+          );
+        }
+        if (p.setter && base.setter) {
+          lines.push(
+            `    void set_${base.name}(${type} ${base.name}) override { ${owner.name}::set_${base.name}(${base.name}); }`,
+          );
+        }
+      }
+    }
+    if (lines.length === 0) return;
+    this.emitHeader("");
+    this.emitHeader("    // Interface members provided by a base FB");
+    for (const line of lines) this.emitHeader(line);
+  }
+
+  /** An inline override of `method` that calls the one `owner` declares. */
+  private forwardingMethod(method: MethodDeclaration, owner: string): string {
+    const isIfaceReturn =
+      method.returnType !== undefined &&
+      this.isInterfaceType(method.returnType.name);
+    const returnType = method.returnType
+      ? isIfaceReturn
+        ? `${this.inOutParamType(method.returnType)}&`
+        : this.mapTypeRefToCpp(method.returnType)
+      : "void";
+    const args = method.varBlocks
+      .filter(
+        (b) =>
+          b.blockType === "VAR_INPUT" ||
+          b.blockType === "VAR_IN_OUT" ||
+          b.blockType === "VAR_OUTPUT",
+      )
+      .flatMap((b) => b.declarations.flatMap((d) => d.names));
+    return `    ${returnType} ${method.name}(${this.generateMethodParamList(method)}) override { return ${owner}::${method.name}(${args.join(", ")}); }`;
   }
 
   /**
