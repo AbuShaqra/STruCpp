@@ -5176,6 +5176,14 @@ export class SemanticAnalyzer {
       if (fbSym?.kind === "functionBlock") {
         let parentName = fbSym.declaration.extends;
         const visited = new Set<string>();
+        // A PROPERTY of the block or of a base, read or written bare
+        if (
+          fbSym.declaration.properties.some(
+            (p) => p.name.toUpperCase() === upper,
+          )
+        ) {
+          return true;
+        }
         while (parentName) {
           const parentUpper = parentName.toUpperCase();
           if (visited.has(parentUpper)) break;
@@ -5184,6 +5192,13 @@ export class SemanticAnalyzer {
           if (parentScope?.lookupLocal(upper)) return true;
           const parentSym = this.symbolTables.globalScope.lookup(parentUpper);
           if (parentSym?.kind !== "functionBlock") break;
+          if (
+            parentSym.declaration.properties.some(
+              (p) => p.name.toUpperCase() === upper,
+            )
+          ) {
+            return true;
+          }
           parentName = parentSym.declaration.extends;
         }
       }

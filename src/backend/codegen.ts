@@ -588,6 +588,9 @@ export class CodeGenerator {
   /** Lazily built hooks for structure-initializer lowering (see getStructInitEmitter). */
   private structInitEmitter?: StructInitEmitter;
 
+  /** UPPER name of the property whose setter is being generated (its value parameter). */
+  private currentSetterProperty: string | undefined;
+
   /** Lazily built set of file-level VAR_GLOBAL names (see fileScopeGlobalNames). */
   private fileScopeGlobalNameCache?: Set<string>;
 
@@ -2537,7 +2540,9 @@ export class CodeGenerator {
       const setterLine = this.currentLine;
       this.emit(`void ${className}::set_${prop.name}(${type} ${prop.name}) {`);
       // In setter, prop.name refers to the input parameter (no redirection)
+      this.currentSetterProperty = prop.name.toUpperCase();
       this.generateStatements(prop.setter);
+      this.currentSetterProperty = undefined;
       this.emit("}");
       this.emitLineReset();
       this.emit("");
@@ -4877,6 +4882,8 @@ export class CodeGenerator {
     if (copyInTemp !== undefined) return copyInTemp;
     // Bound by reference to a VAR_IN_OUT of a method or function call.
     if (this.inOutBindExprs.has(expr)) return this.renderInOutBound(expr);
+    const selfProperty = this.selfPropertyAccess(expr);
+    if (selfProperty) return this.generateVariableExpression(selfProperty);
 
     const nameUpper = expr.name.toUpperCase();
 
@@ -5065,6 +5072,35 @@ export class CodeGenerator {
     }
 
     return this.renderAccessTail(result, expr, nameUpper);
+  }
+
+  /**
+   * A bare name inside a function block naming a PROPERTY of it or of a base
+   * (`P`, no variable of that name in scope) as `THIS.P`; else undefined.
+   */
+  private selfPropertyAccess(
+    expr: VariableExpression,
+  ): VariableExpression | undefined {
+    const upper = expr.name.toUpperCase();
+    if (
+      this.currentFBName === undefined ||
+      expr.fieldAccess.length > 0 ||
+      expr.subscripts.length > 0 ||
+      expr.isDereference ||
+      (expr.accessChain?.length ?? 0) > 0 ||
+      this.currentScopeVarTypes.has(upper) ||
+      this.isCurrentFunctionResult(upper) ||
+      this.currentSetterProperty === upper ||
+      this.resolvePropertyName(this.currentFBName, expr.name) === undefined
+    ) {
+      return undefined;
+    }
+    return {
+      ...expr,
+      name: "THIS",
+      fieldAccess: [expr.name],
+      accessChain: [{ kind: "field", name: expr.name }],
+    };
   }
 
   /** `nameUpper` names the result variable of the function being generated. */
@@ -6748,8 +6784,31 @@ export class CodeGenerator {
     fieldName: string,
   ): string | undefined {
     if (!typeName) return undefined;
-    const key = `${typeName.toUpperCase()}.${fieldName.toUpperCase()}`;
-    return this.propertyNameMap.get(key);
+    // Own property, else one a base FB declares (nearest wins), unless this
+    // FB declares a variable of that name.
+    const field = fieldName.toUpperCase();
+    const seen = new Set<string>();
+    let current: string | undefined = typeName.toUpperCase();
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      const own = this.propertyNameMap.get(`${current}.${field}`);
+      if (own !== undefined) return own;
+      const owner: string = current;
+      const fb: CompilationUnit["functionBlocks"][number] | undefined =
+        this.ast?.functionBlocks.find((f) => f.name.toUpperCase() === owner);
+      if (
+        !fb ||
+        fb.varBlocks.some((b) =>
+          b.declarations.some((d) =>
+            d.names.some((n) => n.toUpperCase() === field),
+          ),
+        )
+      ) {
+        return undefined;
+      }
+      current = fb.extends?.toUpperCase();
+    }
+    return undefined;
   }
 
   /**
@@ -6780,7 +6839,7 @@ export class CodeGenerator {
     target: Expression,
   ): { objectCode: string; propertyName: string } | undefined {
     if (target.kind !== "VariableExpression") return undefined;
-    const expr = target;
+    const expr = this.selfPropertyAccess(target) ?? target;
     if (expr.fieldAccess.length === 0) return undefined;
 
     const nameUpper = expr.name.toUpperCase();
