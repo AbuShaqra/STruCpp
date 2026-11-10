@@ -86,6 +86,7 @@ import {
   translateIECString,
 } from "./codegen-utils.js";
 import { mangledMemberName, needsMemberMangling } from "./member-mangling.js";
+import { globalCppName, RUNTIME_NAMESPACE_NAMES } from "./global-naming.js";
 import {
   getTypeBits,
   getTypeCategory,
@@ -601,6 +602,9 @@ export class CodeGenerator {
 
   /** Map of variable name (upper case) → type name (original case) for current scope */
   protected currentScopeVarTypes: Map<string, string> = new Map();
+
+  /** UPPER(names) the current scope declares in VAR_EXTERNAL blocks. */
+  private scopeExternalNames: Set<string> = new Set();
 
   /** Map of variable name (upper case) → referenceKind ("ref_to" | "reference_to"
    *  | "pointer_to") for current scope. Only reference/pointer vars are present;
@@ -1767,6 +1771,7 @@ export class CodeGenerator {
           // `inline`, not a static-local behind a reference: the debug table takes
           // their address into PROGMEM, which needs a constant.
           this.emitHeaderChunkMarker("begin", "inlineGlobal", name);
+          const cppName = globalCppName(name);
           if (decl.initialValue) {
             const initExpr = this.generateInitializer(
               decl.initialValue,
@@ -1774,16 +1779,16 @@ export class CodeGenerator {
               decl.type.name,
             );
             this.emitHeader(
-              `${constQualifier}inline ${cppType} ${name} = ${initExpr};`,
+              `${constQualifier}inline ${cppType} ${cppName} = ${initExpr};`,
             );
           } else {
-            this.emitHeader(`inline ${cppType} ${name}{};`);
+            this.emitHeader(`inline ${cppType} ${cppName}{};`);
           }
           // List-qualified names of this global (named_global_lists), as references.
           for (const a of decl.listAliases ?? []) {
             if (a.name !== name) continue;
             this.emitHeader(
-              `${constQualifier}inline ${cppType}& ${a.alias} = ${name};`,
+              `${constQualifier}inline ${cppType}& ${a.alias} = ${cppName};`,
             );
           }
           this.emitHeaderChunkMarker("end", "inlineGlobal", name);
@@ -2671,7 +2676,7 @@ export class CodeGenerator {
         ? getProjectNamespace(this.projectModel)
         : "strucpp";
       for (const e of externalDecls) {
-        fbInits.push(`${e.name}(&${ns}::${e.name})`);
+        fbInits.push(`${e.name}(&${ns}::${globalCppName(e.name)})`);
       }
     }
     for (const block of fb.varBlocks) {
@@ -3394,7 +3399,9 @@ export class CodeGenerator {
     externals: readonly { name: string }[],
   ): void {
     if (!this.reachedPrograms.has(name.toUpperCase())) return;
-    const args = externals.map((ext) => `&${ext.name}`).join(", ");
+    const args = externals
+      .map((ext) => `&${globalCppName(ext.name)}`)
+      .join(", ");
     this.emitHeader(
       `// The one instance of PROGRAM ${name}, reached by name from other POUs`,
     );
@@ -3464,7 +3471,7 @@ export class CodeGenerator {
         }
         // Must stay a real object — generated_debug.cpp takes `&name` into PROGMEM.
         this.emitHeader(
-          `inline GlobalVar<${cppType}> ${gvar.name}{${initVal}};`,
+          `inline GlobalVar<${cppType}> ${globalCppName(gvar.name)}{${initVal}};`,
         );
 
         // A located VAR_GLOBAL (`AT %IX/%QX/%MW ...`) enters the located-vars
@@ -3582,7 +3589,9 @@ export class CodeGenerator {
         );
       } else if (prog && prog.varExternal.length > 0) {
         // Pass a pointer to each canonical GlobalVar<V> member.
-        const args = prog.varExternal.map((ext) => `&${ext.name}`).join(", ");
+        const args = prog.varExternal
+          .map((ext) => `&${globalCppName(ext.name)}`)
+          .join(", ");
         inits.push(`${inst.instanceName}(${args})`);
       } else {
         inits.push(`${inst.instanceName}()`);
@@ -6848,6 +6857,12 @@ export class CodeGenerator {
     this.currentScopeVarRefKinds.clear();
     this.currentScopeVarTypeRefs.clear();
     this.memberMangledNames.clear();
+    this.scopeExternalNames = new Set(
+      varBlocks
+        .filter((b) => b.blockType === "VAR_EXTERNAL")
+        .flatMap((b) => b.declarations.flatMap((d) => d.names))
+        .map((n) => n.toUpperCase()),
+    );
     this.scopeInOutRefs = this.inheritedInOutRefs();
     for (const block of varBlocks) {
       const fbInOut =
@@ -7602,7 +7617,30 @@ export class CodeGenerator {
    * prefixes (e.g., "s." for SETUP variables in test codegen).
    */
   protected resolveVariableBaseName(name: string): string {
-    return name;
+    const upper = name.toUpperCase();
+    if (
+      !RUNTIME_NAMESPACE_NAMES.has(upper) ||
+      (this.currentScopeVarTypes.has(upper) &&
+        !this.scopeExternalNames.has(upper)) ||
+      !this.isNamespaceGlobal(upper)
+    ) {
+      return name;
+    }
+    return globalCppName(name);
+  }
+
+  /** A file-level VAR_GLOBAL of this compile or of a library (not a CONFIGURATION one). */
+  private isNamespaceGlobal(upper: string): boolean {
+    if (this.fileScopeGlobalNames().has(upper)) return true;
+    const sym = this._symbolTables?.globalScope.lookup(upper);
+    if (sym?.kind !== "variable") return false;
+    return !(this.ast?.configurations ?? []).some((c) =>
+      c.varBlocks.some((b) =>
+        b.declarations.some((d) =>
+          d.names.some((n) => n.toUpperCase() === upper),
+        ),
+      ),
+    );
   }
 
   /**
@@ -8217,7 +8255,11 @@ export class CodeGenerator {
   ): string {
     const element =
       locVar.elementIndex === undefined ? "" : `[${locVar.elementIndex}]`;
-    return `${locVar.varName}${memberAccess}${element}.raw_ptr()`;
+    const name =
+      locVar.programName === "@config"
+        ? globalCppName(locVar.varName)
+        : locVar.varName;
+    return `${name}${memberAccess}${element}.raw_ptr()`;
   }
 
   /**
