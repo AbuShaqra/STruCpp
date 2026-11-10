@@ -25,6 +25,7 @@
 #include "iec_traits.hpp"
 #include "iec_retain.hpp"
 #include "iec_ptr.hpp"
+#include "iec_enum.hpp"
 #include "iec_string.hpp"
 #include "iec_wstring.hpp"
 // IEC 61131-3 temporal types — pulled in here so the standard
@@ -832,6 +833,18 @@ template<typename ToVal, typename FromVal>
 inline ToVal iec_convert_value_impl(FromVal value, std::false_type) noexcept {
     return static_cast<ToVal>(value);
 }
+
+/** A conversion source as a number: an enumeration as its underlying integer, anything else as is. */
+template<typename T>
+constexpr T iec_conversion_source(T value) noexcept { return value; }
+template<typename E>
+constexpr std::underlying_type_t<E> iec_conversion_source(const IEC_ENUM_Value<E>& value) noexcept {
+    return static_cast<std::underlying_type_t<E>>(value.get());
+}
+template<typename E>
+constexpr std::underlying_type_t<E> iec_conversion_source(const IEC_ENUM_Var<E>& value) noexcept {
+    return static_cast<std::underlying_type_t<E>>(static_cast<E>(value));
+}
 }  // namespace detail
 
 template<typename ToVal, typename FromVal>
@@ -849,7 +862,8 @@ inline ToVal iec_convert_value(FromVal value) noexcept {
 template<typename To, typename From>
 inline auto CONVERT(From value) noexcept
     -> std::enable_if_t<!std::is_arithmetic<From>::value, To> {
-    return To(iec_convert_value<typename To::value_type>(iec_unwrap(value)));
+    return To(iec_convert_value<typename To::value_type>(
+        detail::iec_conversion_source(iec_unwrap(value))));
 }
 
 /**
