@@ -186,8 +186,8 @@ inline const void* ptr_impl(const void* p, uint16_t* len) noexcept {
 // would otherwise show garbage after the legitimate content if a
 // reader misuses the cap.
 //
-// A forced string's slot holds its characters and a terminating NUL (code
-// units for WSTRING), and its own apply function stores them through the
+// A forced string's slot holds its characters and a terminating NUL, as code
+// units for WSTRING, and its own apply function stores them through the
 // string wrapper so the stored length follows.
 constexpr uint8_t DEBUG_STRING_CAP   = 126;            // chars / code units
 constexpr uint8_t DEBUG_STRING_WIDTH = 1 + DEBUG_STRING_CAP;          // 127 bytes on the wire
