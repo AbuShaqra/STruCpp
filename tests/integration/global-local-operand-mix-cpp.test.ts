@@ -277,19 +277,19 @@ describeIfGpp("DOPE-613 — mixing a global and a local on a block input", () =>
       // changes what read() hands back — so prove the forced value still wins,
       // and that unforcing hands control back to writes.
       //
-      // Note the third step writes before reading. force() deliberately stores
-      // through to the raw value as well, so that plugins reading raw_ptr() see
-      // the forced value; unforce() only clears the flag. The canonical
-      // therefore still holds the forced value until something sets it again,
-      // and asserting a bare revert to 10 would be asserting the wrong contract.
+      // Note the third step writes before reading. A force writes its value
+      // into the variable, and an unforce leaves it there, so the canonical
+      // still holds the forced value until something sets it again; asserting
+      // a bare revert to 10 would be asserting the wrong contract.
       const out = run(
         program("ADD", "INT", "global+local"),
         [
           "    Program_MAIN p(&G);",
           "    p.run();  std::cout << p.O.get() << std::endl;",
-          "    G.value.force(100);",
+          "    const INT_t forced = 100;",
+          "    force::set(G.value.raw_ptr(), &forced, sizeof forced);",
           "    p.run();  std::cout << p.O.get() << std::endl;",
-          "    G.value.unforce();",
+          "    force::clear(G.value.raw_ptr());",
           "    G.write(7);",
           "    p.run();  std::cout << p.O.get() << std::endl;",
         ].join("\n"),
@@ -298,16 +298,18 @@ describeIfGpp("DOPE-613 — mixing a global and a local on a block input", () =>
       expect(out.split("\n").map((s) => s.trim())).toEqual(["10", "103", "10"]);
     });
 
-    it("ignores a write to a forced global, as the canonical does", () => {
-      // set() is a no-op while forced. Reading through a block input must show
-      // the same, or the scan could appear to overwrite an engineer's force.
+    it("overwrites a write to a forced global when the next cycle starts", () => {
+      // A write between cycles lands, but the forced value is written back at
+      // cycle start, so the scan reads the force through the block input.
       const out = run(
         program("ADD", "INT", "global+local"),
         [
           "    Program_MAIN p(&G);",
-          "    G.value.force(100);",
+          "    const INT_t forced = 100;",
+          "    force::set(G.value.raw_ptr(), &forced, sizeof forced);",
           "    G.write(42);",
           "    p.run();  std::cout << p.O.get() << std::endl;",
+          "    force::clear(G.value.raw_ptr());",
         ].join("\n"),
         "write_to_forced_global",
       );
@@ -368,20 +370,12 @@ int main() {
 
   describe("STRING and WSTRING globals keep their forcing semantics", () => {
     /**
-     * `read()` returning `V` means a STRING global now hands back
-     * `IECStringVar<254>`, and that wrapper's special members used to be
-     * `= default` — memberwise, so they copied `forced_` and `forced_value_`.
-     * `IECVar` deliberately does not do that (iec_var.hpp): a fresh copy starts
-     * unforced and assignment routes through `set()`, precisely so generated
-     * code assigning every scan cannot destroy a force the debugger is holding.
-     *
-     * Two ways it broke, both of which these tests pin:
-     *   - assigning from an UNFORCED global cleared a force on the destination
-     *   - assigning from a FORCED global leaked the flag onto the destination,
-     *     whose next write was then silently dropped
-     *
-     * Neither was caught by the first pass of this file, because the matrix had
-     * no string type in it at all.
+     * `read()` returning `V` means a STRING global hands back
+     * `IECStringVar<254>`. Copying one must not carry a force from the source
+     * or clear one on the destination. Forces live in the force table, keyed
+     * by address, so a copy carries none; these tests pin both directions:
+     *   - a forced local keeps its force when the scan copies a global over it
+     *   - a forced global's force does not ride onto the local it is copied to
      */
     /**
      * Two quoting schemes, deliberately separate. IEC 61131-3 spells a STRING
@@ -413,25 +407,42 @@ int main() {
         // char16_t-based, so streaming it to stdout prints the pointer, not
         // the text -- and comparing in C++ is the stronger assertion anyway.
         mainCode: `#include <iostream>
+#include <cstring>
+#include "debug_dispatch.hpp"
+
+// The debugger's wire form: [length][payload], WSTRING code units little-endian.
+static void force_text(void* var, const char* text, bool wide) {
+    uint8_t wire[1 + 2 * 8] = {0};
+    const uint8_t n = static_cast<uint8_t>(std::strlen(text));
+    wire[0] = n;
+    for (uint8_t i = 0; i < n; ++i) {
+        if (wide) wire[1 + 2 * i] = static_cast<uint8_t>(text[i]);
+        else wire[1 + i] = static_cast<uint8_t>(text[i]);
+    }
+    if (wide) strucpp::debug::force_wstring(var, wire, 0);
+    else strucpp::debug::force_string(var, wire, 0);
+}
 
 int main() {
     using namespace strucpp;
+    const bool wide = ${type === "WSTRING" ? "true" : "false"};
     {   // an engineer forces the LOCAL; the scan copies the global over it
         Program_MAIN p(&GS);
-        p.O.force(${cpp("FF")});
+        force_text(&p.O, "FF", wide);
         p.run();
         std::cout << "A " << (int)(p.O.get() == ${cpp("FF")})
-                  << " " << (int)p.O.is_forced() << std::endl;
+                  << " " << (int)force::is_forced(&p.O) << std::endl;
+        force::clear(&p.O);
     }
-    {   // an engineer forces the GLOBAL; the flag must not ride onto the local
+    {   // an engineer forces the GLOBAL; the force must not ride onto the local
         Program_MAIN p(&GS);
-        GS.value.force(${cpp("ZZ")});
+        force_text(&GS.value, "ZZ", wide);
         p.run();
         std::cout << "B " << (int)(p.O.get() == ${cpp("ZZ")})
-                  << " " << (int)p.O.is_forced() << std::endl;
+                  << " " << (int)force::is_forced(&p.O) << std::endl;
         p.O.set(${cpp("QQ")});
         std::cout << "C " << (int)(p.O.get() == ${cpp("QQ")}) << std::endl;
-        GS.value.unforce();
+        force::clear(&GS.value);
     }
     return 0;
 }
@@ -561,6 +572,7 @@ describeIfGpp(
       // observes is a value assembled from two different writes.
       const source = `
 #include "iec_global.hpp"
+#include "iec_force.hpp"
 #include <atomic>
 #include <cstdint>
 #include <iostream>
@@ -684,11 +696,12 @@ int main() {
     }, 60000);
 
     it("keeps a forced global forced when read concurrently", () => {
-      // force()/unforce() run on the canonical while readers go through read().
-      // Every observation must be one of the two legitimate values — never a
-      // half-applied force.
+      // A force and an unforce run on the canonical, under its lock, while
+      // readers go through read(). Every observation must be one of the two
+      // legitimate values — never a half-applied force.
       const source = `
 #include "iec_global.hpp"
+#include "iec_force.hpp"
 #include <atomic>
 #include <cstdint>
 #include <iostream>
@@ -709,8 +722,8 @@ int main() {
 
     std::thread forcer([&] {
         while (!stop.load(std::memory_order_relaxed)) {
-            g.with_lock([&](IEC_LWORD* v) { v->force(kForce); return 0; });
-            g.with_lock([&](IEC_LWORD* v) { v->unforce(); return 0; });
+            g.with_lock([&](IEC_LWORD* v) { force::set(v, &kForce, sizeof kForce); return 0; });
+            g.with_lock([&](IEC_LWORD* v) { force::clear(v); v->set(kReal); return 0; });
         }
     });
 

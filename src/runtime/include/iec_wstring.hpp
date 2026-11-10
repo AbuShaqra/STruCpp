@@ -419,32 +419,6 @@ public:
         value_ = str;
     }
 
-    value_type get_underlying() const noexcept {
-        return value_;
-    }
-
-    void force(const value_type& v) noexcept {
-        forced_ = true;
-        forced_value_ = v;
-    }
-
-    void force(const char16_t* str) noexcept {
-        forced_ = true;
-        forced_value_ = str;
-    }
-
-    void unforce() noexcept {
-        forced_ = false;
-    }
-
-    bool is_forced() const noexcept {
-        return forced_;
-    }
-
-    value_type get_forced_value() const noexcept {
-        return forced_value_;
-    }
-
     operator value_type() const noexcept {
         return get();
     }

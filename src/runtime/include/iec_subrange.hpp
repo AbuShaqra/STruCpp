@@ -275,37 +275,6 @@ public:
         value_ = v;
     }
     
-    // Get underlying value (ignoring forcing)
-    value_type get_underlying() const noexcept {
-        return value_;
-    }
-    
-    // Force to a specific value
-    void force(value_type v) noexcept {
-        forced_ = true;
-        forced_value_ = v;
-    }
-    
-    void force(BaseType v) noexcept {
-        forced_ = true;
-        forced_value_ = v;
-    }
-    
-    // Remove forcing
-    void unforce() noexcept {
-        forced_ = false;
-    }
-    
-    // Check if forced
-    bool is_forced() const noexcept {
-        return forced_;
-    }
-    
-    // Get forced value
-    value_type get_forced_value() const noexcept {
-        return forced_value_;
-    }
-    
     // Implicit conversion to value_type
     operator value_type() const noexcept {
         return get();

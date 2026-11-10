@@ -50,7 +50,7 @@ All 62 tests should pass:
 | Header            | Description                                             |
 | ----------------- | ------------------------------------------------------- |
 | `iec_types.hpp`   | Base type definitions (BOOL, INT, REAL, TIME, etc.)     |
-| `iec_var.hpp`     | IECVar template with forcing support for debugging      |
+| `iec_var.hpp`     | IECVar template wrapping every variable                 |
 | `iec_force.hpp`   | Force table: forced values applied at cycle boundaries  |
 | `iec_traits.hpp`  | Type traits (is_any_int, is_any_real, is_any_bit, etc.) |
 | `iec_time.hpp`    | TIME/LTIME value classes with duration arithmetic       |
@@ -65,26 +65,23 @@ All 62 tests should pass:
 
 ## Variable Forcing
 
-The `IECVar<T>` template provides forcing support for PLC debugging:
+Forced values live in the force table (`iec_force.hpp`), beside the variables.
+A force is written into its variable at once and again at both boundaries of
+every PROGRAM cycle; inside the cycle the program's own writes land:
 
 ```cpp
 IEC_INT myVar(100);
 
-// Normal operation
-myVar.set(200);
-assert(myVar.get() == 200);
+const INT_t forced = 999;
+force::set(&myVar, &forced, sizeof forced);
+assert(myVar.get() == 999);       // written in at once
 
-// Force the variable
-myVar.force(999);
-assert(myVar.is_forced() == true);
-assert(myVar.get() == 999);  // Returns forced value
+myVar.set(300);                   // a write inside the cycle lands
+assert(myVar.get() == 300);
+force::apply_all();               // what a cycle boundary does
+assert(myVar.get() == 999);
 
-myVar.set(300);              // Ignored while forced
-assert(myVar.get() == 999);  // Still returns forced value
-
-// Unforce to resume normal operation
-myVar.unforce();
-assert(myVar.get() == 300);  // Now returns the set value
+force::clear(&myVar);             // unforce: the value stays until written
 ```
 
 ## Type Aliasing Note

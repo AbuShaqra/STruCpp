@@ -78,7 +78,6 @@ int main() {
 }
 `;
 
-
 const RUNTIME_INCLUDE = path.resolve(__dirname, "../../src/runtime/include");
 
 const describeIfGpp = hasGpp ? describe : describe.skip;
@@ -498,10 +497,10 @@ int main() {
   // handle_read() would produce — including through a force — and that a STRING
   // comes back as its payload rather than the [len][payload] wire form.
   //
-  // The force case is the one that motivated read_ptr(): force() writes through
-  // to value_, so raw_ptr() agrees the instant a force is applied — but a
-  // located variable is driven by the program straight into value_ every scan,
-  // and then only read_ptr() still resolves to the forced value.
+  // The force case matters because a force writes its value into the variable
+  // only at cycle boundaries: a located variable is driven by the program
+  // straight into storage during the scan, and only the force table still
+  // holds the forced value then, so a forced leaf is served from its slot.
   it("addresses the same value handle_read copies, force included", () => {
     const result = compile(
       `PROGRAM Main
@@ -567,8 +566,8 @@ int main() {
   memcpy(&via_read, buf, 4);
   chk("forced agrees with read", via_ptr == via_read && via_ptr == 99);
 
-  // And a force survives the program writing the located storage directly,
-  // which is what read_ptr() exists for.
+  // And a force survives the program writing the located storage directly:
+  // the pointer is the force-table slot, not the variable.
   g_config.INSTANCE0.N = 1234;
   const void* pf2 = handle_ptr(${idx("INSTANCE0.N")}, &len);
   memcpy(&via_ptr, pf2, 4);
@@ -586,8 +585,8 @@ int main() {
   chk("wire form still carries the length byte", sbuf[0] == 5);
   chk("wire payload matches", memcmp(sbuf + 1, sp, 5) == 0);
 
-  // A forced STRING resolves through c_str() the same way the scalar op
-  // resolves through read_ptr(). Nothing proved that before.
+  // A forced STRING is served from its force-table slot the same way the
+  // scalar op is. Nothing proved that before.
   unsigned char sforce[1 + 5] = { 5, 'w','o','r','l','d' };
   handle_set(${idx("INSTANCE0.S")}, true, sforce, sizeof(sforce));
   const void* spf = handle_ptr(${idx("INSTANCE0.S")}, &len);
@@ -692,7 +691,10 @@ END_CONFIGURATION`,
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "generated.hpp"), result.headerCode);
     fs.writeFileSync(path.join(dir, "generated.cpp"), result.cppCode);
-    fs.writeFileSync(path.join(dir, "generated_debug.cpp"), result.debugTableCpp!);
+    fs.writeFileSync(
+      path.join(dir, "generated_debug.cpp"),
+      result.debugTableCpp!,
+    );
 
     fs.writeFileSync(
       path.join(dir, "main.cpp"),
@@ -738,7 +740,7 @@ int main() {
   chk("NON_RETAIN left alone", (int)g_config.INSTANCE0.HELD.SCRATCH == 31337);
   // Restore is a plain write: forcing would pin the value and stop the program
   // moving it on the next scan.
-  chk("restore did not force", !g_config.INSTANCE0.BOOTS.is_forced());
+  chk("restore did not force", !force::is_forced(g_config.INSTANCE0.BOOTS.raw_ptr()));
 
   unsigned char bad[512];
   memcpy(bad, blob, n); bad[retain::HEADER_SIZE] ^= 0xFF;
@@ -797,7 +799,9 @@ END_CONFIGURATION`,
     const retained = (result.debugMap!.retainVars ?? []).map((v) => v.path);
     expect(retained).toContain("INSTANCE0.T.START_TIME");
     // …and the un-retained sibling contributes nothing.
-    expect(retained.filter((p) => p.startsWith("INSTANCE0.LOOSE."))).toEqual([]);
+    expect(retained.filter((p) => p.startsWith("INSTANCE0.LOOSE."))).toEqual(
+      [],
+    );
 
     const dir = path.join(tempDir, "libfb-retain");
     fs.mkdirSync(dir, { recursive: true });

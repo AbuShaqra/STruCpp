@@ -33,6 +33,7 @@
 #include "iec_var.hpp"
 #include "iec_string.hpp"
 #include "iec_wstring.hpp"
+#include "iec_force.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <cstddef>
@@ -66,35 +67,58 @@ constexpr uint8_t STATUS_DATA_TOO_LARGE  = 0x82;
 // caller: the editor's debugger, an OPC-UA client, a plugin, or an older
 // editor build that never learned to hide the control.
 constexpr uint8_t STATUS_READ_ONLY       = 0x87;
+// Returned when a force is refused because every force-table slot it would
+// need is taken (iec_force.hpp: STRUCPP_FORCE_SLOTS / _STRING_SLOTS). The
+// leaf is left as it was; unforcing another leaf frees a slot.
+constexpr uint8_t STATUS_FORCE_TABLE_FULL = 0x88;
 
 // ---------------------------------------------------------------------------
 // Templated per-type helpers. One instantiation per IEC elementary type;
 // type_ops[] below wires them into a runtime-indexable table.
+//
+// Forcing goes through the force table (iec_force.hpp), not the variable: a
+// force records the value beside the leaf, writes it in at once, and every
+// PROGRAM cycle writes it in again at its start and its end. Reads and soft
+// writes consult the table so an external client sees the forced value and
+// cannot move a forced leaf, whatever the program did inside the cycle.
 // ---------------------------------------------------------------------------
+
+/** Map a force::set() refusal onto the protocol's status codes. */
+inline uint8_t force_status(force::Status s) noexcept {
+    switch (s) {
+        case force::Status::Ok:       return STATUS_OK;
+        case force::Status::Full:     return STATUS_FORCE_TABLE_FULL;
+        default:                      return STATUS_DATA_TOO_LARGE;
+    }
+}
+
 template <typename T>
-inline void force_impl(void* p, const uint8_t* bytes) noexcept {
+inline T decode_scalar(const uint8_t* bytes) noexcept {
     T v;
     std::memcpy(&v, bytes, sizeof(T));
-    static_cast<IECVar<T>*>(p)->force(v);
+    return v;
 }
 
-// Specialization: memcpy-into-bool is technically UB for non-{0,1} byte
-// values, and some AVR GCC versions have optimizer behavior around bool
-// that can surprise. Normalize explicitly.
+// memcpy-into-bool is technically UB for non-{0,1} byte values, and some AVR
+// GCC versions have optimizer behavior around bool that can surprise.
+// Normalize explicitly.
 template <>
-inline void force_impl<bool>(void* p, const uint8_t* bytes) noexcept {
-    const bool v = bytes[0] != 0;
-    static_cast<IECVar<bool>*>(p)->force(v);
+inline bool decode_scalar<bool>(const uint8_t* bytes) noexcept {
+    return bytes[0] != 0;
 }
 
 template <typename T>
-inline void unforce_impl(void* p) noexcept {
-    static_cast<IECVar<T>*>(p)->unforce();
+inline uint8_t force_impl(void* p, const uint8_t* bytes, uint8_t flags) noexcept {
+    const T v = decode_scalar<T>(bytes);
+    return force_status(force::set(p, &v, sizeof(T), flags));
 }
 
-// Soft write — updates the underlying value_ via IECVar::set(). Respects
-// existing forces (set() is a no-op while forced_ is true), so a force in
-// place stays authoritative until the user explicitly unforces.
+inline void unforce_impl(void* p) noexcept {
+    force::clear(p);
+}
+
+// Soft write — updates the variable through IECVar::set(). Ignored while the
+// leaf is forced, so a force stays authoritative until the user unforces.
 //
 // Distinct from force_impl: that one pins the variable indefinitely; this
 // one writes a value the program can overwrite on the next scan cycle.
@@ -102,21 +126,15 @@ inline void unforce_impl(void* p) noexcept {
 // regular write semantics rather than debugger-style forcing.
 template <typename T>
 inline void write_impl(void* p, const uint8_t* bytes) noexcept {
-    T v;
-    std::memcpy(&v, bytes, sizeof(T));
-    static_cast<IECVar<T>*>(p)->set(v);
+    if (force::is_forced(p)) return;
+    static_cast<IECVar<T>*>(p)->set(decode_scalar<T>(bytes));
 }
 
-// memcpy-into-bool is technically UB for non-{0,1} byte values; normalize
-// explicitly. Same reasoning as force_impl<bool>.
-template <>
-inline void write_impl<bool>(void* p, const uint8_t* bytes) noexcept {
-    const bool v = bytes[0] != 0;
-    static_cast<IECVar<bool>*>(p)->set(v);
-}
-
+// A forced leaf reads its forced value, even mid-cycle after the program
+// wrote it.
 template <typename T>
 inline void read_impl(const void* p, uint8_t* dest) noexcept {
+    if (force::read(p, dest, sizeof(T)) == sizeof(T)) return;
     T v = static_cast<const IECVar<T>*>(p)->get();
     std::memcpy(dest, &v, sizeof(T));
 }
@@ -125,29 +143,26 @@ inline void read_impl(const void* p, uint8_t* dest) noexcept {
 //
 // Exists so a caller that can serve a value without owning it (OPC-UA hands
 // open62541 a UA_Variant with UA_VARIANT_DATA_NODELETE) does not pay an
-// allocation and a copy per read. `read_ptr()` rather than `raw_ptr()`: a
-// located variable is written by the PLC program straight into value_, so
-// raw_ptr() would leak the program's value past an active force.
+// allocation and a copy per read. A forced leaf is served from its force-table
+// slot, so the pointer cannot leak a value the program wrote mid-cycle.
 //
 // The pointer is valid until the variable is next written OR ITS FORCE STATE
 // CHANGES, which for a cooperative single-threaded runtime means "until the
 // caller yields". A caller that can be preempted by the PLC scan must copy
-// instead.
-//
-// The force clause is not pedantry: read_ptr() returns &forced_value_ while
-// forced and &value_ otherwise, so force()/unforce() changes WHICH OBJECT the
-// pointer refers to. A pointer taken while forced keeps reporting the stale
-// forced value after an unforce, with nothing written to invalidate it.
+// instead. A force or an unforce changes WHICH OBJECT the pointer refers to
+// (the slot or the variable), so a pointer taken before it is stale after.
 template <typename T>
 inline const void* ptr_impl(const void* p, uint16_t* len) noexcept {
+    uint16_t n = 0;
+    const void* forced = force::value_ptr(p, &n);
     *len = static_cast<uint16_t>(sizeof(T));
-    return static_cast<const IECVar<T>*>(p)->read_ptr();
+    if (forced != nullptr && n == sizeof(T)) return forced;
+    return static_cast<const IECVar<T>*>(p)->raw_ptr();
 }
 
 // STRING / WSTRING live in `IECStringVar<254>` / `IECWStringVar<254>`,
-// the force-aware wrappers around `IECString<254>` / `IECWString<254>`.
-// Both wrappers carry their own length, capped at 254 bytes / 254 wide
-// code units of storage.
+// the wrappers around `IECString<254>` / `IECWString<254>`, which carry their
+// own length, capped at 254 bytes / 254 wide code units of storage.
 //
 // Wire format (matches the editor decoder in
 // `src/frontend/utils/variable-sizes.ts` — `len8-utf8` / `len8-utf16le`):
@@ -171,23 +186,42 @@ inline const void* ptr_impl(const void* p, uint16_t* len) noexcept {
 // would otherwise show garbage after the legitimate content if a
 // reader misuses the cap.
 //
-// All four ops are force-aware (read sees the forced value when active;
-// write/set is a no-op on a forced variable per `IECStringVar::set`'s
-// own guard; force/unforce manipulate the force state directly).
+// A forced string's slot holds its characters and a terminating NUL, as code
+// units for WSTRING, and its own apply function stores them through the
+// string wrapper so the stored length follows.
 constexpr uint8_t DEBUG_STRING_CAP   = 126;            // chars / code units
 constexpr uint8_t DEBUG_STRING_WIDTH = 1 + DEBUG_STRING_CAP;          // 127 bytes on the wire
 constexpr uint8_t DEBUG_WSTRING_WIDTH = 1 + DEBUG_STRING_CAP * 2;     // 253 bytes on the wire
 
 // --- STRING (IECStringVar<254>) ---------------------------------------
 
-inline void read_string(const void* p, uint8_t* dest) noexcept {
+/** force::ApplyFn for a STRING leaf: `bytes` are the characters and a NUL. */
+inline void apply_string(void* dst, const uint8_t* bytes, uint16_t size) noexcept {
+    static_cast<IECStringVar<254>*>(dst)->set(
+        IECString<254>(reinterpret_cast<const char*>(bytes), size - 1u));
+}
+
+/** Characters and length of a STRING leaf, honouring a force. */
+inline const char* string_view_of(const void* p, std::size_t* len) noexcept {
+    uint16_t n = 0;
+    const void* forced = force::value_ptr(p, &n);
+    if (forced != nullptr) {
+        *len = n - 1u;
+        return static_cast<const char*>(forced);
+    }
     const auto* var = static_cast<const IECStringVar<254>*>(p);
-    const std::size_t actual_len = var->length();
+    *len = var->length();
+    return var->c_str();
+}
+
+inline void read_string(const void* p, uint8_t* dest) noexcept {
+    std::size_t actual_len = 0;
+    const char* src = string_view_of(p, &actual_len);
     const uint8_t wire_len = static_cast<uint8_t>(
         actual_len < DEBUG_STRING_CAP ? actual_len : DEBUG_STRING_CAP);
     dest[0] = wire_len;
     if (wire_len > 0) {
-        std::memcpy(dest + 1, var->c_str(), wire_len);
+        std::memcpy(dest + 1, src, wire_len);
     }
     if (wire_len < DEBUG_STRING_CAP) {
         std::memset(dest + 1 + wire_len, 0, DEBUG_STRING_CAP - wire_len);
@@ -195,23 +229,23 @@ inline void read_string(const void* p, uint8_t* dest) noexcept {
 }
 
 inline void write_string(void* p, const uint8_t* bytes) noexcept {
+    if (force::is_forced(p)) return;
     auto* var = static_cast<IECStringVar<254>*>(p);
     const uint8_t wire_len = bytes[0] < DEBUG_STRING_CAP ? bytes[0] : DEBUG_STRING_CAP;
     var->set(IECString<254>(reinterpret_cast<const char*>(bytes + 1), wire_len));
 }
 
-inline void force_string(void* p, const uint8_t* bytes) noexcept {
-    auto* var = static_cast<IECStringVar<254>*>(p);
+inline uint8_t force_string(void* p, const uint8_t* bytes, uint8_t flags) noexcept {
     const uint8_t wire_len = bytes[0] < DEBUG_STRING_CAP ? bytes[0] : DEBUG_STRING_CAP;
-    var->force(IECString<254>(reinterpret_cast<const char*>(bytes + 1), wire_len));
-}
-
-inline void unforce_string(void* p) noexcept {
-    static_cast<IECStringVar<254>*>(p)->unforce();
+    char value[DEBUG_STRING_CAP + 1];
+    std::memcpy(value, bytes + 1, wire_len);
+    value[wire_len] = '\0';
+    return force_status(force::set(p, value, static_cast<uint16_t>(wire_len + 1u),
+                                   flags, &apply_string));
 }
 
 // The payload only — NOT the [len][payload] wire form read_string() builds.
-// `len` is the character count, and c_str() already resolves the force.
+// `len` is the character count; a forced leaf is served from its slot.
 //
 // Deliberately NOT capped at DEBUG_STRING_CAP. That cap is the Modbus debug
 // FRAME budget: the wire form spends one byte on the length prefix and the
@@ -222,27 +256,50 @@ inline void unforce_string(void* p) noexcept {
 // capacity, which is the only real limit on this path.
 // `len` must be non-null; handle_ptr always passes a real address.
 inline const void* ptr_string(const void* p, uint16_t* len) noexcept {
-    const auto* var = static_cast<const IECStringVar<254>*>(p);
-    *len = static_cast<uint16_t>(var->length());
-    return var->c_str();
+    std::size_t n = 0;
+    const char* src = string_view_of(p, &n);
+    *len = static_cast<uint16_t>(n);
+    return src;
 }
 
 // --- WSTRING (IECWStringVar<254>) -------------------------------------
 
-inline void read_wstring(const void* p, uint8_t* dest) noexcept {
+/** force::ApplyFn for a WSTRING leaf: `bytes` are host-order code units and a NUL. */
+inline void apply_wstring(void* dst, const uint8_t* bytes, uint16_t size) noexcept {
+    char16_t buf[DEBUG_STRING_CAP + 1];
+    std::memcpy(buf, bytes, size);
+    static_cast<IECWStringVar<254>*>(dst)->set(
+        IECWString<254>(buf, static_cast<std::size_t>(size / 2u - 1u)));
+}
+
+/** Code units and count of a WSTRING leaf, honouring a force. */
+inline const char16_t* wstring_view_of(const void* p, std::size_t* len) noexcept {
+    uint16_t n = 0;
+    const void* forced = force::value_ptr(p, &n);
+    if (forced != nullptr) {
+        *len = n / 2u - 1u;
+        return static_cast<const char16_t*>(forced);
+    }
     const auto* var = static_cast<const IECWStringVar<254>*>(p);
-    const std::size_t actual_len = var->length();
+    *len = var->length();
+    return var->c_str();
+}
+
+inline void read_wstring(const void* p, uint8_t* dest) noexcept {
+    std::size_t actual_len = 0;
+    const char16_t* src = wstring_view_of(p, &actual_len);
     const uint8_t wire_len = static_cast<uint8_t>(
         actual_len < DEBUG_STRING_CAP ? actual_len : DEBUG_STRING_CAP);
     dest[0] = wire_len;
-    const char16_t* src = var->c_str();
     for (uint8_t i = 0; i < wire_len; ++i) {
+        char16_t unit;
+        std::memcpy(&unit, src + i, sizeof unit);
         // Little-endian 16-bit code unit — explicit byte split so the
         // wire format is host-endianness-independent (AVR is LE in
         // practice but ARM-BE targets, however rare, would otherwise
         // serialise the wrong way around).
-        dest[1 + i * 2]     = static_cast<uint8_t>(src[i] & 0xFF);
-        dest[1 + i * 2 + 1] = static_cast<uint8_t>((src[i] >> 8) & 0xFF);
+        dest[1 + i * 2]     = static_cast<uint8_t>(unit & 0xFF);
+        dest[1 + i * 2 + 1] = static_cast<uint8_t>((unit >> 8) & 0xFF);
     }
     const std::size_t used = 1 + static_cast<std::size_t>(wire_len) * 2;
     if (used < DEBUG_WSTRING_WIDTH) {
@@ -250,30 +307,31 @@ inline void read_wstring(const void* p, uint8_t* dest) noexcept {
     }
 }
 
+/** Decode `wire_len` little-endian code units from a WSTRING payload. */
+inline void decode_wstring(const uint8_t* bytes, uint8_t wire_len, char16_t* out) noexcept {
+    for (uint8_t i = 0; i < wire_len; ++i) {
+        out[i] = static_cast<char16_t>(bytes[1 + i * 2])
+               | static_cast<char16_t>(static_cast<char16_t>(bytes[1 + i * 2 + 1]) << 8);
+    }
+}
+
 inline void write_wstring(void* p, const uint8_t* bytes) noexcept {
+    if (force::is_forced(p)) return;
     auto* var = static_cast<IECWStringVar<254>*>(p);
     const uint8_t wire_len = bytes[0] < DEBUG_STRING_CAP ? bytes[0] : DEBUG_STRING_CAP;
     char16_t buf[DEBUG_STRING_CAP];
-    for (uint8_t i = 0; i < wire_len; ++i) {
-        buf[i] = static_cast<char16_t>(bytes[1 + i * 2])
-               | static_cast<char16_t>(static_cast<char16_t>(bytes[1 + i * 2 + 1]) << 8);
-    }
+    decode_wstring(bytes, wire_len, buf);
     var->set(IECWString<254>(buf, wire_len));
 }
 
-inline void force_wstring(void* p, const uint8_t* bytes) noexcept {
-    auto* var = static_cast<IECWStringVar<254>*>(p);
+inline uint8_t force_wstring(void* p, const uint8_t* bytes, uint8_t flags) noexcept {
     const uint8_t wire_len = bytes[0] < DEBUG_STRING_CAP ? bytes[0] : DEBUG_STRING_CAP;
-    char16_t buf[DEBUG_STRING_CAP];
-    for (uint8_t i = 0; i < wire_len; ++i) {
-        buf[i] = static_cast<char16_t>(bytes[1 + i * 2])
-               | static_cast<char16_t>(static_cast<char16_t>(bytes[1 + i * 2 + 1]) << 8);
-    }
-    var->force(IECWString<254>(buf, wire_len));
-}
-
-inline void unforce_wstring(void* p) noexcept {
-    static_cast<IECWStringVar<254>*>(p)->unforce();
+    char16_t value[DEBUG_STRING_CAP + 1];
+    decode_wstring(bytes, wire_len, value);
+    value[wire_len] = u'\0';
+    return force_status(force::set(p, value,
+                                   static_cast<uint16_t>((wire_len + 1u) * sizeof(char16_t)),
+                                   flags, &apply_wstring));
 }
 
 // The code-unit buffer as it sits in memory, so `len` is BYTES (2 per code
@@ -300,9 +358,10 @@ inline const void* ptr_wstring(const void*, uint16_t* len) noexcept {
 }
 #else
 inline const void* ptr_wstring(const void* p, uint16_t* len) noexcept {
-    const auto* var = static_cast<const IECWStringVar<254>*>(p);
-    *len = static_cast<uint16_t>(var->length() * 2);
-    return var->c_str();
+    std::size_t n = 0;
+    const char16_t* src = wstring_view_of(p, &n);
+    *len = static_cast<uint16_t>(n * 2);
+    return src;
 }
 #endif
 
@@ -311,7 +370,7 @@ inline const void* ptr_wstring(const void* p, uint16_t* len) noexcept {
 // by force/read (for strings: reserved, handled specially).
 // ---------------------------------------------------------------------------
 struct TypeOps {
-    void (*force)  (void*, const uint8_t*);
+    uint8_t (*force)(void*, const uint8_t*, uint8_t);
     void (*unforce)(void*);
     void (*read)   (const void*, uint8_t*);
     void (*write)  (void*, const uint8_t*);
@@ -344,27 +403,27 @@ struct PtrOps {
 // second and an AVR pays for the table twice in SRAM.
 // ---------------------------------------------------------------------------
 constexpr TypeOps type_ops[TAG__COUNT] = {
-    /*BOOL    */ { &force_impl<BOOL_t>,  &unforce_impl<BOOL_t>,  &read_impl<BOOL_t>,  &write_impl<BOOL_t>,  sizeof(BOOL_t)      },
-    /*SINT    */ { &force_impl<SINT_t>,  &unforce_impl<SINT_t>,  &read_impl<SINT_t>,  &write_impl<SINT_t>,  sizeof(SINT_t)      },
-    /*USINT   */ { &force_impl<USINT_t>, &unforce_impl<USINT_t>, &read_impl<USINT_t>, &write_impl<USINT_t>, sizeof(USINT_t)     },
-    /*INT     */ { &force_impl<INT_t>,   &unforce_impl<INT_t>,   &read_impl<INT_t>,   &write_impl<INT_t>,   sizeof(INT_t)       },
-    /*UINT    */ { &force_impl<UINT_t>,  &unforce_impl<UINT_t>,  &read_impl<UINT_t>,  &write_impl<UINT_t>,  sizeof(UINT_t)      },
-    /*DINT    */ { &force_impl<DINT_t>,  &unforce_impl<DINT_t>,  &read_impl<DINT_t>,  &write_impl<DINT_t>,  sizeof(DINT_t)      },
-    /*UDINT   */ { &force_impl<UDINT_t>, &unforce_impl<UDINT_t>, &read_impl<UDINT_t>, &write_impl<UDINT_t>, sizeof(UDINT_t)     },
-    /*LINT    */ { &force_impl<LINT_t>,  &unforce_impl<LINT_t>,  &read_impl<LINT_t>,  &write_impl<LINT_t>,  sizeof(LINT_t)      },
-    /*ULINT   */ { &force_impl<ULINT_t>, &unforce_impl<ULINT_t>, &read_impl<ULINT_t>, &write_impl<ULINT_t>, sizeof(ULINT_t)     },
-    /*REAL    */ { &force_impl<REAL_t>,  &unforce_impl<REAL_t>,  &read_impl<REAL_t>,  &write_impl<REAL_t>,  sizeof(REAL_t)      },
-    /*LREAL   */ { &force_impl<LREAL_t>, &unforce_impl<LREAL_t>, &read_impl<LREAL_t>, &write_impl<LREAL_t>, sizeof(LREAL_t)     },
-    /*BYTE    */ { &force_impl<BYTE_t>,  &unforce_impl<BYTE_t>,  &read_impl<BYTE_t>,  &write_impl<BYTE_t>,  sizeof(BYTE_t)      },
-    /*WORD    */ { &force_impl<WORD_t>,  &unforce_impl<WORD_t>,  &read_impl<WORD_t>,  &write_impl<WORD_t>,  sizeof(WORD_t)      },
-    /*DWORD   */ { &force_impl<DWORD_t>, &unforce_impl<DWORD_t>, &read_impl<DWORD_t>, &write_impl<DWORD_t>, sizeof(DWORD_t)     },
-    /*LWORD   */ { &force_impl<LWORD_t>, &unforce_impl<LWORD_t>, &read_impl<LWORD_t>, &write_impl<LWORD_t>, sizeof(LWORD_t)     },
-    /*TIME    */ { &force_impl<TIME_t>,  &unforce_impl<TIME_t>,  &read_impl<TIME_t>,  &write_impl<TIME_t>,  sizeof(TIME_t)      },
-    /*DATE    */ { &force_impl<DATE_t>,  &unforce_impl<DATE_t>,  &read_impl<DATE_t>,  &write_impl<DATE_t>,  sizeof(DATE_t)      },
-    /*TOD     */ { &force_impl<TOD_t>,   &unforce_impl<TOD_t>,   &read_impl<TOD_t>,   &write_impl<TOD_t>,   sizeof(TOD_t)       },
-    /*DT      */ { &force_impl<DT_t>,    &unforce_impl<DT_t>,    &read_impl<DT_t>,    &write_impl<DT_t>,    sizeof(DT_t)        },
-    /*STRING  */ { &force_string,        &unforce_string,        &read_string,        &write_string,        DEBUG_STRING_WIDTH  },
-    /*WSTRING */ { &force_wstring,       &unforce_wstring,       &read_wstring,       &write_wstring,       DEBUG_WSTRING_WIDTH },
+    /*BOOL    */ { &force_impl<BOOL_t>,  &unforce_impl, &read_impl<BOOL_t>,  &write_impl<BOOL_t>,  sizeof(BOOL_t)      },
+    /*SINT    */ { &force_impl<SINT_t>,  &unforce_impl, &read_impl<SINT_t>,  &write_impl<SINT_t>,  sizeof(SINT_t)      },
+    /*USINT   */ { &force_impl<USINT_t>, &unforce_impl, &read_impl<USINT_t>, &write_impl<USINT_t>, sizeof(USINT_t)     },
+    /*INT     */ { &force_impl<INT_t>,   &unforce_impl, &read_impl<INT_t>,   &write_impl<INT_t>,   sizeof(INT_t)       },
+    /*UINT    */ { &force_impl<UINT_t>,  &unforce_impl, &read_impl<UINT_t>,  &write_impl<UINT_t>,  sizeof(UINT_t)      },
+    /*DINT    */ { &force_impl<DINT_t>,  &unforce_impl, &read_impl<DINT_t>,  &write_impl<DINT_t>,  sizeof(DINT_t)      },
+    /*UDINT   */ { &force_impl<UDINT_t>, &unforce_impl, &read_impl<UDINT_t>, &write_impl<UDINT_t>, sizeof(UDINT_t)     },
+    /*LINT    */ { &force_impl<LINT_t>,  &unforce_impl, &read_impl<LINT_t>,  &write_impl<LINT_t>,  sizeof(LINT_t)      },
+    /*ULINT   */ { &force_impl<ULINT_t>, &unforce_impl, &read_impl<ULINT_t>, &write_impl<ULINT_t>, sizeof(ULINT_t)     },
+    /*REAL    */ { &force_impl<REAL_t>,  &unforce_impl, &read_impl<REAL_t>,  &write_impl<REAL_t>,  sizeof(REAL_t)      },
+    /*LREAL   */ { &force_impl<LREAL_t>, &unforce_impl, &read_impl<LREAL_t>, &write_impl<LREAL_t>, sizeof(LREAL_t)     },
+    /*BYTE    */ { &force_impl<BYTE_t>,  &unforce_impl, &read_impl<BYTE_t>,  &write_impl<BYTE_t>,  sizeof(BYTE_t)      },
+    /*WORD    */ { &force_impl<WORD_t>,  &unforce_impl, &read_impl<WORD_t>,  &write_impl<WORD_t>,  sizeof(WORD_t)      },
+    /*DWORD   */ { &force_impl<DWORD_t>, &unforce_impl, &read_impl<DWORD_t>, &write_impl<DWORD_t>, sizeof(DWORD_t)     },
+    /*LWORD   */ { &force_impl<LWORD_t>, &unforce_impl, &read_impl<LWORD_t>, &write_impl<LWORD_t>, sizeof(LWORD_t)     },
+    /*TIME    */ { &force_impl<TIME_t>,  &unforce_impl, &read_impl<TIME_t>,  &write_impl<TIME_t>,  sizeof(TIME_t)      },
+    /*DATE    */ { &force_impl<DATE_t>,  &unforce_impl, &read_impl<DATE_t>,  &write_impl<DATE_t>,  sizeof(DATE_t)      },
+    /*TOD     */ { &force_impl<TOD_t>,   &unforce_impl, &read_impl<TOD_t>,   &write_impl<TOD_t>,   sizeof(TOD_t)       },
+    /*DT      */ { &force_impl<DT_t>,    &unforce_impl, &read_impl<DT_t>,    &write_impl<DT_t>,    sizeof(DT_t)        },
+    /*STRING  */ { &force_string,        &unforce_impl, &read_string,        &write_string,        DEBUG_STRING_WIDTH  },
+    /*WSTRING */ { &force_wstring,       &unforce_impl, &read_wstring,       &write_wstring,       DEBUG_WSTRING_WIDTH },
 };
 
 // ---------------------------------------------------------------------------
@@ -496,6 +555,18 @@ inline Entry read_entry(uint8_t arr, uint16_t elem) noexcept {
     return out;
 }
 
+/** debug_array_kind[arr]: DEBUG_ARRAY_GLOBAL or DEBUG_ARRAY_PROGRAM. Same
+ *  flash accessors as read_entry(); `arr` must be in range. */
+inline uint8_t read_array_kind(uint8_t arr) noexcept {
+#if defined(__AVR__) && defined(RAMPZ)
+    return pgm_read_byte_far(pgm_get_far_address(debug_array_kind) + arr);
+#elif defined(__AVR__)
+    return pgm_read_byte(&debug_array_kind[arr]);
+#else
+    return debug_array_kind[arr];
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // Per-entry operations. These are what ModbusSlave / Runtime v4 call.
 // ---------------------------------------------------------------------------
@@ -535,7 +606,9 @@ inline uint8_t validate_payload(uint8_t tag, const uint8_t* bytes, uint16_t len)
     return STATUS_OK;
 }
 
-/** Set (force or unforce) a variable. Returns STATUS_* code. */
+/** Set (force or unforce) a variable. Returns STATUS_OK, or the refusal:
+ *  STATUS_OUT_OF_BOUNDS, STATUS_READ_ONLY, STATUS_DATA_TOO_LARGE, or
+ *  STATUS_FORCE_TABLE_FULL when every force-table slot the value needs is taken. */
 inline uint8_t handle_set(uint8_t arr, uint16_t elem, bool forcing,
                           const uint8_t* bytes, uint16_t len) noexcept {
     Entry e = read_entry(arr, elem);
@@ -549,10 +622,11 @@ inline uint8_t handle_set(uint8_t arr, uint16_t elem, bool forcing,
     if (forcing) {
         const uint8_t bad = validate_payload(e.tag, bytes, len);
         if (bad != STATUS_OK) return bad;
-        type_ops[e.tag].force(e.ptr, bytes);
-    } else {
-        type_ops[e.tag].unforce(e.ptr);
+        const uint8_t flags =
+            read_array_kind(arr) == DEBUG_ARRAY_GLOBAL ? force::FLAG_GLOBAL : 0;
+        return type_ops[e.tag].force(e.ptr, bytes, flags);
     }
+    type_ops[e.tag].unforce(e.ptr);
     return STATUS_OK;
 }
 
@@ -568,8 +642,9 @@ inline uint16_t handle_read(uint8_t arr, uint16_t elem, uint8_t* dest) noexcept 
 }
 
 /** Soft write (non-forcing). Updates the underlying value via
- *  IECVar::set(). If the variable is currently forced, the write is
- *  silently ignored — forcing remains authoritative until unforced.
+ *  IECVar::set(). If the variable is currently forced (it has a force-table
+ *  slot), the write is silently ignored — forcing remains authoritative
+ *  until unforced.
  *  This matches OPC-UA / BACnet write semantics: the next scan cycle
  *  may overwrite the written value, unlike force which pins it.
  *  Returns STATUS_* code. */

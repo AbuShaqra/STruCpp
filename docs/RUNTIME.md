@@ -1,6 +1,6 @@
 # C++ Runtime Library
 
-The STruC++ runtime is a header-only C++14 library in `src/runtime/include/`. Every compiled ST program includes these headers. The runtime provides IEC 61131-3 type wrappers, variable forcing, and standard function implementations.
+The STruC++ runtime is a header-only C++14 library in `src/runtime/include/`. Every compiled ST program includes these headers. The runtime provides IEC 61131-3 type wrappers, a force table for variable forcing, and standard function implementations.
 
 ## Type Definitions (`iec_types.hpp`)
 
@@ -43,32 +43,20 @@ using LDT_t   = int64_t;
 
 ## IECVar Wrapper (`iec_var.hpp`)
 
-`IECVar<T>` wraps every program variable to support variable forcing:
+`IECVar<T>` wraps every program variable:
 
 ```cpp
 template<typename T>
 class IECVar {
     T value_;
-    bool forced_;
-    T forced_value_;
+    // (forced_ / forced_value_ remain until the layout is packed; unused)
 
 public:
-    // Read: returns forced value when forcing is active
-    operator T() const;
-
-    // Write: ignored when forcing is active
-    IECVar& operator=(T v);
-
-    // Forcing API
-    void force(T v);
-    void unforce();
-    bool is_forced() const;
+    operator T() const;          // read
+    IECVar& operator=(T v);      // write
 
     // Raw pointer for I/O memory binding
     T* raw_ptr();
-
-    // Const pointer to the value a READER should see (force-aware)
-    const T* read_ptr() const;
 
     // Cross-type converting constructor (enables implicit widening)
     template<typename U> IECVar(const IECVar<U>& other);
@@ -77,39 +65,13 @@ public:
 
 The implicit `operator T()` and `operator=(T)` make IECVar transparent in expressions -- ST code like `counter := counter + 1` generates natural C++.
 
-### Forcing
-
-Variable forcing is a PLC debugging feature that overrides a variable's value regardless of program logic. When `force(v)` is called, all reads return the forced value and all writes are silently ignored until `unforce()` is called.
-
-### Struct Field Forcing
-
-Struct fields use IECVar-wrapped elementary types (e.g., `IEC_INT` = `IECVar<int16_t>`) for per-field forcing. This means individual struct members can be forced independently:
-
-```cpp
-struct Point {
-    IEC_REAL x;  // IECVar<float> -- independently forceable
-    IEC_REAL y;
-};
-```
-
-Array elements store raw types; the calling variable wraps the entire array.
+Forcing is not part of the variable: it lives in the force table (below). Every
+elementary leaf -- a struct field, an array element, a function-block member --
+can be forced on its own, by address.
 
 ### Located Variables
 
 Located variables (`AT %IX0.0`) use `raw_ptr()` to bind to an I/O image table at runtime. The code generator produces a descriptor array (`__located_vars_[]`) with metadata for each located variable (area, size, byte/bit indices) and accessor methods (`getLocatedVars()`, `getLocatedVarCount()`).
-
-### `raw_ptr()` vs `read_ptr()`
-
-Two pointers into an `IECVar`, and picking the wrong one is silently wrong for exactly one kind of variable.
-
-| | Points at | Use for |
-|---|---|---|
-| `raw_ptr()` | `value_`, always | **Binding** — the I/O image writes through it every scan |
-| `read_ptr()` | `forced_value_` while forced, `value_` otherwise | **Reading** — anything serving the value to a person or a protocol |
-
-`force()` writes through to `value_`, so for an ordinary variable the two agree the moment a force is applied. A **located** variable is the exception: the PLC program drives `value_` directly through the image binding every scan, without going through `set()`, so `raw_ptr()` would show the program's value while `get()` still reports the forced one. `read_ptr()` is `get()`'s semantics with `get()`'s copy removed, which is what an external reader needs to serve a value without copying it. `IECStringVar::c_str()` resolves the force the same way.
-
-The debug dispatch's pointer op (`handle_ptr`, and through it OPC-UA's zero-copy read) uses `read_ptr()` for that reason. The pointer it returns is valid only until the variable is next written **or its force state changes** — an `unforce()` moves the value back to a different object, and a retained pointer keeps reporting the stale forced one.
 
 ## Force Table (`iec_force.hpp`)
 
@@ -117,7 +79,20 @@ The debug dispatch's pointer op (`handle_ptr`, and through it OPC-UA's zero-copy
 instead of inside them. A forced value is written into its variable when the
 force is set, and again at both cycle boundaries by a `force::Scope` held
 around a program's cycle (also on an early `RETURN` or a fault). Between the two
-boundaries a program that writes a forced variable sees its own write.
+boundaries a program that writes a forced variable sees its own write, as with
+typical PLC forcing. What changes for a user, compared with forcing inside the
+variable:
+
+- A program that writes a forced variable reads its own write until the cycle
+  ends; at the end, and at the start of the next cycle, the forced value is back.
+- A forced function-block input that the call passes (`fb(i := x)`) takes the
+  call's value inside the cycle; the forced value is restored at cycle end.
+- Every external reader (the debugger's `handle_read` / `handle_ptr`, OPC-UA,
+  retain save) sees the forced value throughout, and a soft write
+  (`handle_write`, a REPL `set`) to a forced variable is dropped.
+- At most `STRUCPP_FORCE_SLOTS` scalars and `STRUCPP_FORCE_STRING_SLOTS` strings
+  can be forced at once; a force past the bound is refused
+  (`STATUS_FORCE_TABLE_FULL`, 0x88, on the debugger protocol).
 
 | Call | Purpose |
 |------|---------|
@@ -134,11 +109,18 @@ Under `STRUCPP_THREADED` a mutex guards the table, and a `Scope` applies only
 the forces inside its own program instance plus those marked `FLAG_GLOBAL`.
 
 Generated code opens every PROGRAM's `run()` with
-`force::Scope __force_scope(this, sizeof(*this));`. The debugger and the REPL
-do not use the table yet; until they do, forcing still goes through `IECVar`
-(above). The generated debug table carries `debug_array_kind[]`
-(`DEBUG_ARRAY_GLOBAL` / `DEBUG_ARRAY_PROGRAM` per array) so a force can be
-marked `FLAG_GLOBAL`.
+`force::Scope __force_scope(this, sizeof(*this));`. The debug dispatch
+(`handle_set`, `handle_read`, `handle_write`, `handle_ptr`) and the REPL force
+through the table; `handle_set` marks a force on a configuration global
+`FLAG_GLOBAL` from the generated `debug_array_kind[]` (`DEBUG_ARRAY_GLOBAL` /
+`DEBUG_ARRAY_PROGRAM` per array). The pointer `handle_ptr` returns for a forced
+leaf is its slot, valid until the force changes.
+
+For a source-level debugger that has stopped the program (the VS Code
+extension), the header exports `strucpp_force_capture(void* ptr, unsigned size)`
+-- force the variable to the bytes it holds now -- and `strucpp_unforce(void*
+ptr)`. They return 0 on success and never wait for the table lock (5 when it is
+held).
 
 ## Type Traits (`iec_traits.hpp`)
 
@@ -270,7 +252,7 @@ The interactive REPL binary uses [isocline](https://github.com/daanx/isocline) (
 | Header | Purpose |
 |--------|---------|
 | `iec_types.hpp` | Elementary type aliases (including LTIME/LDATE/LTOD/LDT) |
-| `iec_var.hpp` | IECVar wrapper with forcing |
+| `iec_var.hpp` | IECVar wrapper |
 | `iec_force.hpp` | Force table: forced values held beside their variables, applied at cycle boundaries |
 | `iec_traits.hpp` | Type category traits |
 | `iec_string.hpp` | STRING type and functions |
