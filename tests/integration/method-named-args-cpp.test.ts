@@ -228,4 +228,37 @@ END_PROGRAM
     );
     expect(out).toBe("12 34");
   });
+
+  it("SUPER, interface and REFERENCE TO calls bind by name", () => {
+    const out = run(
+      `INTERFACE I_M
+METHOD Drive : INT
+VAR_INPUT a : INT; b : INT; END_VAR
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FB_Base IMPLEMENTS I_M
+METHOD Drive : INT
+VAR_INPUT a : INT; b : INT; END_VAR
+Drive := a * 10 + b;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_D EXTENDS FB_Base
+METHOD Twice : INT
+Twice := SUPER.Drive(b := 2, a := 1) * 2;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR d : FB_D; itf : I_M; rf : REFERENCE TO FB_D; r1 : INT; r2 : INT; r3 : INT; END_VAR
+itf := d;
+rf REF= d;
+r1 := d.Twice();
+r2 := itf.Drive(b := 4, a := 3);
+r3 := rf.Drive(b := 6, a := 5);
+END_PROGRAM
+`,
+      " Program_MAIN p;\n p.run();\n std::cout << p.R1 << ' ' << p.R2 << ' ' << p.R3 << std::endl;",
+      "na_super_itf_ref",
+    );
+    expect(out).toBe("24 34 56");
+  });
 });
