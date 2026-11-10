@@ -126,7 +126,7 @@ describe("isIECVarType", () => {
 
 describe("extractSimpleValue", () => {
   it("extracts integer from struct display", () => {
-    expect(extractSimpleValue("{value_ = 42, forced_ = false, forced_value_ = 0}")).toBe("42");
+    expect(extractSimpleValue("{value_ = 42}")).toBe("42");
   });
 
   it("extracts boolean from struct display", () => {
@@ -164,34 +164,32 @@ describe("looksLikeIECVarChildren", () => {
     return { name, value: "0", variablesReference: 0 };
   }
 
-  it("matches value_ + forced_ + forced_value_ pattern", () => {
-    const vars = [makeVar("value_"), makeVar("forced_"), makeVar("forced_value_")];
-    expect(looksLikeIECVarChildren(vars)).toBe(true);
+  it("matches the single value_ member", () => {
+    expect(looksLikeIECVarChildren([makeVar("value_")])).toBe(true);
   });
 
   it("matches with extra base class child", () => {
-    // Some debuggers add a base class entry
-    const vars = [makeVar("IECVar<short>"), makeVar("value_"), makeVar("forced_"), makeVar("forced_value_")];
+    // Some debuggers add an entry for the wrapper type
+    const vars = [makeVar("IECVar<short>"), makeVar("value_")];
     expect(looksLikeIECVarChildren(vars)).toBe(true);
   });
 
-  it("rejects too few variables", () => {
-    const vars = [makeVar("value_")];
-    expect(looksLikeIECVarChildren(vars)).toBe(false);
+  it("rejects no variables", () => {
+    expect(looksLikeIECVarChildren([])).toBe(false);
   });
 
   it("rejects too many variables", () => {
-    const vars = [makeVar("value_"), makeVar("forced_"), makeVar("forced_value_"), makeVar("extra1"), makeVar("extra2")];
+    const vars = [makeVar("value_"), makeVar("IECVar<short>"), makeVar("extra")];
     expect(looksLikeIECVarChildren(vars)).toBe(false);
   });
 
   it("rejects non-IECVar children", () => {
-    const vars = [makeVar("x"), makeVar("y"), makeVar("z")];
+    const vars = [makeVar("x"), makeVar("y")];
     expect(looksLikeIECVarChildren(vars)).toBe(false);
   });
 
-  it("rejects when missing forced_", () => {
-    const vars = [makeVar("value_"), makeVar("other"), makeVar("forced_value_")];
+  it("rejects a value_ beside a user member", () => {
+    const vars = [makeVar("value_"), makeVar("OTHER")];
     expect(looksLikeIECVarChildren(vars)).toBe(false);
   });
 });

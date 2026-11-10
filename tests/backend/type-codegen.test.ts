@@ -126,7 +126,7 @@ describe('TypeCodeGenerator', () => {
       };
 
       const result = generator.generateTypes([type]);
-      expect(result).toContain('struct Point {');
+      expect(result).toContain('struct STRUCPP_MAY_ALIAS Point {');
       expect(result).toContain('IEC_INT x');
       expect(result).toContain('IEC_REAL y');
       expect(result).toContain('};');
@@ -299,8 +299,8 @@ describe('TypeCodeGenerator', () => {
       const generator = new TypeCodeGenerator();
       const result = generator.generateFromRegistry(registry);
 
-      const innerIndex = result.indexOf('struct Inner');
-      const outerIndex = result.indexOf('struct Outer');
+      const innerIndex = result.indexOf('struct STRUCPP_MAY_ALIAS Inner');
+      const outerIndex = result.indexOf('struct STRUCPP_MAY_ALIAS Outer');
       expect(innerIndex).toBeLessThan(outerIndex);
     });
   });

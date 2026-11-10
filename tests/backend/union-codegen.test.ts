@@ -80,7 +80,7 @@ describe("UNION storage", () => {
     expect(header).toContain("struct ST_P_uref {");
     expect(header).not.toContain("ST_W_u");
     expect(header).not.toContain("ST_X_u");
-    expect(header).toContain(`struct ST_W {
+    expect(header).toContain(`struct STRUCPP_MAY_ALIAS ST_W {
     U_A U{};`);
   });
 

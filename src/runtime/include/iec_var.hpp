@@ -470,26 +470,28 @@ using IEC_LONG_DATE_AND_TIME = IEC_LDT;
 // Layout: every elementary wrapper is exactly its value
 // =============================================================================
 
-#define STRUCPP_ASSERT_PACKED(W, T)                                                  \
-    static_assert(sizeof(W) == sizeof(T) && alignof(W) == alignof(T),               \
-                  #W " must be laid out as " #T);                                   \
-    static_assert(std::is_standard_layout<W>::value &&                              \
-                  std::is_trivially_copyable<W>::value,                             \
-                  #W " must be a plain value")
-STRUCPP_ASSERT_PACKED(IEC_BOOL, BOOL_t);
-STRUCPP_ASSERT_PACKED(IEC_BYTE, BYTE_t);
-STRUCPP_ASSERT_PACKED(IEC_WORD, WORD_t);
-STRUCPP_ASSERT_PACKED(IEC_DWORD, DWORD_t);
-STRUCPP_ASSERT_PACKED(IEC_LWORD, LWORD_t);
-STRUCPP_ASSERT_PACKED(IEC_SINT, SINT_t);
-STRUCPP_ASSERT_PACKED(IEC_INT, INT_t);
-STRUCPP_ASSERT_PACKED(IEC_DINT, DINT_t);
-STRUCPP_ASSERT_PACKED(IEC_LINT, LINT_t);
-STRUCPP_ASSERT_PACKED(IEC_REAL, REAL_t);
-STRUCPP_ASSERT_PACKED(IEC_LREAL, LREAL_t);
-STRUCPP_ASSERT_PACKED(IEC_TIME, TIME_t);
-STRUCPP_ASSERT_PACKED(IEC_CHAR, CHAR_t);
-STRUCPP_ASSERT_PACKED(IEC_WCHAR, WCHAR_t);
-#undef STRUCPP_ASSERT_PACKED
+namespace detail {
+/** True when wrapper W is laid out exactly as its value T. */
+template<typename W, typename T>
+struct is_packed_as
+    : std::integral_constant<bool,
+          sizeof(W) == sizeof(T) && alignof(W) == alignof(T) &&
+          std::is_standard_layout<W>::value && std::is_trivially_copyable<W>::value> {};
+}  // namespace detail
+
+static_assert(detail::is_packed_as<IEC_BOOL, BOOL_t>::value, "IEC_BOOL must be its value");
+static_assert(detail::is_packed_as<IEC_BYTE, BYTE_t>::value, "IEC_BYTE must be its value");
+static_assert(detail::is_packed_as<IEC_WORD, WORD_t>::value, "IEC_WORD must be its value");
+static_assert(detail::is_packed_as<IEC_DWORD, DWORD_t>::value, "IEC_DWORD must be its value");
+static_assert(detail::is_packed_as<IEC_LWORD, LWORD_t>::value, "IEC_LWORD must be its value");
+static_assert(detail::is_packed_as<IEC_SINT, SINT_t>::value, "IEC_SINT must be its value");
+static_assert(detail::is_packed_as<IEC_INT, INT_t>::value, "IEC_INT must be its value");
+static_assert(detail::is_packed_as<IEC_DINT, DINT_t>::value, "IEC_DINT must be its value");
+static_assert(detail::is_packed_as<IEC_LINT, LINT_t>::value, "IEC_LINT must be its value");
+static_assert(detail::is_packed_as<IEC_REAL, REAL_t>::value, "IEC_REAL must be its value");
+static_assert(detail::is_packed_as<IEC_LREAL, LREAL_t>::value, "IEC_LREAL must be its value");
+static_assert(detail::is_packed_as<IEC_TIME, TIME_t>::value, "IEC_TIME must be its value");
+static_assert(detail::is_packed_as<IEC_CHAR, CHAR_t>::value, "IEC_CHAR must be its value");
+static_assert(detail::is_packed_as<IEC_WCHAR, WCHAR_t>::value, "IEC_WCHAR must be its value");
 
 } // namespace strucpp
