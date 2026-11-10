@@ -930,11 +930,14 @@ export class ASTBuilder {
 
     // GET block
     let getter: Statement[] | undefined;
+    let getterVarBlocks: VarBlock[] = [];
+    let setterVarBlocks: VarBlock[] = [];
     const getterNode = getFirstNode(children.propertyGetter);
     if (getterNode) {
       const getterChildren = getterNode.children as CstChildren;
       const getterStmtList = getFirstNode(getterChildren.statementList);
       getter = this.extractStatementsFromList(getterStmtList);
+      getterVarBlocks = this.accessorVarBlocks(getterChildren);
     }
 
     // SET block
@@ -944,6 +947,7 @@ export class ASTBuilder {
       const setterChildren = setterNode.children as CstChildren;
       const setterStmtList = getFirstNode(setterChildren.statementList);
       setter = this.extractStatementsFromList(setterStmtList);
+      setterVarBlocks = this.accessorVarBlocks(setterChildren);
     }
 
     return {
@@ -954,7 +958,16 @@ export class ASTBuilder {
       visibility,
       ...(getter !== undefined ? { getter } : {}),
       ...(setter !== undefined ? { setter } : {}),
+      ...(getterVarBlocks.length > 0 ? { getterVarBlocks } : {}),
+      ...(setterVarBlocks.length > 0 ? { setterVarBlocks } : {}),
     };
+  }
+
+  /** The VAR blocks of a property accessor that declare a variable. */
+  private accessorVarBlocks(accessor: CstChildren): VarBlock[] {
+    return getAllNodes(accessor.varBlock)
+      .map((block) => this.buildVarBlock(block))
+      .filter((block) => block.declarations.length > 0);
   }
 
   /**

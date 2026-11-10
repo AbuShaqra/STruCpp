@@ -734,7 +734,10 @@ export function compileLibrary(
               ...(fb.varBlocks.some((b) => b.blockType === "VAR_IN_OUT")
                 ? { inoutByReference: true as const }
                 : {}),
-              methods: fb.methods.map(serializeMethod),
+              // Not the methods that hold an accessor's body: they are not callable.
+              methods: fb.methods
+                .filter((m) => m.fromAccessor !== true)
+                .map(serializeMethod),
               // The block's own VAR members, declared the same way the
               // interface arrays above are. A RETAINed instance retains these
               // too; without them a retained TON keeps Q and ET and loses the
