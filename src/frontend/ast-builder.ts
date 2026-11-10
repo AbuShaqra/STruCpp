@@ -1930,8 +1930,11 @@ export class ASTBuilder {
 
     // For fixed arrays, extract integer bounds from dimension expressions
     let arrayDimensions: Array<{ start: number; end: number }> | undefined;
+    // Set when a bound is not an integer this POU can know yet.
+    let unresolved: TypeReference["unresolvedArray"];
     if (!isVLA) {
       arrayDimensions = [];
+      const written: Array<{ start: Expression; end: Expression }> = [];
       for (const dimNode of dimNodes) {
         const dimChildren = dimNode.children as CstChildren;
         const exprNodes = getAllNodes(dimChildren.expression);
@@ -1941,9 +1944,18 @@ export class ASTBuilder {
           if (startVal !== undefined && endVal !== undefined) {
             arrayDimensions.push({ start: startVal, end: endVal });
           }
+          const start = this.buildExpression(exprNodes[0]!);
+          const end = this.buildExpression(exprNodes[1]!);
+          if (start && end) written.push({ start, end });
         }
       }
-      if (arrayDimensions.length === 0) {
+      if (
+        arrayDimensions.length < dimNodes.length &&
+        written.length === dimNodes.length
+      ) {
+        unresolved = { dimensions: written, elementTypeName };
+        arrayDimensions = undefined;
+      } else if (arrayDimensions.length === 0) {
         arrayDimensions = undefined;
       }
     }
@@ -1964,6 +1976,7 @@ export class ASTBuilder {
       result.arrayDimensions = arrayDimensions;
       result.elementTypeName = elementTypeName;
     }
+    if (unresolved) result.unresolvedArray = unresolved;
     // Also on an ARRAY[*], whose element type is otherwise only in its name.
     const elementChain = this.elementReferenceChain(elementTypeNode);
     if (elementChain) result.elementReferenceChain = elementChain;

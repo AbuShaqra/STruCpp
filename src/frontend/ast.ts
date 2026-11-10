@@ -489,6 +489,15 @@ export interface TypeReference extends ASTNode {
    * `["pointer_to"]` with `elementTypeName` "INT". Absent for plain elements.
    */
   elementReferenceChain?: ReferenceKind[];
+  /**
+   * An inline array whose bounds the AST builder could not reduce to integers
+   * (a global constant, an enumeration value). `resolveArrayBounds` replaces it
+   * with `arrayDimensions` and `elementTypeName` on the merged unit.
+   */
+  unresolvedArray?: {
+    dimensions: Array<{ start: Expression; end: Expression }>;
+    elementTypeName: string;
+  };
 }
 
 // =============================================================================
