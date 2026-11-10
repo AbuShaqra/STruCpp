@@ -669,11 +669,12 @@ CONCAT(const IECString<MaxLen1>& s1, const IECString<MaxLen2>& s2, const Args&..
     return CONCAT(CONCAT(s1, s2), rest...);
 }
 
+/** INSERT(IN1, IN2, P): IN2 after the first P characters of IN1. */
 template<size_t MaxLen>
 inline IECString<MaxLen> INSERT(const IECString<MaxLen>& s1, const IECString<MaxLen>& s2, size_t pos) noexcept {
     IECString<MaxLen> result(s1);
-    if (pos == 0) pos = 1;
-    result.insert(pos - 1, s2.c_str());
+    if (pos > result.length()) pos = result.length();
+    result.insert(pos, s2.c_str());
     return result;
 }
 
