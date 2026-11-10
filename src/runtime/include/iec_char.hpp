@@ -37,27 +37,6 @@ public:
         value_ = v;
     }
 
-    constexpr CharType get_underlying() const noexcept {
-        return value_;
-    }
-
-    void force(CharType v) noexcept {
-        forced_ = true;
-        forced_value_ = v;
-    }
-
-    void unforce() noexcept {
-        forced_ = false;
-    }
-
-    constexpr bool is_forced() const noexcept {
-        return forced_;
-    }
-
-    constexpr CharType get_forced_value() const noexcept {
-        return forced_value_;
-    }
-
     constexpr operator CharType() const noexcept {
         return get();
     }
