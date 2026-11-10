@@ -38,6 +38,7 @@ import type {
   MethodDeclaration,
   TypeReference,
   VarBlock,
+  VarBlockType,
   VarDeclaration,
 } from "../frontend/ast.js";
 
@@ -109,17 +110,26 @@ function serializeVarType(
   return entry;
 }
 
+/** The parameter direction of a POU var block; undefined for a block of locals. */
+function parameterDirection(
+  blockType: VarBlockType,
+): "input" | "output" | "inout" | undefined {
+  switch (blockType) {
+    case "VAR_INPUT":
+      return "input";
+    case "VAR_OUTPUT":
+      return "output";
+    case "VAR_IN_OUT":
+      return "inout";
+    default:
+      return undefined;
+  }
+}
+
 /** A method of a library FB for the manifest: its signature, no body. */
 function serializeMethod(method: MethodDeclaration): LibraryMethodEntry {
   const parameters = method.varBlocks.flatMap((block) => {
-    const direction =
-      block.blockType === "VAR_INPUT"
-        ? ("input" as const)
-        : block.blockType === "VAR_OUTPUT"
-          ? ("output" as const)
-          : block.blockType === "VAR_IN_OUT"
-            ? ("inout" as const)
-            : undefined;
+    const direction = parameterDirection(block.blockType);
     if (direction === undefined) return [];
     return block.declarations.flatMap((decl) => {
       const initialValue =
@@ -687,8 +697,11 @@ export function compileLibrary(
           {
             name: fn.name,
             returnType: fn.returnType.name,
-            parameters: fn.varBlocks.flatMap((block) =>
-              block.declarations.flatMap((decl) => {
+            parameters: fn.varBlocks.flatMap((block) => {
+              const direction = parameterDirection(block.blockType);
+              // VAR / VAR_TEMP are the function's locals, not parameters.
+              if (direction === undefined) return [];
+              return block.declarations.flatMap((decl) => {
                 const initialValue =
                   decl.initialValue !== undefined
                     ? serializeInitialValue(decl.initialValue)
@@ -696,18 +709,13 @@ export function compileLibrary(
                 return decl.names.map((name) => ({
                   name,
                   type: decl.type.name,
-                  direction:
-                    block.blockType === "VAR_OUTPUT"
-                      ? "output"
-                      : block.blockType === "VAR_IN_OUT"
-                        ? "inout"
-                        : "input",
+                  direction,
                   // Present ⇒ optional input (default supplied); absent ⇒
                   // mandatory. Preserved from user ST and CODESYS-imported ST.
                   ...(initialValue !== undefined ? { initialValue } : {}),
                 }));
-              }),
-            ),
+              });
+            }),
           },
           catByName,
         ),
