@@ -21,8 +21,10 @@ import type {
   Argument,
   CompilationUnit,
   Expression,
+  ForStatement,
   FunctionCallExpression,
   MethodCallExpression,
+  MethodDeclaration,
   Statement,
   VarBlock,
   VariableExpression,
@@ -296,17 +298,107 @@ export function findProgramSelfCalls(
   return found;
 }
 
+/** The member `expr` or `call` names as `OWN.member`, upper case, if any. */
+function selfQualifiedMember(node: unknown, own: string): string | undefined {
+  const n = node as { kind?: string };
+  if (n.kind === "VariableExpression") {
+    const expr = node as VariableExpression;
+    return expr.name.toUpperCase() === own
+      ? firstField(expr)?.toUpperCase()
+      : undefined;
+  }
+  if (n.kind === "FunctionCallExpression") {
+    const call = node as FunctionCallExpression;
+    const parts = call.functionName.split(".");
+    return call.instance === undefined &&
+      parts.length === 2 &&
+      parts[0]!.toUpperCase() === own
+      ? parts[1]!.toUpperCase()
+      : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Rename a method's locals that hide a member the method also names as
+ * `OWN.member`, so that name can be rewritten to the plain member. Every use
+ * of the local in the method follows. Records the renames on the method.
+ */
+function renameHidingLocals(
+  method: MethodDeclaration,
+  own: string,
+  members: ReadonlySet<string>,
+): void {
+  const locals = declaredNames(method.varBlocks);
+  const wanted = new Set<string>();
+  for (const stmt of method.body) {
+    walkAST(stmt, (node) => {
+      const member = selfQualifiedMember(node, own);
+      if (member !== undefined && members.has(member) && locals.has(member)) {
+        wanted.add(member);
+      }
+    });
+  }
+  if (wanted.size === 0) return;
+  const renames = new Map<string, string>();
+  for (const upper of wanted) {
+    let internal = `${upper}__LOCAL`;
+    for (let i = 2; members.has(internal) || locals.has(internal); i++) {
+      internal = `${upper}__LOCAL${i}`;
+    }
+    renames.set(upper, internal);
+    locals.add(internal);
+  }
+  const renamed = (name: string): string | undefined =>
+    renames.get(name.toUpperCase());
+  const visit = (node: unknown): void => {
+    const n = node as { kind?: string };
+    if (n.kind === "VariableExpression") {
+      const expr = node as VariableExpression;
+      expr.name = renamed(expr.name) ?? expr.name;
+    } else if (n.kind === "FunctionCallExpression") {
+      const call = node as FunctionCallExpression;
+      const parts = call.functionName.split(".");
+      const head = renamed(parts[0]!);
+      if (head !== undefined) {
+        call.functionName = [head, ...parts.slice(1)].join(".");
+      }
+    } else if (n.kind === "ForStatement") {
+      const loop = node as ForStatement;
+      loop.controlVariable =
+        renamed(loop.controlVariable) ?? loop.controlVariable;
+    }
+  };
+  for (const block of method.varBlocks) {
+    for (const decl of block.declarations) {
+      decl.names = decl.names.map((n) => renamed(n) ?? n);
+    }
+    walkAST(block, visit);
+  }
+  for (const stmt of method.body) walkAST(stmt, visit);
+  method.renamedLocals = [...renames].map(([name, internal]) => ({
+    internal,
+    name,
+  }));
+}
+
 /**
  * `PRG_A.x` and `PRG_A.fb(...)` written inside PRG_A itself (its body, methods
  * and actions; feature program_methods) name the program's own member, so
- * they are rewritten in place to `x` and `fb(...)`. Not rewritten: a POU
- * declaring a name PRG_A, or a method declaring a local of the member's name.
+ * they are rewritten in place to `x` and `fb(...)`. A method's local of the
+ * member's name is renamed first, so the member stays reachable. Not
+ * rewritten: a POU declaring a name PRG_A.
  */
 export function lowerProgramSelfMembers(ast: CompilationUnit): void {
   for (const prog of ast.programs) {
     const own = prog.name.toUpperCase();
     const members = declaredNames(prog.varBlocks);
     if (members.has(own)) continue;
+    for (const method of prog.methods) {
+      if (!declaredNames(method.varBlocks).has(own)) {
+        renameHidingLocals(method, own, members);
+      }
+    }
     const units = [
       { body: prog.body, locals: new Set<string>() },
       ...prog.methods.map((m) => ({
