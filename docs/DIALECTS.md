@@ -195,9 +195,12 @@ END_PROGRAM
 ```
 
 - `LIST.var` reads and writes the global `var` of that list, followed by any chain of members, subscripts
-  and dereferences, in POU bodies (programs, functions, FBs, methods, property accessors). It types and
-  generates exactly like the unqualified access to that global. Initial values, CONFIGURATION entries and
-  `--test` files do not take the qualified form.
+  and dereferences, in POU bodies (programs, functions, FBs, methods, property accessors) and in
+  declarations: an initial value (`n : INT := GVL_A.k;`, array literals included) and the init argument
+  list of an FB instance (`fb : FB_A(ref := GVL_A.x);`, feature `fb_init`), in a PROGRAM, FUNCTION,
+  FUNCTION_BLOCK, METHOD or top-level `VAR_GLOBAL`. It types and generates exactly like the unqualified
+  access to that global. STRUCT field defaults, CONFIGURATION entries and `--test` files do not take the
+  qualified form.
 - Unqualified access keeps working: qualifying is not enforced.
 - A list name is consulted last. When the name before the dot is anything else in that body (a local,
   member or global variable, a POU, a type, an enum value, a function or method name, THIS/SUPER), that
