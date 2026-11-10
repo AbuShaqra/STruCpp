@@ -189,19 +189,20 @@ describe("pointer and reference initializers", () => {
       "REF_TO initializers are not supported; assign 'R' in the body instead",
     ],
     [
-      "p : POINTER TO INT := ADR(x);",
+      "p : POINTER TO INT := dw;",
       "POINTER TO initializers are not supported; assign 'P' in the body instead",
     ],
   ])("rejects %s", (decl, message) => {
     expect(errors(decl)).toEqual([message]);
   });
 
-  it.each(["r : REF_TO INT := NULL;", "p : POINTER TO INT := 0;"])(
-    "accepts %s",
-    (decl) => {
-      expect(errors(decl)).toEqual([]);
-    },
-  );
+  it.each([
+    "r : REF_TO INT := NULL;",
+    "p : POINTER TO INT := 0;",
+    "p : POINTER TO INT := ADR(x);",
+  ])("accepts %s", (decl) => {
+    expect(errors(decl)).toEqual([]);
+  });
 });
 
 describe("REFERENCE TO is not combined with other levels", () => {

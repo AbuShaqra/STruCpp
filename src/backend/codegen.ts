@@ -8349,7 +8349,13 @@ export class CodeGenerator {
       decl.referenceKind === "reference_to" ||
       decl.referenceKind === "pointer_to"
     ) {
-      return undefined;
+      // `p : POINTER TO T := ADR(x);` binds the pointer as it is created.
+      const value = decl.initialValue;
+      return decl.referenceKind === "pointer_to" &&
+        value?.kind === "FunctionCallExpression" &&
+        value.functionName.toUpperCase() === "ADR"
+        ? this.generateExpression(value)
+        : undefined;
     }
     if (decl.initialValue) {
       return this.generateInitializer(
