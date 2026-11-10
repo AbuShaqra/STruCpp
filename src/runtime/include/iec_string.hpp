@@ -597,75 +597,12 @@ inline IECString<MaxLen> MID(const IECString<MaxLen>& s, size_t len, size_t pos)
     return s.substr(pos - 1, len);
 }
 
-template<size_t MaxLen1, size_t MaxLen2>
-inline IECString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
-CONCAT(const IECString<MaxLen1>& s1, const IECString<MaxLen2>& s2) noexcept {
-    constexpr size_t ResultLen = MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2;
-    IECString<ResultLen> result(s1);
-    result.append(s2);
-    return result;
-}
-
-/** INSERT(IN1, IN2, P): IN2 after the first P characters of IN1. */
-template<size_t MaxLen>
-inline IECString<MaxLen> INSERT(const IECString<MaxLen>& s1, const IECString<MaxLen>& s2, size_t pos) noexcept {
-    IECString<MaxLen> result(s1);
-    if (pos > result.length()) pos = result.length();
-    result.insert(pos, s2.c_str());
-    return result;
-}
-
 template<size_t MaxLen>
 inline IECString<MaxLen> DELETE_STR(const IECString<MaxLen>& s, size_t len, size_t pos) noexcept {
     IECString<MaxLen> result(s);
     if (pos == 0) pos = 1;
     result.erase(pos - 1, len);
     return result;
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> REPLACE(const IECString<MaxLen>& s1, const IECString<MaxLen>& s2, size_t len, size_t pos) noexcept {
-    IECString<MaxLen> result(s1);
-    if (pos == 0) pos = 1;
-    result.replace(pos - 1, len, s2.c_str());
-    return result;
-}
-
-// const char* overloads for string functions (codegen may emit string literals)
-template<size_t MaxLen>
-inline IECString<MaxLen> REPLACE(const IECString<MaxLen>& s1, const char* s2, size_t len, size_t pos) noexcept {
-    return REPLACE(s1, IECString<MaxLen>(s2), len, pos);
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> REPLACE(const IECStringVar<MaxLen>& s1, const char* s2, size_t len, size_t pos) noexcept {
-    return REPLACE(s1.get(), IECString<MaxLen>(s2), len, pos);
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> INSERT(const IECString<MaxLen>& s1, const char* s2, size_t pos) noexcept {
-    return INSERT(s1, IECString<MaxLen>(s2), pos);
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> INSERT(const IECStringVar<MaxLen>& s1, const char* s2, size_t pos) noexcept {
-    return INSERT(s1.get(), IECString<MaxLen>(s2), pos);
-}
-
-template<size_t MaxLen>
-inline size_t FIND(const IECString<MaxLen>& s1, const char* s2) noexcept {
-    return FIND(s1, IECString<MaxLen>(s2));
-}
-
-template<size_t MaxLen>
-inline size_t FIND(const IECStringVar<MaxLen>& s1, const char* s2) noexcept {
-    return FIND(s1.get(), IECString<MaxLen>(s2));
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECString<MaxLen1>& s1, const IECString<MaxLen2>& s2) noexcept {
-    size_t pos = s1.find(s2);
-    return pos == IECString<MaxLen1>::npos ? 0 : pos + 1;
 }
 
 // =============================================================================
@@ -688,72 +625,9 @@ inline IECString<MaxLen> MID(const IECStringVar<MaxLen>& s, size_t len, size_t p
     return MID(s.get(), len, pos);
 }
 
-template<size_t MaxLen1, size_t MaxLen2>
-inline IECString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
-CONCAT(const IECStringVar<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2) noexcept {
-    return CONCAT(s1.get(), s2.get());
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline IECString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
-CONCAT(const IECStringVar<MaxLen1>& s1, const IECString<MaxLen2>& s2) noexcept {
-    return CONCAT(s1.get(), s2);
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline IECString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
-CONCAT(const IECString<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2) noexcept {
-    return CONCAT(s1, s2.get());
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> INSERT(const IECStringVar<MaxLen>& s1, const IECStringVar<MaxLen>& s2, size_t pos) noexcept {
-    return INSERT(s1.get(), s2.get(), pos);
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> INSERT(const IECStringVar<MaxLen>& s1, const IECString<MaxLen>& s2, size_t pos) noexcept {
-    return INSERT(s1.get(), s2, pos);
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> INSERT(const IECString<MaxLen>& s1, const IECStringVar<MaxLen>& s2, size_t pos) noexcept {
-    return INSERT(s1, s2.get(), pos);
-}
-
 template<size_t MaxLen>
 inline IECString<MaxLen> DELETE_STR(const IECStringVar<MaxLen>& s, size_t len, size_t pos) noexcept {
     return DELETE_STR(s.get(), len, pos);
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> REPLACE(const IECStringVar<MaxLen>& s1, const IECStringVar<MaxLen>& s2, size_t len, size_t pos) noexcept {
-    return REPLACE(s1.get(), s2.get(), len, pos);
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> REPLACE(const IECStringVar<MaxLen>& s1, const IECString<MaxLen>& s2, size_t len, size_t pos) noexcept {
-    return REPLACE(s1.get(), s2, len, pos);
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> REPLACE(const IECString<MaxLen>& s1, const IECStringVar<MaxLen>& s2, size_t len, size_t pos) noexcept {
-    return REPLACE(s1, s2.get(), len, pos);
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECStringVar<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2) noexcept {
-    return FIND(s1.get(), s2.get());
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECStringVar<MaxLen1>& s1, const IECString<MaxLen2>& s2) noexcept {
-    return FIND(s1.get(), s2);
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECString<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2) noexcept {
-    return FIND(s1, s2.get());
 }
 
 // =============================================================================
@@ -786,70 +660,10 @@ inline IECString<MaxLen> DELETE_STR(const IECVar<IECString<MaxLen>>& s, size_t l
     return DELETE_STR(static_cast<IECString<MaxLen>>(s), len, pos);
 }
 
-template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECVar<IECString<MaxLen1>>& s1, const IECStringVar<MaxLen2>& s2) noexcept {
-    return FIND(static_cast<IECString<MaxLen1>>(s1), s2.get());
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECVar<IECString<MaxLen1>>& s1, const IECString<MaxLen2>& s2) noexcept {
-    return FIND(static_cast<IECString<MaxLen1>>(s1), s2);
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline size_t FIND(const IECStringVar<MaxLen1>& s1, const IECVar<IECString<MaxLen2>>& s2) noexcept {
-    return FIND(s1.get(), static_cast<IECString<MaxLen2>>(s2));
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline IECString<MaxLen1> REPLACE(const IECVar<IECString<MaxLen1>>& s1, const IECStringVar<MaxLen2>& s2, size_t len, size_t pos) noexcept {
-    return REPLACE(static_cast<IECString<MaxLen1>>(s1), IECString<MaxLen1>(s2.get().c_str()), len, pos);
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline IECString<MaxLen1> INSERT(const IECVar<IECString<MaxLen1>>& s1, const IECStringVar<MaxLen2>& s2, size_t pos) noexcept {
-    return INSERT(static_cast<IECString<MaxLen1>>(s1), IECString<MaxLen1>(s2.get().c_str()), pos);
-}
-
-// Cross-size REPLACE/INSERT: arguments may have different string sizes
-template<size_t MaxLen1, size_t MaxLen2, std::enable_if_t<MaxLen1 != MaxLen2, int> = 0>
-inline IECString<MaxLen1> REPLACE(const IECStringVar<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2, size_t len, size_t pos) noexcept {
-    return REPLACE(s1.get(), IECString<MaxLen1>(s2.get().c_str()), len, pos);
-}
-
-template<size_t MaxLen1, size_t MaxLen2, std::enable_if_t<MaxLen1 != MaxLen2, int> = 0>
-inline IECString<MaxLen1> INSERT(const IECStringVar<MaxLen1>& s1, const IECStringVar<MaxLen2>& s2, size_t pos) noexcept {
-    return INSERT(s1.get(), IECString<MaxLen1>(s2.get().c_str()), pos);
-}
-
-// CONCAT overloads for IECVar<IECString<N>>
-template<size_t MaxLen1, size_t MaxLen2>
-inline IECString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
-CONCAT(const IECVar<IECString<MaxLen1>>& s1, const IECString<MaxLen2>& s2) noexcept {
-    return CONCAT(static_cast<IECString<MaxLen1>>(s1), s2);
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline IECString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
-CONCAT(const IECString<MaxLen1>& s1, const IECVar<IECString<MaxLen2>>& s2) noexcept {
-    return CONCAT(s1, static_cast<IECString<MaxLen2>>(s2));
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline IECString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
-CONCAT(const IECVar<IECString<MaxLen1>>& s1, const IECStringVar<MaxLen2>& s2) noexcept {
-    return CONCAT(static_cast<IECString<MaxLen1>>(s1), s2.get());
-}
-
-template<size_t MaxLen1, size_t MaxLen2>
-inline IECString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
-CONCAT(const IECStringVar<MaxLen1>& s1, const IECVar<IECString<MaxLen2>>& s2) noexcept {
-    return CONCAT(s1.get(), static_cast<IECString<MaxLen2>>(s2));
-}
-
 // =============================================================================
 // STRING functions taking a string literal (codegen emits a bare literal as a
-// C string), and CONCAT of 3+ arguments of any STRING form.
+// C string), and the functions of two or more STRING arguments, each a value,
+// a variable or a literal of any length.
 // =============================================================================
 
 namespace detail {
@@ -859,8 +673,6 @@ template<size_t N> struct is_string_arg<IECStringVar<N>> : std::true_type {};
 template<size_t N> struct is_string_arg<IECVar<IECString<N>>> : std::true_type {};
 template<size_t N> struct is_string_arg<char[N]> : std::true_type {};
 
-template<typename T> struct is_string_literal : std::false_type {};
-template<size_t N> struct is_string_literal<char[N]> : std::true_type {};
 
 /** A STRING argument as a value; a literal is a STRING of the default length. */
 template<size_t N> inline const IECString<N>& svalue(const IECString<N>& s) noexcept { return s; }
@@ -869,15 +681,79 @@ template<size_t N> inline IECString<N> svalue(const IECVar<IECString<N>>& s) noe
     return static_cast<IECString<N>>(s);
 }
 template<size_t N> inline STRING svalue(const char (&s)[N]) noexcept { return STRING(s); }
+inline STRING svalue(const char* const& s) noexcept { return STRING(s); }
 
-/** Two STRING arguments, at least one of them a literal. */
-template<typename A, typename B>
-using if_string_literal_pair = typename std::enable_if<
-    is_string_arg<A>::value && is_string_arg<B>::value &&
-    (is_string_literal<A>::value || is_string_literal<B>::value), int>::type;
+template<> struct is_string_arg<const char*> : std::true_type {};
+
+/** Characters a STRING argument can hold; a literal is a default STRING. */
+template<typename T> struct string_capacity;
+template<size_t N> struct string_capacity<IECString<N>> : std::integral_constant<size_t, N> {};
+template<size_t N> struct string_capacity<IECStringVar<N>> : std::integral_constant<size_t, N> {};
+template<size_t N> struct string_capacity<IECVar<IECString<N>>> : std::integral_constant<size_t, N> {};
+template<size_t N> struct string_capacity<char[N]> : std::integral_constant<size_t, STRING::max_length> {};
+template<> struct string_capacity<const char*> : std::integral_constant<size_t, STRING::max_length> {};
+
+/** The largest capacity among STRING arguments. */
+template<typename A, typename... Rest> struct max_string_capacity
+    : std::integral_constant<size_t,
+          (string_capacity<A>::value > max_string_capacity<Rest...>::value
+               ? string_capacity<A>::value : max_string_capacity<Rest...>::value)> {};
+template<typename A> struct max_string_capacity<A> : string_capacity<A> {};
+
+/** The result of a function of several STRINGs: room for the longest argument type. */
+template<typename... Args>
+using joined_string = IECString<max_string_capacity<Args...>::value>;
+
 template<typename A>
 using if_string_arg = typename std::enable_if<is_string_arg<A>::value, int>::type;
+template<typename A, typename B>
+using if_string_pair = typename std::enable_if<
+    is_string_arg<A>::value && is_string_arg<B>::value, int>::type;
 }  // namespace detail
+
+/** CONCAT(IN1, IN2): IN1 followed by IN2. */
+template<typename A, typename B, detail::if_string_pair<A, B> = 0>
+inline detail::joined_string<A, B> CONCAT(const A& s1, const B& s2) noexcept {
+    detail::joined_string<A, B> result(detail::svalue(s1));
+    result.append(detail::svalue(s2));
+    return result;
+}
+
+/** CONCAT of 3+ STRING arguments (IEC 61131-3 extensible function). */
+template<typename A, typename B, typename C, typename... Rest,
+         detail::if_string_pair<A, B> = 0, detail::if_string_arg<C> = 0>
+inline detail::joined_string<A, B, C, Rest...>
+CONCAT(const A& s1, const B& s2, const C& s3, const Rest&... rest) noexcept {
+    // Widen first, so no partial result is cut to its own arguments' length.
+    const detail::joined_string<A, B, C, Rest...> first(detail::svalue(s1));
+    return CONCAT(CONCAT(first, s2), s3, rest...);
+}
+
+/** INSERT(IN1, IN2, P): IN2 after the first P characters of IN1. */
+template<typename A, typename B, detail::if_string_pair<A, B> = 0>
+inline detail::joined_string<A, B> INSERT(const A& s1, const B& s2, size_t pos) noexcept {
+    detail::joined_string<A, B> result(detail::svalue(s1));
+    if (pos > result.length()) pos = result.length();
+    result.insert(pos, detail::svalue(s2).c_str());
+    return result;
+}
+
+/** REPLACE(IN1, IN2, L, P): L characters of IN1 from position P replaced by IN2. */
+template<typename A, typename B, detail::if_string_pair<A, B> = 0>
+inline detail::joined_string<A, B> REPLACE(const A& s1, const B& s2, size_t len, size_t pos) noexcept {
+    detail::joined_string<A, B> result(detail::svalue(s1));
+    if (pos == 0) pos = 1;
+    result.replace(pos - 1, len, detail::svalue(s2).c_str());
+    return result;
+}
+
+/** FIND(IN1, IN2): the position of IN2 in IN1, from 1; 0 when absent. */
+template<typename A, typename B, detail::if_string_pair<A, B> = 0>
+inline size_t FIND(const A& s1, const B& s2) noexcept {
+    const auto& haystack = detail::svalue(s1);
+    const size_t pos = haystack.find(detail::svalue(s2));
+    return pos == std::remove_reference<decltype(haystack)>::type::npos ? 0 : pos + 1;
+}
 
 template<size_t N>
 inline size_t LEN(const char (&s)[N]) noexcept {
@@ -902,35 +778,6 @@ inline STRING MID(const char (&s)[N], size_t len, size_t pos) noexcept {
 template<size_t N>
 inline STRING DELETE_STR(const char (&s)[N], size_t len, size_t pos) noexcept {
     return DELETE_STR(STRING(s), len, pos);
-}
-
-/** INSERT / REPLACE / FIND with a literal IN1; IN2 may be any STRING form. */
-template<size_t N, typename B, detail::if_string_arg<B> = 0>
-inline STRING INSERT(const char (&s1)[N], const B& s2, size_t pos) noexcept {
-    return INSERT(STRING(s1), STRING(detail::svalue(s2).c_str()), pos);
-}
-
-template<size_t N, typename B, detail::if_string_arg<B> = 0>
-inline STRING REPLACE(const char (&s1)[N], const B& s2, size_t len, size_t pos) noexcept {
-    return REPLACE(STRING(s1), STRING(detail::svalue(s2).c_str()), len, pos);
-}
-
-template<size_t N, typename B, detail::if_string_arg<B> = 0>
-inline size_t FIND(const char (&s1)[N], const B& s2) noexcept {
-    return FIND(STRING(s1), detail::svalue(s2));
-}
-
-/** CONCAT of two STRING arguments, at least one a literal. */
-template<typename A, typename B, detail::if_string_literal_pair<A, B> = 0>
-inline auto CONCAT(const A& s1, const B& s2) noexcept {
-    return CONCAT(detail::svalue(s1), detail::svalue(s2));
-}
-
-/** CONCAT of 3+ STRING arguments (IEC 61131-3 extensible function). */
-template<typename A, typename B, typename C, typename... Rest,
-         detail::if_string_arg<A> = 0, detail::if_string_arg<B> = 0>
-inline auto CONCAT(const A& s1, const B& s2, const C& s3, const Rest&... rest) noexcept {
-    return CONCAT(CONCAT(detail::svalue(s1), detail::svalue(s2)), s3, rest...);
 }
 
 template<size_t MaxLen1, size_t MaxLen2>
@@ -1082,31 +929,6 @@ inline IECString<N> UPPERCASE(const IECString<N>& s) noexcept {
 template<size_t N>
 inline IECString<N> UPPERCASE(const IECStringVar<N>& s) noexcept {
     return UPPERCASE(s.get());
-}
-
-// CONCAT with const char* overloads (codegen may mix string literals with IECString)
-template<size_t MaxLen>
-inline IECString<MaxLen> CONCAT(const IECString<MaxLen>& s1, const char* s2) noexcept {
-    IECString<MaxLen> result(s1);
-    result.append(s2);
-    return result;
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> CONCAT(const char* s1, const IECString<MaxLen>& s2) noexcept {
-    IECString<MaxLen> result(s1);
-    result.append(s2);
-    return result;
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> CONCAT(const IECStringVar<MaxLen>& s1, const char* s2) noexcept {
-    return CONCAT(s1.get(), s2);
-}
-
-template<size_t MaxLen>
-inline IECString<MaxLen> CONCAT(const char* s1, const IECStringVar<MaxLen>& s2) noexcept {
-    return CONCAT(s1, s2.get());
 }
 
 // =============================================================================
