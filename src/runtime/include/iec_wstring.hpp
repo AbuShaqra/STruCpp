@@ -592,10 +592,17 @@ template<size_t N> struct is_wstring<IECWStringVar<N>> : std::true_type { static
 
 template<size_t N> inline IECWString<N> wvalue(const IECWString<N>& s) noexcept { return s; }
 template<size_t N> inline IECWString<N> wvalue(const IECWStringVar<N>& s) noexcept { return s.get(); }
+template<size_t N> inline WSTRING wvalue(const char16_t (&s)[N]) noexcept { return WSTRING(s); }
 
-template<typename S> using wstring_value_t = IECWString<is_wstring<S>::len>;
+/** A WSTRING function argument: a string, a variable or a literal (default length). */
+template<typename T> struct is_wstring_arg : is_wstring<T> {};
+template<size_t N> struct is_wstring_arg<char16_t[N]> : std::true_type {
+    static constexpr size_t len = 254;
+};
+
+template<typename S> using wstring_value_t = IECWString<is_wstring_arg<S>::len>;
 template<typename S, typename R = void>
-using if_wstring = typename std::enable_if<is_wstring<S>::value, R>::type;
+using if_wstring = typename std::enable_if<is_wstring_arg<S>::value, R>::type;
 }  // namespace detail
 
 namespace detail {
@@ -644,9 +651,9 @@ inline detail::wstring_value_t<S> MID(const S& s, size_t len, size_t pos) noexce
 }
 
 template<typename A, typename B, typename = detail::if_wstring<A>, typename = detail::if_wstring<B>>
-inline IECWString<(detail::is_wstring<A>::len > detail::is_wstring<B>::len
-                       ? detail::is_wstring<A>::len
-                       : detail::is_wstring<B>::len)>
+inline IECWString<(detail::is_wstring_arg<A>::len > detail::is_wstring_arg<B>::len
+                       ? detail::is_wstring_arg<A>::len
+                       : detail::is_wstring_arg<B>::len)>
 CONCAT(const A& s1, const B& s2) noexcept {
     return WCONCAT(detail::wvalue(s1), detail::wvalue(s2));
 }

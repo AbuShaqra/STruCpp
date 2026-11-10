@@ -662,13 +662,6 @@ CONCAT(const IECString<MaxLen1>& s1, const IECString<MaxLen2>& s2) noexcept {
     return result;
 }
 
-// Variadic CONCAT for 3+ arguments (IEC 61131-3 extensible function)
-template<size_t MaxLen1, size_t MaxLen2, typename... Args>
-inline auto
-CONCAT(const IECString<MaxLen1>& s1, const IECString<MaxLen2>& s2, const Args&... rest) noexcept {
-    return CONCAT(CONCAT(s1, s2), rest...);
-}
-
 /** INSERT(IN1, IN2, P): IN2 after the first P characters of IN1. */
 template<size_t MaxLen>
 inline IECString<MaxLen> INSERT(const IECString<MaxLen>& s1, const IECString<MaxLen>& s2, size_t pos) noexcept {
@@ -908,6 +901,92 @@ template<size_t MaxLen1, size_t MaxLen2>
 inline IECString<(MaxLen1 > MaxLen2 ? MaxLen1 : MaxLen2)>
 CONCAT(const IECStringVar<MaxLen1>& s1, const IECVar<IECString<MaxLen2>>& s2) noexcept {
     return CONCAT(s1.get(), static_cast<IECString<MaxLen2>>(s2));
+}
+
+// =============================================================================
+// STRING functions taking a string literal (codegen emits a bare literal as a
+// C string), and CONCAT of 3+ arguments of any STRING form.
+// =============================================================================
+
+namespace detail {
+template<typename T> struct is_string_arg : std::false_type {};
+template<size_t N> struct is_string_arg<IECString<N>> : std::true_type {};
+template<size_t N> struct is_string_arg<IECStringVar<N>> : std::true_type {};
+template<size_t N> struct is_string_arg<IECVar<IECString<N>>> : std::true_type {};
+template<size_t N> struct is_string_arg<char[N]> : std::true_type {};
+
+template<typename T> struct is_string_literal : std::false_type {};
+template<size_t N> struct is_string_literal<char[N]> : std::true_type {};
+
+/** A STRING argument as a value; a literal is a STRING of the default length. */
+template<size_t N> inline const IECString<N>& svalue(const IECString<N>& s) noexcept { return s; }
+template<size_t N> inline IECString<N> svalue(const IECStringVar<N>& s) noexcept { return s.get(); }
+template<size_t N> inline IECString<N> svalue(const IECVar<IECString<N>>& s) noexcept {
+    return static_cast<IECString<N>>(s);
+}
+template<size_t N> inline STRING svalue(const char (&s)[N]) noexcept { return STRING(s); }
+
+/** Two STRING arguments, at least one of them a literal. */
+template<typename A, typename B>
+using if_string_literal_pair = typename std::enable_if<
+    is_string_arg<A>::value && is_string_arg<B>::value &&
+    (is_string_literal<A>::value || is_string_literal<B>::value), int>::type;
+template<typename A>
+using if_string_arg = typename std::enable_if<is_string_arg<A>::value, int>::type;
+}  // namespace detail
+
+template<size_t N>
+inline size_t LEN(const char (&s)[N]) noexcept {
+    return STRING(s).length();
+}
+
+template<size_t N>
+inline STRING LEFT(const char (&s)[N], size_t len) noexcept {
+    return LEFT(STRING(s), len);
+}
+
+template<size_t N>
+inline STRING RIGHT(const char (&s)[N], size_t len) noexcept {
+    return RIGHT(STRING(s), len);
+}
+
+template<size_t N>
+inline STRING MID(const char (&s)[N], size_t len, size_t pos) noexcept {
+    return MID(STRING(s), len, pos);
+}
+
+template<size_t N>
+inline STRING DELETE_STR(const char (&s)[N], size_t len, size_t pos) noexcept {
+    return DELETE_STR(STRING(s), len, pos);
+}
+
+/** INSERT / REPLACE / FIND with a literal IN1; IN2 may be any STRING form. */
+template<size_t N, typename B, detail::if_string_arg<B> = 0>
+inline STRING INSERT(const char (&s1)[N], const B& s2, size_t pos) noexcept {
+    return INSERT(STRING(s1), STRING(detail::svalue(s2).c_str()), pos);
+}
+
+template<size_t N, typename B, detail::if_string_arg<B> = 0>
+inline STRING REPLACE(const char (&s1)[N], const B& s2, size_t len, size_t pos) noexcept {
+    return REPLACE(STRING(s1), STRING(detail::svalue(s2).c_str()), len, pos);
+}
+
+template<size_t N, typename B, detail::if_string_arg<B> = 0>
+inline size_t FIND(const char (&s1)[N], const B& s2) noexcept {
+    return FIND(STRING(s1), detail::svalue(s2));
+}
+
+/** CONCAT of two STRING arguments, at least one a literal. */
+template<typename A, typename B, detail::if_string_literal_pair<A, B> = 0>
+inline auto CONCAT(const A& s1, const B& s2) noexcept {
+    return CONCAT(detail::svalue(s1), detail::svalue(s2));
+}
+
+/** CONCAT of 3+ STRING arguments (IEC 61131-3 extensible function). */
+template<typename A, typename B, typename C, typename... Rest,
+         detail::if_string_arg<A> = 0, detail::if_string_arg<B> = 0>
+inline auto CONCAT(const A& s1, const B& s2, const C& s3, const Rest&... rest) noexcept {
+    return CONCAT(CONCAT(detail::svalue(s1), detail::svalue(s2)), s3, rest...);
 }
 
 template<size_t MaxLen1, size_t MaxLen2>
