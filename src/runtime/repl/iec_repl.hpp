@@ -20,6 +20,7 @@
 
 #include "iec_types.hpp"
 #include "iec_var.hpp"
+#include "iec_force.hpp"
 #include "iec_std_lib.hpp"
 #include "isocline.h"
 #include <string>
@@ -181,29 +182,14 @@ inline std::string var_value_to_string(VarTypeTag type, void* ptr) {
     }
 }
 
-inline bool var_is_forced(VarTypeTag type, void* ptr) {
-    switch (type) {
-        case VarTypeTag::BOOL:  return static_cast<IECVar<BOOL_t>*>(ptr)->is_forced();
-        case VarTypeTag::SINT:  return static_cast<IECVar<SINT_t>*>(ptr)->is_forced();
-        case VarTypeTag::INT:   return static_cast<IECVar<INT_t>*>(ptr)->is_forced();
-        case VarTypeTag::DINT:  return static_cast<IECVar<DINT_t>*>(ptr)->is_forced();
-        case VarTypeTag::LINT:  return static_cast<IECVar<LINT_t>*>(ptr)->is_forced();
-        case VarTypeTag::USINT: return static_cast<IECVar<USINT_t>*>(ptr)->is_forced();
-        case VarTypeTag::UINT:  return static_cast<IECVar<UINT_t>*>(ptr)->is_forced();
-        case VarTypeTag::UDINT: return static_cast<IECVar<UDINT_t>*>(ptr)->is_forced();
-        case VarTypeTag::ULINT: return static_cast<IECVar<ULINT_t>*>(ptr)->is_forced();
-        case VarTypeTag::REAL:  return static_cast<IECVar<REAL_t>*>(ptr)->is_forced();
-        case VarTypeTag::LREAL: return static_cast<IECVar<LREAL_t>*>(ptr)->is_forced();
-        case VarTypeTag::BYTE:  return static_cast<IECVar<BYTE_t>*>(ptr)->is_forced();
-        case VarTypeTag::WORD:  return static_cast<IECVar<WORD_t>*>(ptr)->is_forced();
-        case VarTypeTag::DWORD: return static_cast<IECVar<DWORD_t>*>(ptr)->is_forced();
-        case VarTypeTag::LWORD: return static_cast<IECVar<LWORD_t>*>(ptr)->is_forced();
-        case VarTypeTag::TIME:  return static_cast<IECVar<TIME_t>*>(ptr)->is_forced();
-        default: return false;
-    }
+inline bool var_is_forced(VarTypeTag, void* ptr) {
+    return force::is_forced(ptr);
 }
 
 inline bool var_set_value(VarTypeTag type, void* ptr, const std::string& val) {
+    // A forced variable keeps its forced value; the write is dropped, as a
+    // debugger soft write is.
+    if (force::is_forced(ptr)) return true;
     try {
         switch (type) {
             case VarTypeTag::BOOL:
@@ -248,53 +234,45 @@ inline bool var_set_value(VarTypeTag type, void* ptr, const std::string& val) {
     } catch (...) { return false; }
 }
 
-inline bool var_force_value(VarTypeTag type, void* ptr, const std::string& val) {
+/** Outcome of var_force_value(). */
+enum class ForceResult { Ok, InvalidValue, TableFull };
+
+/** Record `v` as the forced value of the variable at `ptr` (force table). */
+template <typename T>
+inline ForceResult force_as(void* ptr, T v) {
+    return force::set(ptr, &v, sizeof(T)) == force::Status::Ok ? ForceResult::Ok
+                                                               : ForceResult::TableFull;
+}
+
+inline ForceResult var_force_value(VarTypeTag type, void* ptr, const std::string& val) {
     try {
         switch (type) {
             case VarTypeTag::BOOL:
-                if (val == "TRUE" || val == "true" || val == "1") { static_cast<IECVar<BOOL_t>*>(ptr)->force(true); return true; }
-                if (val == "FALSE" || val == "false" || val == "0") { static_cast<IECVar<BOOL_t>*>(ptr)->force(false); return true; }
-                return false;
-            case VarTypeTag::SINT:  static_cast<IECVar<SINT_t>*>(ptr)->force(static_cast<SINT_t>(std::stoi(val))); return true;
-            case VarTypeTag::INT:   static_cast<IECVar<INT_t>*>(ptr)->force(static_cast<INT_t>(std::stoi(val))); return true;
-            case VarTypeTag::DINT:  static_cast<IECVar<DINT_t>*>(ptr)->force(static_cast<DINT_t>(std::stol(val))); return true;
-            case VarTypeTag::LINT:  static_cast<IECVar<LINT_t>*>(ptr)->force(static_cast<LINT_t>(std::stoll(val))); return true;
-            case VarTypeTag::USINT: static_cast<IECVar<USINT_t>*>(ptr)->force(static_cast<USINT_t>(std::stoul(val))); return true;
-            case VarTypeTag::UINT:  static_cast<IECVar<UINT_t>*>(ptr)->force(static_cast<UINT_t>(std::stoul(val))); return true;
-            case VarTypeTag::UDINT: static_cast<IECVar<UDINT_t>*>(ptr)->force(static_cast<UDINT_t>(std::stoul(val))); return true;
-            case VarTypeTag::ULINT: static_cast<IECVar<ULINT_t>*>(ptr)->force(static_cast<ULINT_t>(std::stoull(val))); return true;
-            case VarTypeTag::REAL:  static_cast<IECVar<REAL_t>*>(ptr)->force(std::stof(val)); return true;
-            case VarTypeTag::LREAL: static_cast<IECVar<LREAL_t>*>(ptr)->force(std::stod(val)); return true;
-            case VarTypeTag::BYTE:  static_cast<IECVar<BYTE_t>*>(ptr)->force(static_cast<BYTE_t>(std::stoul(val, nullptr, 0))); return true;
-            case VarTypeTag::WORD:  static_cast<IECVar<WORD_t>*>(ptr)->force(static_cast<WORD_t>(std::stoul(val, nullptr, 0))); return true;
-            case VarTypeTag::DWORD: static_cast<IECVar<DWORD_t>*>(ptr)->force(static_cast<DWORD_t>(std::stoul(val, nullptr, 0))); return true;
-            case VarTypeTag::LWORD: static_cast<IECVar<LWORD_t>*>(ptr)->force(static_cast<LWORD_t>(std::stoull(val, nullptr, 0))); return true;
-            case VarTypeTag::TIME:  static_cast<IECVar<TIME_t>*>(ptr)->force(static_cast<TIME_t>(std::stoll(val))); return true;
-            default: return false;
+                if (val == "TRUE" || val == "true" || val == "1") return force_as<BOOL_t>(ptr, true);
+                if (val == "FALSE" || val == "false" || val == "0") return force_as<BOOL_t>(ptr, false);
+                return ForceResult::InvalidValue;
+            case VarTypeTag::SINT:  return force_as<SINT_t>(ptr, static_cast<SINT_t>(std::stoi(val)));
+            case VarTypeTag::INT:   return force_as<INT_t>(ptr, static_cast<INT_t>(std::stoi(val)));
+            case VarTypeTag::DINT:  return force_as<DINT_t>(ptr, static_cast<DINT_t>(std::stol(val)));
+            case VarTypeTag::LINT:  return force_as<LINT_t>(ptr, static_cast<LINT_t>(std::stoll(val)));
+            case VarTypeTag::USINT: return force_as<USINT_t>(ptr, static_cast<USINT_t>(std::stoul(val)));
+            case VarTypeTag::UINT:  return force_as<UINT_t>(ptr, static_cast<UINT_t>(std::stoul(val)));
+            case VarTypeTag::UDINT: return force_as<UDINT_t>(ptr, static_cast<UDINT_t>(std::stoul(val)));
+            case VarTypeTag::ULINT: return force_as<ULINT_t>(ptr, static_cast<ULINT_t>(std::stoull(val)));
+            case VarTypeTag::REAL:  return force_as<REAL_t>(ptr, std::stof(val));
+            case VarTypeTag::LREAL: return force_as<LREAL_t>(ptr, std::stod(val));
+            case VarTypeTag::BYTE:  return force_as<BYTE_t>(ptr, static_cast<BYTE_t>(std::stoul(val, nullptr, 0)));
+            case VarTypeTag::WORD:  return force_as<WORD_t>(ptr, static_cast<WORD_t>(std::stoul(val, nullptr, 0)));
+            case VarTypeTag::DWORD: return force_as<DWORD_t>(ptr, static_cast<DWORD_t>(std::stoul(val, nullptr, 0)));
+            case VarTypeTag::LWORD: return force_as<LWORD_t>(ptr, static_cast<LWORD_t>(std::stoull(val, nullptr, 0)));
+            case VarTypeTag::TIME:  return force_as<TIME_t>(ptr, static_cast<TIME_t>(std::stoll(val)));
+            default: return ForceResult::InvalidValue;
         }
-    } catch (...) { return false; }
+    } catch (...) { return ForceResult::InvalidValue; }
 }
 
-inline void var_unforce(VarTypeTag type, void* ptr) {
-    switch (type) {
-        case VarTypeTag::BOOL:  static_cast<IECVar<BOOL_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::SINT:  static_cast<IECVar<SINT_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::INT:   static_cast<IECVar<INT_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::DINT:  static_cast<IECVar<DINT_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::LINT:  static_cast<IECVar<LINT_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::USINT: static_cast<IECVar<USINT_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::UINT:  static_cast<IECVar<UINT_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::UDINT: static_cast<IECVar<UDINT_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::ULINT: static_cast<IECVar<ULINT_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::REAL:  static_cast<IECVar<REAL_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::LREAL: static_cast<IECVar<LREAL_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::BYTE:  static_cast<IECVar<BYTE_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::WORD:  static_cast<IECVar<WORD_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::DWORD: static_cast<IECVar<DWORD_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::LWORD: static_cast<IECVar<LWORD_t>*>(ptr)->unforce(); break;
-        case VarTypeTag::TIME:  static_cast<IECVar<TIME_t>*>(ptr)->unforce(); break;
-        default: break;
-    }
+inline void var_unforce(VarTypeTag, void* ptr) {
+    force::clear(ptr);
 }
 
 // =============================================================================
@@ -399,8 +377,13 @@ inline std::string process_command(
         if (!prog) return "ERR: Unknown program: " + pn;
         auto* var = find_var(prog, vn);
         if (!var) return "ERR: Unknown variable: " + vn + " in " + pn;
-        if (var_force_value(var->type, var->var_ptr, val)) {
+        const ForceResult forced = var_force_value(var->type, var->var_ptr, val);
+        if (forced == ForceResult::Ok) {
             return std::string("OK: ") + pn + "." + vn + " FORCED = " + var_value_to_string(var->type, var->var_ptr);
+        }
+        if (forced == ForceResult::TableFull) {
+            return "ERR: Force table full (" + std::to_string(force::count()) +
+                   " variables forced); unforce one first";
         }
         return std::string("ERR: Invalid value for ") + var_type_name(var->type) + ": " + val;
     }
