@@ -63,6 +63,7 @@ import { orderGlobals } from "./global-order.js";
 import { stripEnEno, walkAST } from "../ast-utils.js";
 import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
 import { structExtends } from "./struct-extends.js";
+import { bindStdFunctionArguments } from "./std-function-args.js";
 import {
   fbIndex,
   fbInitArgumentScope,
@@ -1321,6 +1322,7 @@ export class TypeChecker {
     expr: FunctionCallExpression,
     scope: Scope,
   ): IECType | undefined {
+    this.bindStdFunctionCallArguments(expr, scope);
     // Resolve argument expressions
     for (const arg of expr.arguments) {
       this.resolveExprType(arg.value, scope);
@@ -1382,7 +1384,9 @@ export class TypeChecker {
       // so downstream checks see a real type — e.g. NOT(BOOL) -> BOOL, which
       // the EN-input check (and bit/num operand rules) require.
       if (returnType && isGenericGroupType(returnType) && this.stdRegistry) {
-        const desc = this.stdRegistry.lookup(nameUpper);
+        const desc = this.unboundStdFunctionCalls.has(expr)
+          ? undefined
+          : this.stdRegistry.lookup(nameUpper);
         if (desc && this.refuseEnumOrderingArguments(expr, desc.params)) {
           return undefined;
         }
@@ -1425,7 +1429,7 @@ export class TypeChecker {
       const desc =
         this.stdRegistry.lookup(nameUpper) ??
         this.stdRegistry.resolveTypedTrunc(nameUpper);
-      if (desc) {
+      if (desc && !this.unboundStdFunctionCalls.has(expr)) {
         // Specific return type
         if (desc.specificReturnType) {
           const retType =
@@ -1833,6 +1837,63 @@ export class TypeChecker {
         arg.sourceSpan.file,
       );
     }
+  }
+
+  /** Standard function calls whose arguments were already bound. */
+  private boundStdFunctionCalls = new WeakSet<FunctionCallExpression>();
+  /** Standard function calls whose named arguments could not be bound. */
+  private unboundStdFunctionCalls = new WeakSet<FunctionCallExpression>();
+
+  /**
+   * A standard function call with named arguments: put its arguments in the
+   * IEC parameter order every later pass and the C++ call rely on, and refuse
+   * names the function does not declare. A user FUNCTION of the name, an FB
+   * instance or an own program method is not a standard function call.
+   */
+  private bindStdFunctionCallArguments(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (!this.stdRegistry || expr.instance) return;
+    if (this.boundStdFunctionCalls.has(expr)) return;
+    this.boundStdFunctionCalls.add(expr);
+    const name = expr.functionName;
+    if (name.includes(".") || this.findUserFunction(name)) return;
+    if (scope.lookup(name)?.kind === "variable") return;
+    if (this.ownProgramMethod(name)) return;
+    const upper = name.toUpperCase();
+    const desc = this.stdRegistry.lookup(upper);
+    let params = desc?.params;
+    let variadic = desc?.isVariadic === true;
+    if (!params && this.stdRegistry.resolveConversion(upper)) {
+      params = [{ name: "IN", constraint: "ANY", isByRef: false }];
+      variadic = false;
+    }
+    if (!params && this.symbolTables.lookupFunction(upper) === undefined) {
+      params = this.stdRegistry.resolveTypedTrunc(upper)?.params;
+    }
+    if (!params) return;
+    const binding = bindStdFunctionArguments(
+      desc?.name ?? upper,
+      params,
+      variadic,
+      expr.arguments,
+    );
+    for (const issue of binding.issues) {
+      const span = issue.argument?.sourceSpan ?? expr.sourceSpan;
+      if (issue.severity === "error") {
+        this.addError(issue.message, span.startLine, span.startCol, span.file);
+      } else {
+        this.addWarning(
+          issue.message,
+          span.startLine,
+          span.startCol,
+          span.file,
+        );
+      }
+    }
+    if (binding.ordered) expr.arguments = binding.ordered;
+    if (binding.failed) this.unboundStdFunctionCalls.add(expr);
   }
 
   /** Function calls whose argument names were already checked. */
@@ -3909,6 +3970,8 @@ export class TypeChecker {
       this.stdRegistry.lookup(nameUpper) ??
       this.stdRegistry.resolveTypedTrunc(nameUpper);
     if (!desc) return; // User-defined or unknown — skip constraint checking
+    // Already refused: the arguments are in no parameter order.
+    if (this.unboundStdFunctionCalls.has(expr)) return;
     this.refuseEnumOrderingArguments(expr, desc.params);
 
     // Validate argument types against parameter constraints. Strip EN/ENO
