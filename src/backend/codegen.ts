@@ -5587,7 +5587,11 @@ export class CodeGenerator {
     const right = this.generateExpression(expr.right);
 
     // STRUCT = / <> STRUCT: memberwise, each operand evaluated once
-    if (expr.operator === "=" || expr.operator === "<>") {
+    // Not when a pointer or reference to the STRUCT is compared itself.
+    if (
+      (expr.operator === "=" || expr.operator === "<>") &&
+      expr.comparesReferences !== true
+    ) {
       const rt = expr.left.resolvedType;
       const structName =
         rt !== undefined && "name" in rt && typeof rt.name === "string"

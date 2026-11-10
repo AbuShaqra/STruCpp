@@ -763,6 +763,8 @@ export interface BinaryExpression extends TypedNode {
   operator: BinaryOperator;
   left: Expression;
   right: Expression;
+  /** Set by the type checker when `=` / `<>` compares a POINTER TO or REF_TO itself, not what it refers to. */
+  comparesReferences?: true;
 }
 
 /**
