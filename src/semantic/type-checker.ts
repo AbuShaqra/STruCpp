@@ -3648,8 +3648,10 @@ export class TypeChecker {
 
   /**
    * Named arguments of a call on an instance of `type`, a function block this
-   * compile declares, that name no member of it: the generated C++ assigns
-   * `inst.NAME`, which does not build. Names of VAR locals still bind.
+   * compile declares, that name no input, output or in/out of it. The C++
+   * assigns `inst.NAME`: for an unknown name, a method, a property or a
+   * VAR_EXTERNAL it does not build, and a VAR, VAR_TEMP or CONSTANT local is
+   * not part of the call interface.
    */
   private checkFbCallArgumentNames(
     type: VarDeclaration["type"],
@@ -3658,7 +3660,8 @@ export class TypeChecker {
     if (type.referenceKind !== "none" || type.arrayDimensions !== undefined) {
       return;
     }
-    const known = this.fbMemberNames(type.name);
+    if (!this.fbMemberNames(type.name)) return;
+    const known = this.fbParameterNames(type.name);
     if (!known) return;
     for (const arg of args) {
       if (arg.name === undefined) continue;
