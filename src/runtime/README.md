@@ -51,6 +51,7 @@ All 62 tests should pass:
 | ----------------- | ------------------------------------------------------- |
 | `iec_types.hpp`   | Base type definitions (BOOL, INT, REAL, TIME, etc.)     |
 | `iec_var.hpp`     | IECVar template with forcing support for debugging      |
+| `iec_force.hpp`   | Force table: forced values applied at cycle boundaries  |
 | `iec_traits.hpp`  | Type traits (is_any_int, is_any_real, is_any_bit, etc.) |
 | `iec_time.hpp`    | TIME/LTIME value classes with duration arithmetic       |
 | `iec_date.hpp`    | DATE/LDATE value classes for calendar dates             |
