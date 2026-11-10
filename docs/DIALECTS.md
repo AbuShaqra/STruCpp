@@ -78,6 +78,7 @@ the root. A profile without `extends` has only its own features.
 | `fb_init`            | init arguments `fb : FB_A(p := 1)`, and FB_init at start-up  |
 | `trunc_dint`         | `TRUNC(x)` returns DINT for an LREAL too (not only a REAL)   |
 | `interface_zero`     | `itf := 0` stores NULL in an interface variable              |
+| `end_semicolon_optional` | under `--strict`, `END_IF` and the like need no `;`      |
 
 ## Refusals
 
@@ -423,6 +424,9 @@ gets `IEC_NULL`. Without it each of these is refused with the message above, at 
 interface with `0` (`itf = 0`, `itf <> 0`) needs no feature and is accepted in every dialect, as before
 profiles.
 
+`end_semicolon_optional` is in neither the default set nor `iec-3`, and refuses nothing. It relaxes one
+`--strict` check: see [Strict checks a feature relaxes](#strict-checks-a-feature-relaxes).
+
 `program_methods` is not in the default set: a `METHOD` in a `PROGRAM` is refused with no dialect flag too
 (before profiles it did not parse at all). `--strict` does not change any feature. A refused method is still
 registered and checked, so a call to it adds no second error. Program methods go before the body, interleaved with the VAR blocks
@@ -483,6 +487,21 @@ and column (listed by `--check --json`, exit 0). Their contents are not interpre
 `{define ...}`, `{undefine ...}`, any case) are an error, `Conditional compilation pragmas are not
 supported: {...}`, because skipping them would compile every branch. A pragma ends at the first `}`; an
 unclosed `{` is the error `Unterminated pragma: '{' has no closing '}'`.
+
+## Strict checks a feature relaxes
+
+`--strict` and the dialect are separate: `--strict` adds checks, and by itself a feature never removes
+one. These features are the exceptions. Each relaxes exactly one `--strict` check when it is on, and
+changes nothing without `--strict`:
+
+| Feature                  | `--strict` check it relaxes                                                   |
+| ------------------------ | ----------------------------------------------------------------------------- |
+| `end_semicolon_optional` | `Missing ';' after END_IF` (also END_CASE, END_FOR, END_WHILE and END_REPEAT) |
+
+Without `--strict` the `;` is optional in every dialect, `iec-3` included, as it was before profiles. With
+`--strict`, alone or with `--dialect iec-3`, a missing `;` is an error at the END keyword. A profile that
+lists `end_semicolon_optional`, or `--feature end_semicolon_optional`, accepts it under `--strict` too; the
+generated C++ is the same as with the `;` written.
 
 ## Checks
 

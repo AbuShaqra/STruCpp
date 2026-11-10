@@ -3794,11 +3794,15 @@ export class TypeChecker {
     }
   }
 
-  /** `--strict`: END_IF, END_CASE, END_FOR, END_WHILE and END_REPEAT need a `;`. */
+  /**
+   * `--strict`: END_IF, END_CASE, END_FOR, END_WHILE and END_REPEAT need a `;`,
+   * unless the feature end_semicolon_optional relaxes the check.
+   */
   private checkStrictTerminator(stmt: {
     unterminated?: UnterminatedEnd;
   }): void {
     if (!this.strict || !stmt.unterminated) return;
+    if (this.features.has("end_semicolon_optional")) return;
     this.addStrictErrorAt(
       `Missing ';' after ${stmt.unterminated.keyword}`,
       stmt.unterminated.sourceSpan,
