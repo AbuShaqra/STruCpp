@@ -111,6 +111,31 @@ Two pointers into an `IECVar`, and picking the wrong one is silently wrong for e
 
 The debug dispatch's pointer op (`handle_ptr`, and through it OPC-UA's zero-copy read) uses `read_ptr()` for that reason. The pointer it returns is valid only until the variable is next written **or its force state changes** — an `unforce()` moves the value back to a different object, and a retained pointer keeps reporting the stale forced one.
 
+## Force Table (`iec_force.hpp`)
+
+`strucpp::force` keeps forced values in a fixed table beside the variables
+instead of inside them. A forced value is written into its variable when the
+force is set, and again at both cycle boundaries by a `force::Scope` held
+around a program's cycle (also on an early `RETURN` or a fault). Between the two
+boundaries a program that writes a forced variable sees its own write.
+
+| Call | Purpose |
+|------|---------|
+| `set(ptr, bytes, size, flags, apply)` | Force a variable; writes it now. Returns `Ok`, `Full`, `TooLarge` or `BadArgument` |
+| `clear(ptr)` / `clear_all()` | Stop forcing; the variable keeps its current value |
+| `is_forced(ptr)`, `read(ptr, dest, cap)`, `value_ptr(ptr, &size)` | Query a force |
+| `apply_all()`, `apply_owned(base, len)` | Write forced values in |
+| `Scope(self, len)` | Applies on construction and destruction |
+
+The table holds `STRUCPP_FORCE_SLOTS` scalar slots of 8 bytes (64; 16 on AVR)
+and `STRUCPP_FORCE_STRING_SLOTS` slots of `STRUCPP_FORCE_STRING_BYTES` bytes for
+larger values (8 of 256; 1 of 127 on AVR). All three are overridable with `-D`.
+Under `STRUCPP_THREADED` a mutex guards the table, and a `Scope` applies only
+the forces inside its own program instance plus those marked `FLAG_GLOBAL`.
+
+The table is not yet used by generated code or by the debugger; until it is,
+forcing still goes through `IECVar` (above).
+
 ## Type Traits (`iec_traits.hpp`)
 
 Template traits for compile-time type categorization:
@@ -242,6 +267,7 @@ The interactive REPL binary uses [isocline](https://github.com/daanx/isocline) (
 |--------|---------|
 | `iec_types.hpp` | Elementary type aliases (including LTIME/LDATE/LTOD/LDT) |
 | `iec_var.hpp` | IECVar wrapper with forcing |
+| `iec_force.hpp` | Force table: forced values held beside their variables, applied at cycle boundaries |
 | `iec_traits.hpp` | Type category traits |
 | `iec_string.hpp` | STRING type and functions |
 | `iec_wstring.hpp` | WSTRING type and functions |
