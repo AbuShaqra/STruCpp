@@ -273,7 +273,7 @@ END_TYPE
 ```
 
 - Code generation lowers a UNION to one storage shared by all members: a zero-initialised byte buffer
-  sized and aligned for the largest member's plain value (`REAL` as a 4-byte float, not the forceable
+  sized and aligned for the largest member's plain value (`REAL` as a 4-byte float, the same size as the
   wrapper a STRUCT field has). Writing one member and reading another reinterprets the bytes in the host
   byte order; the supported targets are little-endian, so `u.f := 1.0` reads back as `u.d = 16#3F800000`
   and `u.arr[0]` is the low byte of `u.d`. A STRUCT member is laid out as its plain C++ struct (natural

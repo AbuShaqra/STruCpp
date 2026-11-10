@@ -47,9 +47,8 @@ using LDT_t   = int64_t;
 
 ```cpp
 template<typename T>
-class IECVar {
-    T value_;
-    // (forced_ / forced_value_ remain until the layout is packed; unused)
+class STRUCPP_MAY_ALIAS IECVar {
+    T value_;                    // the only member
 
 public:
     operator T() const;          // read
@@ -68,6 +67,34 @@ The implicit `operator T()` and `operator=(T)` make IECVar transparent in expres
 Forcing is not part of the variable: it lives in the force table (below). Every
 elementary leaf -- a struct field, an array element, a function-block member --
 can be forced on its own, by address.
+
+### Memory layout
+
+A variable is laid out as on a PLC: `IECVar<T>`, `IEC_ENUM_Var<E>` and the
+other elementary wrappers are exactly their value -- the size and alignment of
+`T`, standard layout, trivially copyable (`static_assert`ed in `iec_var.hpp`).
+So `ARRAY[0..3] OF BYTE` is 4 bytes, a `STRUCT` packs its fields with natural
+alignment (`STRUCT a : BYTE; b : WORD; c : BOOL; END_STRUCT` is 6 bytes; on AVR
+everything is 1-byte aligned), an enumeration without a declared base is an
+`INT`, and `SIZEOF` returns those sizes. A `POINTER TO` of another shape reads
+and writes the target's real bytes: a `DWORD` as `ARRAY[0..3] OF BYTE`, a
+`REAL` as a `DWORD`, a `STRUCT` as bytes. (STRING / WSTRING still carry a stored
+length after their characters.)
+
+### Pointer punning and strict aliasing
+
+Reading an object through a pointer of another type is undefined in C++, and
+GCC and Clang's type-based alias analysis can reorder such accesses at `-O2`.
+Two layers keep the IEC semantics:
+
+- `STRUCPP_MAY_ALIAS` (`iec_types.hpp`) marks `IECVar`, `IEC_ENUM_Var` and every
+  generated STRUCT, and a `POINTER TO` a scalar dereferences through an
+  aliasing type. This travels with the headers, so it holds whatever flags a
+  host build uses. It expands to `__attribute__((__may_alias__))` on GCC and
+  Clang; it is empty elsewhere (MSVC does no type-based alias analysis).
+- The builds this repo drives (`strucpp --build`, the CLI test runner, the VS
+  Code extension) also pass `-fno-strict-aliasing`. Host builds are
+  recommended to do the same; a compiler other than GCC, Clang or MSVC must.
 
 ### Located Variables
 

@@ -776,12 +776,9 @@ export class CodeGenerator {
     // User-defined types fall into two camps:
     //   1. FBs / interfaces / structs / arrays — fields already wrap leaves
     //      in IECVar internally, so the bare class name is used directly.
-    //   2. Enums (`enum class`) — the raw C++ enum has no value_/forced_/
-    //      forced_value_ layout, so the debugger's `read_impl<int16_t>`
-    //      cast walks past the 2-byte enum into adjacent memory and
-    //      returns garbage when nearby variables are forced. Use the
-    //      `IEC_<name>` wrapper (= `IEC_ENUM<name>`) so enum-typed fields
-    //      have proper IECVar shape with forcing support.
+    //   2. Enums (`enum class`) — declared as the `IEC_<name>` wrapper
+    //      (= `IEC_ENUM<name>`), which has the IECVar shape (one value_
+    //      member) the debugger's `read_impl` and the operators expect.
     if (this.isUserDefinedType(typeName)) {
       // Programs use Program_NAME class naming convention
       if (this.knownProgramTypes.has(typeName.toUpperCase())) {

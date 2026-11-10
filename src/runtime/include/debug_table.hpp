@@ -173,7 +173,7 @@ extern const uint8_t      debug_array_kind[]   STRUCPP_DEBUG_FLASH;
 // else: by (arr, elem) into the tables above. No offsets and no sizeof, which
 // is what keeps the retain path correct where an offset-based descriptor was
 // not — the host moves the VALUE through `handle_read` / `handle_write` rather
-// than a memory region, so the IECVar wrapper's forcing state is never
+// than a memory region, so the force table's state is never
 // persisted, and a nested function-block member or a configuration global
 // needs no special case.
 //

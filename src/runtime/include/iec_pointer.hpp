@@ -14,7 +14,8 @@
  *
  * Design decisions:
  * - References are NOT forceable (unlike IECVar<T>)
- * - Writes through references respect target's forcing state
+ * - Writes through references land in the target; a forced target gets its
+ *   forced value back at the next cycle boundary (iec_force.hpp)
  * - Null dereference throws NullReferenceException
  * - REFERENCE_TO cannot be NULL (must always be bound)
  *
@@ -146,7 +147,7 @@ template<typename U> struct ref_target<IEC_Ptr<U>> { using type = IEC_Ptr<U>; };
  * Wraps a pointer to an IECVar<T> with null checking.
  *
  * Note: References themselves are NOT forceable.
- * Writes through references respect the target's forcing state.
+ * Writes through references land in the target, as any write does.
  *
  * @tparam T The underlying value type (e.g., INT_t, REAL_t)
  */
@@ -431,7 +432,7 @@ public:
 
     /**
      * Implicit value assignment (set) - writes to target
-     * Respects target's forcing state
+     * Writes the target, as any write does
      */
     void set(const T& value) { bound().set(value); }
 
