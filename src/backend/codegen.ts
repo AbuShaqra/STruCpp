@@ -5526,6 +5526,22 @@ export class CodeGenerator {
     const left = this.generateExpression(expr.left);
     const right = this.generateExpression(expr.right);
 
+    // STRUCT = / <> STRUCT: memberwise, each operand evaluated once
+    if (expr.operator === "=" || expr.operator === "<>") {
+      const rt = expr.left.resolvedType;
+      const structName =
+        rt !== undefined && "name" in rt && typeof rt.name === "string"
+          ? rt.name
+          : undefined;
+      if (
+        structName !== undefined &&
+        this.structFieldsOf(structName) !== undefined
+      ) {
+        const eq = `[&](const auto& __l, const auto& __r) { return ${this.memberwiseEqual(structName, "__l", "__r", 0)}; }(${left}, ${right})`;
+        return expr.operator === "=" ? eq : `!${eq}`;
+      }
+    }
+
     // Power operator needs special handling
     if (expr.operator === "**") {
       return `std::pow(static_cast<double>(${left}), static_cast<double>(${right}))`;
@@ -5554,6 +5570,93 @@ export class CodeGenerator {
     }
 
     return `${left} ${cppOp} ${right}`;
+  }
+
+  /** The fields of STRUCT `typeName` (through aliases), or undefined for any other type. */
+  private structFieldsOf(typeName: string): VarDeclaration[] | undefined {
+    const seen = new Set<string>();
+    let name = typeName.toUpperCase();
+    while (!seen.has(name)) {
+      seen.add(name);
+      const upper = name;
+      const decl = this.ast?.types.find((t) => t.name.toUpperCase() === upper);
+      const def = decl?.definition;
+      if (def?.kind === "StructDefinition") {
+        return def.isUnion === true ? undefined : def.fields;
+      }
+      if (
+        def?.kind !== "TypeReference" ||
+        def.referenceKind !== "none" ||
+        def.arrayDimensions !== undefined
+      ) {
+        return undefined;
+      }
+      name = def.name.toUpperCase();
+    }
+    return undefined;
+  }
+
+  /** The element type of an ARRAY type (inline or named, through aliases), else undefined. */
+  private arrayElementTypeOf(type: TypeReference): string | undefined {
+    if (type.referenceKind !== "none") return undefined;
+    if (type.arrayDimensions !== undefined) return type.elementTypeName;
+    const seen = new Set<string>();
+    let name = type.name.toUpperCase();
+    while (!seen.has(name)) {
+      seen.add(name);
+      const upper = name;
+      const def = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind === "ArrayDefinition") {
+        return def.elementType.referenceKind === "none"
+          ? def.elementType.name
+          : undefined;
+      }
+      if (def?.kind !== "TypeReference" || def.referenceKind !== "none") {
+        return undefined;
+      }
+      if (def.arrayDimensions !== undefined) return def.elementTypeName;
+      name = def.name.toUpperCase();
+    }
+    return undefined;
+  }
+
+  /**
+   * C++ for `l = r` on two values of type `typeName`: field by field for a
+   * STRUCT, element by element for an ARRAY, else `==`.
+   */
+  private memberwiseEqual(
+    typeName: string,
+    l: string,
+    r: string,
+    depth: number,
+  ): string {
+    const fields = this.structFieldsOf(typeName);
+    if (fields === undefined) return `(${l} == ${r})`;
+    const parts: string[] = [];
+    for (const field of fields) {
+      for (const name of field.names) {
+        const member = this.needsFieldMangling(name, field.type.name, typeName)
+          ? `${name}_`
+          : name;
+        const fl = `${l}.${member}`;
+        const fr = `${r}.${member}`;
+        const element = this.arrayElementTypeOf(field.type);
+        if (element !== undefined) {
+          const x = `__x${depth}`;
+          const y = `__y${depth}`;
+          parts.push(
+            `::strucpp::iec_equal_each(${fl}, ${fr}, [&](const auto& ${x}, const auto& ${y}) { return ${this.memberwiseEqual(element, x, y, depth + 1)}; })`,
+          );
+        } else if (field.type.referenceKind !== "none") {
+          parts.push(`(${fl} == ${fr})`);
+        } else {
+          parts.push(this.memberwiseEqual(field.type.name, fl, fr, depth));
+        }
+      }
+    }
+    return parts.length === 0 ? "true" : `(${parts.join(" && ")})`;
   }
 
   /**

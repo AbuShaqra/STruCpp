@@ -87,7 +87,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | Category | Operators | Status |
 |----------|-----------|--------|
 | Arithmetic | `+`, `-`, `*`, `/`, `MOD`, `**` | Supported |
-| Comparison | `=`, `<>`, `<`, `>`, `<=`, `>=` | Supported |
+| Comparison | `=`, `<>`, `<`, `>`, `<=`, `>=` | Supported. `=` and `<>` on two STRUCT values compare field by field (a nested STRUCT field by field, an ARRAY member element by element); IEC 61131-3 Ed. 3 types the comparison functions on elementary values only, so this is not Ed. 3. It is accepted in every dialect, `--dialect iec-3` included, as it was before it compiled; whether iec-3 should refuse it is left to the iec-3 audit, see [DIALECTS.md](DIALECTS.md) |
 | Logical | `AND`, `OR`, `XOR`, `NOT` | Supported |
 | Bitwise | `AND`, `OR`, `XOR`, `NOT` (on bit types) | Supported |
 | Bit shift | `SHL`, `SHR`, `ROL`, `ROR` | Supported |
