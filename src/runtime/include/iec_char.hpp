@@ -22,15 +22,15 @@ class IECCharVar {
 public:
     using value_type = CharType;
 
-    constexpr IECCharVar() noexcept : value_{}, forced_{false}, forced_value_{} {}
-    constexpr explicit IECCharVar(CharType v) noexcept : value_{v}, forced_{false}, forced_value_{} {}
+    constexpr IECCharVar() noexcept : value_{} {}
+    constexpr explicit IECCharVar(CharType v) noexcept : value_{v} {}
     IECCharVar(const IECCharVar&) = default;
     IECCharVar(IECCharVar&&) = default;
     IECCharVar& operator=(const IECCharVar&) = default;
     IECCharVar& operator=(IECCharVar&&) = default;
 
     constexpr CharType get() const noexcept {
-        return forced_ ? forced_value_ : value_;
+        return value_;
     }
 
     void set(CharType v) noexcept {
@@ -80,8 +80,6 @@ public:
 
 private:
     CharType value_;
-    bool forced_;
-    CharType forced_value_;
 };
 
 using IEC_CHAR_Var = IECCharVar<CHAR_t>;

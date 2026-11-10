@@ -32,8 +32,9 @@
 /**
  * STruC++ Runtime - IEC Variable Wrapper
  *
- * This header defines the IECVar template class that wraps IEC types.
- * Forcing is held in the force table (iec_force.hpp), beside the variable.
+ * This header defines the IECVar template class that wraps IEC types: one
+ * member, laid out as the value itself. Forcing is held in the force table
+ * (iec_force.hpp), beside the variable.
  *
  * Located variables (AT %IX0.0, etc.) use this same wrapper, and the
  * raw_ptr() method provides access to the underlying storage for
@@ -56,18 +57,22 @@ template<typename T> class IEC_Ptr;
 // =============================================================================
 
 /**
- * Template wrapper for IEC variables with forcing support.
+ * Template wrapper for IEC variables.
+ *
+ * The wrapper is exactly its value: one member, the size and alignment of T,
+ * standard layout and trivially copyable, so a variable is laid out in memory
+ * as on a PLC and a POINTER TO of another shape reads its real bytes. Forcing
+ * is held beside the variable in the force table (iec_force.hpp).
  *
  * This class wraps any IEC type and provides:
  * - Normal get/set operations
- * - Variable forcing (override value for debugging/testing)
  * - Implicit conversion for natural syntax
  * - Arithmetic operators for numeric types
  *
  * @tparam T The underlying C++ type (e.g., int16_t for INT)
  */
 template<typename T>
-class IECVar {
+class STRUCPP_MAY_ALIAS IECVar {
 public:
     using value_type = T;
 
@@ -76,10 +81,10 @@ public:
     // =========================================================================
 
     /** Default constructor - initializes to zero/false */
-    IECVar() noexcept : value_{}, forced_{false}, forced_value_{} {}
+    IECVar() noexcept : value_{} {}
 
     /** Construct with initial value (non-explicit to allow IEC_INT val = 10 syntax) */
-    IECVar(T v) noexcept : value_{v}, forced_{false}, forced_value_{} {}
+    IECVar(T v) noexcept : value_{v} {}
 
     /** Cross-type converting constructor: IECVar<SINT_t> → IECVar<INT_t> etc.
      *  Enables implicit widening when struct fields (now IECVar-wrapped) are passed
@@ -88,61 +93,28 @@ public:
     template<typename U, std::enable_if_t<
         std::is_convertible<U, T>::value && !std::is_same<U, T>::value, int> = 0>
     IECVar(const IECVar<U>& other) noexcept
-        : value_{static_cast<T>(other.get())}, forced_{false}, forced_value_{} {}
+        : value_{static_cast<T>(other.get())} {}
 
-    /** Copy constructor — fresh IECVar starts unforced regardless of source. */
-    IECVar(const IECVar& other) noexcept
-        : value_{other.get()}, forced_{false}, forced_value_{} {}
-
-    /** Move constructor — same semantics as copy. */
-    IECVar(IECVar&& other) noexcept
-        : value_{other.get()}, forced_{false}, forced_value_{} {}
-
-    /**
-     * Copy assignment.
-     *
-     * Assigning FROM another IECVar must go through `set()` so forcing
-     * state is preserved on the destination. A memberwise copy would
-     * clobber `forced_` / `forced_value_`, silently unforcing variables
-     * that the debugger is holding — precisely what generated PLC code
-     * does every scan cycle with `BLINK := TOF0.Q`.
-     */
-    IECVar& operator=(const IECVar& other) noexcept {
-        set(other.get());
-        return *this;
-    }
-
-    /** Move assignment — same semantics as copy. */
-    IECVar& operator=(IECVar&& other) noexcept {
-        set(other.get());
-        return *this;
-    }
+    /** Copies are plain value copies: a force is keyed by address, so a copy
+     *  neither carries one nor clears one. */
+    IECVar(const IECVar&) = default;
+    IECVar(IECVar&&) = default;
+    IECVar& operator=(const IECVar&) = default;
+    IECVar& operator=(IECVar&&) = default;
 
     // =========================================================================
     // Value Access
     // =========================================================================
 
-    /**
-     * Get the current value.
-     * Returns the forced value if forcing is active, otherwise the normal value.
-     */
+    /** Get the current value. */
     T get() const noexcept {
-        return forced_ ? forced_value_ : value_;
+        return value_;
     }
 
-    /**
-     * Set the value.
-     * If forcing is active, the set is ignored to ensure drivers reading
-     * the raw storage always see the forced value for output variables.
-     */
+    /** Set the value. */
     void set(T v) noexcept {
-        if (!forced_) {
-            value_ = v;
-        }
+        value_ = v;
     }
-
-    // Forcing lives in the force table (iec_force.hpp), not here. Nothing sets
-    // forced_ any more; the members go when the layout is packed.
 
     // =========================================================================
     // Raw Pointer Access (for Located Variables)
@@ -153,8 +125,8 @@ public:
      * Used by the runtime to bind located variables to I/O image tables.
      * Plugins and drivers read/write through this pointer.
      *
-     * For inputs: drivers write to this pointer, get() returns forced value when forced
-     * For outputs: force() updates this storage, so drivers always read the forced value
+     * A forced located variable is written through the same storage by the
+     * force table at cycle boundaries, so drivers see the forced value.
      */
     T* raw_ptr() noexcept { return &value_; }
 
@@ -317,9 +289,7 @@ public:
     }
 
 private:
-    T value_;           ///< The actual value
-    bool forced_;       ///< Whether forcing is active
-    T forced_value_;    ///< The forced value (when forced_ is true)
+    T value_;           ///< The value; the only member
 };
 
 // =============================================================================
@@ -444,7 +414,7 @@ inline IECVar<T> operator~(const IECVar<T>& a) noexcept {
 }
 
 // =============================================================================
-// IEC Type Aliases with Forcing Support
+// IEC Type Aliases
 // =============================================================================
 
 // Boolean
@@ -495,5 +465,31 @@ using IEC_TIME_OF_DAY = IEC_TOD;
 using IEC_DATE_AND_TIME = IEC_DT;
 using IEC_LONG_TIME_OF_DAY = IEC_LTOD;
 using IEC_LONG_DATE_AND_TIME = IEC_LDT;
+
+// =============================================================================
+// Layout: every elementary wrapper is exactly its value
+// =============================================================================
+
+#define STRUCPP_ASSERT_PACKED(W, T)                                                  \
+    static_assert(sizeof(W) == sizeof(T) && alignof(W) == alignof(T),               \
+                  #W " must be laid out as " #T);                                   \
+    static_assert(std::is_standard_layout<W>::value &&                              \
+                  std::is_trivially_copyable<W>::value,                             \
+                  #W " must be a plain value")
+STRUCPP_ASSERT_PACKED(IEC_BOOL, BOOL_t);
+STRUCPP_ASSERT_PACKED(IEC_BYTE, BYTE_t);
+STRUCPP_ASSERT_PACKED(IEC_WORD, WORD_t);
+STRUCPP_ASSERT_PACKED(IEC_DWORD, DWORD_t);
+STRUCPP_ASSERT_PACKED(IEC_LWORD, LWORD_t);
+STRUCPP_ASSERT_PACKED(IEC_SINT, SINT_t);
+STRUCPP_ASSERT_PACKED(IEC_INT, INT_t);
+STRUCPP_ASSERT_PACKED(IEC_DINT, DINT_t);
+STRUCPP_ASSERT_PACKED(IEC_LINT, LINT_t);
+STRUCPP_ASSERT_PACKED(IEC_REAL, REAL_t);
+STRUCPP_ASSERT_PACKED(IEC_LREAL, LREAL_t);
+STRUCPP_ASSERT_PACKED(IEC_TIME, TIME_t);
+STRUCPP_ASSERT_PACKED(IEC_CHAR, CHAR_t);
+STRUCPP_ASSERT_PACKED(IEC_WCHAR, WCHAR_t);
+#undef STRUCPP_ASSERT_PACKED
 
 } // namespace strucpp
