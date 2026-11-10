@@ -5174,6 +5174,7 @@ export class SemanticAnalyzer {
             expr.functionName.indexOf("."),
           );
           this.checkNameDeclared(objName, scope, ctx, expr.sourceSpan);
+          if (!expr.instance) this.checkSelfQualifiedCall(expr, scope, ctx);
         }
         // An FB instance reached through an expression (`units[0]()`) — check
         // the instance and its subscripts, which are ordinary variables.
@@ -5382,6 +5383,41 @@ export class SemanticAnalyzer {
       fbName = fb.declaration.extends;
     }
     return false;
+  }
+
+  /**
+   * `PRG_A.X()` inside PRG_A: X must be a method or action of PRG_A. A member
+   * X is lowered to `X()` with program_methods and refused without it, as
+   * `PRG_A.x` is; the C++ would name a member the program class lacks.
+   */
+  private checkSelfQualifiedCall(
+    expr: FunctionCallExpression,
+    scope: Scope,
+    ctx: UndeclaredVarContext,
+  ): void {
+    const parts = expr.functionName.split(".");
+    if (parts.length !== 2 || ctx.programName === undefined) return;
+    const own = parts[0]!;
+    if (own.toUpperCase() !== ctx.programName.toUpperCase()) return;
+    const sym = scope.lookup(own);
+    if (sym?.kind !== "program") return;
+    const upper = parts[1]!.toUpperCase();
+    const prog = sym.declaration;
+    if (prog.methods.some((m) => m.name.toUpperCase() === upper)) return;
+    const span = expr.sourceSpan;
+    const isMember = prog.varBlocks.some((b) =>
+      b.declarations.some((d) =>
+        d.names.some((n) => n.toUpperCase() === upper),
+      ),
+    );
+    this.addError(
+      isMember
+        ? `Cannot access members of program '${own}' directly — declare a variable of type '${own}' first.`
+        : `PROGRAM ${prog.name} has no method or action '${parts[1]!}'`,
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
   }
 
   /**
