@@ -26,7 +26,12 @@ import * as path from "path";
 import * as os from "os";
 import { execSync } from "child_process";
 import { compile } from "../../src/index.js";
-import { hasGpp, RUNTIME_INCLUDE_PATH, cxxEnv, CXX_STD } from "./test-helpers.js";
+import {
+  hasGpp,
+  RUNTIME_INCLUDE_PATH,
+  cxxEnv,
+  CXX_STD,
+} from "./test-helpers.js";
 
 const describeIfGpp = hasGpp ? describe : describe.skip;
 
@@ -290,10 +295,10 @@ END_PROGRAM${CFG}`;
       `
   unsigned char compact[3] = { 2, 'F', 'F' };
   expect_eq("force",   handle_set(${s}, true, compact, 3), STATUS_OK);
-  expect_eq("forced?",  g_config.INSTANCE0.S.is_forced() ? 1 : 0, 1);
+  expect_eq("forced?",  strucpp::force::is_forced(&g_config.INSTANCE0.S) ? 1 : 0, 1);
 
-  // A write while forced is ACCEPTED by the gate and then dropped by
-  // IECVar::set(), as for any other type. Asserting the status matters:
+  // A write while forced is ACCEPTED by the gate and then dropped because the
+  // leaf is in the force table, as for any other type. Asserting the status matters:
   // handle_write had the same length bug, so this assertion passed for the
   // wrong reason until it was fixed -- the write was being refused outright,
   // not ignored because of the force.
@@ -302,7 +307,7 @@ END_PROGRAM${CFG}`;
   expect_str("write ignored", g_config.INSTANCE0.S.get().c_str(), "FF");
 
   expect_eq("unforce",  handle_set(${s}, false, nullptr, 0), STATUS_OK);
-  expect_eq("unforced?", g_config.INSTANCE0.S.is_forced() ? 1 : 0, 0);
+  expect_eq("unforced?", strucpp::force::is_forced(&g_config.INSTANCE0.S) ? 1 : 0, 0);
 
   // And writes land again once released.
   handle_write(${s}, other, 3);
