@@ -33,7 +33,7 @@ describe.skipIf(!hasGpp)("STRING INSERT — g++ e2e", () => {
         r := INSERT(s, x, LEN(s));      b3 := r = 'ABCXY';
         r := INSERT(s, x, 7);           b4 := r = 'ABCXY';
         r := INSERT(s, 'XY', 1);        b5 := r = 'AXYBC';
-        r5 := INSERT(s5, x5, 2);        b6 := r5 = 'ABXYC';
+        r5 := INSERT(s5, x5, 2);        b6 := r5 = 'ABXYZ';
         r5 := INSERT(s5, 'XYZ', 2);     b8 := r5 = 'ABXYZ';
         r := INSERT(s, x, 2);           b7 := LEN(r) = 5;
       END_PROGRAM
