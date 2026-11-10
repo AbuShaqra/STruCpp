@@ -1096,6 +1096,14 @@ export class TypeChecker {
   ): IECType | undefined {
     const leftType = this.resolveExprType(expr.left, scope);
     const rightType = this.resolveExprType(expr.right, scope);
+    delete expr.comparesReferences;
+    if (
+      (expr.operator === "=" || expr.operator === "<>") &&
+      (this.isReferenceItself(expr.left, scope) ||
+        this.isReferenceItself(expr.right, scope))
+    ) {
+      expr.comparesReferences = true;
+    }
 
     if (leftType === undefined || rightType === undefined) {
       return undefined;
@@ -1240,6 +1248,7 @@ export class TypeChecker {
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope);
     this.validateInterfaceArguments(inputs, expr.arguments);
+    this.markPointerZeroArguments(inputs, expr.arguments);
     this.validateStructArguments(inputs, expr.arguments);
     this.validateReferenceToArguments(inputs, expr.arguments, scope);
     this.validateInOutArguments(
@@ -2147,6 +2156,7 @@ export class TypeChecker {
         }
         this.validateInOutMemberWrite(stmt.target, scope);
         if (this.isAddressIntoPointer(stmt.target, valueType, scope)) break;
+        if (this.isZeroIntoPointer(stmt.target, stmt.value, scope)) break;
         if (this.checkArrayScalarAssignment(stmt.target, stmt.value, scope)) {
           break;
         }
@@ -3287,6 +3297,49 @@ export class TypeChecker {
     return (
       this.declaredReferenceShape(target, scope)?.chain[0] === "pointer_to"
     );
+  }
+
+  /** Whether `expr` denotes a POINTER TO or REF_TO variable, not its target. */
+  private isReferenceItself(expr: Expression, scope: Scope): boolean {
+    if (expr.kind !== "VariableExpression") return false;
+    const outer = this.declaredReferenceShape(expr, scope)?.chain[0];
+    return outer === "pointer_to" || outer === "ref_to";
+  }
+
+  /** Mark an untyped `0` bound to a POINTER TO input as NULL. */
+  private markPointerZeroArguments(
+    inputs: CallInput[] | undefined,
+    args: readonly Argument[],
+  ): void {
+    if (!inputs) return;
+    stripEnEno([...args]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (!input || input.inOut) return;
+      if (referenceShapeOf(input.type)?.chain[0] !== "pointer_to") return;
+      if (isUntypedZero(arg.value)) arg.value.asNull = true;
+    });
+  }
+
+  /**
+   * `p := 0`: the untyped literal 0 stored in a POINTER TO of any target type
+   * is NULL, as it already is for an elementary target.
+   */
+  private isZeroIntoPointer(
+    target: Expression,
+    value: Expression,
+    scope: Scope,
+  ): boolean {
+    if (!isUntypedZero(value)) return false;
+    if (this.declaredReferenceShape(target, scope)?.chain[0] !== "pointer_to") {
+      return false;
+    }
+    value.asNull = true;
+    return true;
   }
 
   /** Report `value` when it cannot be held by a target of shape `t`. */
