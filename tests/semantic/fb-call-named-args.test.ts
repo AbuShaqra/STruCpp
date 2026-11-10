@@ -1,8 +1,9 @@
 /**
  * Named arguments of a function block instance call (`inst(a := 1)`,
- * `outer.sub(a := 1)`, `outer.m.sub(a := 1)`) must name a member of the
- * block: the C++ assigns `inst.NAME`, which does not build otherwise. VAR
- * locals still bind (the C++ builds), and library blocks are not checked.
+ * `outer.sub(a := 1)`, `outer.m.sub(a := 1)`) must name an input, output or
+ * in/out of the block, in every mode: the C++ assigns `inst.NAME`. A VAR,
+ * VAR_TEMP or CONSTANT local is not part of the call interface, and other
+ * members do not build. Library blocks are not checked.
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
@@ -102,13 +103,48 @@ describe("named arguments that name a member stay accepted", () => {
       ).toEqual([]);
     });
 
-    it(`a VAR local still binds by name (${mode.name})`, () => {
+    it(`a VAR local is refused (${mode.name})`, () => {
       expect(
         messages(
           program("s(loc := 1, io := v);\no.m.sub(loc := 2, io := v);"),
           mode.options,
         ),
-      ).toEqual([]);
+      ).toEqual([
+        `${BODY_LINE}:3 FB_SUB has no input or output named LOC`,
+        `${BODY_LINE + 1}:9 FB_SUB has no input or output named LOC`,
+      ]);
     });
+  }
+});
+
+describe("other members of the block are refused as named arguments", () => {
+  const FB = `FUNCTION_BLOCK FB_M
+VAR_INPUT a : INT; END_VAR
+VAR_TEMP tmp : INT; END_VAR
+VAR CONSTANT cst : INT := 1; END_VAR
+VAR_EXTERNAL ext : INT; END_VAR
+METHOD M : INT
+M := 1;
+END_METHOD
+a := a + tmp + cst + ext;
+ACTION Act:
+a := 1;
+END_ACTION
+END_FUNCTION_BLOCK
+VAR_GLOBAL ext : INT; END_VAR
+PROGRAM MAIN
+VAR f : FB_M; END_VAR
+`;
+  const line = FB.split("\n").length;
+  for (const name of ["tmp", "cst", "ext", "M", "Act"]) {
+    for (const mode of MODES) {
+      it(`${name} (${mode.name})`, () => {
+        expect(
+          messages(`${FB}f(${name} := 1);\nEND_PROGRAM\n`, mode.options),
+        ).toEqual([
+          `${line}:3 FB_M has no input or output named ${name.toUpperCase()}`,
+        ]);
+      });
+    }
   }
 });

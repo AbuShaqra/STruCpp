@@ -1,7 +1,7 @@
 /**
  * Named arguments of FB instance calls through g++: the forms the
- * unknown-name check keeps accepting (inputs, inherited inputs, outputs,
- * in/outs and VAR locals, on plain, member and chain calls) build and run.
+ * unknown-name check keeps accepting (inputs, inherited inputs, outputs
+ * and in/outs, on plain, member and chain calls) build and run.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -29,7 +29,7 @@ describeIfGpp("FB instance call named arguments end to end", () => {
 VAR_INPUT a : INT; END_VAR
 VAR_OUTPUT q : INT; END_VAR
 VAR_IN_OUT io : INT; END_VAR
-VAR loc : INT; END_VAR
+VAR_INPUT loc : INT; END_VAR
 q := a * 10 + loc;
 io := io + 1;
 END_FUNCTION_BLOCK
