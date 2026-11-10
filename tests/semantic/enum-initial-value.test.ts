@@ -57,8 +57,8 @@ PROGRAM Main END_PROGRAM
   });
 
   it("accepts a value of the enumeration", () => {
-    const decls = `e1 : E2 := E2#B; e2 : E2 := B; e3 : E2 := E2.B; e4 : E3 := B;
-      e5 : E2 := A; e6 : E2A := E2#B; e7 : E2A := B;
+    const decls = `v1 : E2 := E2#B; v2 : E2 := B; v3 : E2 := E2.B; v4 : E3 := B;
+      v5 : E2 := A; v6 : E2A := E2#B; v7 : E2A := B;
       a : ARRAY[0..1] OF E2 := [A, B]; a2 : ARRAY[0..1] OF E2 := [E2#A, E2.B];
       s : S1 := (e := B, n := 2); s2 : S1 := (e := E2#B);
       as : ARRAY[0..1] OF S1 := [(e := A), (e := E2#B)];
