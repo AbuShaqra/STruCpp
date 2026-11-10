@@ -160,7 +160,7 @@ describe("bad dialect input", () => {
       /^error: dialect file .*bad-semantics\.json: semantics key 'trunc_result' is not known$/,
     );
     expect(msg("unknown-feature")).toMatch(
-      /^error: unknown feature 'no_such_feature' in dialect file .*bad-feature\.json \(known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero\)$/,
+      /^error: unknown feature 'no_such_feature' in dialect file .*bad-feature\.json \(known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional\)$/,
     );
     expect(msg("wrong-id")).toMatch(
       /^error: dialect file .*bad-id\.json: id 'another-id' does not match the file name$/,
@@ -174,7 +174,7 @@ describe("bad dialect input", () => {
     const f = run(["--feature", "+goto", "--print-dialect"]);
     expect(f.status).toBe(1);
     expect(f.err.trim()).toBe(
-      "error: unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero)",
+      "error: unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional)",
     );
   });
 

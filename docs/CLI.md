@@ -229,6 +229,9 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
   END_CASE, END_FOR, END_WHILE or END_REPEAT, an FB call naming a parameter the FB lacks,
   and a duplicate or overlapping CASE label.
 
+A dialect feature can relax one of these checks: `end_semicolon_optional` accepts the missing `;`
+under `--strict`. See "Strict checks a feature relaxes" in [DIALECTS.md](DIALECTS.md).
+
 ### Dialects
 
 | Flag                    | Description                                                                             |
