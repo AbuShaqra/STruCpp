@@ -1818,6 +1818,9 @@ export class SemanticAnalyzer {
     // Validate that structure initializers only appear where IEC allows them
     this.validateStructInitializerPlacement(ast);
 
+    // Validate that an enumeration type's default is one of its values
+    this.validateEnumTypeDefaults(ast);
+
     // Validate that integer literals fit an IEC integer type
     this.validateIntegerLiteralRange(ast);
 
@@ -2123,6 +2126,42 @@ export class SemanticAnalyzer {
         // Dereference — pointer semantics are out of scope for this check.
         return;
       }
+    }
+  }
+
+  /**
+   * The default of an enumeration type (`(A, B) := B`, `(A, B) := E#B`) must be
+   * one of that type's own values: a bare member name, or the member qualified
+   * by the type itself. Anything else reached g++ as an invalid initializer.
+   */
+  private validateEnumTypeDefaults(ast: CompilationUnit): void {
+    for (const td of ast.types) {
+      const def = td.definition;
+      const value = td.defaultValue;
+      if (def.kind !== "EnumDefinition" || value === undefined) continue;
+      const members = new Set(def.members.map((m) => m.name.toUpperCase()));
+      let member: string | undefined;
+      if (
+        value.kind === "VariableExpression" &&
+        value.subscripts.length === 0 &&
+        !value.isDereference
+      ) {
+        const fields = value.fieldAccess;
+        if (fields.length === 0) member = value.name;
+        else if (
+          fields.length === 1 &&
+          value.name.toUpperCase() === td.name.toUpperCase()
+        ) {
+          member = fields[0];
+        }
+      }
+      if (member !== undefined && members.has(member.toUpperCase())) continue;
+      this.addError(
+        `The default value of enumeration '${td.name}' must be one of its values`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
     }
   }
 
