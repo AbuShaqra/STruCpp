@@ -1328,6 +1328,7 @@ export class TypeChecker {
     this.validateReferenceArguments(expr, scope);
     this.checkDottedMethodCall(expr, scope);
     this.checkMethodCallArgumentNames(expr, scope);
+    this.checkFunctionCallArgumentNames(expr, scope);
     const inputs =
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope);
@@ -1827,6 +1828,64 @@ export class TypeChecker {
     for (const arg of this.unknownMethodArguments(found, expr.arguments)) {
       this.addError(
         `Method '${found.name}' of '${ownerName}' has no parameter named '${arg.name ?? ""}'`,
+        arg.sourceSpan.startLine,
+        arg.sourceSpan.startCol,
+        arg.sourceSpan.file,
+      );
+    }
+  }
+
+  /** Function calls whose argument names were already checked. */
+  private checkedFunctionCallNames = new WeakSet<FunctionCallExpression>();
+
+  /**
+   * `F(name := v)` of a user or library FUNCTION: each named argument must
+   * name a VAR_INPUT, VAR_IN_OUT or VAR_OUTPUT of F, which the generated C++
+   * binds by name and would otherwise drop. Standard functions, FB instances
+   * and the enclosing program's methods are bound elsewhere and skipped.
+   */
+  private checkFunctionCallArgumentNames(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (expr.instance || this.checkedFunctionCallNames.has(expr)) return;
+    this.checkedFunctionCallNames.add(expr);
+    if (!expr.arguments.some((a) => a.name !== undefined)) return;
+    const name = expr.functionName;
+    if (name.includes(".")) return;
+    if (scope.lookup(name)?.kind === "variable") return;
+    if (this.ownProgramMethod(name)) return;
+    let declaredName: string;
+    let params: string[];
+    const userFn = this.findUserFunction(name);
+    if (userFn) {
+      declaredName = userFn.name;
+      params = userFn.varBlocks
+        .filter(
+          (b) =>
+            b.blockType === "VAR_INPUT" ||
+            b.blockType === "VAR_IN_OUT" ||
+            b.blockType === "VAR_OUTPUT",
+        )
+        .flatMap((b) => b.declarations.flatMap((d) => d.names));
+    } else {
+      const upper = name.toUpperCase();
+      if (
+        this.stdRegistry?.lookup(upper) !== undefined ||
+        this.stdRegistry?.resolveConversion(upper) !== undefined
+      ) {
+        return;
+      }
+      const libFn = this.symbolTables.lookupFunction(name);
+      if (libFn === undefined) return;
+      declaredName = libFn.name;
+      params = libFn.parameters.map((p) => p.name);
+    }
+    const known = new Set(params.map((p) => p.toUpperCase()));
+    for (const arg of stripEnEno([...expr.arguments])) {
+      if (arg.name === undefined || known.has(arg.name.toUpperCase())) continue;
+      this.addError(
+        `Function '${declaredName}' has no parameter named '${arg.name}'`,
         arg.sourceSpan.startLine,
         arg.sourceSpan.startCol,
         arg.sourceSpan.file,
