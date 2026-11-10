@@ -581,9 +581,13 @@ template<typename A, typename... Rest> struct max_wstring_capacity
 template<typename A> struct max_wstring_capacity<A>
     : std::integral_constant<size_t, is_wstring_arg<A>::len> {};
 
-/** The result of a function of several WSTRINGs: room for the longest argument type. */
+/**
+ * The result of a function of several WSTRINGs: a full-length WSTRING, or the
+ * longest argument type when that is longer. It is cut only when assigned.
+ */
 template<typename... Args>
-using joined_wstring = IECWString<max_wstring_capacity<Args...>::value>;
+using joined_wstring = IECWString<
+    (max_wstring_capacity<Args...>::value > 254 ? max_wstring_capacity<Args...>::value : 254)>;
 template<typename S, typename R = void>
 using if_wstring = typename std::enable_if<is_wstring_arg<S>::value, R>::type;
 }  // namespace detail
@@ -635,7 +639,9 @@ inline detail::wstring_value_t<S> MID(const S& s, size_t len, size_t pos) noexce
 
 template<typename A, typename B, typename = detail::if_wstring<A>, typename = detail::if_wstring<B>>
 inline detail::joined_wstring<A, B> CONCAT(const A& s1, const B& s2) noexcept {
-    return WCONCAT(detail::wvalue(s1), detail::wvalue(s2));
+    detail::joined_wstring<A, B> result(detail::wvalue(s1));
+    result.append(detail::wvalue(s2));
+    return result;
 }
 
 template<typename A, typename B, typename C, typename... Rest,

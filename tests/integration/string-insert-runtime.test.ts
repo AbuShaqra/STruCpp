@@ -52,7 +52,7 @@ ${body}
     expect(stdout).toBe("ABXYC|XYABC|AXYBC|ABCXY|ABCXY");
   });
 
-  it("truncates the inserted text at MaxLen, as the WSTRING INSERT does", () => {
+  it("returns the whole result and cuts it when assigned", () => {
     const stdout = run(
       "string_insert_truncate",
       `
@@ -60,12 +60,14 @@ ${body}
     IECString<5> x("XYZ");
     IECWString<5> wa(u"ABC");
     IECWString<5> wx(u"XYZ");
+    IECString<5> r5 = INSERT(a, x, 2);
+    IECWString<5> wr5 = INSERT(wa, wx, 2);
     std::cout << INSERT(a, x, 2).c_str() << "|" << INSERT(a, x, 0).c_str() << "|"
-              << INSERT(a, x, 9).c_str() << "|"
-              << (INSERT(wa, wx, 2) == u"ABXYC") << (INSERT(wa, wx, 0) == u"XYABC")
-              << (INSERT(wa, wx, 9) == u"ABCXY");`,
+              << INSERT(a, x, 9).c_str() << "|" << r5.c_str() << "|"
+              << (INSERT(wa, wx, 2) == u"ABXYZC") << (INSERT(wa, wx, 0) == u"XYZABC")
+              << (INSERT(wa, wx, 9) == u"ABCXYZ") << (wr5 == u"ABXYZ");`,
     );
-    expect(stdout).toBe("ABXYC|XYABC|ABCXY|111");
+    expect(stdout).toBe("ABXYZC|XYZABC|ABCXYZ|ABXYZ|1111");
   });
 
   it("gives the same result through the IECStringVar and const char* overloads", () => {

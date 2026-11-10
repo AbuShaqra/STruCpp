@@ -700,9 +700,14 @@ template<typename A, typename... Rest> struct max_string_capacity
                ? string_capacity<A>::value : max_string_capacity<Rest...>::value)> {};
 template<typename A> struct max_string_capacity<A> : string_capacity<A> {};
 
-/** The result of a function of several STRINGs: room for the longest argument type. */
+/**
+ * The result of a function of several STRINGs: a full-length STRING, or the
+ * longest argument type when that is longer. It is cut only when assigned.
+ */
 template<typename... Args>
-using joined_string = IECString<max_string_capacity<Args...>::value>;
+using joined_string = IECString<
+    (max_string_capacity<Args...>::value > STRING::max_length
+         ? max_string_capacity<Args...>::value : STRING::max_length)>;
 
 template<typename A>
 using if_string_arg = typename std::enable_if<is_string_arg<A>::value, int>::type;
