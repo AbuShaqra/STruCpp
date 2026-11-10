@@ -3918,7 +3918,7 @@ export class CodeGenerator {
         } else {
           const fbType = this.getFBInvocationType(
             stmt.call.functionName,
-            stmt.call.instance !== undefined,
+            stmt.call.instance,
           );
           const calledProgram =
             stmt.call.instance === undefined
@@ -4467,8 +4467,7 @@ export class CodeGenerator {
     }
     const nameUpper = name.toUpperCase();
     if (
-      this.getFBInvocationType(name, call.instance !== undefined) !==
-        undefined ||
+      this.getFBInvocationType(name, call.instance) !== undefined ||
       this.stdRegistry.resolveConversion(nameUpper) ||
       this.stdRegistry.lookup(nameUpper)
     ) {
@@ -7334,8 +7333,30 @@ export class CodeGenerator {
    */
   private getFBInvocationType(
     functionName: string,
-    isElementCall = false,
+    instance?: Expression,
   ): string | undefined {
+    const isElementCall = instance !== undefined;
+    // `pf^(…)`: the function block a pointer or reference points at
+    if (
+      instance?.kind === "VariableExpression" &&
+      (instance.isDereference ||
+        (instance.accessChain ?? []).some((s) => s.kind === "dereference"))
+    ) {
+      const base = this.currentScopeVarTypeRefs.get(
+        instance.name.toUpperCase(),
+      );
+      const target =
+        base === undefined
+          ? undefined
+          : resolveAccessType(base, instance, this.accessLookup);
+      return target !== undefined &&
+        (target.referenceKind === undefined ||
+          target.referenceKind === "none") &&
+        target.arrayDimensions === undefined &&
+        this.isFBType(target.name)
+        ? target.name
+        : undefined;
+    }
     const declaredType = isElementCall
       ? this.currentScopeVarTypes.get(functionName.toUpperCase())
       : this.invocationTargetType(functionName);
@@ -7500,17 +7521,20 @@ export class CodeGenerator {
           ? this.generateExpression(call.instance)
           : rawName.includes(".")
             ? this.generateExpression(this.dottedInstanceExpression(call))
-            : this.scopeInOutRefs.has(rawName.toUpperCase())
-              ? `(*${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName})`
-              : (this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName);
+            : this.currentScopeVarRefKinds.get(rawName.toUpperCase()) ===
+                "reference_to"
+              ? `${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName}.target()`
+              : this.scopeInOutRefs.has(rawName.toUpperCase())
+                ? `(*${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName})`
+                : (this.memberMangledNames.get(rawName.toUpperCase()) ??
+                  rawName);
 
     // Extract implicit EN/ENO parameters
     const { enExpr, enoVar, filteredArgs } = this.extractEnEno(call.arguments);
 
     // Resolve FB type for positional argument mapping
     const fbTypeName =
-      program ??
-      this.getFBInvocationType(call.functionName, call.instance !== undefined);
+      program ?? this.getFBInvocationType(call.functionName, call.instance);
     // A PROGRAM's own instance or a variable of PROGRAM type: run() it.
     const programType =
       program ??

@@ -1460,6 +1460,11 @@ export class STParser extends CstParser {
         steps++;
         lastWasField = true;
         i += 2;
+      } else if (!selfRoot && t === tokens.Caret) {
+        // `p^.M(`: a dereference step
+        steps++;
+        lastWasField = false;
+        i++;
       } else if (!selfRoot && t === tokens.LBracket) {
         let depth = 0;
         for (; i <= MAX_LOOKAHEAD; i++) {
@@ -1488,6 +1493,13 @@ export class STParser extends CstParser {
    */
   private isInstanceCallAhead(): boolean {
     if (!this.isIdentifierOrKeywordToken(this.LA(1).tokenType)) return false;
+    // `pf^(…)`: invoking the function block a pointer or REF_TO points at
+    if (
+      this.LA(2).tokenType === tokens.Caret &&
+      this.LA(3).tokenType === tokens.LParen
+    ) {
+      return true;
+    }
     if (this.LA(2).tokenType !== tokens.LBracket) return false;
 
     // Walk to the matching `]`, allowing nested subscripts in the index
