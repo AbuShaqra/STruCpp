@@ -3480,6 +3480,38 @@ export class SemanticAnalyzer {
     this.callOwner = {};
   }
 
+  /**
+   * True when `upper` names an FB or PROGRAM instance of the body being
+   * walked: a local, a member of its block or of one of the block's bases.
+   */
+  private isVisibleVariable(
+    upper: string,
+    varTypeMap: ReadonlyMap<string, string>,
+  ): boolean {
+    const isBlock = (typeName: string | undefined): boolean => {
+      if (typeName === undefined) return false;
+      const kind = this.symbolTables.globalScope.lookup(typeName)?.kind;
+      return kind === "functionBlock" || kind === "program";
+    };
+    if (varTypeMap.has(upper)) return isBlock(varTypeMap.get(upper));
+    const seen = new Set<string>();
+    let fbName = this.callOwner.fbName;
+    while (fbName !== undefined && !seen.has(fbName.toUpperCase())) {
+      seen.add(fbName.toUpperCase());
+      const fb = this.symbolTables.globalScope.lookup(fbName);
+      if (fb?.kind !== "functionBlock") return false;
+      for (const b of fb.declaration.varBlocks) {
+        for (const d of b.declarations) {
+          if (d.names.some((n) => n.toUpperCase() === upper)) {
+            return d.type.arrayDimensions === undefined && isBlock(d.type.name);
+          }
+        }
+      }
+      fbName = fb.declaration.extends;
+    }
+    return false;
+  }
+
   /** The PROGRAM or FUNCTION_BLOCK whose bodies validateExpressions walks. */
   private callOwner: UndeclaredVarContext = {};
 
@@ -3613,7 +3645,7 @@ export class SemanticAnalyzer {
       expr.kind === "FunctionCallExpression" &&
       !expr.functionName.includes(".")
     ) {
-      this.checkStdFunctionArgs(expr);
+      this.checkStdFunctionArgs(expr, varTypeMap);
     }
 
     // Recurse into sub-expressions
@@ -3655,16 +3687,25 @@ export class SemanticAnalyzer {
    * success around the call site, but they are not part of any function's
    * declared signature. Strip them before counting against the registry.
    */
-  private checkStdFunctionArgs(expr: FunctionCallExpression): void {
+  private checkStdFunctionArgs(
+    expr: FunctionCallExpression,
+    varTypeMap: ReadonlyMap<string, string>,
+  ): void {
     const nameUpper = expr.functionName.toUpperCase();
     // A method of the enclosing block is called, not a function of its name.
     if (this.hasOwnMethod(nameUpper, this.callOwner)) return;
+    // So is an FB instance in scope, inherited members included.
+    if (expr.instance || this.isVisibleVariable(nameUpper, varTypeMap)) {
+      return;
+    }
     const userArgs = stripEnEno(expr.arguments);
     const argCount = userArgs.length;
 
     // Look up in std function registry; a user or library function named
     // like a typed truncation (TRUNC_INT) keeps its own signature.
     const sym = this.symbolTables.globalScope.lookup(nameUpper);
+    // A PROGRAM of the name is invoked, not a standard function.
+    if (sym?.kind === "program") return;
     // A user FUNCTION named like a standard function or operator is called.
     const userFunction =
       sym?.kind === "function" &&
