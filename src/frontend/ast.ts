@@ -810,6 +810,8 @@ export interface MethodCallExpression extends TypedNode {
   arguments: Argument[];
   /** Where the method name is written; set for a call through a member chain. */
   methodNameSpan?: SourceSpan;
+  /** Set by the type checker when `methodName` is a function block instance member, called (`a.b.fb()`). */
+  fbInstanceCall?: true;
 }
 
 /**
