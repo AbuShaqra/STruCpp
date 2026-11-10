@@ -22,43 +22,42 @@
 namespace strucpp {
 
 template<size_t MaxLen = 254>
-class IECWString {
+class STRUCPP_MAY_ALIAS IECWString {
 public:
     static constexpr size_t max_length = MaxLen;
     using value_type = WCHAR_t;
     using size_type = size_t;
 
-    constexpr IECWString() noexcept : length_(0) {
-        data_[0] = u'\0';
-    }
+    constexpr IECWString() noexcept : data_{} {}
 
-    IECWString(const char16_t* str) noexcept : length_(0) {
+    IECWString(const char16_t* str) noexcept : data_{} {
+        size_t cur = 0;
         if (str) {
             size_t len = 0;
             while (str[len] != u'\0' && len < MaxLen) ++len;
-            length_ = static_cast<uint16_t>(len);
-            for (size_t i = 0; i < length_; ++i) {
+            cur = len;
+            for (size_t i = 0; i < cur; ++i) {
                 data_[i] = str[i];
             }
         }
-        data_[length_] = u'\0';
+        data_[cur] = u'\0';
     }
 
-    IECWString(const char16_t* str, size_t len) noexcept {
-        length_ = static_cast<uint16_t>(len < MaxLen ? len : MaxLen);
-        for (size_t i = 0; i < length_; ++i) {
+    IECWString(const char16_t* str, size_t len) noexcept : data_{} {
+        size_t cur = len < MaxLen ? len : MaxLen;
+        for (size_t i = 0; i < cur; ++i) {
             data_[i] = str[i];
         }
-        data_[length_] = u'\0';
+        data_[cur] = u'\0';
     }
 
     template<size_t OtherLen>
-    IECWString(const IECWString<OtherLen>& other) noexcept {
-        length_ = static_cast<uint16_t>(other.length() < MaxLen ? other.length() : MaxLen);
-        for (size_t i = 0; i < length_; ++i) {
-            data_[i] = other[i];
+    IECWString(const IECWString<OtherLen>& other) noexcept : data_{} {
+        size_t cur = other.length() < MaxLen ? other.length() : MaxLen;
+        for (size_t i = 0; i < cur; ++i) {
+            data_[i] = other.c_str()[i];
         }
-        data_[length_] = u'\0';
+        data_[cur] = u'\0';
     }
 
     IECWString(const IECWString&) = default;
@@ -67,102 +66,110 @@ public:
     IECWString& operator=(IECWString&&) = default;
 
     IECWString& operator=(const char16_t* str) noexcept {
+        size_t cur = len_();
         if (str) {
             size_t len = 0;
             while (str[len] != u'\0' && len < MaxLen) ++len;
-            length_ = static_cast<uint16_t>(len);
-            for (size_t i = 0; i < length_; ++i) {
+            cur = len;
+            for (size_t i = 0; i < cur; ++i) {
                 data_[i] = str[i];
             }
         } else {
-            length_ = 0;
+            cur = 0;
         }
-        data_[length_] = u'\0';
+        data_[cur] = u'\0';
         return *this;
     }
 
     template<size_t OtherLen>
     IECWString& operator=(const IECWString<OtherLen>& other) noexcept {
-        length_ = static_cast<uint16_t>(other.length() < MaxLen ? other.length() : MaxLen);
-        for (size_t i = 0; i < length_; ++i) {
-            data_[i] = other[i];
+        size_t cur = len_();
+        cur = other.length() < MaxLen ? other.length() : MaxLen;
+        for (size_t i = 0; i < cur; ++i) {
+            data_[i] = other.c_str()[i];
         }
-        data_[length_] = u'\0';
+        data_[cur] = u'\0';
         return *this;
     }
 
-    constexpr size_t length() const noexcept { return length_; }
-    constexpr size_t size() const noexcept { return length_; }
+    size_t length() const noexcept { return len_(); }
+    size_t size() const noexcept { return len_(); }
     constexpr size_t capacity() const noexcept { return MaxLen; }
-    constexpr bool empty() const noexcept { return length_ == 0; }
+    bool empty() const noexcept { return data_[0] == u'\0'; }
 
     const char16_t* c_str() const noexcept { return data_; }
     const char16_t* data() const noexcept { return data_; }
     char16_t* data() noexcept { return data_; }
 
     char16_t operator[](size_t index) const noexcept {
-        return index < length_ ? data_[index] : u'\0';
+        size_t cur = len_();
+        return index < cur ? data_[index] : u'\0';
     }
 
     char16_t& operator[](size_t index) noexcept {
-        return data_[index < length_ ? index : length_];
+        size_t cur = len_();
+        return data_[index < cur ? index : cur];
     }
 
     char16_t at(size_t index) const noexcept {
-        return index < length_ ? data_[index] : u'\0';
+        size_t cur = len_();
+        return index < cur ? data_[index] : u'\0';
     }
 
     void clear() noexcept {
-        length_ = 0;
         data_[0] = u'\0';
     }
 
     void resize(size_t new_len) noexcept {
+        size_t cur = len_();
         if (new_len > MaxLen) new_len = MaxLen;
-        if (new_len > length_) {
-            for (size_t i = length_; i < new_len; ++i) {
+        if (new_len > cur) {
+            for (size_t i = cur; i < new_len; ++i) {
                 data_[i] = u' ';
             }
         }
-        length_ = static_cast<uint16_t>(new_len);
-        data_[length_] = u'\0';
+        cur = new_len;
+        data_[cur] = u'\0';
     }
 
     template<size_t OtherLen>
     IECWString& append(const IECWString<OtherLen>& other) noexcept {
+        size_t cur = len_();
         size_t copy_len = other.length();
-        if (length_ + copy_len > MaxLen) {
-            copy_len = MaxLen - length_;
+        if (cur + copy_len > MaxLen) {
+            copy_len = MaxLen - cur;
         }
         for (size_t i = 0; i < copy_len; ++i) {
-            data_[length_ + i] = other[i];
+            data_[cur + i] = other.c_str()[i];
         }
-        length_ += static_cast<uint16_t>(copy_len);
-        data_[length_] = u'\0';
+        cur += copy_len;
+        data_[cur] = u'\0';
         return *this;
     }
 
     IECWString& append(const char16_t* str) noexcept {
+        size_t cur = len_();
         if (str) {
             size_t str_len = 0;
             while (str[str_len] != u'\0') ++str_len;
             size_t copy_len = str_len;
-            if (length_ + copy_len > MaxLen) {
-                copy_len = MaxLen - length_;
+            if (cur + copy_len > MaxLen) {
+                copy_len = MaxLen - cur;
             }
             for (size_t i = 0; i < copy_len; ++i) {
-                data_[length_ + i] = str[i];
+                data_[cur + i] = str[i];
             }
-            length_ += static_cast<uint16_t>(copy_len);
-            data_[length_] = u'\0';
+            cur += copy_len;
+            data_[cur] = u'\0';
         }
         return *this;
     }
 
     IECWString& append(char16_t c) noexcept {
-        if (length_ < MaxLen) {
-            data_[length_++] = c;
-            data_[length_] = u'\0';
+        size_t cur = len_();
+        if (cur < MaxLen) {
+            data_[cur++] = c;
+            data_[cur] = u'\0';
         }
         return *this;
     }
@@ -195,21 +202,23 @@ public:
 
     template<size_t OtherLen>
     bool operator==(const IECWString<OtherLen>& other) const noexcept {
-        if (length_ != other.length()) return false;
-        for (size_t i = 0; i < length_; ++i) {
-            if (data_[i] != other[i]) return false;
+        size_t cur = len_();
+        if (cur != other.length()) return false;
+        for (size_t i = 0; i < cur; ++i) {
+            if (data_[i] != other.c_str()[i]) return false;
         }
         return true;
     }
 
     bool operator==(const char16_t* str) const noexcept {
-        if (!str) return length_ == 0;
+        size_t cur = len_();
+        if (!str) return cur == 0;
         size_t i = 0;
-        while (i < length_ && str[i] != u'\0') {
+        while (i < cur && str[i] != u'\0') {
             if (data_[i] != str[i]) return false;
             ++i;
         }
-        return i == length_ && str[i] == u'\0';
+        return i == cur && str[i] == u'\0';
     }
 
     template<size_t OtherLen>
@@ -223,12 +232,13 @@ public:
 
     template<size_t OtherLen>
     bool operator<(const IECWString<OtherLen>& other) const noexcept {
-        size_t min_len = length_ < other.length() ? length_ : other.length();
+        size_t cur = len_();
+        size_t min_len = cur < other.length() ? cur : other.length();
         for (size_t i = 0; i < min_len; ++i) {
-            if (data_[i] < other[i]) return true;
-            if (data_[i] > other[i]) return false;
+            if (data_[i] < other.c_str()[i]) return true;
+            if (data_[i] > other.c_str()[i]) return false;
         }
-        return length_ < other.length();
+        return cur < other.length();
     }
 
     template<size_t OtherLen>
@@ -248,25 +258,27 @@ public:
 
     template<size_t OtherLen>
     int compare(const IECWString<OtherLen>& other) const noexcept {
-        size_t min_len = length_ < other.length() ? length_ : other.length();
+        size_t cur = len_();
+        size_t min_len = cur < other.length() ? cur : other.length();
         for (size_t i = 0; i < min_len; ++i) {
-            if (data_[i] < other[i]) return -1;
-            if (data_[i] > other[i]) return 1;
+            if (data_[i] < other.c_str()[i]) return -1;
+            if (data_[i] > other.c_str()[i]) return 1;
         }
-        if (length_ < other.length()) return -1;
-        if (length_ > other.length()) return 1;
+        if (cur < other.length()) return -1;
+        if (cur > other.length()) return 1;
         return 0;
     }
 
     template<size_t OtherLen>
     size_t find(const IECWString<OtherLen>& substr, size_t pos = 0) const noexcept {
-        if (pos >= length_ || substr.length() == 0) return npos;
-        if (substr.length() > length_ - pos) return npos;
+        size_t cur = len_();
+        if (pos >= cur || substr.length() == 0) return npos;
+        if (substr.length() > cur - pos) return npos;
         
-        for (size_t i = pos; i <= length_ - substr.length(); ++i) {
+        for (size_t i = pos; i <= cur - substr.length(); ++i) {
             bool found = true;
             for (size_t j = 0; j < substr.length(); ++j) {
-                if (data_[i + j] != substr[j]) {
+                if (data_[i + j] != substr.c_str()[j]) {
                     found = false;
                     break;
                 }
@@ -277,37 +289,40 @@ public:
     }
 
     size_t find(char16_t c, size_t pos = 0) const noexcept {
-        for (size_t i = pos; i < length_; ++i) {
+        size_t cur = len_();
+        for (size_t i = pos; i < cur; ++i) {
             if (data_[i] == c) return i;
         }
         return npos;
     }
 
     IECWString substr(size_t pos, size_t len = npos) const noexcept {
-        if (pos >= length_) return IECWString();
-        if (len == npos || pos + len > length_) {
-            len = length_ - pos;
+        size_t cur = len_();
+        if (pos >= cur) return IECWString();
+        if (len == npos || pos + len > cur) {
+            len = cur - pos;
         }
         return IECWString(data_ + pos, len);
     }
 
     void replace(size_t pos, size_t len, const char16_t* str) noexcept {
-        if (pos >= length_) return;
-        if (pos + len > length_) len = length_ - pos;
+        size_t cur = len_();
+        if (pos >= cur) return;
+        if (pos + len > cur) len = cur - pos;
         
         size_t str_len = 0;
         if (str) {
             while (str[str_len] != u'\0') ++str_len;
         }
         
-        size_t new_len = length_ - len + str_len;
+        size_t new_len = cur - len + str_len;
         if (new_len > MaxLen) {
-            str_len = MaxLen - (length_ - len);
+            str_len = MaxLen - (cur - len);
             new_len = MaxLen;
         }
         
         if (str_len != len) {
-            for (size_t i = 0; i < length_ - pos - len; ++i) {
+            for (size_t i = 0; i < cur - pos - len; ++i) {
                 data_[pos + str_len + i] = data_[pos + len + i];
             }
         }
@@ -316,99 +331,88 @@ public:
                 data_[pos + i] = str[i];
             }
         }
-        length_ = static_cast<uint16_t>(new_len);
-        data_[length_] = u'\0';
+        cur = new_len;
+        data_[cur] = u'\0';
     }
 
     void insert(size_t pos, const char16_t* str) noexcept {
-        if (pos > length_) pos = length_;
+        size_t cur = len_();
+        if (pos > cur) pos = cur;
         if (!str) return;
         
         size_t str_len = 0;
         while (str[str_len] != u'\0') ++str_len;
         
-        if (length_ + str_len > MaxLen) {
-            str_len = MaxLen - length_;
+        if (cur + str_len > MaxLen) {
+            str_len = MaxLen - cur;
         }
         
-        for (size_t i = length_ - pos; i > 0; --i) {
+        for (size_t i = cur - pos; i > 0; --i) {
             data_[pos + str_len + i - 1] = data_[pos + i - 1];
         }
         for (size_t i = 0; i < str_len; ++i) {
             data_[pos + i] = str[i];
         }
-        length_ += static_cast<uint16_t>(str_len);
-        data_[length_] = u'\0';
+        cur += str_len;
+        data_[cur] = u'\0';
     }
 
     void erase(size_t pos, size_t len = npos) noexcept {
-        if (pos >= length_) return;
-        if (len == npos || pos + len > length_) {
-            len = length_ - pos;
+        size_t cur = len_();
+        if (pos >= cur) return;
+        if (len == npos || pos + len > cur) {
+            len = cur - pos;
         }
-        for (size_t i = 0; i < length_ - pos - len; ++i) {
+        for (size_t i = 0; i < cur - pos - len; ++i) {
             data_[pos + i] = data_[pos + len + i];
         }
-        length_ -= static_cast<uint16_t>(len);
-        data_[length_] = u'\0';
+        cur -= len;
+        data_[cur] = u'\0';
     }
 
     static constexpr size_t npos = static_cast<size_t>(-1);
 
 private:
+    /** Code units before the first NUL, at most MaxLen. */
+    size_t len_() const noexcept {
+        size_t n = 0;
+        while (n < MaxLen && data_[n] != u'\0') ++n;
+        return n;
+    }
+
     char16_t data_[MaxLen + 1];
-    uint16_t length_;
 };
 
 using WSTRING = IECWString<254>;
 
+/**
+ * A WSTRING(MaxLen) variable: exactly its IECWString, so it is laid out as the
+ * NUL-terminated code units. Forcing is held in the force table
+ * (iec_force.hpp).
+ */
 template<size_t MaxLen>
-class IECWStringVar {
+class STRUCPP_MAY_ALIAS IECWStringVar {
 public:
     using value_type = IECWString<MaxLen>;
 
-    IECWStringVar() noexcept : value_{}, forced_{false}, forced_value_{} {}
-    IECWStringVar(const value_type& v) noexcept : value_{v}, forced_{false}, forced_value_{} {}
-    IECWStringVar(const char16_t* str) noexcept : value_{str}, forced_{false}, forced_value_{} {}
-    /* Forcing semantics, matching IECVar (see iec_var.hpp).
-     *
-     * These cannot be `= default`. A memberwise copy carries `forced_` and
-     * `forced_value_` across, which breaks forcing two ways: assigning FROM a
-     * forced source leaks the flag onto the destination (whose next `set()` is
-     * then silently dropped), and assigning from an unforced source clears a
-     * force the debugger is holding. Generated code assigns every scan, so
-     * either one destroys a force within one cycle -- and STRING forcing is a
-     * first-class debug operation (force_string / unforce_string).
-     *
-     * Construction takes a detached snapshot of the effective value and starts
-     * unforced; assignment routes through set() so the destination keeps its
-     * own forcing state. */
-    IECWStringVar(const IECWStringVar& other) noexcept
-        : value_{other.forced_ ? other.forced_value_ : other.value_},
-          forced_{false},
-          forced_value_{} {}
-    IECWStringVar(IECWStringVar&& other) noexcept
-        : value_{other.forced_ ? other.forced_value_ : other.value_},
-          forced_{false},
-          forced_value_{} {}
-    IECWStringVar& operator=(const IECWStringVar& other) noexcept {
-        set(other.forced_ ? other.forced_value_ : other.value_);
-        return *this;
-    }
-    IECWStringVar& operator=(IECWStringVar&& other) noexcept {
-        set(other.forced_ ? other.forced_value_ : other.value_);
-        return *this;
-    }
+    IECWStringVar() noexcept : value_{} {}
+    IECWStringVar(const value_type& v) noexcept : value_{v} {}
+    IECWStringVar(const char16_t* str) noexcept : value_{str} {}
+
+    IECWStringVar(const IECWStringVar&) = default;
+    IECWStringVar(IECWStringVar&&) = default;
+    IECWStringVar& operator=(const IECWStringVar&) = default;
+    IECWStringVar& operator=(IECWStringVar&&) = default;
 
     // Cross-size assignment (IEC 61131-3: WSTRING types are interoperable, truncation on overflow)
     template<size_t OtherLen>
     IECWStringVar& operator=(const IECWStringVar<OtherLen>& other) noexcept {
-        value_ = IECWString<MaxLen>(other.get().c_str());
+        value_ = IECWString<MaxLen>(other.c_str(), other.length());
         return *this;
     }
 
-    value_type get() const noexcept {
-        return forced_ ? forced_value_ : value_;
+    const value_type& get() const noexcept {
+        return value_;
     }
 
     void set(const value_type& v) noexcept {
@@ -420,7 +424,7 @@ public:
     }
 
     operator value_type() const noexcept {
-        return get();
+        return value_;
     }
 
     IECWStringVar& operator=(const value_type& v) noexcept {
@@ -433,26 +437,19 @@ public:
         return *this;
     }
 
-    // Read-through proxies into the inner IECWString.  Mirror of the
-    // IECStringVar proxy set — see `iec_string.hpp` for the design
-    // rationale, including why comparison operators are intentionally
-    // NOT proxied (free-function `==` / `!=` overloads already cover
-    // every cross-class compare path, and adding member operators
-    // would risk overload ambiguity at ST call sites).
-    constexpr size_t length() const noexcept {
-        return (forced_ ? forced_value_ : value_).length();
+    // Read-through proxies into the inner IECWString; mirror of IECStringVar's.
+    size_t length() const noexcept {
+        return value_.length();
     }
     const char16_t* c_str() const noexcept {
-        return (forced_ ? forced_value_ : value_).c_str();
+        return value_.c_str();
     }
     char16_t operator[](size_t index) const noexcept {
-        return (forced_ ? forced_value_ : value_)[index];
+        return value_[index];
     }
 
 private:
     value_type value_;
-    bool forced_;
-    value_type forced_value_;
 };
 
 using WSTRING_VAR = IECWStringVar<254>;

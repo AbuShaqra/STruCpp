@@ -54,37 +54,34 @@ namespace strucpp {
 // Forward declaration for cross-type assignment
 template<size_t MaxLen> class IECStringVar;
 
+/**
+ * STRING(MaxLen) laid out as on a PLC: MaxLen + 1 characters, NUL-terminated.
+ * The length is the position of the first NUL, at most MaxLen, so characters
+ * and a 0 written through a POINTER TO ARRAY OF BYTE change what LEN reports.
+ * Every operation that writes the string re-terminates it.
+ */
 template<size_t MaxLen = 254>
-class IECString {
+class STRUCPP_MAY_ALIAS IECString {
 public:
     static constexpr size_t max_length = MaxLen;
     using value_type = CHAR_t;
     using size_type = size_t;
 
-    constexpr IECString() noexcept : length_(0) {
-        data_[0] = '\0';
+    constexpr IECString() noexcept : data_{} {}
+
+    // A constructed string is zero past its terminator, as a PLC variable is,
+    // so a pointer reading beyond the NUL sees zeros.
+    IECString(const char* str) noexcept : data_{} {
+        assign(str, str ? std::strlen(str) : 0);
     }
 
-    IECString(const char* str) noexcept : length_(0) {
-        if (str) {
-            size_t len = std::strlen(str);
-            length_ = static_cast<uint16_t>(len < MaxLen ? len : MaxLen);
-            std::memcpy(data_, str, length_);
-        }
-        data_[length_] = '\0';
-    }
-
-    IECString(const char* str, size_t len) noexcept {
-        length_ = static_cast<uint16_t>(len < MaxLen ? len : MaxLen);
-        std::memcpy(data_, str, length_);
-        data_[length_] = '\0';
+    IECString(const char* str, size_t len) noexcept : data_{} {
+        assign(str, len);
     }
 
     template<size_t OtherLen>
-    IECString(const IECString<OtherLen>& other) noexcept {
-        length_ = static_cast<uint16_t>(other.length() < MaxLen ? other.length() : MaxLen);
-        std::memcpy(data_, other.c_str(), length_);
-        data_[length_] = '\0';
+    IECString(const IECString<OtherLen>& other) noexcept : data_{} {
+        assign(other.c_str(), other.length());
     }
 
     IECString(const IECString&) = default;
@@ -93,22 +90,13 @@ public:
     IECString& operator=(IECString&&) = default;
 
     IECString& operator=(const char* str) noexcept {
-        if (str) {
-            size_t len = std::strlen(str);
-            length_ = static_cast<uint16_t>(len < MaxLen ? len : MaxLen);
-            std::memcpy(data_, str, length_);
-        } else {
-            length_ = 0;
-        }
-        data_[length_] = '\0';
+        assign(str, str ? std::strlen(str) : 0);
         return *this;
     }
 
     template<size_t OtherLen>
     IECString& operator=(const IECString<OtherLen>& other) noexcept {
-        length_ = static_cast<uint16_t>(other.length() < MaxLen ? other.length() : MaxLen);
-        std::memcpy(data_, other.c_str(), length_);
-        data_[length_] = '\0';
+        assign(other.c_str(), other.length());
         return *this;
     }
 
@@ -116,73 +104,58 @@ public:
     template<size_t OtherLen>
     inline IECString& operator=(const IECStringVar<OtherLen>& other) noexcept;
 
-    constexpr size_t length() const noexcept { return length_; }
-    constexpr size_t size() const noexcept { return length_; }
+    /** Characters before the first NUL, at most MaxLen. */
+    size_t length() const noexcept {
+        const void* nul = std::memchr(data_, 0, MaxLen);
+        return nul ? static_cast<size_t>(static_cast<const char*>(nul) - data_) : MaxLen;
+    }
+    size_t size() const noexcept { return length(); }
     constexpr size_t capacity() const noexcept { return MaxLen; }
-    constexpr bool empty() const noexcept { return length_ == 0; }
+    bool empty() const noexcept { return data_[0] == '\0'; }
 
+    /** NUL-terminated while only runtime operations wrote the string. */
     const char* c_str() const noexcept { return data_; }
     const char* data() const noexcept { return data_; }
     char* data() noexcept { return data_; }
 
     char operator[](size_t index) const noexcept {
-        return index < length_ ? data_[index] : '\0';
+        return index < length() ? data_[index] : '\0';
     }
 
     char& operator[](size_t index) noexcept {
-        return data_[index < length_ ? index : length_];
+        const size_t n = length();
+        return data_[index < n ? index : n];
     }
 
     char at(size_t index) const noexcept {
-        return index < length_ ? data_[index] : '\0';
+        return index < length() ? data_[index] : '\0';
     }
 
     void clear() noexcept {
-        length_ = 0;
         data_[0] = '\0';
     }
 
     void resize(size_t new_len) noexcept {
         if (new_len > MaxLen) new_len = MaxLen;
-        if (new_len > length_) {
-            std::memset(data_ + length_, ' ', new_len - length_);
+        const size_t n = length();
+        if (new_len > n) {
+            std::memset(data_ + n, ' ', new_len - n);
         }
-        length_ = static_cast<uint16_t>(new_len);
-        data_[length_] = '\0';
+        data_[new_len] = '\0';
     }
 
     template<size_t OtherLen>
     IECString& append(const IECString<OtherLen>& other) noexcept {
-        size_t copy_len = other.length();
-        if (length_ + copy_len > MaxLen) {
-            copy_len = MaxLen - length_;
-        }
-        std::memcpy(data_ + length_, other.c_str(), copy_len);
-        length_ += static_cast<uint16_t>(copy_len);
-        data_[length_] = '\0';
-        return *this;
+        return append_chars(other.c_str(), other.length());
     }
 
     IECString& append(const char* str) noexcept {
-        if (str) {
-            size_t str_len = std::strlen(str);
-            size_t copy_len = str_len;
-            if (length_ + copy_len > MaxLen) {
-                copy_len = MaxLen - length_;
-            }
-            std::memcpy(data_ + length_, str, copy_len);
-            length_ += static_cast<uint16_t>(copy_len);
-            data_[length_] = '\0';
-        }
+        if (str) append_chars(str, std::strlen(str));
         return *this;
     }
 
     IECString& append(char c) noexcept {
-        if (length_ < MaxLen) {
-            data_[length_++] = c;
-            data_[length_] = '\0';
-        }
-        return *this;
+        return append_chars(&c, 1);
     }
 
     template<size_t OtherLen>
@@ -213,13 +186,15 @@ public:
 
     template<size_t OtherLen>
     bool operator==(const IECString<OtherLen>& other) const noexcept {
-        if (length_ != other.length()) return false;
-        return std::memcmp(data_, other.c_str(), length_) == 0;
+        const size_t n = length();
+        if (n != other.length()) return false;
+        return std::memcmp(data_, other.c_str(), n) == 0;
     }
 
     bool operator==(const char* str) const noexcept {
-        if (!str) return length_ == 0;
-        return std::strcmp(data_, str) == 0;
+        if (!str) return empty();
+        const size_t n = length();
+        return std::strlen(str) == n && std::memcmp(data_, str, n) == 0;
     }
 
     template<size_t OtherLen>
@@ -233,192 +208,206 @@ public:
 
     template<size_t OtherLen>
     bool operator<(const IECString<OtherLen>& other) const noexcept {
-        return std::strcmp(data_, other.c_str()) < 0;
+        return compare(other) < 0;
     }
 
     template<size_t OtherLen>
     bool operator<=(const IECString<OtherLen>& other) const noexcept {
-        return std::strcmp(data_, other.c_str()) <= 0;
+        return compare(other) <= 0;
     }
 
     template<size_t OtherLen>
     bool operator>(const IECString<OtherLen>& other) const noexcept {
-        return std::strcmp(data_, other.c_str()) > 0;
+        return compare(other) > 0;
     }
 
     template<size_t OtherLen>
     bool operator>=(const IECString<OtherLen>& other) const noexcept {
-        return std::strcmp(data_, other.c_str()) >= 0;
+        return compare(other) >= 0;
     }
 
+    /** strcmp order, bounded by both lengths. */
     template<size_t OtherLen>
     int compare(const IECString<OtherLen>& other) const noexcept {
-        return std::strcmp(data_, other.c_str());
+        return compare_chars(other.c_str(), other.length());
     }
 
     int compare(const char* str) const noexcept {
-        return std::strcmp(data_, str ? str : "");
+        return compare_chars(str ? str : "", str ? std::strlen(str) : 0);
     }
 
     template<size_t OtherLen>
     size_t find(const IECString<OtherLen>& substr, size_t pos = 0) const noexcept {
-        if (pos >= length_ || substr.length() == 0) return npos;
-        const char* found = std::strstr(data_ + pos, substr.c_str());
-        return found ? static_cast<size_t>(found - data_) : npos;
+        return find_chars(substr.c_str(), substr.length(), pos);
     }
 
     size_t find(const char* substr, size_t pos = 0) const noexcept {
-        if (pos >= length_ || !substr || !*substr) return npos;
-        const char* found = std::strstr(data_ + pos, substr);
-        return found ? static_cast<size_t>(found - data_) : npos;
+        if (!substr) return npos;
+        return find_chars(substr, std::strlen(substr), pos);
     }
 
     size_t find(char c, size_t pos = 0) const noexcept {
-        for (size_t i = pos; i < length_; ++i) {
+        const size_t n = length();
+        for (size_t i = pos; i < n; ++i) {
             if (data_[i] == c) return i;
         }
         return npos;
     }
 
     IECString substr(size_t pos, size_t len = npos) const noexcept {
-        if (pos >= length_) return IECString();
-        if (len == npos || pos + len > length_) {
-            len = length_ - pos;
+        const size_t n = length();
+        if (pos >= n) return IECString();
+        if (len == npos || pos + len > n) {
+            len = n - pos;
         }
         return IECString(data_ + pos, len);
     }
 
     void replace(size_t pos, size_t len, const char* str) noexcept {
-        if (pos >= length_) return;
-        if (pos + len > length_) len = length_ - pos;
-        
+        const size_t n = length();
+        if (pos >= n) return;
+        if (pos + len > n) len = n - pos;
+
         size_t str_len = str ? std::strlen(str) : 0;
-        size_t new_len = length_ - len + str_len;
+        size_t new_len = n - len + str_len;
         if (new_len > MaxLen) {
-            str_len = MaxLen - (length_ - len);
+            str_len = MaxLen - (n - len);
             new_len = MaxLen;
         }
-        
+
         if (str_len != len) {
-            std::memmove(data_ + pos + str_len, data_ + pos + len, length_ - pos - len);
+            const size_t tail = n - pos - len;
+            const size_t keep = pos + str_len + tail > MaxLen ? MaxLen - pos - str_len : tail;
+            std::memmove(data_ + pos + str_len, data_ + pos + len, keep);
         }
         if (str_len > 0 && str) {
             std::memcpy(data_ + pos, str, str_len);
         }
-        length_ = static_cast<uint16_t>(new_len);
-        data_[length_] = '\0';
+        data_[new_len] = '\0';
     }
 
     void insert(size_t pos, const char* str) noexcept {
-        if (pos > length_) pos = length_;
+        const size_t n = length();
+        if (pos > n) pos = n;
         if (!str) return;
-        
+
         size_t str_len = std::strlen(str);
-        if (length_ + str_len > MaxLen) {
-            str_len = MaxLen - length_;
+        if (n + str_len > MaxLen) {
+            str_len = MaxLen - n;
         }
-        
-        std::memmove(data_ + pos + str_len, data_ + pos, length_ - pos);
+
+        std::memmove(data_ + pos + str_len, data_ + pos, n - pos);
         std::memcpy(data_ + pos, str, str_len);
-        length_ += static_cast<uint16_t>(str_len);
-        data_[length_] = '\0';
+        data_[n + str_len] = '\0';
     }
 
     void erase(size_t pos, size_t len = npos) noexcept {
-        if (pos >= length_) return;
-        if (len == npos || pos + len > length_) {
-            len = length_ - pos;
+        const size_t n = length();
+        if (pos >= n) return;
+        if (len == npos || pos + len > n) {
+            len = n - pos;
         }
-        std::memmove(data_ + pos, data_ + pos + len, length_ - pos - len);
-        length_ -= static_cast<uint16_t>(len);
-        data_[length_] = '\0';
+        std::memmove(data_ + pos, data_ + pos + len, n - pos - len);
+        data_[n - len] = '\0';
     }
 
     static constexpr size_t npos = static_cast<size_t>(-1);
 
 private:
+    /** Store `len` characters of `str` (at most MaxLen, stopping at a NUL). */
+    void assign(const char* str, size_t len) noexcept {
+        if (len > MaxLen) len = MaxLen;
+        if (len > 0) std::memmove(data_, str, len);
+        data_[len] = '\0';
+    }
+
+    IECString& append_chars(const char* str, size_t count) noexcept {
+        const size_t n = length();
+        if (n + count > MaxLen) count = MaxLen - n;
+        std::memcpy(data_ + n, str, count);
+        data_[n + count] = '\0';
+        return *this;
+    }
+
+    int compare_chars(const char* other, size_t other_len) const noexcept {
+        const size_t n = length();
+        const int c = std::memcmp(data_, other, n < other_len ? n : other_len);
+        if (c != 0) return c;
+        return n < other_len ? -1 : (n > other_len ? 1 : 0);
+    }
+
+    size_t find_chars(const char* sub, size_t sub_len, size_t pos) const noexcept {
+        const size_t n = length();
+        if (pos >= n || sub_len == 0 || sub_len > n) return npos;
+        for (size_t i = pos; i + sub_len <= n; ++i) {
+            if (std::memcmp(data_ + i, sub, sub_len) == 0) return i;
+        }
+        return npos;
+    }
+
     char data_[MaxLen + 1];
-    uint16_t length_;
 };
 
 using STRING = IECString<254>;
 
+/**
+ * A STRING(MaxLen) variable: exactly its IECString, so it is laid out as the
+ * NUL-terminated characters. Forcing is held in the force table
+ * (iec_force.hpp). Kept apart from IECString because REF(), the reference
+ * traits and the comparison overloads tell a variable from a value.
+ */
 template<size_t MaxLen>
-class IECStringVar {
+class STRUCPP_MAY_ALIAS IECStringVar {
 public:
     using value_type = IECString<MaxLen>;
 
-    IECStringVar() noexcept : value_{}, forced_{false}, forced_value_{} {}
-    IECStringVar(const value_type& v) noexcept : value_{v}, forced_{false}, forced_value_{} {}
-    IECStringVar(const char* str) noexcept : value_{str}, forced_{false}, forced_value_{} {}
-    /* Forcing semantics, matching IECVar (see iec_var.hpp).
-     *
-     * These cannot be `= default`. A memberwise copy carries `forced_` and
-     * `forced_value_` across, which breaks forcing two ways: assigning FROM a
-     * forced source leaks the flag onto the destination (whose next `set()` is
-     * then silently dropped), and assigning from an unforced source clears a
-     * force the debugger is holding. Generated code assigns every scan, so
-     * either one destroys a force within one cycle -- and STRING forcing is a
-     * first-class debug operation (force_string / unforce_string).
-     *
-     * Construction takes a detached snapshot of the effective value and starts
-     * unforced; assignment routes through set() so the destination keeps its
-     * own forcing state. */
-    IECStringVar(const IECStringVar& other) noexcept
-        : value_{other.forced_ ? other.forced_value_ : other.value_},
-          forced_{false},
-          forced_value_{} {}
-    IECStringVar(IECStringVar&& other) noexcept
-        : value_{other.forced_ ? other.forced_value_ : other.value_},
-          forced_{false},
-          forced_value_{} {}
-    IECStringVar& operator=(const IECStringVar& other) noexcept {
-        set(other.forced_ ? other.forced_value_ : other.value_);
-        return *this;
-    }
-    IECStringVar& operator=(IECStringVar&& other) noexcept {
-        set(other.forced_ ? other.forced_value_ : other.value_);
-        return *this;
-    }
+    IECStringVar() noexcept : value_{} {}
+    IECStringVar(const value_type& v) noexcept : value_{v} {}
+    IECStringVar(const char* str) noexcept : value_{str} {}
+
+    IECStringVar(const IECStringVar&) = default;
+    IECStringVar(IECStringVar&&) = default;
+    IECStringVar& operator=(const IECStringVar&) = default;
+    IECStringVar& operator=(IECStringVar&&) = default;
 
     // Cross-size converting constructor (IEC 61131-3: STRING types are interoperable)
     template<size_t OtherLen, std::enable_if_t<OtherLen != MaxLen, int> = 0>
     IECStringVar(const IECStringVar<OtherLen>& other) noexcept
-        : value_(other.get().c_str()), forced_{false}, forced_value_{} {}
+        : value_(other.get()) {}
 
     // Converting constructor from IECString of any size
     template<size_t OtherLen, std::enable_if_t<OtherLen != MaxLen, int> = 0>
     IECStringVar(const IECString<OtherLen>& other) noexcept
-        : value_(other.c_str()), forced_{false}, forced_value_{} {}
+        : value_(other) {}
 
     // Converting constructor from IECVar<IECString<N>> (struct field access returns this type)
     template<size_t OtherLen>
     IECStringVar(const IECVar<IECString<OtherLen>>& other) noexcept
-        : value_(static_cast<IECString<OtherLen>>(other).c_str()), forced_{false}, forced_value_{} {}
+        : value_(static_cast<IECString<OtherLen>>(other)) {}
 
     // Cross-size assignment (IEC 61131-3: STRING types are interoperable, truncation on overflow)
     template<size_t OtherLen>
     IECStringVar& operator=(const IECStringVar<OtherLen>& other) noexcept {
-        value_ = IECString<MaxLen>(other.get().c_str());
+        value_ = other.get();
         return *this;
     }
 
     // Assignment from IECVar<IECString<N>> (struct field access)
     template<size_t OtherLen>
     IECStringVar& operator=(const IECVar<IECString<OtherLen>>& other) noexcept {
-        value_ = IECString<MaxLen>(static_cast<IECString<OtherLen>>(other).c_str());
+        value_ = static_cast<IECString<OtherLen>>(other);
         return *this;
     }
 
     // Assignment from IECString of different size
     template<size_t OtherLen, std::enable_if_t<OtherLen != MaxLen, int> = 0>
     IECStringVar& operator=(const IECString<OtherLen>& other) noexcept {
-        value_ = IECString<MaxLen>(other.c_str());
+        value_ = other;
         return *this;
     }
 
-    value_type get() const noexcept {
-        return forced_ ? forced_value_ : value_;
+    const value_type& get() const noexcept {
+        return value_;
     }
 
     void set(const value_type& v) noexcept {
@@ -430,7 +419,7 @@ public:
     }
 
     operator value_type() const noexcept {
-        return get();
+        return value_;
     }
 
     IECStringVar& operator=(const value_type& v) noexcept {
@@ -443,38 +432,22 @@ public:
         return *this;
     }
 
-    // Read-through proxies into the inner IECString.  Without these,
-    // user code in C/C++ POU bodies has to write `name.get().c_str()`
-    // / `name.get().length()` for every read — `IECStringVar` would
-    // otherwise expose nothing but `get()` / `set()` / `operator=` to
-    // its consumers.  Routed through the force-aware value (forced
-    // value when forcing is active, underlying value otherwise) so
-    // every read respects force semantics the same way `IECVar<T>`'s
-    // `operator T()` already does for numeric pins.  Returning the
-    // pointer to the persistent member (not to `get()`'s temporary)
-    // keeps `c_str()`'s buffer stable for the lifetime of `*this`.
-    //
-    // NOTE: only methods that didn't previously exist on
-    // `IECStringVar` are added here.  Comparison (`operator==` etc.)
-    // is intentionally NOT proxied — the free-function overloads at
-    // the bottom of this file (`operator==(IECStringVar, IECString)`
-    // and converse) already handle every cross-class compare path,
-    // and adding member operators would risk overload ambiguity at
-    // ST call sites that previously bound to the free functions.
-    constexpr size_t length() const noexcept {
-        return (forced_ ? forced_value_ : value_).length();
+    // Read-through proxies into the inner IECString, so C/C++ POU bodies can
+    // write `name.c_str()` / `name.length()`. Comparison is NOT proxied: the
+    // free-function overloads at the bottom of this file handle every
+    // cross-class compare, and member operators would make them ambiguous.
+    size_t length() const noexcept {
+        return value_.length();
     }
     const char* c_str() const noexcept {
-        return (forced_ ? forced_value_ : value_).c_str();
+        return value_.c_str();
     }
     char operator[](size_t index) const noexcept {
-        return (forced_ ? forced_value_ : value_)[index];
+        return value_[index];
     }
 
 private:
     value_type value_;
-    bool forced_;
-    value_type forced_value_;
 };
 
 using STRING_VAR = IECStringVar<254>;
@@ -485,10 +458,7 @@ using STRING_VAR = IECStringVar<254>;
 template<size_t MaxLen>
 template<size_t OtherLen>
 inline IECString<MaxLen>& IECString<MaxLen>::operator=(const IECStringVar<OtherLen>& other) noexcept {
-    auto val = other.get();
-    length_ = static_cast<uint16_t>(val.length() < MaxLen ? val.length() : MaxLen);
-    std::memcpy(data_, val.c_str(), length_);
-    data_[length_] = '\0';
+    assign(other.c_str(), other.length());
     return *this;
 }
 
