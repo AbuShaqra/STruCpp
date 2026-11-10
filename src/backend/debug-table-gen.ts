@@ -35,6 +35,7 @@ import { isElementaryType } from "../semantic/type-registry.js";
 import { evalIntConst, MAX_TYPE_ALIAS_DEPTH } from "../semantic/type-utils.js";
 import { formatArrayElementAccess } from "./codegen-utils.js";
 import { mangledMemberName } from "./member-mangling.js";
+import { globalCppName } from "./global-naming.js";
 
 // ---------------------------------------------------------------------------
 // Type tags — MUST match TypeTag enum in runtime/include/debug_dispatch.hpp.
@@ -986,7 +987,7 @@ export function generateDebugTable(
           seenGlobals.add(key);
           visitTypeRef(
             key,
-            `${varName}.value`,
+            `${globalCppName(varName)}.value`,
             decl.type,
             applyBlockFlags(0, block),
           );

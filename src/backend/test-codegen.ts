@@ -235,7 +235,7 @@ export class TestCodeGenerator extends CodeGenerator {
     if (this.setupVarNames.has(name)) {
       return `s.${name}`;
     }
-    return name;
+    return super.resolveVariableBaseName(name);
   }
 
   /**
