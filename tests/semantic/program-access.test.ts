@@ -248,3 +248,67 @@ END_PROGRAM
     });
   }
 });
+
+describe("a PROGRAM naming its own members (PRG_A.x inside PRG_A)", () => {
+  /** PRG_A using its members with the prefix `p` (`PRG_A.` or none). Lines 1-25. */
+  const self = (
+    p: string,
+  ): string => `TYPE ST : STRUCT a : INT; END_STRUCT END_TYPE
+VAR_GLOBAL g : INT; END_VAR
+FUNCTION_BLOCK FB_T
+VAR_INPUT i : BOOL; END_VAR VAR_OUTPUT q : BOOL; END_VAR
+  q := i;
+END_FUNCTION_BLOCK
+PROGRAM PRG_A
+VAR_EXTERNAL g : INT; END_VAR
+VAR_INPUT inp : INT; END_VAR
+VAR x : INT; s : ST; arr : ARRAY[0..2] OF INT; t : FB_T; r : INT; END_VAR
+VAR CONSTANT c : INT := 3; END_VAR
+METHOD M
+  ${p}x := ${p}x + 1;
+END_METHOD
+  ${p}x := ${p}inp + ${p}c;
+  ${p}s.a := ${p}arr[1];
+  ${p}t(i := TRUE);
+  ${p}r := ${p}g;
+  IF ${p}t.q THEN M(); END_IF
+  ACTION Act: ${p}r := ${p}s.a; END_ACTION
+END_PROGRAM
+`;
+
+  it("accepts members, STRUCT fields, array elements, FB calls and externals in the body, a method and an action", () => {
+    expect(lines(compile(self("PRG_A."), ON))).toEqual([]);
+  });
+
+  it("emits the same C++ as the plain member names", () => {
+    const a = compile(self("PRG_A."), ON);
+    const b = compile(self(""), ON);
+    expect(b.errors).toEqual([]);
+    expect(a.cppCode).toBe(b.cppCode);
+    expect(a.headerCode).toBe(b.headerCode);
+  });
+
+  it("still refuses a write to a CONSTANT member", () => {
+    const src = `PROGRAM PRG_A
+VAR CONSTANT c : INT := 3; END_VAR
+  PRG_A.c := 4;
+END_PROGRAM
+`;
+    expect(lines(compile(src, ON))).toEqual([
+      "3:3: Cannot assign to CONSTANT variable 'C'",
+    ]);
+  });
+
+  it("refuses PRG_A.x without the feature", () => {
+    const src = `PROGRAM PRG_A
+VAR x : INT; END_VAR
+  PRG_A.x := 1;
+END_PROGRAM
+`;
+    for (const r of [compile(src), compile(src, { dialect: "iec-3" })]) {
+      expect(lines(r)).toEqual([
+        "3:3: Cannot access members of program 'PRG_A' directly — declare a variable of type 'PRG_A' first.",
+      ]);
+    }
+  });
+});
