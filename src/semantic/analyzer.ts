@@ -507,6 +507,7 @@ export class SemanticAnalyzer {
     this.validateInterfaceProperties(ast);
     this.validatePostfixEnumBases(ast);
     this.validateConfigurationGlobalsHoldNoFB(ast);
+    this.validateDeclaredEno(ast);
     if (this.features.has("fb_init")) {
       validateFbInitArguments(
         ast,
@@ -544,6 +545,45 @@ export class SemanticAnalyzer {
       errors: this.errors,
       warnings: this.warnings,
     };
+  }
+
+  /**
+   * A PROGRAM or a FUNCTION_BLOCK without a base that declares ENO declares
+   * its ENO output, which must be a plain BOOL. (A derived block's ENO only
+   * shadows its base's and keeps working as a variable.)
+   */
+  private validateDeclaredEno(ast: CompilationUnit): void {
+    const blocks: Array<{
+      label: string;
+      name: string;
+      varBlocks: readonly VarBlock[];
+    }> = [
+      ...ast.programs.map((p) => ({ ...p, label: "PROGRAM" })),
+      ...ast.functionBlocks
+        .filter((f) => f.extends === undefined)
+        .map((f) => ({ ...f, label: "FUNCTION_BLOCK" })),
+    ];
+    for (const block of blocks) {
+      for (const vb of block.varBlocks) {
+        for (const decl of vb.declarations) {
+          if (!decl.names.some((n) => n.toUpperCase() === "ENO")) continue;
+          const t = decl.type;
+          if (
+            t.arrayDimensions === undefined &&
+            t.referenceKind === "none" &&
+            t.name.toUpperCase() === "BOOL"
+          ) {
+            continue;
+          }
+          this.addError(
+            `'ENO' of ${block.label} ${block.name} must be BOOL: it is the block's ENO output`,
+            decl.sourceSpan.startLine,
+            decl.sourceSpan.startCol,
+            decl.sourceSpan.file,
+          );
+        }
+      }
+    }
   }
 
   /** Report a global-list diagnostic; returns true when it must gate the later passes. */
