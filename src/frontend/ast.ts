@@ -638,6 +638,8 @@ export interface ForStatement extends ASTNode {
   end: Expression;
   step?: Expression;
   body: Statement[];
+  /** Set when the body is written as empty statements only (`DO ; END_FOR`). */
+  emptyStatementBody?: true;
 }
 
 /**

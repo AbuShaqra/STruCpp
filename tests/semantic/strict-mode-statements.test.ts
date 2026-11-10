@@ -169,13 +169,14 @@ END_CONFIGURATION
 });
 
 describe("strict mode: row h, FOR body", () => {
-  it("rejects a FOR loop with no statement, and one with only ';'", () => {
+  it("rejects a FOR loop with no statement", () => {
     pin(prog("k : INT;", "FOR k := 1 TO 3 DO\n  END_FOR;"), [
       "5: A FOR loop must have a body",
     ]);
-    pin(prog("k : INT;", "FOR k := 1 TO 3 DO ; END_FOR;"), [
-      "5: A FOR loop must have a body",
-    ]);
+  });
+  it("accepts a FOR loop whose body is an empty statement", () => {
+    const src = prog("k : INT;", "FOR k := 1 TO 3 DO ; END_FOR;");
+    expect(strict(src).errors).toEqual([]);
   });
   it("accepts a FOR loop with a body", () => {
     const src = prog(

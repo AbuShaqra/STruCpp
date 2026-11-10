@@ -2209,6 +2209,9 @@ export class ASTBuilder {
 
     const stmtListNode = getFirstNode(children.statementList);
     const body = this.extractStatementsFromList(stmtListNode);
+    const writtenStatements = stmtListNode
+      ? getAllNodes((stmtListNode.children as CstChildren).statement).length
+      : 0;
 
     // Use conditional spreading for optional step to comply with exactOptionalPropertyTypes
     return {
@@ -2219,6 +2222,9 @@ export class ASTBuilder {
       end: endExpr ?? this.createDummyLiteral(node),
       body,
       ...(stepExpr !== undefined ? { step: stepExpr } : {}),
+      ...(body.length === 0 && writtenStatements > 0
+        ? { emptyStatementBody: true as const }
+        : {}),
       ...this.unterminatedEnd(children, "END_FOR"),
     };
   }
