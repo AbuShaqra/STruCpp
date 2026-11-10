@@ -104,6 +104,26 @@ export interface LibraryVarType {
 }
 
 /**
+ * A method of a library function block, as a consumer calls it.
+ */
+export interface LibraryMethodEntry {
+  /** Method name */
+  name: string;
+  /** Return type (its `name` is the method's); absent for a method without one. */
+  returnType?: LibraryVarType;
+  /** VAR_INPUT, VAR_OUTPUT and VAR_IN_OUT parameters in declaration order (the C++ parameter order). */
+  parameters: Array<
+    LibraryVarType & {
+      direction: "input" | "output" | "inout";
+      /** Initial value of an input as an ST expression, as in `LibraryFunctionEntry`. */
+      initialValue?: string;
+    }
+  >;
+  /** Declared visibility when not PUBLIC. */
+  visibility?: "PRIVATE" | "PROTECTED";
+}
+
+/**
  * Library function block entry in a manifest.
  */
 export interface LibraryFBEntry {
@@ -163,6 +183,13 @@ export interface LibraryFBEntry {
    * nobody is told about is the thing this field exists to prevent.
    */
   locals?: LibraryVarType[];
+  /**
+   * The block's own methods (ACTIONs included). Present, possibly empty, on
+   * an archive that lists methods: a consumer then binds named arguments and
+   * fills omitted inputs of `inst.M(...)` from it. Absent on an older archive,
+   * whose method calls pass their arguments through as written.
+   */
+  methods?: LibraryMethodEntry[];
   /** Block-level help text shown in editor hover dialogs. Authored in
    *  the library's `library.json` and merged into the manifest at build
    *  time (see scripts/generate-*.mjs). Optional so existing archives
