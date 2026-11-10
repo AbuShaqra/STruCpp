@@ -66,10 +66,16 @@ function lowerOne(
     return undefined;
   }
   const name = accessorMethodName(fb.name, prop.name, accessor);
+  // A point, so no diagnostic in the accessor is placed in this block.
+  const head = {
+    ...prop.sourceSpan,
+    endLine: prop.sourceSpan.startLine,
+    endCol: prop.sourceSpan.startCol,
+  };
   // The property's own name: the value a GET returns, the value a SET receives.
   const value: VarBlock = {
     kind: "VarBlock",
-    sourceSpan: prop.sourceSpan,
+    sourceSpan: head,
     blockType: accessor === "GET" ? "VAR_OUTPUT" : "VAR_INPUT",
     isConstant: false,
     isRetain: false,
@@ -77,7 +83,7 @@ function lowerOne(
     declarations: [
       {
         kind: "VarDeclaration",
-        sourceSpan: prop.sourceSpan,
+        sourceSpan: head,
         names: [prop.name],
         type: { ...prop.type },
       },

@@ -9,6 +9,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { compile } from "../../src/index.js";
+import { compileStlib } from "../../src/library/library-compiler.js";
 import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 
 const SOURCE = `
@@ -158,6 +159,36 @@ END_PROPERTY`),
         `A property accessor declares only VAR or VAR_TEMP variables, not ${kind} (GET of 'VALUE')`,
       ]);
     }
+  });
+
+  it("keeps the accessor's method out of a library manifest", () => {
+    const result = compileStlib(
+      [
+        {
+          fileName: "lib.st",
+          source: `FUNCTION_BLOCK FB_L
+VAR _v : INT; END_VAR
+METHOD Calc : INT
+  Calc := _v;
+END_METHOD
+PROPERTY Value : INT
+GET
+VAR t : INT; END_VAR
+  t := _v;
+  Value := t;
+END_GET
+END_PROPERTY
+END_FUNCTION_BLOCK
+`,
+        },
+      ],
+      { name: "test-lib", version: "1.0.0", namespace: "test" },
+    );
+    expect(result.success).toBe(true);
+    const fb = result.archive!.manifest.functionBlocks.find(
+      (f) => f.name === "FB_L",
+    );
+    expect(fb?.methods?.map((m) => m.name)).toEqual(["CALC"]);
   });
 
   it("leaves a property without a declaration part unchanged", () => {
