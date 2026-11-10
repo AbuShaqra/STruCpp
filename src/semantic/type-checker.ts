@@ -1511,6 +1511,7 @@ export class TypeChecker {
             ELEMENTARY_TYPES[this.currentReturn.type.name.toUpperCase()];
         }
         this.validateInOutMemberWrite(stmt.target, scope);
+        if (this.isAddressIntoPointer(stmt.target, valueType, scope)) break;
         const errorsBefore = this.errors.length;
         this.validateAssignment(targetType, valueType, stmt.target, stmt.value);
         // One error per mistake: the REF_TO check only adds what the general one missed.
@@ -2604,6 +2605,25 @@ export class TypeChecker {
   ): void {
     const t = this.declaredReferenceShape(target, scope);
     if (t) this.validateReferenceValue(t, value, scope);
+  }
+
+  /**
+   * `p := ADR(x)`: an address (__XWORD) into a POINTER TO of any target type.
+   * The checker types `p` as its target type, which a STRUCT, UNION or FB
+   * target would refuse; an elementary one already accepts __XWORD.
+   */
+  private isAddressIntoPointer(
+    target: Expression,
+    valueType: IECType | undefined,
+    scope: Scope,
+  ): boolean {
+    if (valueType?.typeKind !== "elementary") return false;
+    if ((valueType as ElementaryType).name.toUpperCase() !== "__XWORD") {
+      return false;
+    }
+    return (
+      this.declaredReferenceShape(target, scope)?.chain[0] === "pointer_to"
+    );
   }
 
   /** Report `value` when it cannot be held by a target of shape `t`. */

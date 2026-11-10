@@ -219,7 +219,7 @@ edges on `CU` and `CD` leave `CV` unchanged. CODESYS does not document that case
 | Inline C++ | Supported | `{external ...}` as a statement in a POU body (braces inside it may nest); refused elsewhere, e.g. in a VAR block |
 | Global constants (`-D`) | Supported | CLI `-D NAME=VALUE`, emits `constexpr` |
 | Dynamic memory | Supported | `__NEW(type)`, `__DELETE(ptr)` |
-| POINTER TO, `ADR()` | Supported | Full pointer type with dereference; the feature `pointer_to` (`ADR` and `POINTER TO` are refused under `--dialect iec-3`; IEC `REF_TO`, `REF()` and `^` stay accepted, as do the vendor forms bare `THIS^` and `SUPER^`) |
+| POINTER TO, `ADR()` | Supported | Full pointer type with dereference; `p := ADR(x)` takes the address of a variable of any type, a STRUCT, UNION, ARRAY or FB instance included, into a POINTER TO it (`p^.field` reads and writes through it); the feature `pointer_to` (`ADR` and `POINTER TO` are refused under `--dialect iec-3`; IEC `REF_TO`, `REF()` and `^` stay accepted, as do the vendor forms bare `THIS^` and `SUPER^`) |
 | Typed literals | Supported | `INT#5`, `DINT#42`, `REAL#3.14` |
 | Dialect profiles | Supported | `--dialect`, `--dialect-file`, `--dialect-path`, `--feature`: named feature sets; `iec-3` enables none, no flag keeps the default set (see [DIALECTS.md](DIALECTS.md)) |
 
