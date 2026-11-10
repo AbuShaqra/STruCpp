@@ -51,6 +51,7 @@ import {
   typeName as typeNameUtil,
   isGenericGroupType,
   canonicalElementaryName,
+  getBitAccessWidth,
   resolveAccessType,
   resolveArrayElementAccessType,
   resolveFieldDeclaration,
@@ -548,7 +549,16 @@ export class TypeChecker {
     if (ELEMENTARY_TYPES[canonicalElementaryName(upper)] !== undefined) {
       // `w.C_BIT`: a bit selected by a named constant, not a member.
       const sym = scope.lookup(name);
-      if (sym?.kind === "constant" || sym?.kind === "variable") return;
+      if (sym?.kind === "constant" || sym?.kind === "variable") {
+        const last = expr.fieldAccess[expr.fieldAccess.length - 1];
+        if (
+          getBitAccessWidth(canonicalElementaryName(upper)) !== undefined &&
+          last?.toUpperCase() === memberUpper
+        ) {
+          expr.namedBitIndex = true;
+        }
+        return;
+      }
       what = `A value of type '${upper}'`;
     } else if (this.isClosedStruct(upper)) {
       what = `STRUCT '${upper}'`;

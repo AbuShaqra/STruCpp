@@ -3926,13 +3926,11 @@ export class CodeGenerator {
 
     // Bit access write: var.N := value → var = (var & ~(1ULL << N)) | ((value ? 1ULL : 0ULL) << N)
     // Uses 1ULL (64-bit) to avoid UB when bit index >= 32 (e.g., LWORD.33)
-    if (
-      stmt.target.kind === "VariableExpression" &&
-      stmt.target.fieldAccess.length > 0 &&
-      /^\d+$/.test(stmt.target.fieldAccess[stmt.target.fieldAccess.length - 1]!)
-    ) {
-      const bitIdx =
-        stmt.target.fieldAccess[stmt.target.fieldAccess.length - 1]!;
+    const bitIdx =
+      stmt.target.kind === "VariableExpression"
+        ? this.lastFieldBitIndex(stmt.target)
+        : undefined;
+    if (stmt.target.kind === "VariableExpression" && bitIdx !== undefined) {
       // Build the base variable (without the bit index)
       const baseVar: VariableExpression = {
         ...stmt.target,
@@ -4048,11 +4046,9 @@ export class CodeGenerator {
   ): string {
     const nameUpper = target.name.toUpperCase();
     const ptr = this.resolveVariableBaseName(target.name);
-    const lastField = target.fieldAccess[target.fieldAccess.length - 1];
-    const isBitWrite =
-      target.fieldAccess.length > 0 && /^\d+$/.test(lastField ?? "");
+    const lastField = this.lastFieldBitIndex(target);
 
-    if (isBitWrite) {
+    if (lastField !== undefined) {
       // Base without the trailing bit index, rendered on the lock lambda param.
       const baseVar: VariableExpression = {
         ...target,
@@ -4234,7 +4230,7 @@ export class CodeGenerator {
       e.kind === "VariableExpression" &&
       !e.isDereference &&
       this.compositeExternals.has(e.name.toUpperCase()) &&
-      !/^\d+$/.test(e.fieldAccess[e.fieldAccess.length - 1] ?? "");
+      this.lastFieldBitIndex(e) === undefined;
     const isUnionMember = (e: Expression): e is VariableExpression =>
       e.kind === "VariableExpression" && e.unionMember === true;
     const rendersBound = (e: Expression): e is VariableExpression =>
@@ -5098,6 +5094,7 @@ export class CodeGenerator {
         expr.accessChain,
         nameUpper,
         baseType,
+        expr.namedBitIndex === true,
       );
     }
 
@@ -5123,8 +5120,9 @@ export class CodeGenerator {
         const field = expr.fieldAccess[i]!;
         const isLast = i === expr.fieldAccess.length - 1;
         // Bit access: numeric field like .0, .15, .31 → ((var >> N) & 1)
-        if (/^\d+$/.test(field)) {
-          result = `((static_cast<uint64_t>(${result}) >> ${field}) & 1)`;
+        const bit = this.bitIndexCode(field, isLast && expr.namedBitIndex);
+        if (bit !== undefined) {
+          result = `((static_cast<uint64_t>(${result}) >> ${bit}) & 1)`;
           continue;
         }
         if (isLast) {
@@ -5162,6 +5160,41 @@ export class CodeGenerator {
   }
 
   /**
+   * The C++ bit index a field selects: a numeric field as written, a named
+   * constant (`w.C_BIT`, `named`) as its value; undefined for a member.
+   */
+  private bitIndexCode(
+    field: string,
+    named: boolean | undefined,
+  ): string | undefined {
+    if (/^\d+$/.test(field)) return field;
+    if (named !== true) return undefined;
+    const index = this.generateExpression({
+      kind: "VariableExpression",
+      sourceSpan: {
+        file: "",
+        startLine: 0,
+        startCol: 0,
+        endLine: 0,
+        endCol: 0,
+      },
+      name: field,
+      subscripts: [],
+      fieldAccess: [],
+      isDereference: false,
+    });
+    return `static_cast<uint64_t>(${index})`;
+  }
+
+  /** The bit index the last field of `expr` selects, if it is a bit access. */
+  private lastFieldBitIndex(expr: VariableExpression): string | undefined {
+    const last = expr.fieldAccess[expr.fieldAccess.length - 1];
+    return last === undefined
+      ? undefined
+      : this.bitIndexCode(last, expr.namedBitIndex);
+  }
+
+  /**
    * Generate C++ code from an ordered access chain.
    * Handles correct interleaving of field accesses, subscripts, and dereferences.
    *
@@ -5178,6 +5211,7 @@ export class CodeGenerator {
     chain: AccessStep[],
     baseNameUpper: string,
     baseType?: string,
+    namedBit = false,
   ): string {
     let result = base;
     let currentType = baseType ?? this.currentScopeVarTypes.get(baseNameUpper);
@@ -5189,8 +5223,9 @@ export class CodeGenerator {
       switch (step.kind) {
         case "field": {
           // Bit access: numeric field like .0, .15, .31
-          if (/^\d+$/.test(step.name)) {
-            result = `((static_cast<uint64_t>(${result}) >> ${step.name}) & 1)`;
+          const bit = this.bitIndexCode(step.name, isLast && namedBit);
+          if (bit !== undefined) {
+            result = `((static_cast<uint64_t>(${result}) >> ${bit}) & 1)`;
             continue;
           }
           // Property access on the last step
@@ -5893,19 +5928,24 @@ export class CodeGenerator {
         return `${this.currentFBExtends}::${resolvedMethod}(${args.join(", ")})`;
       } else {
         // instance.method() call; through an interface, on the instance it refers to
+        const instance = (): string =>
+          this.generateExpression({
+            kind: "VariableExpression",
+            sourceSpan: expr.sourceSpan,
+            name: prefix,
+            subscripts: [],
+            fieldAccess: [],
+            isDereference: false,
+          });
         const receiver =
           ownerType !== undefined && this.isInterfaceType(ownerType)
-            ? `itf_ref(${this.generateExpression({
-                kind: "VariableExpression",
-                sourceSpan: expr.sourceSpan,
-                name: prefix,
-                subscripts: [],
-                fieldAccess: [],
-                isDereference: false,
-              })})`
+            ? `itf_ref(${instance()})`
             : reachedProgram !== undefined
               ? this.sharedProgramInstance(reachedProgram)
-              : prefix;
+              : varType !== undefined &&
+                  this.memberMangledNames.has(prefix.toUpperCase())
+                ? instance()
+                : prefix;
         return `${receiver}.${resolvedMethod}(${args.join(", ")})`;
       }
     }
@@ -7046,9 +7086,9 @@ export class CodeGenerator {
     functionName: string,
     isElementCall = false,
   ): string | undefined {
-    const declaredType = this.currentScopeVarTypes.get(
-      functionName.toUpperCase(),
-    );
+    const declaredType = isElementCall
+      ? this.currentScopeVarTypes.get(functionName.toUpperCase())
+      : this.invocationTargetType(functionName);
     if (!declaredType) return undefined;
     const varType = isElementCall
       ? this.ast
@@ -7063,6 +7103,30 @@ export class CodeGenerator {
       return varType;
     }
     return undefined;
+  }
+
+  /**
+   * The declared type of a call target written as a name: a variable of the
+   * scope, else a file-level or library VAR_GLOBAL; for `a.b.c` the type of
+   * member `c` reached from `a` (undefined when any step is not a field).
+   */
+  private invocationTargetType(functionName: string): string | undefined {
+    const [root, ...members] = functionName.split(".");
+    const rootUpper = root!.toUpperCase();
+    let type =
+      this.currentScopeVarTypes.get(rootUpper) ??
+      this.namespaceGlobalType(rootUpper);
+    for (const member of members) type = this.resolveMemberType(type, member);
+    return type;
+  }
+
+  /** Declared type name of a file-level or library VAR_GLOBAL not shadowed here. */
+  private namespaceGlobalType(upper: string): string | undefined {
+    if (this.isCurrentFunctionResult(upper)) return undefined;
+    if (this.reachedProgramNamed(upper) !== undefined) return undefined;
+    if (!this.isNamespaceGlobal(upper)) return undefined;
+    const sym = this._symbolTables?.globalScope.lookup(upper);
+    return sym?.kind === "variable" ? sym.declaration.type.name : undefined;
   }
 
   /**
@@ -7184,9 +7248,11 @@ export class CodeGenerator {
         ? this.sharedProgramInstance(program)
         : call.instance !== undefined
           ? this.generateExpression(call.instance)
-          : this.scopeInOutRefs.has(rawName.toUpperCase())
-            ? `(*${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName})`
-            : (this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName);
+          : rawName.includes(".")
+            ? this.generateExpression(this.dottedInstanceExpression(call))
+            : this.scopeInOutRefs.has(rawName.toUpperCase())
+              ? `(*${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName})`
+              : (this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName);
 
     // Extract implicit EN/ENO parameters
     const { enExpr, enoVar, filteredArgs } = this.extractEnEno(call.arguments);
@@ -7314,6 +7380,22 @@ export class CodeGenerator {
         );
       }
     }
+  }
+
+  /** `a.b(...)` on a member instance `b`: the instance as a variable access `a.b`. */
+  private dottedInstanceExpression(
+    call: FunctionCallExpression,
+  ): VariableExpression {
+    const [root, ...members] = call.functionName.split(".");
+    return {
+      kind: "VariableExpression",
+      sourceSpan: call.sourceSpan,
+      name: root!,
+      subscripts: [],
+      fieldAccess: members,
+      isDereference: false,
+      accessChain: members.map((name) => ({ kind: "field", name })),
+    };
   }
 
   /**
