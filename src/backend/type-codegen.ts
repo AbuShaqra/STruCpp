@@ -408,9 +408,7 @@ export class TypeCodeGenerator {
     } else {
       cppType = this.mapStructFieldTypeToCpp(type.name, type.maxLength);
     }
-    const rawType = type.arrayDimensions
-      ? cppType
-      : this.mapTypeToCpp(type.name);
+    const rawType = type.arrayDimensions ? cppType : this.mapTypeRefToCpp(type);
     return isReferenceField(type)
       ? // REF_TO / REFERENCE TO: the same wrapper a variable gets.
         wrapReferenceChain(type.referenceChain ?? [type.referenceKind], rawType)
@@ -627,9 +625,9 @@ export class TypeCodeGenerator {
         : this.mapTypeToCpp(def.elementTypeName);
       cppType = formatArrayType(elemCpp, def.arrayDimensions);
     } else {
-      cppType = this.mapTypeToCpp(def.name);
+      cppType = this.mapTypeRefToCpp(def);
     }
-    const rawType = def.arrayDimensions ? cppType : this.mapTypeToCpp(def.name);
+    const rawType = def.arrayDimensions ? cppType : this.mapTypeRefToCpp(def);
     cppType = isReferenceField(def)
       ? wrapReferenceChain(def.referenceChain ?? [def.referenceKind], rawType)
       : rawPointerType(def, cppType, rawType);
@@ -662,6 +660,19 @@ export class TypeCodeGenerator {
     }
 
     return typeName;
+  }
+
+  /**
+   * The raw C++ type a reference names, keeping a declared STRING(n) or
+   * WSTRING(n) length: `IECString<10>` for `STRING(10)`.
+   */
+  mapTypeRefToCpp(type: { name: string; maxLength?: number | string }): string {
+    if (type.maxLength !== undefined) {
+      const upperName = type.name.toUpperCase();
+      if (upperName === "STRING") return `IECString<${type.maxLength}>`;
+      if (upperName === "WSTRING") return `IECWString<${type.maxLength}>`;
+    }
+    return this.mapTypeToCpp(type.name);
   }
 
   /**

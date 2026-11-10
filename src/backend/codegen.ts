@@ -937,7 +937,9 @@ export class CodeGenerator {
       const elemType =
         typeRef.arrayDimensions && typeRef.elementTypeName
           ? baseType
-          : this.rawReferencedType(typeRef.name);
+          : typeRef.maxLength !== undefined
+            ? this.typeCodeGen.mapTypeRefToCpp(typeRef)
+            : this.rawReferencedType(typeRef.name);
       // Nested levels (`POINTER TO REF_TO INT`) wrap innermost first.
       return wrapReferenceChain(
         typeRef.referenceChain ?? [typeRef.referenceKind],

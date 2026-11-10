@@ -148,13 +148,39 @@ const REFERENCE_LEVEL_TEXT: Record<string, string> = {
 };
 
 /** `REF_TO REF_TO INT` for a declared reference shape. */
-function describeReferenceShape(shape: {
-  chain: string[];
-  base: string;
-}): string {
-  return [...shape.chain.map((k) => REFERENCE_LEVEL_TEXT[k] ?? k), shape.base]
+function describeReferenceShape(shape: ReferenceShape): string {
+  const base =
+    shape.length === undefined
+      ? shape.base
+      : `${shape.base}(${String(shape.length)})`;
+  return [...shape.chain.map((k) => REFERENCE_LEVEL_TEXT[k] ?? k), base]
     .join(" ")
     .toUpperCase();
+}
+
+/** The reference levels and target type of a declared type. */
+interface ReferenceShape {
+  chain: string[];
+  base: string;
+  /** The declared length of a STRING(n) / WSTRING(n) target. */
+  length?: number | string;
+  /** Set when the declaration's string length is not carried (an array element). */
+  lengthUnknown?: boolean;
+}
+
+/** Characters a STRING or WSTRING holds when no length is declared. */
+const DEFAULT_STRING_LENGTH = 254;
+
+/**
+ * Whether two STRING / WSTRING targets are known to differ in length. A length
+ * named by a constant is only compared with the same name.
+ */
+function stringLengthsDiffer(a: ReferenceShape, b: ReferenceShape): boolean {
+  if (a.lengthUnknown === true || b.lengthUnknown === true) return false;
+  const la = a.length ?? DEFAULT_STRING_LENGTH;
+  const lb = b.length ?? DEFAULT_STRING_LENGTH;
+  if (typeof la === "number" && typeof lb === "number") return la !== lb;
+  return false;
 }
 
 /**
@@ -186,16 +212,19 @@ function isUntypedZero(expr: Expression): expr is LiteralExpression {
 }
 
 /** The reference levels and target type of a declared type; undefined for an array. */
-function referenceShapeOf(
-  type: AccessType,
-): { chain: string[]; base: string } | undefined {
+function referenceShapeOf(type: AccessType): ReferenceShape | undefined {
   if (type.arrayDimensions) return undefined;
   const chain =
     type.referenceChain ??
     (type.referenceKind !== undefined && type.referenceKind !== "none"
       ? [type.referenceKind]
       : []);
-  return { chain, base: type.name };
+  const length = (type as { maxLength?: number | string }).maxLength;
+  return {
+    chain,
+    base: type.name,
+    ...(length !== undefined ? { length } : {}),
+  };
 }
 
 // =============================================================================
@@ -3119,7 +3148,7 @@ export class TypeChecker {
 
   /** Report `value` when it cannot be held by a target of shape `t`. */
   private validateReferenceValue(
-    t: { chain: string[]; base: string },
+    t: ReferenceShape,
     value: Expression,
     scope: Scope,
   ): void {
@@ -3135,7 +3164,7 @@ export class TypeChecker {
     const sameBase =
       canonicalElementaryName(t.base.toUpperCase()) ===
       canonicalElementaryName(v.base.toUpperCase());
-    if (sameLevels && sameBase) return;
+    if (sameLevels && sameBase && !stringLengthsDiffer(t, v)) return;
     this.addError(
       `Cannot assign ${describeReferenceShape(v)} to ${describeReferenceShape(t)}: a REF_TO can only hold a reference to its declared type`,
       value.sourceSpan.startLine,
@@ -3151,11 +3180,11 @@ export class TypeChecker {
   private declaredReferenceShape(
     expr: Expression,
     scope: Scope,
-  ): { chain: string[]; base: string } | undefined {
+  ): ReferenceShape | undefined {
     if (expr.kind === "RefExpression") {
       const inner = this.declaredReferenceShape(expr.operand, scope);
       return inner
-        ? { chain: ["ref_to", ...inner.chain], base: inner.base }
+        ? { ...inner, chain: ["ref_to", ...inner.chain] }
         : undefined;
     }
     if (expr.kind === "FunctionCallExpression") {
@@ -3174,7 +3203,18 @@ export class TypeChecker {
     const type = this.hasMemberAccess(expr)
       ? resolveAccessType(declared.type, expr, this.accessLookup)
       : declared.type;
-    return type ? referenceShapeOf(type) : undefined;
+    const shape = type ? referenceShapeOf(type) : undefined;
+    // An array element's declaration does not carry its string length.
+    if (shape && this.hasSubscript(expr)) shape.lengthUnknown = true;
+    return shape;
+  }
+
+  /** Whether an access path indexes an array anywhere. */
+  private hasSubscript(expr: VariableExpression): boolean {
+    return (
+      expr.subscripts.length > 0 ||
+      (expr.accessChain?.some((step) => step.kind === "subscript") ?? false)
+    );
   }
 
   private findUserFunction(name: string): FunctionDeclaration | undefined {
