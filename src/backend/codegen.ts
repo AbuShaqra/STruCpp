@@ -3911,7 +3911,13 @@ export class CodeGenerator {
         this.generateRefAssignStatement(stmt, indent);
         break;
       case "FunctionCallStatement": {
-        if (stmt.call.kind === "MethodCallExpression") {
+        const memberInstanceCall =
+          stmt.call.kind === "MethodCallExpression"
+            ? this.memberInstanceCall(stmt.call)
+            : undefined;
+        if (memberInstanceCall !== undefined) {
+          this.generateFBInvocation(memberInstanceCall, indent);
+        } else if (stmt.call.kind === "MethodCallExpression") {
           this.emit(
             `${indent}${this.generateMethodCallExpression(stmt.call)};`,
           );
@@ -7439,15 +7445,25 @@ export class CodeGenerator {
     instance?: Expression,
   ): string | undefined {
     const isElementCall = instance !== undefined;
-    // `pf^(…)`: the function block a pointer or reference points at
+    // `pf^(…)`, `a.b.fb(…)`: the function block a pointer or reference
+    // points at, or a member instance
     if (
       instance?.kind === "VariableExpression" &&
       (instance.isDereference ||
-        (instance.accessChain ?? []).some((s) => s.kind === "dereference"))
+        (instance.accessChain ?? []).some((s) => s.kind !== "subscript"))
     ) {
-      const base = this.currentScopeVarTypeRefs.get(
-        instance.name.toUpperCase(),
-      );
+      const rootUpper = instance.name.toUpperCase();
+      const globalType = this.namespaceGlobalTypeRef(rootUpper);
+      const base: TypeReference | undefined =
+        rootUpper === "THIS" && this.currentFBName !== undefined
+          ? {
+              kind: "TypeReference",
+              sourceSpan: instance.sourceSpan,
+              name: this.currentFBName,
+              isReference: false,
+              referenceKind: "none",
+            }
+          : (this.currentScopeVarTypeRefs.get(rootUpper) ?? globalType);
       const target =
         base === undefined
           ? undefined
@@ -7480,6 +7496,40 @@ export class CodeGenerator {
   }
 
   /**
+   * `a.b.fb(args)` (a method call the type checker found to name a function
+   * block member) as an invocation of the instance `a.b.fb`.
+   */
+  private memberInstanceCall(
+    call: MethodCallExpression,
+  ): FunctionCallExpression | undefined {
+    const object = call.object;
+    if (call.fbInstanceCall !== true || object.kind !== "VariableExpression") {
+      return undefined;
+    }
+    if (object.name.toUpperCase() === "SUPER") return undefined;
+    const steps: AccessStep[] = [
+      ...(object.accessChain ??
+        object.fieldAccess.map(
+          (name): AccessStep => ({ kind: "field", name }),
+        )),
+      { kind: "field", name: call.methodName },
+    ];
+    const instance: VariableExpression = {
+      ...object,
+      fieldAccess: [...object.fieldAccess, call.methodName],
+      accessChain: steps,
+      sourceSpan: call.sourceSpan,
+    };
+    return {
+      kind: "FunctionCallExpression",
+      sourceSpan: call.sourceSpan,
+      functionName: object.name,
+      arguments: call.arguments,
+      instance,
+    };
+  }
+
+  /**
    * The declared type of a call target written as a name: a variable of the
    * scope, else a file-level or library VAR_GLOBAL; for `a.b.c` the type of
    * member `c` reached from `a` (undefined when any step is not a field).
@@ -7492,6 +7542,14 @@ export class CodeGenerator {
       this.namespaceGlobalType(rootUpper);
     for (const member of members) type = this.resolveMemberType(type, member);
     return type;
+  }
+
+  /** Declared type of a file-level or library VAR_GLOBAL not shadowed here. */
+  private namespaceGlobalTypeRef(upper: string): TypeReference | undefined {
+    if (this.currentScopeVarTypes.has(upper)) return undefined;
+    if (this.namespaceGlobalType(upper) === undefined) return undefined;
+    const sym = this._symbolTables?.globalScope.lookup(upper);
+    return sym?.kind === "variable" ? sym.declaration.type : undefined;
   }
 
   /** Declared type name of a file-level or library VAR_GLOBAL not shadowed here. */
