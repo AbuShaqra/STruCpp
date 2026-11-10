@@ -1373,6 +1373,11 @@ export class TypeChecker {
       return retType;
     }
 
+    // An FB instance in scope is invoked (no return value)
+    if (!expr.instance && this.calledInstance(expr.functionName, scope)) {
+      return undefined;
+    }
+
     // Check user-defined functions in symbol tables
     const funcSymbol = this.symbolTables.lookupFunction(expr.functionName);
     if (funcSymbol !== undefined) {
@@ -1785,6 +1790,7 @@ export class TypeChecker {
         return;
       }
       if (scope.lookup(methodName)?.kind === "variable") return;
+      if (this.calledInstance(methodName, scope)) return;
       owner = enclosing;
     } else if (parts.length === 2) {
       methodName = parts[1]!;
@@ -1866,6 +1872,7 @@ export class TypeChecker {
     const name = expr.functionName;
     if (name.includes(".") || this.findUserFunction(name)) return;
     if (scope.lookup(name)?.kind === "variable") return;
+    if (this.calledInstance(name, scope)) return;
     if (this.ownMethod(name)) return;
     const upper = name.toUpperCase();
     const desc = this.stdRegistry.lookup(upper);
@@ -1921,6 +1928,7 @@ export class TypeChecker {
     const name = expr.functionName;
     if (name.includes(".")) return;
     if (scope.lookup(name)?.kind === "variable") return;
+    if (this.calledInstance(name, scope)) return;
     if (this.ownMethod(name)) return;
     let declaredName: string;
     let params: string[];
@@ -2194,6 +2202,53 @@ export class TypeChecker {
     return this.currentProgram?.methods.find(
       (m) => m.name.toUpperCase() === upper,
     );
+  }
+
+  /**
+   * A bare `name(...)` that invokes a PROGRAM, or a variable in scope of a
+   * FUNCTION_BLOCK or PROGRAM type: it shadows a FUNCTION or standard
+   * function of its name, as the C++ member does.
+   */
+  private calledInstance(name: string, scope: Scope): boolean {
+    if (name.includes(".")) return false;
+    const sym = scope.lookup(name);
+    if (sym?.kind === "program") return true;
+    const type =
+      sym?.kind === "variable"
+        ? (sym.declaration as VarDeclaration | undefined)?.type
+        : this.inheritedMemberType(name);
+    if (type === undefined || type.arrayDimensions !== undefined) return false;
+    const upper = this.aliasBase(type.name).toUpperCase();
+    return (
+      this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper) ===
+        true ||
+      this.ast?.programs.some((p) => p.name.toUpperCase() === upper) === true ||
+      this.symbolTables.lookupFunctionBlock(upper) !== undefined
+    );
+  }
+
+  /** The declared type of a member the enclosing FB inherits from a base. */
+  private inheritedMemberType(name: string): TypeReference | undefined {
+    const upper = name.toUpperCase();
+    const seen = new Set<string>();
+    let current = this.ast?.functionBlocks.find(
+      (f) => f.name.toUpperCase() === this.currentFBName?.toUpperCase(),
+    )?.extends;
+    while (current !== undefined && !seen.has(current.toUpperCase())) {
+      const base = current.toUpperCase();
+      seen.add(base);
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === base,
+      );
+      if (!fb) return undefined;
+      for (const block of fb.varBlocks) {
+        for (const d of block.declarations) {
+          if (d.names.some((n) => n.toUpperCase() === upper)) return d.type;
+        }
+      }
+      current = fb.extends;
+    }
+    return undefined;
   }
 
   /** The declared return type of a method, or undefined when it has none. */
@@ -3240,6 +3295,7 @@ export class TypeChecker {
   ): boolean {
     if (expr.instance !== undefined) return true;
     if (this.ownMethod(expr.functionName)) return false;
+    if (this.calledInstance(expr.functionName, scope)) return true;
     if (this.findUserFunction(expr.functionName)) return false;
     return scope.lookup(expr.functionName)?.kind === "variable";
   }
@@ -3770,7 +3826,9 @@ export class TypeChecker {
         );
     const ownMethod = this.ownMethod(expr.functionName);
     if (ownMethod) return fromBlocks(ownMethod.varBlocks);
-    const fn = this.findUserFunction(expr.functionName);
+    const fn = this.calledInstance(expr.functionName, scope)
+      ? undefined
+      : this.findUserFunction(expr.functionName);
     if (fn) return fromBlocks(fn.varBlocks);
     const sym = scope.lookup(expr.functionName);
     if (sym?.kind !== "variable" || expr.instance) return undefined;
@@ -4206,6 +4264,7 @@ export class TypeChecker {
   ): void {
     if (call.instance) return;
     if (scope.lookup(call.functionName)?.kind === "variable") return;
+    if (this.calledInstance(call.functionName, scope)) return;
     const fn = this.symbolTables.lookupFunction(call.functionName);
     if (!fn?.returnType) return;
     this.addStrictErrorAt(

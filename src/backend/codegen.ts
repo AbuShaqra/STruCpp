@@ -7773,9 +7773,33 @@ export class CodeGenerator {
     const rootUpper = root!.toUpperCase();
     let type =
       this.currentScopeVarTypes.get(rootUpper) ??
+      this.inheritedMemberTypeName(rootUpper) ??
       this.namespaceGlobalType(rootUpper);
     for (const member of members) type = this.resolveMemberType(type, member);
     return type;
+  }
+
+  /** Declared type name of a member the current FB inherits from a base. */
+  private inheritedMemberTypeName(upper: string): string | undefined {
+    const seen = new Set<string>();
+    let current = this.currentFBExtends;
+    while (current !== undefined && !seen.has(current.toUpperCase())) {
+      const base = current.toUpperCase();
+      seen.add(base);
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === base,
+      );
+      if (!fb) return undefined;
+      for (const block of fb.varBlocks) {
+        for (const d of block.declarations) {
+          if (d.names.some((n) => n.toUpperCase() === upper)) {
+            return d.type.name;
+          }
+        }
+      }
+      current = fb.extends;
+    }
+    return undefined;
   }
 
   /** Declared type of a file-level or library VAR_GLOBAL not shadowed here. */
