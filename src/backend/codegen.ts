@@ -5033,10 +5033,12 @@ export class CodeGenerator {
     // Bare enum member: Stopped → Irrigation_State::Stopped
     // Only qualify if the name is NOT a declared variable in the current scope
     // (a local variable named RED should not be rewritten as Color::RED).
+    // Nor the return variable of the function or method being generated.
     const enumEntry = this.enumMemberToType.get(nameUpper);
     if (
       enumEntry?.typeName &&
       !this.currentScopeVarTypes.has(nameUpper) &&
+      !this.isCurrentFunctionResult(nameUpper) &&
       expr.fieldAccess.length === 0 &&
       (!expr.accessChain || expr.accessChain.length === 0)
     ) {
