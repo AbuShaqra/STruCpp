@@ -1427,6 +1427,8 @@ export class TypeChecker {
           span.startCol,
           span.file,
         );
+      } else {
+        this.checkFbCallArgumentNames(member.type, expr.arguments);
       }
       return;
     }
@@ -1523,6 +1525,7 @@ export class TypeChecker {
         this.symbolTables.lookupFunctionBlock(member.type.name) !== undefined)
     ) {
       expr.fbInstanceCall = true;
+      if (report) this.checkFbCallArgumentNames(member.type, expr.arguments);
       return undefined;
     }
     if (member !== undefined) {
@@ -2080,6 +2083,9 @@ export class TypeChecker {
         if (this.strict && stmt.call.kind === "FunctionCallExpression") {
           this.checkStrictDiscardedResult(stmt.call, scope);
           this.checkStrictFbParameters(stmt.call, scope);
+        }
+        if (stmt.call.kind === "FunctionCallExpression") {
+          this.checkFbInstanceCallNames(stmt.call, scope);
         }
         break;
       }
@@ -3521,6 +3527,71 @@ export class TypeChecker {
         arg.sourceSpan,
       );
     }
+  }
+
+  /** `inst(name := v)` on a variable: the name must be a member of the FB. */
+  private checkFbInstanceCallNames(
+    call: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (call.instance || call.functionName.includes(".")) return;
+    const sym = scope.lookup(call.functionName);
+    if (sym?.kind !== "variable") return;
+    const declared = sym.declaration as VarDeclaration | undefined;
+    if (declared) this.checkFbCallArgumentNames(declared.type, call.arguments);
+  }
+
+  /**
+   * Named arguments of a call on an instance of `type`, a function block this
+   * compile declares, that name no member of it: the generated C++ assigns
+   * `inst.NAME`, which does not build. Names of VAR locals still bind.
+   */
+  private checkFbCallArgumentNames(
+    type: VarDeclaration["type"],
+    args: readonly Argument[],
+  ): void {
+    if (type.referenceKind !== "none" || type.arrayDimensions !== undefined) {
+      return;
+    }
+    const known = this.fbMemberNames(type.name);
+    if (!known) return;
+    for (const arg of args) {
+      if (arg.name === undefined) continue;
+      const upper = arg.name.toUpperCase();
+      if (upper === "EN" || upper === "ENO" || known.has(upper)) continue;
+      this.addStrictErrorAt(
+        `${type.name} has no input or output named ${arg.name}`,
+        arg.sourceSpan,
+      );
+    }
+  }
+
+  /**
+   * The upper-cased names of every variable, method, property and action of a
+   * function block this compile declares, bases included. Undefined when the
+   * type or a base is not declared here (a library block, say).
+   */
+  private fbMemberNames(typeName: string): Set<string> | undefined {
+    const names = new Set<string>();
+    let current: string | undefined = typeName.toUpperCase();
+    for (let depth = 0; current !== undefined; depth++) {
+      if (depth >= 32) return undefined;
+      const upper: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === upper,
+      );
+      if (!fb) return undefined;
+      for (const block of fb.varBlocks) {
+        for (const d of block.declarations) {
+          for (const n of d.names) names.add(n.toUpperCase());
+        }
+      }
+      for (const m of fb.methods) names.add(m.name.toUpperCase());
+      for (const p of fb.properties) names.add(p.name.toUpperCase());
+      for (const a of fb.actions) names.add(a.name.toUpperCase());
+      current = fb.extends?.toUpperCase();
+    }
+    return names;
   }
 
   /**
