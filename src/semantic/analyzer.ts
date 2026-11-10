@@ -2912,17 +2912,27 @@ export class SemanticAnalyzer {
         }
 
         for (const ifaceName of fb.implements) {
-          const requiredMethods = ifaceMap.get(ifaceName.toUpperCase());
-          if (requiredMethods) {
-            for (const reqMethod of requiredMethods) {
-              if (!fbMethodNames.has(reqMethod)) {
-                this.addError(
-                  `FUNCTION_BLOCK '${fb.name}' implements '${ifaceName}' but does not provide method '${reqMethod}'.`,
-                  fb.sourceSpan.startLine,
-                  fb.sourceSpan.startCol,
-                  fb.sourceSpan.file,
-                );
-              }
+          // The interface's own methods and those of its EXTENDS bases
+          const requiredMethods = new Set<string>();
+          const seenIfaces = new Set<string>();
+          const collect = (name: string): void => {
+            const upper = name.toUpperCase();
+            if (seenIfaces.has(upper)) return;
+            seenIfaces.add(upper);
+            for (const m of ifaceMap.get(upper) ?? []) requiredMethods.add(m);
+            for (const base of ifaceDecls.get(upper)?.extends ?? []) {
+              collect(base);
+            }
+          };
+          collect(ifaceName);
+          for (const reqMethod of requiredMethods) {
+            if (!fbMethodNames.has(reqMethod)) {
+              this.addError(
+                `FUNCTION_BLOCK '${fb.name}' implements '${ifaceName}' but does not provide method '${reqMethod}'.`,
+                fb.sourceSpan.startLine,
+                fb.sourceSpan.startCol,
+                fb.sourceSpan.file,
+              );
             }
           }
         }
