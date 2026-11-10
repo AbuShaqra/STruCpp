@@ -405,7 +405,7 @@ END_TYPE
 PROGRAM P
 VAR union : INT; end_union : INT; s : T1; e : E := End_Union; END_VAR
 union := end_union + s.x;
-IF e = Union THEN union := 0; END_IF;
+IF union = end_union THEN union := 0; END_IF;
 END_PROGRAM
 `;
   for (const mode of [...MODES, { name: "+union", options: ON }]) {
