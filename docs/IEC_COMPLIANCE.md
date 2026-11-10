@@ -149,7 +149,7 @@ All IEC 61131-3 standard functions are implemented in the C++ runtime:
 | Bitwise | AND, OR, XOR, NOT, MOVE |
 | Bit Shift | SHL, SHR, ROL, ROR |
 | Type Conversion | *_TO_* (INT_TO_REAL, DINT_TO_STRING, etc.); TRUNC, TRUNC_* and *_TRUNC_* (TRUNC_INT, REAL_TRUNC_DINT, etc.) |
-| String | LEN, LEFT, RIGHT, MID, CONCAT, FIND, REPLACE, INSERT, DELETE, UPPER, LOWER, TRIM. LEN, LEFT, RIGHT, MID, CONCAT, FIND, REPLACE, INSERT and DELETE also take WSTRING values of any length, as do `=`, `<>`, `<`, `<=`, `>`, `>=` between WSTRINGs; on WSTRING, INSERT puts IN2 after the first P characters, as the standard's INSERT example does |
+| String | LEN, LEFT, RIGHT, MID, CONCAT, FIND, REPLACE, INSERT, DELETE, UPPER, LOWER, TRIM. LEN, LEFT, RIGHT, MID, CONCAT, FIND, REPLACE, INSERT and DELETE also take WSTRING values of any length, as do `=`, `<>`, `<`, `<=`, `>`, `>=` between WSTRINGs; on STRING and WSTRING, INSERT and WINSERT put IN2 after the first P characters, as the standard's INSERT example does |
 | System | ADR, SIZEOF |
 
 **REAL/LREAL to integer.** `REAL_TO_*` and `LREAL_TO_*` to an integer type round to nearest (half away from

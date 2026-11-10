@@ -518,11 +518,12 @@ WCONCAT(const IECWString<MaxLen1>& s1, const IECWString<MaxLen2>& s2) noexcept {
     return result;
 }
 
+/** WINSERT(IN1, IN2, P): IN2 after the first P characters of IN1. */
 template<size_t MaxLen>
 inline IECWString<MaxLen> WINSERT(const IECWString<MaxLen>& s1, const IECWString<MaxLen>& s2, size_t pos) noexcept {
     IECWString<MaxLen> result(s1);
-    if (pos == 0) pos = 1;
-    result.insert(pos - 1, s2.c_str());
+    if (pos > result.length()) pos = result.length();
+    result.insert(pos, s2.c_str());
     return result;
 }
 
