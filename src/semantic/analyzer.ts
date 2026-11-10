@@ -626,7 +626,7 @@ export class SemanticAnalyzer {
       scope: Scope,
       ctx: UndeclaredVarContext,
     ): GlobalListScope => ({
-      resolvesOtherwise: (name) => {
+      resolvesOtherwise: (name): boolean => {
         const upper = name.toUpperCase();
         return (
           scope.lookup(upper) !== undefined ||
@@ -635,7 +635,7 @@ export class SemanticAnalyzer {
           this.enumMemberMap.has(upper)
         );
       },
-      hidesGlobal: (name) => {
+      hidesGlobal: (name): boolean => {
         const upper = name.toUpperCase();
         const hit = scope.lookup(upper);
         if (hit !== globalScope.lookup(upper)) {
