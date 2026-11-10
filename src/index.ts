@@ -42,6 +42,7 @@ import type {
 } from "./frontend/ast.js";
 import { mergeCompilationUnits } from "./merge.js";
 import { lowerInlineTypes } from "./frontend/lower-inline-types.js";
+import { resolveArrayBounds } from "./semantic/array-bounds.js";
 import { lowerActions } from "./semantic/lower-actions.js";
 import { lowerAccessorLocals } from "./semantic/lower-accessor-locals.js";
 import { lowerProgramSelfMembers } from "./semantic/program-access.js";
@@ -712,6 +713,7 @@ function runPipeline(
     // Actions first, so lowerInlineTypes qualifies inline enum members in
     // action bodies as it does in the owner's methods.
     const loweringErrors = [
+      ...resolveArrayBounds(ast, mergedOptions.globalConstants ?? {}),
       ...lowerActions(ast),
       ...lowerAccessorLocals(ast),
       ...lowerInlineTypes(ast),
