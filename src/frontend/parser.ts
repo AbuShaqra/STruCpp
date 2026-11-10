@@ -102,7 +102,7 @@ export class STParser extends CstParser {
   public programDeclaration = this.RULE("programDeclaration", () => {
     this.CONSUME(tokens.PROGRAM);
     this.CONSUME(tokens.Identifier);
-    // VAR blocks and methods interleaved (before body), as in a
+    // VAR blocks, methods and actions interleaved (before body), as in a
     // FUNCTION_BLOCK; the analyzer refuses methods without the feature
     // program_methods. PROPERTY stays out of programs.
     this.MANY(() => {
@@ -115,6 +115,10 @@ export class STParser extends CstParser {
           {
             ALT: () => this.SUBRULE(this.methodDeclaration),
             GATE: () => this.LA(1).tokenType === tokens.METHOD,
+          },
+          {
+            ALT: (): CstNode => this.SUBRULE2(this.actionDeclaration),
+            GATE: (): boolean => this.isActionDeclarationAhead(false),
           },
         ],
         IGNORE_AMBIGUITIES: true,
@@ -176,7 +180,7 @@ export class STParser extends CstParser {
           DEF: () => this.CONSUME3(tokens.Identifier),
         });
       });
-      // VAR blocks, methods, properties interleaved (before body)
+      // VAR blocks, methods, properties, actions interleaved (before body)
       this.MANY(() => {
         this.OR2({
           DEF: [
@@ -191,6 +195,10 @@ export class STParser extends CstParser {
             {
               ALT: () => this.SUBRULE(this.propertyDeclaration),
               GATE: () => this.LA(1).tokenType === tokens.PROPERTY,
+            },
+            {
+              ALT: (): CstNode => this.SUBRULE2(this.actionDeclaration),
+              GATE: (): boolean => this.isActionDeclarationAhead(false),
             },
           ],
           IGNORE_AMBIGUITIES: true,
@@ -210,7 +218,7 @@ export class STParser extends CstParser {
 
   /**
    * ACTION Name [:] statements END_ACTION, inside a PROGRAM or FUNCTION_BLOCK
-   * after its body. An action has no VAR blocks of its own.
+   * before or after its body. An action has no VAR blocks of its own.
    */
   public actionDeclaration = this.RULE("actionDeclaration", () => {
     this.CONSUME(tokens.ACTION);
