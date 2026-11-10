@@ -30,7 +30,7 @@ PROGRAM Main
   VAR
     str : STRING := 'abcdef';
     pt : POINTER TO ARRAY[1..255] OF BYTE;
-    r1, r2, r3 : BYTE;
+    r1, r2, r3, r_tail : BYTE;
     shortened : STRING := 'abcdef';
     len_short : INT;
     grown : STRING(20) := 'ab';
@@ -54,6 +54,7 @@ PROGRAM Main
   END_VAR
   pt := ADR(str);
   r1 := pt^[1]; r2 := pt^[2]; r3 := pt^[3];
+  r_tail := pt^[9];          (* past the terminator: zero, as on a PLC *)
 
   pt := ADR(shortened);
   pt^[1] := 16#58;           (* 'X' *)
@@ -96,7 +97,8 @@ const MAIN = `
 int main() {
     strucpp::Program_MAIN m;
     m.run();
-    std::printf("read %u %u %u\\n", (unsigned)m.R1, (unsigned)m.R2, (unsigned)m.R3);
+    std::printf("read %u %u %u %u\\n", (unsigned)m.R1, (unsigned)m.R2, (unsigned)m.R3,
+        (unsigned)m.R_TAIL);
     std::printf("short %d %s | grown %d %s | chr %d %s\\n", (int)m.LEN_SHORT,
         m.SHORTENED.c_str(), (int)m.LEN_GROWN, m.GROWN.c_str(), (int)m.LEN_CHR, m.CHR.c_str());
     std::printf("zero %d | joined %d %d\\n", (int)m.LEN_ZERO, (int)m.LEN_JOINED, (int)m.EQ);
@@ -109,7 +111,7 @@ int main() {
 `;
 
 const EXPECTED = [
-  "read 97 98 99",
+  "read 97 98 99 0",
   "short 3 Xbc | grown 4 abcd | chr 1 A",
   // A string ends at its first NUL; CONCAT sees the grown length.
   "zero 1 | joined 5 1",

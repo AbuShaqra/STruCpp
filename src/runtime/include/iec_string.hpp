@@ -69,16 +69,18 @@ public:
 
     constexpr IECString() noexcept : data_{} {}
 
-    IECString(const char* str) noexcept {
+    // A constructed string is zero past its terminator, as a PLC variable is,
+    // so a pointer reading beyond the NUL sees zeros.
+    IECString(const char* str) noexcept : data_{} {
         assign(str, str ? std::strlen(str) : 0);
     }
 
-    IECString(const char* str, size_t len) noexcept {
+    IECString(const char* str, size_t len) noexcept : data_{} {
         assign(str, len);
     }
 
     template<size_t OtherLen>
-    IECString(const IECString<OtherLen>& other) noexcept {
+    IECString(const IECString<OtherLen>& other) noexcept : data_{} {
         assign(other.c_str(), other.length());
     }
 

@@ -43,25 +43,25 @@ class IECStringPrinter:
 
     def to_string(self):
         try:
-            # IECStringVar wraps IEC_STRING which has buf_ and len_ members
+            # IECStringVar<N> holds one IECString<N> in value_; an IECString<N>
+            # is char data_[N+1], NUL-terminated (the length is the NUL).
             inner = self.val
-            # Try to access value_ (IECVar wrapper)
             try:
                 inner = inner["value_"]
             except gdb.error:
                 pass
-            # IEC_STRING has data() method or buf_ member
-            try:
-                buf = inner["buf_"]
-                length = int(inner["len_"])
-                return buf.string(length=length)
-            except gdb.error:
-                pass
-            # Try c_str()-like access
-            try:
-                return inner["buf_"].string()
-            except gdb.error:
-                return str(inner)
+            data = inner["data_"]
+            capacity = int(data.type.sizeof // data.type.target().sizeof) - 1
+            units = []
+            for i in range(capacity):
+                unit = int(data[i]) & 0xFFFF
+                if unit == 0:
+                    break
+                units.append(unit)
+            wide = data.type.target().sizeof > 1
+            if wide:
+                return "".join(chr(u) for u in units)
+            return bytes(u & 0xFF for u in units).decode("latin-1")
         except gdb.error:
             return str(self.val)
 

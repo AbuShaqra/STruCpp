@@ -30,7 +30,7 @@ public:
 
     constexpr IECWString() noexcept : data_{} {}
 
-    IECWString(const char16_t* str) noexcept {
+    IECWString(const char16_t* str) noexcept : data_{} {
         size_t cur = 0;
         if (str) {
             size_t len = 0;
@@ -43,7 +43,7 @@ public:
         data_[cur] = u'\0';
     }
 
-    IECWString(const char16_t* str, size_t len) noexcept {
+    IECWString(const char16_t* str, size_t len) noexcept : data_{} {
         size_t cur = len < MaxLen ? len : MaxLen;
         for (size_t i = 0; i < cur; ++i) {
             data_[i] = str[i];
@@ -52,7 +52,7 @@ public:
     }
 
     template<size_t OtherLen>
-    IECWString(const IECWString<OtherLen>& other) noexcept {
+    IECWString(const IECWString<OtherLen>& other) noexcept : data_{} {
         size_t cur = other.length() < MaxLen ? other.length() : MaxLen;
         for (size_t i = 0; i < cur; ++i) {
             data_[i] = other.c_str()[i];
