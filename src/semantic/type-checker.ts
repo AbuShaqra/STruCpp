@@ -2250,7 +2250,12 @@ export class TypeChecker {
 
       case "ForStatement": {
         this.checkStrictTerminator(stmt);
-        if (this.strict && stmt.body.length === 0) {
+        // An empty statement (`DO ; END_FOR`) is a body; no statement is not.
+        if (
+          this.strict &&
+          stmt.body.length === 0 &&
+          stmt.emptyStatementBody !== true
+        ) {
           this.addStrictErrorAt("A FOR loop must have a body", stmt.sourceSpan);
         }
         const startType = this.resolveExprType(stmt.start, scope);

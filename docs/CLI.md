@@ -225,9 +225,10 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 - arithmetic on BOOL or on BYTE/WORD/DWORD/LWORD, and an integer used as TIME;
 - the reserved names ON, STEP and MOVE for a variable, POU, method, type, field, enum value,
   configuration, resource, task or program instance (a FUNCTION may still be named MOVE);
-- an empty FOR body, a function result that is discarded, a missing `;` after END_IF,
-  END_CASE, END_FOR, END_WHILE or END_REPEAT, an FB call naming a parameter the FB lacks,
-  and a duplicate or overlapping CASE label.
+- a FOR loop with no statement in its body (an empty statement, `DO ; END_FOR`, is a
+  body), a function result that is discarded, a missing `;` after END_IF, END_CASE,
+  END_FOR, END_WHILE or END_REPEAT, an FB call naming a parameter the FB lacks, and a
+  duplicate or overlapping CASE label.
 
 A dialect feature can relax one of these checks: `end_semicolon_optional` accepts the missing `;`
 under `--strict`. See "Strict checks a feature relaxes" in [DIALECTS.md](DIALECTS.md).
