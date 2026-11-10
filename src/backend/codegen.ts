@@ -7261,10 +7261,17 @@ export class CodeGenerator {
     const fbTypeName =
       program ??
       this.getFBInvocationType(call.functionName, call.instance !== undefined);
+    // A PROGRAM's own instance or a variable of PROGRAM type: run() it.
+    const programType =
+      program ??
+      (fbTypeName !== undefined &&
+      this.knownProgramTypes.has(fbTypeName.toUpperCase())
+        ? fbTypeName
+        : undefined);
     // Parameters a positional argument binds, in declaration order.
     const positionalParams =
-      program !== undefined
-        ? this.programInputNames(program)
+      programType !== undefined
+        ? this.programInputNames(programType)
         : this.fbPositionalParams(fbTypeName);
 
     // Bind each argument to its parameter (named or positional) before the
@@ -7288,7 +7295,7 @@ export class CodeGenerator {
     // An in-out passed by copy (another type, a UNION member) binds a
     // temporary that must outlive the call: the call then sits in a block.
     const kindOf = (param: string): ReturnType<CodeGenerator["inOutKind"]> =>
-      program === undefined ? this.inOutKind(fbTypeName, param) : undefined;
+      programType === undefined ? this.inOutKind(fbTypeName, param) : undefined;
     const byCopy = (b: { arg: Argument; param: string }): boolean =>
       kindOf(b.param) === "ref" &&
       (b.arg.inOutCopy === true ||
@@ -7354,8 +7361,11 @@ export class CodeGenerator {
       enExpr,
       enoVar,
       (bi) => {
-        if (program !== undefined) this.emit(`${bi}${instanceName}.run();`);
-        else this.emitPOUCallLine(instanceName, call.functionName, bi);
+        if (programType !== undefined) {
+          this.emit(`${bi}${instanceName}.run();`);
+        } else {
+          this.emitPOUCallLine(instanceName, call.functionName, bi);
+        }
       },
       `${instanceName}.ENO`,
     );
