@@ -84,6 +84,7 @@ import {
   getBitAccessWidth,
   resolveFieldType,
   resolveArrayElementType,
+  resolveFieldDeclaration,
   buildEnumMemberMap,
   describeType,
   resolveArrayShape,
@@ -4575,7 +4576,13 @@ export class SemanticAnalyzer {
       for (const block of blocks) {
         for (const decl of block.declarations) {
           if (decl.initialValue) {
-            this.checkInitialValueNames(decl.initialValue, scope, ctx);
+            this.checkInitialValueNames(
+              decl.initialValue,
+              scope,
+              ctx,
+              ast,
+              this.declaredTypeName(decl.type),
+            );
           }
         }
       }
@@ -4628,29 +4635,136 @@ export class SemanticAnalyzer {
           }
         });
         if (!namesSibling) {
-          this.checkInitialValueNames(field.initialValue, global, {});
+          this.checkInitialValueNames(
+            field.initialValue,
+            global,
+            {},
+            ast,
+            this.declaredTypeName(field.type),
+          );
         }
       }
     }
   }
 
-  /** Check one initial value's names; structure initializer element names are not values. */
+  /**
+   * Check one initial value's names; structure initializer element names are
+   * not values. `typeName` is the type it initialises, which settles a bare
+   * member of several enumerations.
+   */
   private checkInitialValueNames(
     expr: Expression,
     scope: Scope,
     ctx: UndeclaredVarContext,
+    ast: CompilationUnit,
+    typeName: string | undefined,
   ): void {
     if (expr.kind === "StructInitializerExpression") {
       for (const el of expr.elements) {
-        this.checkInitialValueNames(el.value, scope, ctx);
+        const field =
+          typeName === undefined
+            ? undefined
+            : resolveFieldDeclaration(typeName, el.name, ast);
+        this.checkInitialValueNames(
+          el.value,
+          scope,
+          ctx,
+          ast,
+          field ? this.declaredTypeName(field.type) : undefined,
+        );
       }
     } else if (expr.kind === "ArrayLiteralExpression") {
+      const element =
+        typeName === undefined
+          ? undefined
+          : resolveArrayElementType(typeName, ast);
       for (const el of expr.elements) {
-        this.checkInitialValueNames(el, scope, ctx);
+        this.checkInitialValueNames(el, scope, ctx, ast, element);
       }
     } else {
+      this.settleEnumMember(expr, typeName, scope);
       this.checkExpressionForUndeclaredVars(expr, scope, ctx);
     }
+  }
+
+  /** A declared type's name when it holds its value directly (no POINTER or reference). */
+  private declaredTypeName(type: TypeReference): string | undefined {
+    if (type.referenceKind !== "none" || type.referenceChain !== undefined) {
+      return undefined;
+    }
+    return type.arrayDimensions !== undefined &&
+      type.elementTypeName !== undefined
+      ? type.elementReferenceChain === undefined
+        ? `__INLINE_ARRAY_${type.elementTypeName}`
+        : undefined
+      : type.name;
+  }
+
+  /**
+   * Mark a bare member of several enumerations (`B` in `e : E1 := B`) with the
+   * one `typeName` is (through aliases), so it is not ambiguous there.
+   */
+  private settleEnumMember(
+    expr: Expression,
+    typeName: string | undefined,
+    scope: Scope,
+  ): void {
+    if (typeName === undefined || expr.kind !== "VariableExpression") return;
+    if (
+      expr.fieldAccess.length > 0 ||
+      expr.subscripts.length > 0 ||
+      (expr.accessChain?.length ?? 0) > 0 ||
+      expr.isDereference
+    ) {
+      return;
+    }
+    const upper = expr.name.toUpperCase();
+    const entry = this.enumMemberMap.get(upper);
+    if (entry?.typeName !== null || entry === undefined) return;
+    const hit = scope.lookup(upper);
+    if (hit && hit.kind !== "enumValue") return;
+    let current = typeName.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const sym = this.symbolTables.lookupType(current);
+      if (!sym) return;
+      const name = current;
+      const owner = entry.conflictingTypes.find(
+        (t) => t.toUpperCase() === name,
+      );
+      if (owner !== undefined) {
+        expr.enumType = owner;
+        return;
+      }
+      const def = sym.declaration?.definition;
+      if (
+        def?.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        def.referenceKind !== "none"
+      ) {
+        return;
+      }
+      current = def.name.toUpperCase();
+    }
+  }
+
+  /** The declared type of a plain variable assigned to (`e := ...`), if any. */
+  private assignedTypeName(
+    target: Expression,
+    scope: Scope,
+  ): string | undefined {
+    if (
+      target.kind !== "VariableExpression" ||
+      target.fieldAccess.length > 0 ||
+      target.subscripts.length > 0 ||
+      (target.accessChain?.length ?? 0) > 0 ||
+      target.isDereference
+    ) {
+      return undefined;
+    }
+    const sym = scope.lookup(target.name.toUpperCase());
+    if (sym?.kind !== "variable") return undefined;
+    const type = (sym.declaration as VarDeclaration | undefined)?.type;
+    return type ? this.declaredTypeName(type) : undefined;
   }
 
   /** Init argument values (feature fb_init) name only what their declaring scope declares. */
@@ -4826,6 +4940,11 @@ export class SemanticAnalyzer {
           break;
         case "AssignmentStatement":
           this.checkExpressionForUndeclaredVars(stmt.target, scope, ctx);
+          this.settleEnumMember(
+            stmt.value,
+            this.assignedTypeName(stmt.target, scope),
+            scope,
+          );
           this.checkExpressionForUndeclaredVars(stmt.value, scope, ctx);
           break;
         case "RefAssignStatement":
@@ -4896,6 +5015,7 @@ export class SemanticAnalyzer {
   ): void {
     switch (expr.kind) {
       case "VariableExpression":
+        if (expr.enumType !== undefined) break;
         this.checkNameDeclared(expr.name, scope, ctx, expr.sourceSpan);
         // Reject member access on a type-level symbol (FB / program / type).
         // Resolves the bug where `RED_YELLOW_GREEN.GREENTIME := …` is

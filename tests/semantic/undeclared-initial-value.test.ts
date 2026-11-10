@@ -84,3 +84,42 @@ describe("undeclared name in an initial value", () => {
     ).toEqual([]);
   });
 });
+
+describe("member of several enumerations settled by its target", () => {
+  const ENUMS = `
+    TYPE MODE1 : (A, B); END_TYPE
+    TYPE MODE2 : (B, C); END_TYPE
+    TYPE T1 : MODE1; END_TYPE
+    TYPE ST : STRUCT f : MODE2 := B; END_STRUCT END_TYPE`;
+
+  it("accepts it where the target is one of its enumerations", () => {
+    const result = compile(
+      `${ENUMS}
+      PROGRAM Main
+      VAR e : MODE1 := B; t : T1 := B; s : ST := (f := B);
+        arr : ARRAY[0..1] OF MODE2 := [C, B]; e3 : MODE2; END_VAR
+        e3 := B;
+      END_PROGRAM`,
+    );
+    expect(result.errors.map((e) => e.message)).toEqual([]);
+    expect(result.cppCode).toContain("E(MODE1::B)");
+    expect(result.cppCode).toContain("T(MODE1::B)");
+    expect(result.cppCode).toContain("MODE2::C, MODE2::B");
+    expect(result.cppCode).toContain("E3 = MODE2::B;");
+    expect(result.cppCode).toContain("v0.F = MODE2::B;");
+    expect(result.headerCode).toContain("F = MODE2::B;");
+  });
+
+  it("still refuses it where the target does not settle it", () => {
+    expect(
+      errorsIn(`${ENUMS}
+      PROGRAM Main
+      VAR x : INT := B; y : INT; END_VAR
+        y := B;
+      END_PROGRAM`),
+    ).toEqual([
+      "Ambiguous enum member 'B' — qualify as 'MODE1' or 'MODE2'",
+      "Ambiguous enum member 'B' — qualify as 'MODE1' or 'MODE2'",
+    ]);
+  });
+});

@@ -766,6 +766,9 @@ export class TypeCodeGenerator {
     let result = expr.name;
     const nameUpper = expr.name.toUpperCase();
 
+    // A member of several enums, settled by its target's type.
+    if (expr.enumType !== undefined) return `${expr.enumType}::${expr.name}`;
+
     // Bare enum member: Stopped → Irrigation_State::Stopped
     const enumEntry = this.enumMemberToType.get(nameUpper);
     if (enumEntry?.typeName && expr.fieldAccess.length === 0) {

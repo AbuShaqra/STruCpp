@@ -66,4 +66,44 @@ int main() {
     });
     expect(stdout).toBe("1212 3 46 345");
   });
+
+  it("settles a member of several enumerations by its target", () => {
+    const result = compile(
+      `
+      TYPE MODE1 : (A, B); END_TYPE
+      TYPE MODE2 : (B, C); END_TYPE
+      TYPE T1 : MODE1; END_TYPE
+      TYPE ST : STRUCT f : MODE2 := B; END_STRUCT END_TYPE
+      PROGRAM Main
+      VAR e : MODE1 := B; t : T1 := B; s : ST; s2 : ST := (f := B);
+        arr : ARRAY[0..1] OF MODE2 := [C, B]; e3 : MODE2; n : INT; END_VAR
+        e3 := B;
+        IF e = MODE1#B THEN n := n + 1; END_IF;
+        IF t = MODE1#B THEN n := n + 10; END_IF;
+        IF s.f = MODE2#B AND s2.f = MODE2#B THEN n := n + 100; END_IF;
+        IF arr[1] = MODE2#B AND arr[0] = MODE2#C THEN n := n + 1000; END_IF;
+        IF e3 = MODE2#B THEN n := n + 10000; END_IF;
+      END_PROGRAM
+    `,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "settled_enum_member",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << prog.N.get() << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("11111");
+  });
 });

@@ -494,15 +494,16 @@ describe("Undeclared Variables - Enum members", () => {
     expect(undeclaredErrors(result)).toHaveLength(0);
   });
 
-  it("should report ambiguous bare enum member", () => {
+  it("should report ambiguous bare enum member its target does not settle", () => {
     const result = analyzeSource(`
       TYPE
         State1 : (IDLE, RUNNING);
         State2 : (IDLE, ACTIVE);
       END_TYPE
       PROGRAM Main
-        VAR x : State1; END_VAR
+        VAR x : State1; b : BOOL; END_VAR
         x := IDLE;
+        b := x = IDLE;
       END_PROGRAM
     `);
     const ambiguousErrors = result.errors.filter((e) =>
