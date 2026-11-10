@@ -755,3 +755,68 @@ describe("Codegen - Function Calls", () => {
     });
   });
 });
+
+describe("Codegen - omitted inputs take their default", () => {
+  const types = `
+    TYPE ST_P : STRUCT a : INT := 3; b : INT := 4; END_STRUCT END_TYPE
+    TYPE E_M : (ALPHA, BETA); END_TYPE
+  `;
+
+  it("passes a declared INT default for a trailing positional omission", () => {
+    const result = compileAndCheck(`${types}
+      FUNCTION F_S : INT
+        VAR_INPUT s : ST_P; k : INT := 9; END_VAR
+        F_S := k;
+      END_FUNCTION
+      PROGRAM Main
+        VAR r : INT; st : ST_P; END_VAR
+        r := F_S(st);
+      END_PROGRAM
+    `);
+    expect(result.cppCode).toContain("F_S(ST, 9)");
+  });
+
+  it("passes a declared STRUCT default and a value-initialised STRUCT", () => {
+    const result = compileAndCheck(`${types}
+      FUNCTION F_T : INT
+        VAR_INPUT k : INT := 9; s : ST_P := (b := 6); END_VAR
+        F_T := k;
+      END_FUNCTION
+      FUNCTION_BLOCK FB_U
+      METHOD U : INT
+        VAR_INPUT k : INT; s : ST_P; e : E_M; END_VAR
+        U := k;
+      END_METHOD
+      END_FUNCTION_BLOCK
+      PROGRAM Main
+        VAR r : INT; fb : FB_U; END_VAR
+        r := F_T(1);
+        r := fb.U(1);
+      END_PROGRAM
+    `);
+    expect(result.cppCode).not.toMatch(/F_T\(1, \)/);
+    expect(result.cppCode).toMatch(/F_T\(1, [^;]*B = 6/);
+    expect(result.cppCode).toContain("FB.U(1, ST_P(), IEC_E_M())");
+  });
+
+  it("pads a positional method call with defaults and an output temporary", () => {
+    const result = compileAndCheck(`${types}
+      FUNCTION_BLOCK FB_X
+      METHOD M : INT
+        VAR_INPUT x : INT := 7; s : ST_P; END_VAR
+        VAR_OUTPUT q : INT; END_VAR
+        M := x;
+      END_METHOD
+      METHOD Run : INT
+        Run := M(1);
+      END_METHOD
+      END_FUNCTION_BLOCK
+      PROGRAM Main
+        VAR r : INT; fb : FB_X; END_VAR
+        r := fb.M();
+      END_PROGRAM
+    `);
+    expect(result.cppCode).toMatch(/FB\.M\(7, ST_P\(\), __output_tmp_\d+\)/);
+    expect(result.cppCode).toMatch(/RUN_result = M\(1, ST_P\(\), __output_tmp_\d+\)/);
+  });
+});
