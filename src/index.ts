@@ -48,7 +48,7 @@ import { unionLoweringErrors } from "./semantic/union.js";
 import { fbInitLoweringErrors } from "./semantic/fb-init.js";
 import { walkAST } from "./ast-utils.js";
 import { registerLibrarySymbols } from "./library/library-loader.js";
-import type { StlibArchive } from "./library/library-manifest.js";
+import type { LibraryChunk, StlibArchive } from "./library/library-manifest.js";
 import { annotateErrorsWithPouContext } from "./diagnostic-pou-context.js";
 import {
   DialectError,
@@ -141,24 +141,120 @@ function collectUsedSymbols(
   archives: StlibArchive[],
   includeEverything: boolean,
 ): Map<string, Set<string>> {
-  // When asked to include everything (test builds), short-circuit.
+  const shadowed = userDeclaredNames(ast);
+  // When asked to include everything (test builds), short-circuit, leaving out
+  // the library chunks a user declaration shadows and every chunk needing one.
   if (includeEverything) {
     const all = new Map<string, Set<string>>();
+    const byKey = new Map<string, LibraryChunk>();
+    for (const archive of archives) {
+      for (const c of archive.chunks ?? []) {
+        byKey.set(`${archive.manifest.name}:${c.name}`, c);
+      }
+    }
     for (const archive of archives) {
       const chunkNames = new Set<string>();
       for (const chunk of archive.chunks ?? []) {
-        chunkNames.add(chunk.name);
+        if (
+          shadowed.size === 0 ||
+          !needsShadowedChunk(chunk, byKey, shadowed)
+        ) {
+          chunkNames.add(chunk.name);
+        }
       }
       all.set(archive.manifest.name, chunkNames);
     }
     return all;
   }
+  return shakeLibraryChunks(ast, archives, shadowed).byLibrary;
+}
+
+/**
+ * Upper-cased names the user's AST declares at global level: POUs,
+ * interfaces, types and top-level / CONFIGURATION globals. A library chunk of
+ * the same name is shadowed: it is never emitted, since its C++ declaration
+ * would collide with the user's.
+ */
+function userDeclaredNames(ast: CompilationUnit): Set<string> {
+  const names = new Set<string>();
+  const add = (n: string): void => {
+    names.add(n.toUpperCase());
+  };
+  for (const pou of [
+    ...ast.programs,
+    ...ast.functions,
+    ...ast.functionBlocks,
+    ...ast.interfaces,
+    ...ast.types,
+  ]) {
+    add(pou.name);
+  }
+  const blocks = [
+    ...ast.globalVarBlocks,
+    ...ast.configurations.flatMap((c) => c.varBlocks),
+  ];
+  for (const block of blocks) {
+    for (const decl of block.declarations) decl.names.forEach(add);
+  }
+  return names;
+}
+
+/**
+ * True when `chunk` is shadowed by a user declaration, or reaches one through
+ * its dependency edges.
+ */
+function needsShadowedChunk(
+  chunk: LibraryChunk,
+  byKey: Map<string, LibraryChunk>,
+  shadowed: Set<string>,
+): boolean {
+  const seen = new Set<string>();
+  const stack = [chunk];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    if (shadowed.has(cur.name.toUpperCase())) return true;
+    for (const dep of cur.deps) {
+      const key = `${dep.library}:${dep.name}`;
+      const next = byKey.get(key);
+      if (next && !seen.has(key)) {
+        seen.add(key);
+        stack.push(next);
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * A library chunk the program needs whose name a user declaration shadows:
+ * `needer` is the reachable chunk that depends on it.
+ */
+interface ShadowConflict {
+  name: string;
+  library: string;
+  needer: string;
+}
+
+/**
+ * Tree-shake the archives from the names the user's AST references. A name
+ * the user declares never seeds a library chunk; a reachable chunk that still
+ * depends on one is reported as a conflict and left out.
+ */
+function shakeLibraryChunks(
+  ast: CompilationUnit,
+  archives: StlibArchive[],
+  shadowed: Set<string>,
+): { byLibrary: Map<string, Set<string>>; conflicts: ShadowConflict[] } {
+  const conflicts: ShadowConflict[] = [];
 
   // Build symbol→{library, chunk} index across every archive.  Names
   // are uppercased to match how chunks are keyed (the codegen
   // normalises every emitted identifier to uppercase before sealing
   // chunk boundaries).
-  const symbolIndex = new Map<string, { library: string; chunk: string }>();
+  const symbolIndex = new Map<
+    string,
+    { library: string; chunk: string; kind: LibraryChunk["kind"] }
+  >();
   // Per-library chunk-name lookup so the dep BFS can resolve chunks
   // it already named when the consumer didn't reference them directly.
   const chunkByKey = new Map<string, { library: string; chunk: string }>();
@@ -167,13 +263,16 @@ function collectUsedSymbols(
     const libName = archive.manifest.name;
     for (const chunk of archive.chunks ?? []) {
       const entry = { library: libName, chunk: chunk.name };
-      symbolIndex.set(chunk.name.toUpperCase(), entry);
+      symbolIndex.set(chunk.name.toUpperCase(), { ...entry, kind: chunk.kind });
       chunkByKey.set(`${libName}:${chunk.name}`, entry);
     }
   }
 
   // Seed the reachable set from names the user AST references.
   const referencedNames = new Set<string>();
+  // Names read as variables: they seed only a global or a type, never a
+  // function or block that merely shares a local's or parameter's name.
+  const variableNames = new Set<string>();
   walkAST(ast, (node: ASTNode): void => {
     switch (node.kind) {
       case "FunctionCallExpression": {
@@ -185,7 +284,7 @@ function collectUsedSymbols(
         // Inline-global reads (e.g. `MATH.PI2`) show up as
         // VariableExpression with name="MATH".
         const ve = node as unknown as { name: string };
-        referencedNames.add(ve.name.toUpperCase());
+        variableNames.add(ve.name.toUpperCase());
         break;
       }
       case "TypeReference": {
@@ -222,16 +321,21 @@ function collectUsedSymbols(
   const reachable = new Set<string>(); // keys: "<library>:<chunk>"
   const queue: Array<{ library: string; chunk: string }> = [];
 
-  for (const name of referencedNames) {
+  const seed = (name: string, asVariable: boolean): void => {
+    if (shadowed.has(name)) return;
     const entry = symbolIndex.get(name);
-    if (entry) {
-      const key = `${entry.library}:${entry.chunk}`;
-      if (!reachable.has(key)) {
-        reachable.add(key);
-        queue.push(entry);
-      }
+    if (!entry) return;
+    if (asVariable && entry.kind !== "inlineGlobal" && entry.kind !== "type") {
+      return;
     }
-  }
+    const key = `${entry.library}:${entry.chunk}`;
+    if (!reachable.has(key)) {
+      reachable.add(key);
+      queue.push({ library: entry.library, chunk: entry.chunk });
+    }
+  };
+  for (const name of referencedNames) seed(name, false);
+  for (const name of variableNames) seed(name, true);
 
   // Build a fast lookup from "<library>:<chunk>" → chunk object so
   // the BFS can read each chunk's pre-computed deps without rescanning.
@@ -260,6 +364,14 @@ function collectUsedSymbols(
       if (reachable.has(depKey)) continue;
       const target = chunkByKey.get(depKey);
       if (!target) continue;
+      if (shadowed.has(dep.name.toUpperCase())) {
+        conflicts.push({
+          name: dep.name,
+          library: dep.library,
+          needer: cur.chunk,
+        });
+        continue;
+      }
       reachable.add(depKey);
       queue.push(target);
     }
@@ -279,7 +391,66 @@ function collectUsedSymbols(
     set.add(name);
   }
 
-  return byLibrary;
+  return { byLibrary, conflicts };
+}
+
+/**
+ * Errors for library chunks the program needs but a user declaration shadows:
+ * both would be emitted under one C++ name.
+ */
+function libraryShadowErrors(
+  ast: CompilationUnit,
+  archives: StlibArchive[],
+): CompileError[] {
+  const shadowed = userDeclaredNames(ast);
+  if (shadowed.size === 0) return [];
+  const errors: CompileError[] = [];
+  const reported = new Set<string>();
+  for (const c of shakeLibraryChunks(ast, archives, shadowed).conflicts) {
+    const key = c.name.toUpperCase();
+    if (reported.has(key)) continue;
+    reported.add(key);
+    const decl = userDeclarationSpan(ast, key);
+    errors.push({
+      message:
+        `'${c.name}' is declared here and also by library '${c.library}', ` +
+        `where '${c.needer}', which this program uses, depends on it. ` +
+        `Rename the declaration.`,
+      line: decl?.startLine ?? 0,
+      column: decl?.startCol ?? 0,
+      severity: "error",
+      ...(decl?.file !== undefined ? { file: decl.file } : {}),
+    });
+  }
+  return errors;
+}
+
+/** Source span of the user's global-level declaration of `upperName`. */
+function userDeclarationSpan(
+  ast: CompilationUnit,
+  upperName: string,
+): ASTNode["sourceSpan"] | undefined {
+  for (const pou of [
+    ...ast.programs,
+    ...ast.functions,
+    ...ast.functionBlocks,
+    ...ast.interfaces,
+    ...ast.types,
+  ]) {
+    if (pou.name.toUpperCase() === upperName) return pou.sourceSpan;
+  }
+  const blocks = [
+    ...ast.globalVarBlocks,
+    ...ast.configurations.flatMap((c) => c.varBlocks),
+  ];
+  for (const block of blocks) {
+    for (const decl of block.declarations) {
+      if (decl.names.some((n) => n.toUpperCase() === upperName)) {
+        return decl.sourceSpan;
+      }
+    }
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -739,6 +910,8 @@ function runPipeline(
     }
     // In analyze mode, semantic failure is non-fatal — return whatever we have
   }
+
+  errors.push(...libraryShadowErrors(ast, allArchives));
 
   // Annotate errors/warnings with POU + section context so programmatic
   // consumers (e.g. the OpenPLC Editor) can route diagnostics to the
