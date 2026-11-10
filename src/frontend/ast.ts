@@ -202,6 +202,12 @@ export interface MethodDeclaration extends ASTNode {
   fromAction?: boolean;
   /** True when the method holds the body of a property accessor that declares locals. */
   fromAccessor?: boolean;
+  /**
+   * Locals renamed so the program's member of the same name stays reachable
+   * as `PRG_A.name` (see `lowerProgramSelfMembers`): the internal name and
+   * the name as written.
+   */
+  renamedLocals?: Array<{ internal: string; name: string }>;
   /** Span of the method's name. */
   nameSpan?: SourceSpan;
 }

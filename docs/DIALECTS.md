@@ -468,6 +468,10 @@ statement`. A local variable named `PRG_A` shadows the program. A program callin
 (`PRG_A();` inside PRG_A) is refused under every dialect: `PROGRAM PRG_A cannot call itself` (it used to
 pass `--check` and fail in g++).
 
+Inside PRG_A itself (its body, methods and actions) `PRG_A.x` is the program's own member `x`, also in a
+method that declares a local `x`: the plain `x` there is the local, `PRG_A.x` the member. A name the
+program does not declare is `PROGRAM PRG_A has no variable 'ZZ'`.
+
 Because the program has one instance, once it is reached by name a variable of its type
 (`VAR p : PRG_A; END_VAR`) and a second CONFIGURATION instance of it are refused:
 `PROGRAM PRG_A has one instance, reached by name from other POUs; ...`. A program nobody reaches keeps

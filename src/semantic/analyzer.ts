@@ -483,6 +483,14 @@ export class SemanticAnalyzer {
 
     // Pass 1: Build symbol tables (global lists first: they may rename globals)
     this.globalListDisplayNames.clear();
+    // A method local renamed by lowerProgramSelfMembers shows as written.
+    for (const prog of ast.programs) {
+      for (const method of prog.methods) {
+        for (const r of method.renamedLocals ?? []) {
+          this.globalListDisplayNames.set(r.internal.toUpperCase(), r.name);
+        }
+      }
+    }
     this.prepareGlobalLists(ast);
     this.buildSymbolTables(ast);
 
@@ -5138,7 +5146,7 @@ export class SemanticAnalyzer {
         // `VAR foo : Foo;` declaration of the same identifier) are
         // honoured because `scope.lookup` walks the chain — the
         // shadowing variable wins.
-        this.checkInstanceAccess(expr, scope);
+        this.checkInstanceAccess(expr, scope, ctx);
         if (expr.accessChain) {
           // accessChain is the authoritative ordered chain — walk its subscripts
           for (const step of expr.accessChain) {
@@ -5230,7 +5238,11 @@ export class SemanticAnalyzer {
    * them is rejected by the type system elsewhere, so we skip them
    * here.
    */
-  private checkInstanceAccess(expr: VariableExpression, scope: Scope): void {
+  private checkInstanceAccess(
+    expr: VariableExpression,
+    scope: Scope,
+    ctx: UndeclaredVarContext,
+  ): void {
     const hasFieldAccess =
       expr.fieldAccess.length > 0 ||
       (expr.accessChain?.some((step) => step.kind === "field") ?? false);
@@ -5256,6 +5268,21 @@ export class SemanticAnalyzer {
 
     // `PRG_A.x` from another POU is validated by validateProgramAccess.
     if (sym.kind === "program" && this.reachedMemberNodes.has(expr)) return;
+
+    // `PRG_A.zz` inside PRG_A: its members were lowered, so this names none.
+    if (
+      sym.kind === "program" &&
+      this.features.has("program_methods") &&
+      ctx.programName?.toUpperCase() === expr.name.toUpperCase()
+    ) {
+      this.addError(
+        `PROGRAM ${expr.name.toUpperCase()} has no variable '${expr.fieldAccess[0] ?? expr.accessChain?.find((s) => s.kind === "field")?.name ?? ""}'`,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+      return;
+    }
 
     let noun: string | null = null;
     if (sym.kind === "functionBlock") noun = "function block";
