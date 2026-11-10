@@ -113,7 +113,10 @@ export function looksLikeIECVarChildren(variables: DAPVariable[]): boolean {
  * type), then record those bytes in the runtime's force table, which writes
  * them back at every cycle boundary until unforced.
  */
-export function forceExpressions(evaluateName: string, value: string): string[] {
+export function forceExpressions(
+  evaluateName: string,
+  value: string,
+): [write: string, capture: string] {
   return [
     `${evaluateName}.value_ = ${value}`,
     `strucpp_force_capture((void*)&(${evaluateName}), sizeof(${evaluateName}.value_))`,

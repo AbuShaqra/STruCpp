@@ -80,8 +80,8 @@ async function forceViaDebugger(
   value: string,
 ): Promise<void> {
   const [write, capture] = forceExpressions(evaluateName, value);
-  await debugEvaluate(session, write!);
-  const error = forceCallError(await debugEvaluate(session, capture!));
+  await debugEvaluate(session, write);
+  const error = forceCallError(await debugEvaluate(session, capture));
   if (error !== undefined) throw new Error(error);
 
   // Trigger a Variables pane refresh by re-reading the value we just set.
