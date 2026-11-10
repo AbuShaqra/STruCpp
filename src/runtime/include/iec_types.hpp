@@ -50,6 +50,22 @@
 #include <concepts>
 #endif
 
+/**
+ * STRUCPP_MAY_ALIAS marks a type whose objects may be read and written through
+ * a pointer of another type, as IEC 61131-3 POINTER TO allows: a DWORD read as
+ * ARRAY OF BYTE, a REAL as a DWORD, a STRUCT as bytes. Without it, GCC and
+ * Clang's type-based alias analysis may reorder such accesses at -O2.
+ *
+ * GCC and Clang only. MSVC does no type-based alias analysis, so nothing is
+ * needed there; any other compiler must be run with its equivalent of
+ * -fno-strict-aliasing.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#define STRUCPP_MAY_ALIAS __attribute__((__may_alias__))
+#else
+#define STRUCPP_MAY_ALIAS
+#endif
+
 namespace strucpp {
 
 // =============================================================================

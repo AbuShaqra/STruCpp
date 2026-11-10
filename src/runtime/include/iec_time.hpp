@@ -51,11 +51,10 @@ constexpr int64_t NS_PER_D = 24LL * NS_PER_H;
 // generic numeric conversions.  Other units stay here so the per-type
 // surface is self-contained.
 //
-// Functions are inline but not constexpr: `IECVar<T>`'s default constructor
-// is non-constexpr (storage has a runtime `forced_` flag and forced-value
-// slot the debugger flips through `force()`), so passing one by value to
-// a constexpr context isn't allowed.  Inline gives us identical codegen
-// without the literal-type constraint.
+// Functions are inline but not constexpr: `IECVar<T>`'s constructors are
+// not constexpr, so passing one by value to a constexpr context isn't
+// allowed.  Inline gives us identical codegen without the literal-type
+// constraint.
 inline int64_t TIME_TO_NS(IEC_TIME t) noexcept {
     return iec_unwrap(t);
 }

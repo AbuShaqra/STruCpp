@@ -159,8 +159,8 @@ END_PROGRAM
     expect(written.errors).toEqual([]);
     expect(derived.headerCode).toBe(written.headerCode);
     expect(derived.cppCode).toBe(written.cppCode);
-    expect(derived.headerCode).toContain("struct ST_B {");
-    expect(derived.headerCode).not.toMatch(/struct ST_B\s*:/);
+    expect(derived.headerCode).toContain("struct STRUCPP_MAY_ALIAS ST_B {");
+    expect(derived.headerCode).not.toMatch(/struct (STRUCPP_MAY_ALIAS )?ST_B\s*:/);
   });
 
   it("sets inherited fields in a structure initializer", () => {
@@ -509,6 +509,6 @@ END_TYPE`,
       { libraries: [lib.archive] },
     );
     expect(consumer.errors).toEqual([]);
-    expect(consumer.headerCode).toContain("struct ST_C");
+    expect(consumer.headerCode).toContain("struct STRUCPP_MAY_ALIAS ST_C");
   });
 });

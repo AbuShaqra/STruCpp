@@ -955,6 +955,9 @@ function runTestMode(options: CLIOptions): void {
         options.gpp,
         [
           "-std=c++14",
+          // Pointer punning is valid IEC; the runtime marks its types
+          // may_alias, and this covers anything it cannot mark.
+          "-fno-strict-aliasing",
           `-I${runtimeIncludeDir}`,
           `-I${testRuntimeDir}`,
           `-I${tempDir}`,
@@ -1547,6 +1550,9 @@ async function main(): Promise<void> {
     // Step 2: Compile C++ and link with isocline.o (uses execFileSync to avoid shell injection)
     const gppArgs = [
       "-std=c++14",
+      // Pointer punning is valid IEC; the runtime marks its types
+      // may_alias, and this covers anything it cannot mark.
+      "-fno-strict-aliasing",
       `-I${runtimeIncludeDir}`,
       `-I${replDir}`,
       `-I${outputDir}`,

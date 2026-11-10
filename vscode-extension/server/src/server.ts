@@ -877,6 +877,7 @@ connection.onRequest(RunTestsRequest, async (params: RunTestsParams): Promise<Ru
     try {
       await execFile(gppPath, [
         "-std=c++17",
+        "-fno-strict-aliasing", // pointer punning is valid IEC
         `-I${runtimePaths.includeDir}`,
         `-I${testRuntimeDir}`,
         `-I${tempDir}`,

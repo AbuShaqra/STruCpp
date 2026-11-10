@@ -236,7 +236,7 @@ describe('Phase 2.7 - Namespaces', () => {
 
       // Struct should be inside namespace
       expect(result.headerCode).toContain('namespace strucpp {');
-      expect(result.headerCode).toContain('struct POINT');
+      expect(result.headerCode).toContain('struct STRUCPP_MAY_ALIAS POINT');
     });
   });
 

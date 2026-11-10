@@ -82,7 +82,7 @@ export function isIECVarType(type: string | undefined): boolean {
 /**
  * Extract the simple value from an IECVar struct display string.
  *
- * Input:  "{value_ = 42, forced_ = false, forced_value_ = 0}"
+ * Input:  "{value_ = 42}"
  * Output: "42"
  *
  * Returns undefined for complex nested values (starts with '{')
@@ -99,12 +99,15 @@ export function extractSimpleValue(value: string | undefined): string | undefine
 
 /**
  * Check if a set of variables looks like the children of an expanded IECVar.
- * IECVar<T> has exactly: value_, forced_, forced_value_.
+ * IECVar<T> has exactly one member, value_; some debuggers add an entry for
+ * the wrapper type itself (`IECVar<short>`).
  */
 export function looksLikeIECVarChildren(variables: DAPVariable[]): boolean {
-  if (variables.length < 2 || variables.length > 4) return false;
-  const names = new Set(variables.map((v) => v.name));
-  return names.has("value_") && names.has("forced_") && names.has("forced_value_");
+  if (variables.length < 1 || variables.length > 2) return false;
+  return (
+    variables.some((v) => v.name === "value_") &&
+    variables.every((v) => v.name === "value_" || /^(strucpp::)?IEC/.test(v.name))
+  );
 }
 
 /**

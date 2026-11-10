@@ -94,24 +94,22 @@ public:
 };
 
 /**
- * IEC enumeration variable with forcing support.
- * Wraps IEC_ENUM_Value in IECVar for debugging capabilities.
+ * IEC enumeration variable: one member, laid out as the enumeration itself.
+ * Forcing is held in the force table (iec_force.hpp).
  *
  * @tparam EnumType The underlying C++ enum class type
  */
 template<typename EnumType>
-class IEC_ENUM_Var {
+class STRUCPP_MAY_ALIAS IEC_ENUM_Var {
 public:
     using value_type = IEC_ENUM_Value<EnumType>;
     using enum_type = EnumType;
     
 private:
     value_type value_;
-    bool forced_;
-    value_type forced_value_;
     
 public:
-    IEC_ENUM_Var() noexcept : value_{}, forced_{false}, forced_value_{} {}
+    IEC_ENUM_Var() noexcept : value_{} {}
 
     // Non-explicit so raw `EnumType` values can implicitly convert at call
     // sites — matches the implicit `IECVar(T v)` constructor for elementary
@@ -119,22 +117,22 @@ public:
     // literal at the call site, since enum-typed variables are now
     // declared as `IEC_<name>` (= IEC_ENUM_Var<EnumType>).
     IEC_ENUM_Var(EnumType val) noexcept
-        : value_{val}, forced_{false}, forced_value_{} {}
+        : value_{val} {}
 
     IEC_ENUM_Var(value_type val) noexcept
-        : value_{val}, forced_{false}, forced_value_{} {}
+        : value_{val} {}
     
     IEC_ENUM_Var(const IEC_ENUM_Var&) = default;
     IEC_ENUM_Var(IEC_ENUM_Var&&) = default;
     IEC_ENUM_Var& operator=(const IEC_ENUM_Var&) = default;
     IEC_ENUM_Var& operator=(IEC_ENUM_Var&&) = default;
     
-    // Get current value (returns forced value if forced)
+    // Get current value
     value_type get() const noexcept {
-        return forced_ ? forced_value_ : value_;
+        return value_;
     }
     
-    // Set value (ignored if forced)
+    // Set value
     void set(value_type v) noexcept {
         value_ = v;
     }
@@ -183,7 +181,7 @@ public:
 };
 
 /**
- * Convenience alias for IEC enumeration with forcing support.
+ * Convenience alias for an IEC enumeration variable.
  * Usage: IEC_ENUM<MyEnumClass> myVar;
  */
 template<typename EnumType>

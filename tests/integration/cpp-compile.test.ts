@@ -690,7 +690,7 @@ describeIfGpp('C++ Compilation Tests', () => {
     // Verify types are in namespace
     expect(result.headerCode).toContain('namespace strucpp {');
     expect(result.headerCode).toContain('enum class MOTORSTATE');
-    expect(result.headerCode).toContain('struct POINT');
+    expect(result.headerCode).toContain('struct STRUCPP_MAY_ALIAS POINT');
 
     const cppResult = compileWithGpp(result.headerCode, result.cppCode, 'types_in_namespace');
     expect(cppResult.success).toBe(true);

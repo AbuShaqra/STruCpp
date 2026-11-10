@@ -263,6 +263,7 @@ async function buildCommand(
 
       const gppArgs = [
         "-std=c++17",
+        "-fno-strict-aliasing", // pointer punning is valid IEC
         `-I${runtimeIncludeDir}`,
         `-I${replDir}`,
         `-I${outputDir}`,
@@ -401,6 +402,7 @@ export async function debugBuildCommand(
 
       const gppArgs = [
         "-std=c++17",
+        "-fno-strict-aliasing", // pointer punning is valid IEC
         "-g",
         "-O0",
         `-I${runtimeIncludeDir}`,

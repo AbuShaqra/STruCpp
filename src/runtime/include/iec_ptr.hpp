@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <type_traits>
 
+#include "iec_types.hpp"
 #include "iec_fault.hpp"   // STRUCPP_HAS_EXCEPTIONS, IecFault, iec_runtime_fault
 #if STRUCPP_HAS_EXCEPTIONS
 #include <stdexcept>
@@ -35,11 +36,27 @@ namespace strucpp {
 // Forward declare IECVar for arithmetic overloads
 template<typename T> class IECVar;
 
+namespace detail {
+/**
+ * What a POINTER TO T dereferences as: T marked STRUCPP_MAY_ALIAS when T is a
+ * scalar, so `POINTER TO DWORD` over a REAL is not reordered by alias
+ * analysis. A class pointee (an array, a STRUCT) is left as it is: the
+ * attribute cannot be added to a defined class, and its elementary members
+ * already carry it.
+ */
+template<typename T, bool IsClass = std::is_class<T>::value>
+struct ptr_alias { typedef T STRUCPP_MAY_ALIAS type; };
+template<typename T>
+struct ptr_alias<T, true> { typedef T type; };
+}  // namespace detail
+
 template<typename T>
 class IEC_Ptr {
     void* ptr_;
 public:
     using element_type = T;
+    /** The type a dereference yields; see detail::ptr_alias. */
+    using ref_type = typename detail::ptr_alias<T>::type;
 
     // Constructors
     IEC_Ptr() noexcept : ptr_(nullptr) {}
@@ -103,22 +120,22 @@ public:
     }
 
     // Dereference (null-checked)
-    T& operator*() const { __fault_if_null(); return *static_cast<T*>(ptr_); }
+    ref_type& operator*() const { __fault_if_null(); return *static_cast<ref_type*>(ptr_); }
     T* operator->() const { __fault_if_null(); return static_cast<T*>(ptr_); }
 
     // Subscript (pointer[n]) — null-checked base (the offset itself is
     // unbounded raw pointer arithmetic, as in C).
-    T& operator[](std::ptrdiff_t n) const {
+    ref_type& operator[](std::ptrdiff_t n) const {
         __fault_if_null();
-        return *(static_cast<T*>(ptr_) + n);
+        return *(static_cast<ref_type*>(ptr_) + n);
     }
 
     // Bounds-checked accessor used by codegen's subscript path. A POINTER TO has
     // no bounds metadata, so this matches operator[]: null-checked base with
     // unbounded raw pointer arithmetic (as in C).
-    T& at(std::ptrdiff_t n) const {
+    ref_type& at(std::ptrdiff_t n) const {
         __fault_if_null();
-        return *(static_cast<T*>(ptr_) + n);
+        return *(static_cast<ref_type*>(ptr_) + n);
     }
 
     // Raw access

@@ -439,13 +439,16 @@ export class TypeCodeGenerator {
    *   END_STRUCT;
    *
    * C++:
-   *   struct MyStruct {
+   *   struct STRUCPP_MAY_ALIAS MyStruct {
    *       INT_t x;
    *       REAL_t y;
    *   };
+   *
+   * STRUCPP_MAY_ALIAS lets a POINTER TO of another shape read and write the
+   * struct's bytes without alias analysis reordering the accesses.
    */
   private generateStructType(name: string, def: StructDefinition): void {
-    this.emit(`struct ${name} {`);
+    this.emit(`struct STRUCPP_MAY_ALIAS ${name} {`);
 
     for (const field of def.fields) {
       const cppType = this.structFieldCppType(field.type);

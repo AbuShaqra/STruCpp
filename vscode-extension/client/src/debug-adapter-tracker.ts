@@ -6,7 +6,7 @@
  * Intercepts DAP messages to:
  * 1. Transform watch/REPL expressions from ST to C++ (onWillReceiveMessage)
  * 2. Collapse IECVar<T> variables to show just the inner value (onDidSendMessage)
- * 3. Filter forced_/forced_value_ internals from expanded IECVar children
+ * 3. Filter the wrapper's internals from expanded IECVar children
  */
 
 import * as vscode from "vscode";
@@ -207,7 +207,7 @@ class StrucppDebugTracker implements vscode.DebugAdapterTracker {
           v.value = rawValue;
         }
         // If value is already clean (LLDB summary) or was just extracted,
-        // collapse to non-expandable — hide forced_/forced_value_ internals.
+        // collapse to non-expandable — hide the wrapper's internals.
         // Only skip if value is still "{...}" (summary didn't work).
         if (!v.value.startsWith("{")) {
           v.variablesReference = 0;
@@ -219,11 +219,11 @@ class StrucppDebugTracker implements vscode.DebugAdapterTracker {
 
     // Strategy 2: Filter expanded IECVar children.
     // When the debug adapter returns "{...}" for an IECVar (Strategy 1 can't extract),
-    // the user expands it and sees value_, forced_, forced_value_ as children.
-    // Strip forced_/forced_value_ to show only the actual value.
+    // the user expands it and sees value_, sometimes beside an entry for the
+    // wrapper type. Keep only value_.
     if (looksLikeIECVarChildren(variables)) {
       for (let i = variables.length - 1; i >= 0; i--) {
-        if (variables[i].name === "forced_" || variables[i].name === "forced_value_") {
+        if (variables[i].name !== "value_") {
           variables.splice(i, 1);
         }
       }

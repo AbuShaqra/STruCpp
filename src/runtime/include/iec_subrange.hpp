@@ -227,8 +227,8 @@ public:
 };
 
 /**
- * Subrange variable with forcing support.
- * Wraps IEC_SUBRANGE_Value in a forceable variable.
+ * Subrange variable.
+ * Wraps IEC_SUBRANGE_Value; forcing is held in the force table.
  *
  * @tparam BaseType The underlying numeric type
  * @tparam Lower The minimum allowed value
@@ -244,29 +244,27 @@ public:
     
 private:
     value_type value_;
-    bool forced_;
-    value_type forced_value_;
     
 public:
-    IEC_SUBRANGE_Var() noexcept : value_{}, forced_{false}, forced_value_{} {}
+    IEC_SUBRANGE_Var() noexcept : value_{} {}
     
     explicit IEC_SUBRANGE_Var(BaseType val) noexcept 
-        : value_{val}, forced_{false}, forced_value_{} {}
+        : value_{val} {}
     
     explicit IEC_SUBRANGE_Var(value_type val) noexcept 
-        : value_{val}, forced_{false}, forced_value_{} {}
+        : value_{val} {}
     
     IEC_SUBRANGE_Var(const IEC_SUBRANGE_Var&) = default;
     IEC_SUBRANGE_Var(IEC_SUBRANGE_Var&&) = default;
     IEC_SUBRANGE_Var& operator=(const IEC_SUBRANGE_Var&) = default;
     IEC_SUBRANGE_Var& operator=(IEC_SUBRANGE_Var&&) = default;
     
-    // Get current value (returns forced value if forced)
+    // Get current value
     value_type get() const noexcept {
-        return forced_ ? forced_value_ : value_;
+        return value_;
     }
     
-    // Set value (ignored if forced)
+    // Set value
     void set(value_type v) noexcept {
         value_ = v;
     }
@@ -315,7 +313,7 @@ public:
 };
 
 /**
- * Convenience alias for subrange with forcing support.
+ * Convenience alias for a subrange variable.
  * Usage: IEC_SUBRANGE<int16_t, 0, 100> percentage;
  */
 template<typename BaseType, BaseType Lower, BaseType Upper>
