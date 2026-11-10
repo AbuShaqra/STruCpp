@@ -402,7 +402,9 @@ function compileNativeEntries(
   if (errors.length > 0) return { ...empty, errors };
   if (projected.length === 0) return empty;
 
-  const compileOpts: Partial<import("../types.js").CompileOptions> = {};
+  const compileOpts: Partial<import("../types.js").CompileOptions> = {
+    cppNamesAsDeclared: true,
+  };
   if (options.dependencies) compileOpts.libraries = options.dependencies;
   if (options.globalConstants)
     compileOpts.globalConstants = options.globalConstants;
@@ -595,6 +597,7 @@ export function compileLibrary(
     // they're persisted, so downstream consumers (legacy and
     // chunk-aware alike) see clean output.
     emitChunkMarkers: true,
+    cppNamesAsDeclared: true,
   };
   if (options.strict === true) compileOpts.strict = true;
   if (options.dialect !== undefined) compileOpts.dialect = options.dialect;

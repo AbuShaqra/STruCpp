@@ -17,6 +17,18 @@ import { RUNTIME_CALLABLE_NAMES } from "../../src/semantic/runtime-functions.js"
 import { StdFunctionRegistry } from "../../src/semantic/std-function-registry.js";
 import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 
+// Typed truncations are resolved by pattern, not registered by name.
+const TYPED_TRUNC_NAMES = [
+  "SINT",
+  "INT",
+  "DINT",
+  "LINT",
+  "USINT",
+  "UINT",
+  "UDINT",
+  "ULINT",
+].flatMap((t) => [`TRUNC_${t}`, `REAL_TRUNC_${t}`, `LREAL_TRUNC_${t}`]);
+
 const RUNTIME_INCLUDE = path.resolve(__dirname, "../../src/runtime/include");
 
 describe.skipIf(!hasGpp)("global named like a runtime name — g++", () => {
@@ -33,6 +45,7 @@ describe.skipIf(!hasGpp)("global named like a runtime name — g++", () => {
       ...new Set([
         ...RUNTIME_CALLABLE_NAMES,
         ...new StdFunctionRegistry().getAll().map((f) => f.name.toUpperCase()),
+        ...TYPED_TRUNC_NAMES,
       ]),
     ].filter((n) => /^[A-Z_][A-Z0-9_]*$/.test(n));
     // Every header the generated header includes, then one global per line.

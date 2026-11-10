@@ -12,6 +12,7 @@
  * logic (asserts, mocks, setup/teardown, runner registration) lives here.
  */
 
+import { renamePouReferencesInTests } from "./pou-naming.js";
 import type {
   TestFile,
   TestCase,
@@ -168,6 +169,8 @@ export function generateTestMain(
   options: TestMainGenOptions,
 ): string {
   const lines: string[] = [];
+  // Test code names POUs as the program declares them in ST.
+  if (options.ast) renamePouReferencesInTests(options.ast, testFiles);
   const testCodegen = new TestCodeGenerator(options.pous);
   const inlineTypes = collectTestInlineTypes(testFiles);
 

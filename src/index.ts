@@ -48,6 +48,7 @@ import { unionLoweringErrors } from "./semantic/union.js";
 import { fbInitLoweringErrors } from "./semantic/fb-init.js";
 import { walkAST } from "./ast-utils.js";
 import { registerLibrarySymbols } from "./library/library-loader.js";
+import { renameRuntimeCollidingPous } from "./backend/pou-naming.js";
 import type { LibraryChunk, StlibArchive } from "./library/library-manifest.js";
 import { annotateErrorsWithPouContext } from "./diagnostic-pou-context.js";
 import {
@@ -392,6 +393,16 @@ function shakeLibraryChunks(
   }
 
   return { byLibrary, conflicts };
+}
+
+/** `message` with each C++ name of a renamed POU shown as declared. */
+function withDeclaredNames(
+  message: string,
+  names: ReadonlyMap<string, string>,
+): string {
+  if (names.size === 0) return message;
+  const re = new RegExp(`\\b(${[...names.keys()].join("|")})\\b`, "gi");
+  return message.replace(re, (m) => names.get(m.toUpperCase()) ?? m);
 }
 
 /**
@@ -1003,6 +1014,15 @@ export function compile(
   }
 
   // Phase 6: Generate C++ code
+  // POUs and types named like a runtime function are emitted as NAME_.
+  const pouDisplayNames =
+    pipeline.mergedOptions.cppNamesAsDeclared === true
+      ? new Map<string, string>()
+      : renameRuntimeCollidingPous(
+          pipeline.ast,
+          pipeline.symbolTables,
+          pipeline.projectModel,
+        );
   // Collect library headers for #include directives
   const libraryHeaders: string[] = [];
   for (const archive of pipeline.allArchives) {
@@ -1060,7 +1080,7 @@ export function compile(
   // Collect codegen warnings
   for (const warn of codeResult.warnings) {
     const entry: CompileError = {
-      message: warn.message,
+      message: withDeclaredNames(warn.message, pouDisplayNames),
       line: warn.line ?? 0,
       column: warn.column ?? 0,
       severity: "warning",
@@ -1094,7 +1114,7 @@ export function compile(
     // nothing in the build to point at — so it is said, every build.
     for (const item of dbg.incomplete) {
       pipeline.warnings.push({
-        message: item.reason,
+        message: withDeclaredNames(item.reason, pouDisplayNames),
         line: 0,
         column: 0,
         severity: "warning",
@@ -1110,7 +1130,10 @@ export function compile(
     // nothing, with no thread back to the cause.
     for (const item of dbg.skipped) {
       pipeline.warnings.push({
-        message: `${item.path} is not debuggable: ${item.reason}`,
+        message: withDeclaredNames(
+          `${item.path} is not debuggable: ${item.reason}`,
+          pouDisplayNames,
+        ),
         line: 0,
         column: 0,
         severity: "warning",

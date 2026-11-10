@@ -3573,11 +3573,16 @@ export class SemanticAnalyzer {
     // Look up in std function registry; a user or library function named
     // like a typed truncation (TRUNC_INT) keeps its own signature.
     const sym = this.symbolTables.globalScope.lookup(nameUpper);
-    const desc =
-      this.stdRegistry.lookup(nameUpper) ??
-      (sym?.kind === "function"
-        ? undefined
-        : this.stdRegistry.resolveTypedTrunc(nameUpper));
+    // A user FUNCTION named like a standard function or operator is called.
+    const userFunction =
+      sym?.kind === "function" &&
+      !this.symbolTables.globalScope.definedByLibrary(nameUpper);
+    const desc = userFunction
+      ? undefined
+      : (this.stdRegistry.lookup(nameUpper) ??
+        (sym?.kind === "function"
+          ? undefined
+          : this.stdRegistry.resolveTypedTrunc(nameUpper)));
     if (desc) {
       if (desc.isVariadic) {
         const minArgs = desc.minArgs ?? desc.params.length;
@@ -3600,7 +3605,7 @@ export class SemanticAnalyzer {
           );
         }
       }
-    } else if (this.stdRegistry.resolveConversion(nameUpper)) {
+    } else if (!userFunction && this.stdRegistry.resolveConversion(nameUpper)) {
       // *_TO_* conversion functions always take exactly 1 argument
       if (argCount !== 1) {
         this.addError(
@@ -3625,13 +3630,17 @@ export class SemanticAnalyzer {
       }
     }
 
-    if (nameUpper === "ADR") {
+    if (nameUpper === "ADR" && !userFunction) {
       this.requireFeature("pointer_to", "ADR", expr.sourceSpan);
     }
 
     // Additional ADR / REF_LINK constraint: argument must be an l-value
     // (you can only take the address of / a reference to a variable).
-    if ((nameUpper === "ADR" || nameUpper === "REF_LINK") && argCount > 0) {
+    if (
+      (nameUpper === "ADR" || nameUpper === "REF_LINK") &&
+      !userFunction &&
+      argCount > 0
+    ) {
       const arg = userArgs[0]!.value;
       if (!this.isLValue(arg)) {
         this.addError(

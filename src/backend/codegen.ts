@@ -6329,110 +6329,119 @@ export class CodeGenerator {
       return `${this.currentFBExtends}::operator()(${args.join(", ")})`;
     }
 
-    // 0. ADR(x) → &(x) (CODESYS address-of operator)
-    if (nameUpper === "ADR") {
-      const args = expr.arguments.map((arg) =>
-        this.addressedOperand(arg.value, "ADR", expr),
-      );
-      return `&(${args[0] ?? ""})`;
-    }
-
-    // 0a. REF_LINK(x) → REF(x) — callable form of the REF() reference operator
-    // (REF is a reserved token and can't take the graphical EN/IN/ENO call
-    // form). Assigning the result to a REF_TO variable binds it.
-    if (nameUpper === "REF_LINK") {
-      const args = expr.arguments.map((arg) =>
-        this.addressedOperand(arg.value, "REF_LINK", expr),
-      );
-      return `REF(${args[0] ?? ""})`;
-    }
-
-    // 0b. LOWER_BOUND/UPPER_BOUND(arr, dim) → arr.lower_bound() / arr.upper_bound()
-    if (nameUpper === "LOWER_BOUND" || nameUpper === "UPPER_BOUND") {
-      const method =
-        nameUpper === "LOWER_BOUND" ? "lower_bound" : "upper_bound";
-      const arrExpr = this.generateExpression(expr.arguments[0]!.value);
-      if (expr.arguments.length >= 2) {
-        const dimExpr = this.generateExpression(expr.arguments[1]!.value);
-        return `${arrExpr}.${method}(${dimExpr})`;
-      }
-      return `${arrExpr}.${method}()`;
-    }
-
-    // 1. Check for *_TO_* conversion pattern (e.g., INT_TO_REAL -> TO_REAL)
-    const conversion = this.stdRegistry.resolveConversion(nameUpper);
-    if (conversion) {
-      const args = expr.arguments.map((arg, idx) => {
-        const generated = this.generateExpression(arg.value);
-        if (idx !== 0) return generated;
-        // Type-aware unit scaling, in whichever direction applies — a
-        // temporal source going to an integer, or an integer going into a
-        // temporal target. See `TEMPORAL_CONVERSION_UNITS` for the units and
-        // why they are CODESYS's.
-        //
-        // It has to happen here rather than in the runtime because the C++
-        // runtime aliases every temporal type to `IECVar<int64_t>`: a `TIME`
-        // and a `DATE` are literally the same type after compilation, and the
-        // codegen layer is the last place that still knows which one this
-        // expression is. Without it `TO_UINT(time_var)` lowers to a
-        // `static_cast<uint16_t>(raw_ns)` and the user sees the low 16 bits of
-        // a nanosecond count.
-        return this.scaleConversionArg(
-          generated,
-          conversion.fromType.toUpperCase(),
-          conversion.toType.toUpperCase(),
+    // A user FUNCTION wins over an operator or standard function of its name.
+    const userFunction =
+      this.ast?.functions.some((f) => f.name.toUpperCase() === nameUpper) ===
+      true;
+    if (!userFunction) {
+      // 0. ADR(x) → &(x) (CODESYS address-of operator)
+      if (nameUpper === "ADR") {
+        const args = expr.arguments.map((arg) =>
+          this.addressedOperand(arg.value, "ADR", expr),
         );
-      });
-      return `${conversion.cppName}(${args.join(", ")})`;
-    }
+        return `&(${args[0] ?? ""})`;
+      }
 
-    // 2. Check for standard function (may have different cppName)
-    const stdFunc = this.stdRegistry.lookup(nameUpper);
-    if (stdFunc) {
-      const args = expr.arguments.map((arg, idx) => {
-        let generated = this.generateExpression(arg.value);
-        // For the bare `TO_xxx(temporal_var)` spelling, `nameUpper` is
-        // a registered std function (not a `*_TO_*` form) so the source
-        // type isn't in the name — infer it from the argument's IEC
-        // type and apply the same temporal→ms wrap as the conversion
-        // branch above.  Conversion std functions advertise
-        // `isConversion: true` and carry the target in
-        // `specificReturnType`, so we have everything needed without
-        // adding a new schema field.
-        if (idx === 0 && stdFunc.isConversion && stdFunc.specificReturnType) {
-          const fromType = this.inferExprType(arg.value);
-          if (fromType) {
-            generated = this.scaleConversionArg(
-              generated,
-              fromType.toUpperCase(),
-              stdFunc.specificReturnType.toUpperCase(),
-            );
-          }
+      // 0a. REF_LINK(x) → REF(x) — callable form of the REF() reference operator
+      // (REF is a reserved token and can't take the graphical EN/IN/ENO call
+      // form). Assigning the result to a REF_TO variable binds it.
+      if (nameUpper === "REF_LINK") {
+        const args = expr.arguments.map((arg) =>
+          this.addressedOperand(arg.value, "REF_LINK", expr),
+        );
+        return `REF(${args[0] ?? ""})`;
+      }
+
+      // 0b. LOWER_BOUND/UPPER_BOUND(arr, dim) → arr.lower_bound() / arr.upper_bound()
+      if (nameUpper === "LOWER_BOUND" || nameUpper === "UPPER_BOUND") {
+        const method =
+          nameUpper === "LOWER_BOUND" ? "lower_bound" : "upper_bound";
+        const arrExpr = this.generateExpression(expr.arguments[0]!.value);
+        if (expr.arguments.length >= 2) {
+          const dimExpr = this.generateExpression(expr.arguments[1]!.value);
+          return `${arrExpr}.${method}(${dimExpr})`;
         }
-        return generated;
-      });
-      this.harmonizeStdFuncArgs(args, expr.arguments, stdFunc);
-      // TRUNC's C++ result type follows the C++ argument type, but codegen
-      // emits REAL literals/expressions containing one as double.  Pass the
-      // argument at its checked ST type so DINT (REAL) / LINT (LREAL) match.
-      if (stdFunc.returnTypeFor && args.length > 0) {
-        args[0] = this.atRealType(args[0]!, expr.arguments[0]?.value);
-        if (this.truncToDint(expr)) return `TRUNC_DINT(${args.join(", ")})`;
+        return `${arrExpr}.${method}()`;
       }
-      return `${stdFunc.cppName}(${args.join(", ")})`;
-    }
 
-    // 2b. Typed truncation (TRUNC_INT, REAL_TRUNC_INT): runtime helpers of
-    // the same name; the overloaded form takes its argument at its ST type.
-    const typedTrunc = this.typedTrunc(nameUpper);
-    if (typedTrunc) {
-      const args = expr.arguments.map((arg) =>
-        this.generateExpression(arg.value),
-      );
-      if (typedTrunc.params[0]?.specificType === undefined && args.length > 0) {
-        args[0] = this.atRealType(args[0]!, expr.arguments[0]?.value);
+      // 1. Check for *_TO_* conversion pattern (e.g., INT_TO_REAL -> TO_REAL)
+      const conversion = this.stdRegistry.resolveConversion(nameUpper);
+      if (conversion) {
+        const args = expr.arguments.map((arg, idx) => {
+          const generated = this.generateExpression(arg.value);
+          if (idx !== 0) return generated;
+          // Type-aware unit scaling, in whichever direction applies — a
+          // temporal source going to an integer, or an integer going into a
+          // temporal target. See `TEMPORAL_CONVERSION_UNITS` for the units and
+          // why they are CODESYS's.
+          //
+          // It has to happen here rather than in the runtime because the C++
+          // runtime aliases every temporal type to `IECVar<int64_t>`: a `TIME`
+          // and a `DATE` are literally the same type after compilation, and the
+          // codegen layer is the last place that still knows which one this
+          // expression is. Without it `TO_UINT(time_var)` lowers to a
+          // `static_cast<uint16_t>(raw_ns)` and the user sees the low 16 bits of
+          // a nanosecond count.
+          return this.scaleConversionArg(
+            generated,
+            conversion.fromType.toUpperCase(),
+            conversion.toType.toUpperCase(),
+          );
+        });
+        return `${conversion.cppName}(${args.join(", ")})`;
       }
-      return `${typedTrunc.cppName}(${args.join(", ")})`;
+
+      // 2. Check for standard function (may have different cppName)
+      const stdFunc = this.stdRegistry.lookup(nameUpper);
+      if (stdFunc) {
+        const args = expr.arguments.map((arg, idx) => {
+          let generated = this.generateExpression(arg.value);
+          // For the bare `TO_xxx(temporal_var)` spelling, `nameUpper` is
+          // a registered std function (not a `*_TO_*` form) so the source
+          // type isn't in the name — infer it from the argument's IEC
+          // type and apply the same temporal→ms wrap as the conversion
+          // branch above.  Conversion std functions advertise
+          // `isConversion: true` and carry the target in
+          // `specificReturnType`, so we have everything needed without
+          // adding a new schema field.
+          if (idx === 0 && stdFunc.isConversion && stdFunc.specificReturnType) {
+            const fromType = this.inferExprType(arg.value);
+            if (fromType) {
+              generated = this.scaleConversionArg(
+                generated,
+                fromType.toUpperCase(),
+                stdFunc.specificReturnType.toUpperCase(),
+              );
+            }
+          }
+          return generated;
+        });
+        this.harmonizeStdFuncArgs(args, expr.arguments, stdFunc);
+        // TRUNC's C++ result type follows the C++ argument type, but codegen
+        // emits REAL literals/expressions containing one as double.  Pass the
+        // argument at its checked ST type so DINT (REAL) / LINT (LREAL) match.
+        if (stdFunc.returnTypeFor && args.length > 0) {
+          args[0] = this.atRealType(args[0]!, expr.arguments[0]?.value);
+          if (this.truncToDint(expr)) return `TRUNC_DINT(${args.join(", ")})`;
+        }
+        return `${stdFunc.cppName}(${args.join(", ")})`;
+      }
+
+      // 2b. Typed truncation (TRUNC_INT, REAL_TRUNC_INT): runtime helpers of
+      // the same name; the overloaded form takes its argument at its ST type.
+      const typedTrunc = this.typedTrunc(nameUpper);
+      if (typedTrunc) {
+        const args = expr.arguments.map((arg) =>
+          this.generateExpression(arg.value),
+        );
+        if (
+          typedTrunc.params[0]?.specificType === undefined &&
+          args.length > 0
+        ) {
+          args[0] = this.atRealType(args[0]!, expr.arguments[0]?.value);
+        }
+        return `${typedTrunc.cppName}(${args.join(", ")})`;
+      }
     }
 
     // 3. Check for named arguments that may need reordering

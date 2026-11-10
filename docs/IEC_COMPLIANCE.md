@@ -152,6 +152,12 @@ All IEC 61131-3 standard functions are implemented in the C++ runtime:
 | String | LEN, LEFT, RIGHT, MID, CONCAT, FIND, REPLACE, INSERT, DELETE, UPPER, LOWER, TRIM. LEN, LEFT, RIGHT, MID, CONCAT, FIND, REPLACE, INSERT and DELETE also take WSTRING values of any length, as do `=`, `<>`, `<`, `<=`, `>`, `>=` between WSTRINGs; on STRING and WSTRING, INSERT and WINSERT put IN2 after the first P characters, as the standard's INSERT example does. Any STRING or WSTRING argument of these nine may be a literal (`INSERT('ABC', 'XY', 1)`), and CONCAT takes three or more arguments of any mix of literals and variables |
 | System | ADR, SIZEOF |
 
+**Names of standard functions are not reserved.** A user FUNCTION named like a standard function or operator
+(`MAX`, `LEN`, `ADR`, `SIZEOF`, `INT_TO_REAL`) is the function a call of that name reaches, with its own
+parameters. A FUNCTION, FUNCTION_BLOCK, INTERFACE or TYPE named like a function the C++ runtime declares
+(`SUB`, `MID`, `LIMIT`, `TRUNC_INT`) is emitted as `NAME_` in the generated C++; diagnostics, the debug table
+and the REPL keep the ST name.
+
 **REAL/LREAL to integer.** `REAL_TO_*` and `LREAL_TO_*` to an integer type round to nearest (half away from
 zero), saturate at the target's range and give 0 for NaN, instead of the undefined behaviour of a plain C++
 cast. `*_TO_BOOL` still rounds first (0.4 is FALSE). `TRUNC` returns an integer, as the standard says: DINT for

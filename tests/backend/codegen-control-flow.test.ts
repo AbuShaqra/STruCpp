@@ -590,8 +590,8 @@ describe("Phase 3.2: RETURN Statement Code Generation", () => {
       END_FUNCTION
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("ABS_result = -X;");
-    expect(result.cppCode).toContain("return ABS_result;");
+    expect(result.cppCode).toContain("ABS__result = -X;");
+    expect(result.cppCode).toContain("return ABS__result;");
   });
 });
 
