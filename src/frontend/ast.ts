@@ -200,6 +200,8 @@ export interface MethodDeclaration extends ASTNode {
   body: Statement[];
   /** True when the method is a lowered ACTION (needs no feature in a PROGRAM). */
   fromAction?: boolean;
+  /** True when the method holds the body of a property accessor that declares locals. */
+  fromAccessor?: boolean;
   /** Span of the method's name. */
   nameSpan?: SourceSpan;
 }
@@ -226,6 +228,14 @@ export interface PropertyDeclaration extends ASTNode {
   visibility: Visibility;
   getter?: Statement[];
   setter?: Statement[];
+  /** The declaration part of GET, when it declares anything; lowered to `getterMethod`. */
+  getterVarBlocks?: VarBlock[];
+  /** The declaration part of SET, when it declares anything; lowered to `setterMethod`. */
+  setterVarBlocks?: VarBlock[];
+  /** The method holding the body of a GET that declares locals; `getter` is then empty. */
+  getterMethod?: string;
+  /** The method holding the body of a SET that declares locals; `setter` is then empty. */
+  setterMethod?: string;
 }
 
 // =============================================================================

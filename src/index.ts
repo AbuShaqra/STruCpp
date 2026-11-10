@@ -43,6 +43,7 @@ import type {
 import { mergeCompilationUnits } from "./merge.js";
 import { lowerInlineTypes } from "./frontend/lower-inline-types.js";
 import { lowerActions } from "./semantic/lower-actions.js";
+import { lowerAccessorLocals } from "./semantic/lower-accessor-locals.js";
 import { lowerProgramSelfMembers } from "./semantic/program-access.js";
 import { unionLoweringErrors } from "./semantic/union.js";
 import { fbInitLoweringErrors } from "./semantic/fb-init.js";
@@ -710,7 +711,11 @@ function runPipeline(
     ast = mergeCompilationUnits(units);
     // Actions first, so lowerInlineTypes qualifies inline enum members in
     // action bodies as it does in the owner's methods.
-    const loweringErrors = [...lowerActions(ast), ...lowerInlineTypes(ast)];
+    const loweringErrors = [
+      ...lowerActions(ast),
+      ...lowerAccessorLocals(ast),
+      ...lowerInlineTypes(ast),
+    ];
     // After the actions, so `PRG_A.x` in an action of PRG_A is lowered too.
     if (dialect.features.has("program_methods")) lowerProgramSelfMembers(ast);
     errors.push(...loweringErrors);

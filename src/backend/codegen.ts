@@ -2684,6 +2684,13 @@ export class CodeGenerator {
       this.emit(`${type} ${className}::get_${prop.name}() const {`);
       this.emit(`    ${type} ${prop.name}_result;`);
       this.currentFunctionName = prop.name;
+      if (prop.getterMethod !== undefined) {
+        // The body declares locals, so it is a method: the getter is const
+        // to be readable through a const instance, the method is not.
+        this.emit(
+          `    const_cast<${className}*>(this)->${prop.getterMethod}(${prop.name}_result);`,
+        );
+      }
       this.generateStatements(prop.getter);
       this.emit(`    return ${prop.name}_result;`);
       this.currentFunctionName = undefined;
@@ -2700,6 +2707,9 @@ export class CodeGenerator {
       this.emit(`void ${className}::set_${prop.name}(${type} ${prop.name}) {`);
       // In setter, prop.name refers to the input parameter (no redirection)
       this.currentSetterProperty = prop.name.toUpperCase();
+      if (prop.setterMethod !== undefined) {
+        this.emit(`    ${prop.setterMethod}(${prop.name});`);
+      }
       this.generateStatements(prop.setter);
       this.currentSetterProperty = undefined;
       this.emit("}");

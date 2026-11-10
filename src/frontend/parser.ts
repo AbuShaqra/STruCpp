@@ -445,6 +445,11 @@ export class STParser extends CstParser {
    */
   public propertyGetter = this.RULE("propertyGetter", () => {
     this.CONSUME(tokens.Identifier); // GET
+    // An optional declaration part: the accessor's own locals
+    this.MANY({
+      GATE: (): boolean => this.isVarBlockAhead(),
+      DEF: (): CstNode => this.SUBRULE(this.varBlock),
+    });
     this.OPTION(() => {
       this.SUBRULE(this.statementList);
     });
@@ -456,6 +461,11 @@ export class STParser extends CstParser {
    */
   public propertySetter = this.RULE("propertySetter", () => {
     this.CONSUME(tokens.Identifier); // SET
+    // An optional declaration part: the accessor's own locals
+    this.MANY({
+      GATE: (): boolean => this.isVarBlockAhead(),
+      DEF: (): CstNode => this.SUBRULE(this.varBlock),
+    });
     this.OPTION(() => {
       this.SUBRULE(this.statementList);
     });
