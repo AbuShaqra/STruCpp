@@ -6054,50 +6054,19 @@ export class CodeGenerator {
       return generated;
     });
 
-    // Pad missing trailing VAR_OUTPUT/VAR_IN_OUT params with temp variables
+    // The callee: a function, or a method of the enclosing block called bare.
     const funcDecl = this.ast?.functions.find(
       (f) => f.name.toUpperCase() === nameUpper,
     );
+    const calleeBlocks =
+      funcDecl?.varBlocks ??
+      this.findMethodDeclaration(
+        this.currentFBName ?? this.currentProgramName,
+        nameUpper,
+      )?.varBlocks;
+    // Pad the parameters the call leaves out (outputs, defaulted inputs)
     const suppliedArgs = args.length;
-    if (funcDecl) {
-      const paramInfo: Array<{
-        blockType: string;
-        typeName: string;
-        refInput?: TypeReference;
-      }> = [];
-      for (const block of funcDecl.varBlocks) {
-        if (
-          block.blockType === "VAR_INPUT" ||
-          block.blockType === "VAR_IN_OUT" ||
-          block.blockType === "VAR_OUTPUT"
-        ) {
-          for (const decl of block.declarations) {
-            for (let ni = 0; ni < decl.names.length; ni++) {
-              paramInfo.push({
-                blockType: block.blockType,
-                typeName: decl.type.name,
-                ...(isReferenceInput(block, decl)
-                  ? { refInput: decl.type }
-                  : {}),
-              });
-            }
-          }
-        }
-      }
-      while (args.length < paramInfo.length) {
-        const param = paramInfo[args.length]!;
-        if (
-          param.blockType === "VAR_OUTPUT" ||
-          param.blockType === "VAR_IN_OUT"
-        ) {
-          args.push(this.emitOutputTempVar(param.typeName));
-        } else if (param.refInput) {
-          args.push(`${this.mapTypeRefToCpp(param.refInput)}()`);
-        } else {
-          args.push(this.getTypeDefaultValue(param.typeName));
-        }
-      }
-    }
+    if (calleeBlocks) this.padOmittedArguments(args, calleeBlocks);
 
     // Apply implicit widening casts for user-defined function args
     const paramTypes = this.getParamTypes(nameUpper);
@@ -6105,14 +6074,7 @@ export class CodeGenerator {
       this.coerceUserFuncArgs(args, expr.arguments, paramTypes);
     }
 
-    // Positional arguments bound to REFERENCE TO inputs (a function, or a
-    // method of the enclosing block called bare).
-    const calleeBlocks =
-      funcDecl?.varBlocks ??
-      this.findMethodDeclaration(
-        this.currentFBName ?? this.currentProgramName,
-        nameUpper,
-      )?.varBlocks;
+    // Positional arguments bound to REFERENCE TO inputs.
     if (calleeBlocks) {
       const supplied = args.slice(0, suppliedArgs);
       this.bindPositionalReferenceInputs(supplied, calleeBlocks);
@@ -6217,7 +6179,10 @@ export class CodeGenerator {
       );
     }
     const args = callArgs.map((a) => this.generateExpression(a.value));
-    if (method) this.bindPositionalReferenceInputs(args, method.varBlocks);
+    if (method) {
+      this.bindPositionalReferenceInputs(args, method.varBlocks);
+      this.padOmittedArguments(args, method.varBlocks);
+    }
     return args;
   }
 
@@ -6265,6 +6230,7 @@ export class CodeGenerator {
     const params: Array<{
       name: string;
       typeName: string;
+      type: TypeReference;
       blockType: string;
       defaultExpr?: string;
       refInput?: TypeReference;
@@ -6280,12 +6246,14 @@ export class CodeGenerator {
             const entry: {
               name: string;
               typeName: string;
+              type: TypeReference;
               blockType: string;
               defaultExpr?: string;
               refInput?: TypeReference;
             } = {
               name: name.toUpperCase(),
               typeName: decl.type.name,
+              type: decl.type,
               blockType: block.blockType,
             };
             if (isReferenceInput(block, decl)) entry.refInput = decl.type;
@@ -6407,8 +6375,7 @@ export class CodeGenerator {
         ) {
           result[i] = this.emitOutputTempVar(param.typeName);
         } else {
-          result[i] =
-            param.defaultExpr ?? this.getTypeDefaultValue(param.typeName);
+          result[i] = param.defaultExpr ?? this.typeDefaultArgument(param.type);
         }
       }
     }
@@ -6422,8 +6389,56 @@ export class CodeGenerator {
       ) {
         return this.emitOutputTempVar(param.typeName);
       }
-      return param.defaultExpr ?? this.getTypeDefaultValue(param.typeName);
+      return param.defaultExpr ?? this.typeDefaultArgument(param.type);
     });
+  }
+
+  /**
+   * C++ argument for an omitted input that declares no initial value: the
+   * type's elementary default, else a value-initialised object (STRUCT,
+   * enum, array, alias, pointer or reference).
+   */
+  private typeDefaultArgument(type: TypeReference): string {
+    const elementary =
+      type.referenceKind === "none" ? this.getTypeDefaultValue(type.name) : "";
+    return elementary !== "" ? elementary : `${this.mapTypeRefToCpp(type)}()`;
+  }
+
+  /**
+   * Append the arguments a positional call leaves out at the end: a
+   * temporary for a VAR_OUTPUT / VAR_IN_OUT, else the input's declared
+   * initial value, else its type's default. `varBlocks` is the callee's
+   * declaration (its C++ parameter order).
+   */
+  private padOmittedArguments(args: string[], varBlocks: VarBlock[]): void {
+    let index = 0;
+    for (const block of varBlocks) {
+      if (
+        block.blockType !== "VAR_INPUT" &&
+        block.blockType !== "VAR_IN_OUT" &&
+        block.blockType !== "VAR_OUTPUT"
+      ) {
+        continue;
+      }
+      for (const decl of block.declarations) {
+        for (let n = 0; n < decl.names.length; n++, index++) {
+          if (index < args.length) continue;
+          if (block.blockType !== "VAR_INPUT") {
+            args.push(this.emitOutputTempVar(decl.type.name));
+          } else if (decl.initialValue) {
+            args.push(
+              this.generateInitializer(
+                decl.initialValue,
+                this.mapTypeRefToCpp(decl.type),
+                decl.type.name,
+              ),
+            );
+          } else {
+            args.push(this.typeDefaultArgument(decl.type));
+          }
+        }
+      }
+    }
   }
 
   // ===========================================================================
