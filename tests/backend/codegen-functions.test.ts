@@ -318,7 +318,7 @@ describe("Codegen - Function Calls", () => {
 
         PROGRAM Main
           VAR q : INT; r : INT; END_VAR
-          q := Divide(10, 3, r => r);
+          q := Divide(10, 3, remainder => r);
         END_PROGRAM
       `);
 
@@ -592,7 +592,7 @@ describe("Codegen - Function Calls", () => {
       expect(result.cppCode).toMatch(/CALC\(99, 5, 77\)/);
     });
 
-    it("should warn about named args referencing non-existent parameters", () => {
+    it("should refuse named args referencing non-existent parameters", () => {
       const result = compile(`
         FUNCTION Calc : INT
           VAR_INPUT x : INT := 0; y : INT := 0; END_VAR
@@ -605,32 +605,12 @@ describe("Codegen - Function Calls", () => {
         END_PROGRAM
       `);
 
-      expect(result.success).toBe(true);
-      // Should have warnings for unrecognized param names
-      const typoWarnings = result.warnings.filter((w) =>
-        w.message.includes("does not match any parameter"),
-      );
-      expect(typoWarnings.length).toBe(2);
-      expect(typoWarnings[0]!.message).toContain("XX");
-      expect(typoWarnings[1]!.message).toContain("YY");
-    });
-
-    it("should fill all slots with defaults when named args have typos", () => {
-      const result = compile(`
-        FUNCTION Calc : INT
-          VAR_INPUT x : INT := 0; y : INT := 0; END_VAR
-          Calc := x + y;
-        END_FUNCTION
-
-        PROGRAM Main
-          VAR r : INT; END_VAR
-          r := Calc(xx := 5, yy := 10);
-        END_PROGRAM
-      `);
-
-      expect(result.success).toBe(true);
-      // x and y are unfilled (typos don't match), so they get default 0
-      expect(result.cppCode).toMatch(/CALC\(0, 0\)/);
+      // A misspelled name used to be dropped (the call ran with the defaults)
+      expect(result.success).toBe(false);
+      expect(result.errors.map((e) => e.message)).toEqual([
+        "Function 'CALC' has no parameter named 'XX'",
+        "Function 'CALC' has no parameter named 'YY'",
+      ]);
     });
 
     it("should handle mix of positional before named correctly", () => {
