@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2025 Autonomy®
 /**
- * Method declarations of a library function block, rebuilt from its manifest
- * entry so a consumer binds `inst.M(...)` arguments as for a local block.
+ * Method declarations of a library function block, and declarations of a
+ * library function, rebuilt from their manifest entries so a consumer binds
+ * `inst.M(...)` and `F(...)` arguments as for local ones.
  */
 
-import type { LibraryFBEntry, LibraryVarType } from "./library-manifest.js";
-import type { MethodDeclaration } from "../frontend/ast.js";
+import type {
+  LibraryFBEntry,
+  LibraryFunctionEntry,
+  LibraryVarType,
+} from "./library-manifest.js";
+import type {
+  FunctionDeclaration,
+  MethodDeclaration,
+} from "../frontend/ast.js";
 import { parse } from "../frontend/parser.js";
 import { buildAST } from "../frontend/ast-builder.js";
 
@@ -64,6 +72,37 @@ export function libraryMethodDeclarations(
     const parsed = parse(source);
     if (parsed.errors.length > 0 || parsed.cst === null) return undefined;
     return buildAST(parsed.cst).functionBlocks[0]?.methods;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `fn` as a declaration without a body, its parameters in manifest order (the
+ * order of its C++ parameter list); undefined when the signature does not parse.
+ */
+export function libraryFunctionDeclaration(
+  fn: LibraryFunctionEntry,
+): FunctionDeclaration | undefined {
+  const blockOf = {
+    input: "VAR_INPUT",
+    output: "VAR_OUTPUT",
+    inout: "VAR_IN_OUT",
+  };
+  const params = fn.parameters.map(
+    (p) =>
+      `${blockOf[p.direction]} ${p.name} : ${p.type}` +
+      `${p.initialValue !== undefined ? ` := ${p.initialValue}` : ""}; END_VAR`,
+  );
+  const source = [
+    `FUNCTION ${fn.name} : ${fn.returnType}`,
+    ...params,
+    "END_FUNCTION",
+  ].join("\n");
+  try {
+    const parsed = parse(source);
+    if (parsed.errors.length > 0 || parsed.cst === null) return undefined;
+    return buildAST(parsed.cst).functions[0];
   } catch {
     return undefined;
   }

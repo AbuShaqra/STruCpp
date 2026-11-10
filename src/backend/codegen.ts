@@ -9,6 +9,7 @@
 
 import type {
   CompilationUnit,
+  FunctionDeclaration,
   VarDeclaration,
   Statement,
   Expression,
@@ -53,6 +54,7 @@ import type {
 } from "../project-model.js";
 import type {
   LibraryChunk,
+  LibraryFunctionEntry,
   StlibArchive,
 } from "../library/library-manifest.js";
 import {
@@ -76,7 +78,10 @@ import {
   storedInstance,
 } from "../semantic/fb-init.js";
 import { wrapReferenceChain } from "./reference-types.js";
-import { libraryMethodDeclarations } from "../library/library-methods.js";
+import {
+  libraryFunctionDeclaration,
+  libraryMethodDeclarations,
+} from "../library/library-methods.js";
 import { TypeCodeGenerator, IEC_TO_CPP_VAR_TYPE } from "./type-codegen.js";
 import {
   formatArrayType,
@@ -600,6 +605,11 @@ export class CodeGenerator {
   /** UPPER library FB name → its methods, from archives that list them. */
   private libraryMethods: Map<string, MethodDeclaration[]> = new Map();
 
+  /** Library functions by upper-cased name, and their parsed declarations. */
+  private libraryFunctions: Map<string, LibraryFunctionEntry> = new Map();
+  private libraryFunctionDecls: Map<string, FunctionDeclaration | undefined> =
+    new Map();
+
   /** Library FB field type map: "FBNAME.FIELDNAME" → type name (for field mangling in test codegen) */
   private libraryFBFieldTypes: Map<string, string> = new Map();
 
@@ -1035,6 +1045,12 @@ export class CodeGenerator {
    */
   registerLibraryArchives(archives: StlibArchive[]): void {
     for (const archive of archives) {
+      for (const fn of archive.manifest.functions) {
+        const upper = fn.name.toUpperCase();
+        if (!this.libraryFunctions.has(upper)) {
+          this.libraryFunctions.set(upper, fn);
+        }
+      }
       for (const fb of archive.manifest.functionBlocks) {
         const methods = libraryMethodDeclarations(fb);
         if (methods !== undefined && methods.length > 0) {
@@ -6494,6 +6510,7 @@ export class CodeGenerator {
     );
     const calleeBlocks =
       funcDecl?.varBlocks ??
+      this.libraryFunctionDeclaration(nameUpper)?.varBlocks ??
       this.findMethodDeclaration(
         this.currentFBName ?? this.currentProgramName,
         nameUpper,
@@ -6545,10 +6562,11 @@ export class CodeGenerator {
   private reorderNamedArguments(expr: FunctionCallExpression): string[] | null {
     if (!this.ast) return null;
 
-    // Find the function declaration in the AST
-    const funcDecl = this.ast.functions.find(
-      (f) => f.name.toUpperCase() === expr.functionName.toUpperCase(),
-    );
+    // Find the function declaration in the AST, else in a library
+    const funcDecl =
+      this.ast.functions.find(
+        (f) => f.name.toUpperCase() === expr.functionName.toUpperCase(),
+      ) ?? this.libraryFunctionDeclaration(expr.functionName);
     if (!funcDecl) return null;
     return this.bindArgumentsByName(
       funcDecl.varBlocks,
@@ -6556,6 +6574,19 @@ export class CodeGenerator {
       `function '${expr.functionName}'`,
       expr.sourceSpan,
     );
+  }
+
+  /** The declaration of a library function, from its manifest entry. */
+  private libraryFunctionDeclaration(
+    name: string,
+  ): FunctionDeclaration | undefined {
+    const upper = name.toUpperCase();
+    const entry = this.libraryFunctions.get(upper);
+    if (!entry) return undefined;
+    if (!this.libraryFunctionDecls.has(upper)) {
+      this.libraryFunctionDecls.set(upper, libraryFunctionDeclaration(entry));
+    }
+    return this.libraryFunctionDecls.get(upper);
   }
 
   /**
