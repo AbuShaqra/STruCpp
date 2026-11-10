@@ -1093,6 +1093,7 @@ export class TypeChecker {
     }
     this.validateReferenceArguments(expr, scope);
     this.checkDottedMethodCall(expr, scope);
+    this.checkMethodCallArgumentNames(expr, scope);
     const inputs =
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope);
@@ -1489,6 +1490,112 @@ export class TypeChecker {
     return undefined;
   }
 
+  /** The named arguments of a call of `method` that name none of its parameters. */
+  private unknownMethodArguments(
+    method: MethodDeclaration,
+    args: readonly Argument[],
+  ): Argument[] {
+    const params = new Set(
+      method.varBlocks
+        .filter(
+          (b) =>
+            b.blockType === "VAR_INPUT" ||
+            b.blockType === "VAR_IN_OUT" ||
+            b.blockType === "VAR_OUTPUT",
+        )
+        .flatMap((b) => b.declarations.flatMap((d) => d.names))
+        .map((n) => n.toUpperCase()),
+    );
+    return stripEnEno([...args]).filter(
+      (a) => a.name !== undefined && !params.has(a.name.toUpperCase()),
+    );
+  }
+
+  /** Method calls whose argument names were already checked. */
+  private checkedMethodCallNames = new WeakSet<FunctionCallExpression>();
+
+  /**
+   * `inst.M(name := v)`, `THIS.M(...)`, `SUPER.M(...)`, `PRG.M(...)` and a bare
+   * `M(...)` of the enclosing block or program: each named argument must name
+   * a parameter of the method, which the generated C++ binds by name and
+   * would otherwise drop. Methods this compile does not declare are skipped.
+   */
+  private checkMethodCallArgumentNames(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (expr.instance || this.checkedMethodCallNames.has(expr)) return;
+    this.checkedMethodCallNames.add(expr);
+    if (!expr.arguments.some((a) => a.name !== undefined)) return;
+    const parts = expr.functionName.split(".");
+    const enclosing = this.currentFBName ?? this.currentProgram?.name;
+    let owner: string | undefined;
+    let methodName: string;
+    if (parts.length === 1) {
+      methodName = parts[0]!;
+      // A FUNCTION or a variable (an FB instance) of that name is called instead.
+      if (this.symbolTables.lookupFunction(methodName) !== undefined) return;
+      if (scope.lookup(methodName)?.kind === "variable") return;
+      owner = enclosing;
+    } else if (parts.length === 2) {
+      methodName = parts[1]!;
+      const prefix = parts[0]!.toUpperCase();
+      if (prefix === "THIS") {
+        owner = enclosing;
+      } else if (prefix === "SUPER") {
+        owner =
+          this.currentFBName === undefined
+            ? undefined
+            : this.ast?.functionBlocks.find(
+                (f) =>
+                  f.name.toUpperCase() === this.currentFBName!.toUpperCase(),
+              )?.extends;
+      } else {
+        const sym = scope.lookup(parts[0]!);
+        if (sym?.kind === "program") {
+          owner = sym.name;
+        } else if (sym?.kind === "variable") {
+          const type = (sym.declaration as VarDeclaration | undefined)?.type;
+          if (
+            type !== undefined &&
+            type.arrayDimensions === undefined &&
+            (type.referenceKind === "none" ||
+              type.referenceKind === "reference_to")
+          ) {
+            owner = this.aliasBase(type.name);
+          }
+        }
+      }
+    } else {
+      return;
+    }
+    if (owner === undefined) return;
+    const ownerUpper = owner.toUpperCase();
+    const isProgram =
+      this.ast?.programs.some((p) => p.name.toUpperCase() === ownerUpper) ===
+      true;
+    const found = isProgram
+      ? this.methodsOfType(owner)?.find(
+          (m) => m.name.toUpperCase() === methodName.toUpperCase(),
+        )
+      : this.lookupChainMethod(owner, methodName);
+    if (found === undefined || typeof found === "string") return;
+    const ownerName =
+      [
+        ...(this.ast?.functionBlocks ?? []),
+        ...(this.ast?.programs ?? []),
+        ...(this.ast?.interfaces ?? []),
+      ].find((d) => d.name.toUpperCase() === ownerUpper)?.name ?? owner;
+    for (const arg of this.unknownMethodArguments(found, expr.arguments)) {
+      this.addError(
+        `Method '${found.name}' of '${ownerName}' has no parameter named '${arg.name ?? ""}'`,
+        arg.sourceSpan.startLine,
+        arg.sourceSpan.startCol,
+        arg.sourceSpan.file,
+      );
+    }
+  }
+
   /** Member-chain calls already checked, so an expression visited twice reports once. */
   private checkedChainCalls = new WeakSet<MethodCallExpression>();
 
@@ -1577,13 +1684,11 @@ export class TypeChecker {
       .flatMap((b) => b.declarations)
       .flatMap((d) => d.names.map((n) => n.toUpperCase()));
     const args = stripEnEno(expr.arguments);
-    for (const arg of args) {
-      if (arg.name !== undefined && !params.includes(arg.name.toUpperCase())) {
-        error(
-          `Method '${found.name}' of '${owner.name}' has no parameter named '${arg.name}'`,
-          arg.sourceSpan,
-        );
-      }
+    for (const arg of this.unknownMethodArguments(found, args)) {
+      error(
+        `Method '${found.name}' of '${owner.name}' has no parameter named '${arg.name ?? ""}'`,
+        arg.sourceSpan,
+      );
     }
     const positional = args.filter((a) => a.name === undefined);
     const extra = positional[params.length];
