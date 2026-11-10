@@ -284,3 +284,48 @@ describe("typed literals on a type that is not an enumeration", () => {
     expect(errors("BYTE#16#FF")).toEqual([]);
   });
 });
+
+describe("REF_TO STRING(n) is typed by its length", () => {
+  const errors = (body: string): string[] =>
+    compile(
+      `PROGRAM main
+VAR
+  s : STRING; s10 : STRING(10); s254 : STRING(254); w5 : WSTRING(5);
+  p : REF_TO STRING; p10 : REF_TO STRING(10); p10b : REF_TO STRING(10);
+  pw : REF_TO WSTRING(5); pw9 : REF_TO WSTRING(9);
+  ap : ARRAY[0..1] OF REF_TO STRING(10);
+  as : ARRAY[0..1] OF STRING(10);
+END_VAR
+${body}
+END_PROGRAM
+`,
+    ).errors.map((e) => e.message);
+
+  it("accepts a reference to a variable of the same length", () => {
+    expect(
+      errors(
+        "p10 := REF(s10); p10b := p10; p := REF(s); p := REF(s254); pw := REF(w5);",
+      ),
+    ).toEqual([]);
+  });
+
+  it("rejects REF() of a STRING of another length", () => {
+    expect(errors("p := REF(s10);")).toEqual([
+      "Cannot assign REF_TO STRING(10) to REF_TO STRING: a REF_TO can only hold a reference to its declared type",
+    ]);
+    expect(errors("p10 := REF(s);")).toEqual([
+      "Cannot assign REF_TO STRING to REF_TO STRING(10): a REF_TO can only hold a reference to its declared type",
+    ]);
+  });
+
+  it("rejects a REF_TO of another length", () => {
+    expect(errors("p10 := p;")).toHaveLength(1);
+    expect(errors("pw9 := pw;")).toEqual([
+      "Cannot assign REF_TO WSTRING(5) to REF_TO WSTRING(9): a REF_TO can only hold a reference to its declared type",
+    ]);
+  });
+
+  it("leaves array elements, whose length is not carried, alone", () => {
+    expect(errors("ap[0] := REF(s10); p10 := REF(as[0]);")).toEqual([]);
+  });
+});

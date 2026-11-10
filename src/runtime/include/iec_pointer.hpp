@@ -606,6 +606,20 @@ inline IEC_REF_TO<IECWString<N>> REF(IECWStringVar<N>& var) noexcept {
 }
 
 /**
+ * REF() of a variable of a named STRING / WSTRING type (`TYPE T : STRING(10)`),
+ * which is declared as the string itself. IECStringVar is exactly its string.
+ */
+template<size_t N>
+inline IEC_REF_TO<IECString<N>> REF(IECString<N>& var) noexcept {
+    return IEC_REF_TO<IECString<N>>(reinterpret_cast<IECStringVar<N>*>(&var));
+}
+
+template<size_t N>
+inline IEC_REF_TO<IECWString<N>> REF(IECWString<N>& var) noexcept {
+    return IEC_REF_TO<IECWString<N>>(reinterpret_cast<IECWStringVar<N>*>(&var));
+}
+
+/**
  * REF() of an enumeration variable, which is an IEC_ENUM_Var.
  */
 template<typename E>
