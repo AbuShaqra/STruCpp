@@ -106,3 +106,43 @@ export function looksLikeIECVarChildren(variables: DAPVariable[]): boolean {
   const names = new Set(variables.map((v) => v.name));
   return names.has("value_") && names.has("forced_") && names.has("forced_value_");
 }
+
+/**
+ * The debugger expressions that force a variable, in order: write the value
+ * through the variable's `value_` (the debugger converts it to the variable's
+ * type), then record those bytes in the runtime's force table, which writes
+ * them back at every cycle boundary until unforced.
+ */
+export function forceExpressions(evaluateName: string, value: string): string[] {
+  return [
+    `${evaluateName}.value_ = ${value}`,
+    `strucpp_force_capture((void*)&(${evaluateName}), sizeof(${evaluateName}.value_))`,
+  ];
+}
+
+/** The debugger expression that stops forcing a variable. */
+export function unforceExpression(evaluateName: string): string {
+  return `strucpp_unforce((void*)&(${evaluateName}))`;
+}
+
+/**
+ * Explain a non-zero result of `strucpp_force_capture` / `strucpp_unforce`,
+ * or return undefined when the call succeeded.
+ */
+export function forceCallError(result: string): string | undefined {
+  const code = Number.parseInt(result.trim(), 10);
+  switch (code) {
+    case 0:
+      return undefined;
+    case 1:
+      return "the runtime's force table is full; unforce another variable first";
+    case 2:
+      return "the value is too large to force";
+    case 3:
+      return "the variable cannot be forced";
+    case 5:
+      return "the force table is busy; try again";
+    default:
+      return `unexpected result from the runtime: ${result}`;
+  }
+}

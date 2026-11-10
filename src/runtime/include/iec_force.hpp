@@ -225,39 +225,54 @@ inline bool owned(const void* ptr, uint8_t flags, std::uintptr_t lo, std::uintpt
 
 }  // namespace detail
 
+namespace detail {
+
+/** set() with the table lock already held. */
+inline Status set_locked(Table& t, void* ptr, const void* bytes, uint16_t size,
+                         uint8_t flags, ApplyFn apply) noexcept {
+    if (ptr == nullptr || bytes == nullptr || size == 0) return Status::BadArgument;
+    if (size > STRUCPP_FORCE_STRING_BYTES) return Status::TooLarge;
+    if (size <= SCALAR_BYTES) {
+        return put(t, t.scalars, t.strings, ptr, bytes, size, flags, apply);
+    }
+    return put(t, t.strings, t.scalars, ptr, bytes, size, flags, apply);
+}
+
+/** clear() with the table lock already held. */
+inline bool clear_locked(Table& t, const void* ptr) noexcept {
+    ScalarSlot* s = find_in(t.scalars, ptr);
+    if (s != nullptr) {
+        s->used = false;
+        add_count(t, -1);
+        return true;
+    }
+    StringSlot* w = find_in(t.strings, ptr);
+    if (w != nullptr) {
+        w->used = false;
+        add_count(t, -1);
+        return true;
+    }
+    return false;
+}
+
+}  // namespace detail
+
 /**
  * Force the variable at `ptr` to the `size` bytes at `bytes` and write them
  * into it now. Forcing a forced variable again replaces its value.
  */
 inline Status set(void* ptr, const void* bytes, uint16_t size, uint8_t flags = 0,
                   ApplyFn apply = nullptr) noexcept {
-    if (ptr == nullptr || bytes == nullptr || size == 0) return Status::BadArgument;
-    if (size > STRUCPP_FORCE_STRING_BYTES) return Status::TooLarge;
     detail::Table& t = detail::table();
     detail::Lock lock(t);
-    if (size <= SCALAR_BYTES) {
-        return detail::put(t, t.scalars, t.strings, ptr, bytes, size, flags, apply);
-    }
-    return detail::put(t, t.strings, t.scalars, ptr, bytes, size, flags, apply);
+    return detail::set_locked(t, ptr, bytes, size, flags, apply);
 }
 
 /** Stop forcing the variable at `ptr`; it keeps its current value. False if it was not forced. */
 inline bool clear(const void* ptr) noexcept {
     detail::Table& t = detail::table();
     detail::Lock lock(t);
-    detail::ScalarSlot* s = detail::find_in(t.scalars, ptr);
-    if (s != nullptr) {
-        s->used = false;
-        detail::add_count(t, -1);
-        return true;
-    }
-    detail::StringSlot* w = detail::find_in(t.strings, ptr);
-    if (w != nullptr) {
-        w->used = false;
-        detail::add_count(t, -1);
-        return true;
-    }
-    return false;
+    return detail::clear_locked(t, ptr);
 }
 
 /** Stop every force. */
@@ -391,3 +406,65 @@ private:
 
 }  // namespace force
 }  // namespace strucpp
+
+// ---------------------------------------------------------------------------
+// Entry points for a source-level debugger that has stopped the program and
+// evaluates a call in it (the VS Code extension's Force Variable command).
+// `used` keeps them in every translation unit that includes this header, so
+// the debugger can find them although nothing in the program calls them.
+//
+// They never wait for the table lock: a thread stopped while applying holds
+// it, and waiting would hang the debugger. They report 5 instead.
+// ---------------------------------------------------------------------------
+#if defined(__GNUC__) && !defined(__AVR__)
+#define STRUCPP_DEBUGGER_ENTRY extern "C" __attribute__((used, noinline)) inline
+
+namespace strucpp {
+namespace force {
+namespace detail {
+
+/** Status code the debugger entry points return while the table is locked. */
+constexpr int DEBUGGER_TABLE_BUSY = 5;
+
+template <typename F>
+inline int with_table_try_lock(F&& f) noexcept {
+    Table& t = table();
+#ifdef STRUCPP_THREADED
+    if (!t.mtx.try_lock()) return DEBUGGER_TABLE_BUSY;
+    const int result = f(t);
+    t.mtx.unlock();
+    return result;
+#else
+    return f(t);
+#endif
+}
+
+}  // namespace detail
+}  // namespace force
+}  // namespace strucpp
+
+/** Force the variable at `ptr` to the `size` bytes it holds now. 0 when forced,
+ *  otherwise a force::Status value or 5 (table busy). */
+STRUCPP_DEBUGGER_ENTRY int strucpp_force_capture(void* ptr, unsigned size) noexcept {
+    return strucpp::force::detail::with_table_try_lock([&](strucpp::force::detail::Table& t) {
+        uint8_t value[STRUCPP_FORCE_STRING_BYTES];
+        if (ptr == nullptr || size == 0 || size > sizeof value) {
+            return static_cast<int>(size > sizeof value ? strucpp::force::Status::TooLarge
+                                                        : strucpp::force::Status::BadArgument);
+        }
+        std::memcpy(value, ptr, size);
+        return static_cast<int>(strucpp::force::detail::set_locked(
+            t, ptr, value, static_cast<uint16_t>(size), 0, nullptr));
+    });
+}
+
+/** Stop forcing the variable at `ptr`. 0 when it was forced, 1 when it was
+ *  not, 5 when the table is busy. */
+STRUCPP_DEBUGGER_ENTRY int strucpp_unforce(void* ptr) noexcept {
+    return strucpp::force::detail::with_table_try_lock([&](strucpp::force::detail::Table& t) {
+        return strucpp::force::detail::clear_locked(t, ptr) ? 0 : 1;
+    });
+}
+
+#undef STRUCPP_DEBUGGER_ENTRY
+#endif

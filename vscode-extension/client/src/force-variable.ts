@@ -3,19 +3,24 @@
 /**
  * Force/Unforce variable commands and Forced Variables panel.
  *
- * Forces variables by writing directly to IECVar internal fields via
- * the debug adapter's evaluate request. GDB/LLDB can set struct fields
- * without needing to call template methods:
+ * Forces variables through the runtime's force table, by evaluating calls in
+ * the stopped program through the debug adapter (see forceExpressions):
  *
- *   evaluateName.forced_ = true
- *   evaluateName.forced_value_ = <value>
  *   evaluateName.value_ = <value>
+ *   strucpp_force_capture((void*)&(evaluateName), sizeof(evaluateName.value_))
  *
- * This works when stopped at a breakpoint (the primary use case) because
- * GDB has full access to process memory and ignores C++ access specifiers.
+ * The table writes the value back at every cycle boundary until unforced.
+ * This works when stopped at a breakpoint (the primary use case): the
+ * debugger converts the value to the variable's type and ignores C++ access
+ * specifiers.
  */
 
 import * as vscode from "vscode";
+import {
+  forceCallError,
+  forceExpressions,
+  unforceExpression,
+} from "./debug-utils.js";
 
 /** A variable that has been forced to a specific value. */
 export interface ForcedVariableEntry {
@@ -67,18 +72,17 @@ async function debugEvaluate(
 }
 
 /**
- * Force a variable by writing to its IECVar internal fields via GDB.
- * Sets forced_ = true, forced_value_ = value, value_ = value.
+ * Force a variable: write the value, then record it in the force table.
  */
 async function forceViaDebugger(
   session: vscode.DebugSession,
   evaluateName: string,
   value: string,
 ): Promise<void> {
-  // Write all three fields — GDB ignores C++ access specifiers
-  await debugEvaluate(session, `${evaluateName}.forced_ = true`);
-  await debugEvaluate(session, `${evaluateName}.forced_value_ = ${value}`);
-  await debugEvaluate(session, `${evaluateName}.value_ = ${value}`);
+  const [write, capture] = forceExpressions(evaluateName, value);
+  await debugEvaluate(session, write!);
+  const error = forceCallError(await debugEvaluate(session, capture!));
+  if (error !== undefined) throw new Error(error);
 
   // Trigger a Variables pane refresh by re-reading the value we just set.
   // This causes cppdbg to invalidate its cached variable display.
@@ -90,13 +94,18 @@ async function forceViaDebugger(
 }
 
 /**
- * Unforce a variable by clearing its IECVar forced_ flag via GDB.
+ * Unforce a variable by removing it from the force table. A variable that was
+ * not forced is not an error.
  */
 async function unforceViaDebugger(
   session: vscode.DebugSession,
   evaluateName: string,
 ): Promise<void> {
-  await debugEvaluate(session, `${evaluateName}.forced_ = false`);
+  const result = await debugEvaluate(session, unforceExpression(evaluateName));
+  const code = result.trim();
+  if (code !== "0" && code !== "1") {
+    throw new Error(forceCallError(result) ?? result);
+  }
 }
 
 /**

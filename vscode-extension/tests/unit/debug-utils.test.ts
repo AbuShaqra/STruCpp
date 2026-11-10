@@ -6,6 +6,9 @@ import {
   isIECVarType,
   extractSimpleValue,
   looksLikeIECVarChildren,
+  forceExpressions,
+  unforceExpression,
+  forceCallError,
   type DAPVariable,
 } from "../../client/src/debug-utils.js";
 
@@ -190,5 +193,28 @@ describe("looksLikeIECVarChildren", () => {
   it("rejects when missing forced_", () => {
     const vars = [makeVar("value_"), makeVar("other"), makeVar("forced_value_")];
     expect(looksLikeIECVarChildren(vars)).toBe(false);
+  });
+});
+
+describe("force expressions", () => {
+  it("writes the value through value_, then captures it in the force table", () => {
+    expect(forceExpressions("strucpp::g.INSTANCE0.X", "42")).toEqual([
+      "strucpp::g.INSTANCE0.X.value_ = 42",
+      "strucpp_force_capture((void*)&(strucpp::g.INSTANCE0.X), sizeof(strucpp::g.INSTANCE0.X.value_))",
+    ]);
+  });
+
+  it("unforces through the force table", () => {
+    expect(unforceExpression("X")).toBe("strucpp_unforce((void*)&(X))");
+  });
+
+  it("explains a refused force and accepts success", () => {
+    expect(forceCallError("0")).toBeUndefined();
+    expect(forceCallError(" 0 ")).toBeUndefined();
+    expect(forceCallError("1")).toMatch(/full/);
+    expect(forceCallError("2")).toMatch(/too large/);
+    expect(forceCallError("3")).toMatch(/cannot be forced/);
+    expect(forceCallError("5")).toMatch(/busy/);
+    expect(forceCallError("<error>")).toMatch(/unexpected/);
   });
 });
