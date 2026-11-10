@@ -105,6 +105,8 @@ import {
   typeNamesHeldByTypeDefinition,
   typeNamesHeldByValue,
   typesHoldingFunctionBlocks,
+  ELEMENTARY_TYPES,
+  canonicalElementaryName,
 } from "../semantic/type-utils.js";
 import {
   generateInitializerValue,
@@ -1923,7 +1925,11 @@ export class CodeGenerator {
           const memberName = this.mangleMemberIfNeeded(name, decl.type.name);
           this.emitHeaderLineDirective(decl.sourceSpan.startLine);
           const memberLine = this.currentHeaderLine;
-          this.emitHeader(`    ${cppType} ${memberName};`);
+          const init =
+            block.blockType === "VAR_IN_OUT"
+              ? ""
+              : this.scalarTypeInit(decl.type);
+          this.emitHeader(`    ${cppType} ${memberName}${init};`);
           this.recordHeaderLineMapping(decl.sourceSpan.startLine, memberLine);
         }
       }
@@ -2152,15 +2158,19 @@ export class CodeGenerator {
           const memberName = this.mangleMemberIfNeeded(name, decl.type.name);
           this.emitHeaderLineDirective(decl.sourceSpan.startLine);
           const memberLine = this.currentHeaderLine;
+          const init =
+            block.blockType === "VAR_IN_OUT"
+              ? ""
+              : this.scalarTypeInit(decl.type);
           if (decl.address) {
             // Generate variable with optional address comment
             this.emitHeader(
-              `    ${cppType} ${memberName};  // AT ${decl.address}`,
+              `    ${cppType} ${memberName}${init};  // AT ${decl.address}`,
             );
             // Collect located variable info
             this.collectLocatedVar(name, decl, prog.name);
           } else {
-            this.emitHeader(`    ${cppType} ${memberName};`);
+            this.emitHeader(`    ${cppType} ${memberName}${init};`);
           }
           this.recordHeaderLineMapping(decl.sourceSpan.startLine, memberLine);
         }
@@ -2610,7 +2620,7 @@ export class CodeGenerator {
             const cppType = this.mapTypeRefToCpp(decl.type);
             const initValue = decl.initialValue
               ? ` = ${this.generateInitializer(decl.initialValue, cppType, decl.type.name)}`
-              : "";
+              : this.scalarTypeInit(decl.type);
             this.emit(`    ${cppType} ${name}${initValue};`);
           }
         }
@@ -2944,7 +2954,7 @@ export class CodeGenerator {
               const cppType = this.mapTypeRefToCpp(decl.type);
               const initValue = decl.initialValue
                 ? ` = ${this.generateInitializer(decl.initialValue, cppType, decl.type.name)}`
-                : "";
+                : this.scalarTypeInit(decl.type);
               this.emit(`    ${cppType} ${name}${initValue};`);
             }
           }
@@ -3095,14 +3105,28 @@ export class CodeGenerator {
           this.emitHeaderLineDirective(stLine);
         }
         const memberLine = this.currentHeaderLine;
+        const init =
+          decl.initialValue === undefined
+            ? this.scalarTypeInit({
+                name: decl.typeName,
+                ...(decl.referenceKind !== undefined
+                  ? { referenceKind: decl.referenceKind }
+                  : {}),
+                ...(decl.arrayDimensions !== undefined
+                  ? { arrayDimensions: decl.arrayDimensions }
+                  : {}),
+              })
+            : "";
         if (decl.address) {
           this.emitHeader(
-            `    ${constQualifier}${cppType} ${memberName};  // AT ${decl.address}`,
+            `    ${constQualifier}${cppType} ${memberName}${init};  // AT ${decl.address}`,
           );
           // Collect located variable info
           this.collectLocatedVarFromModel(decl, prog.name);
         } else {
-          this.emitHeader(`    ${constQualifier}${cppType} ${memberName};`);
+          this.emitHeader(
+            `    ${constQualifier}${cppType} ${memberName}${init};`,
+          );
         }
 
         if (stLine !== undefined) {
@@ -3831,7 +3855,9 @@ export class CodeGenerator {
         this.emitHeader("    // VAR_GLOBAL variables");
         for (const decl of block.declarations) {
           for (const name of decl.names) {
-            this.emitHeader(`    ${this.mapTypeRefToCpp(decl.type)} ${name};`);
+            this.emitHeader(
+              `    ${this.mapTypeRefToCpp(decl.type)} ${name}${this.scalarTypeInit(decl.type)};`,
+            );
           }
         }
       }
@@ -7234,6 +7260,54 @@ export class CodeGenerator {
       }
     }
     return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  /**
+   * `{}` (or `{lower bound}` for a subrange) for a variable of a TYPE that is
+   * an alias of an elementary or enumeration type, or a subrange. Its C++
+   * type is the raw value type, which a member or local declared without an
+   * initializer leaves indeterminate. Empty for every other type.
+   */
+  private scalarTypeInit(type: {
+    name: string;
+    referenceKind?: string;
+    arrayDimensions?: unknown;
+  }): string {
+    if (
+      (type.referenceKind !== undefined && type.referenceKind !== "none") ||
+      type.arrayDimensions !== undefined
+    ) {
+      return "";
+    }
+    let name = type.name.toUpperCase();
+    for (let depth = 0; depth < 32; depth++) {
+      const td = this.ast?.types.find((t) => t.name.toUpperCase() === name);
+      if (!td) {
+        if (depth === 0 || name === "STRING" || name === "WSTRING") return "";
+        return ELEMENTARY_TYPES[canonicalElementaryName(name)] ? "{}" : "";
+      }
+      const def = td.definition;
+      if (def.kind === "SubrangeDefinition") {
+        const lo = def.lowerBound;
+        return lo.kind === "LiteralExpression" ||
+          (lo.kind === "UnaryExpression" &&
+            lo.operand.kind === "LiteralExpression")
+          ? `{${this.generateExpression(lo)}}`
+          : "{}";
+      }
+      // A variable of the enumeration itself is an IEC_ENUM wrapper.
+      if (def.kind === "EnumDefinition") return depth === 0 ? "" : "{}";
+      if (
+        def.kind !== "TypeReference" ||
+        def.referenceKind !== "none" ||
+        def.arrayDimensions ||
+        def.maxLength !== undefined
+      ) {
+        return "";
+      }
+      name = def.name.toUpperCase();
+    }
+    return "";
   }
 
   /**
