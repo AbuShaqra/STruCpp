@@ -572,6 +572,18 @@ template<size_t N> struct is_wstring_arg<char16_t[N]> : std::true_type {
 };
 
 template<typename S> using wstring_value_t = IECWString<is_wstring_arg<S>::len>;
+
+/** The largest capacity among WSTRING arguments. */
+template<typename A, typename... Rest> struct max_wstring_capacity
+    : std::integral_constant<size_t,
+          (is_wstring_arg<A>::len > max_wstring_capacity<Rest...>::value
+               ? is_wstring_arg<A>::len : max_wstring_capacity<Rest...>::value)> {};
+template<typename A> struct max_wstring_capacity<A>
+    : std::integral_constant<size_t, is_wstring_arg<A>::len> {};
+
+/** The result of a function of several WSTRINGs: room for the longest argument type. */
+template<typename... Args>
+using joined_wstring = IECWString<max_wstring_capacity<Args...>::value>;
 template<typename S, typename R = void>
 using if_wstring = typename std::enable_if<is_wstring_arg<S>::value, R>::type;
 }  // namespace detail
@@ -622,23 +634,23 @@ inline detail::wstring_value_t<S> MID(const S& s, size_t len, size_t pos) noexce
 }
 
 template<typename A, typename B, typename = detail::if_wstring<A>, typename = detail::if_wstring<B>>
-inline IECWString<(detail::is_wstring_arg<A>::len > detail::is_wstring_arg<B>::len
-                       ? detail::is_wstring_arg<A>::len
-                       : detail::is_wstring_arg<B>::len)>
-CONCAT(const A& s1, const B& s2) noexcept {
+inline detail::joined_wstring<A, B> CONCAT(const A& s1, const B& s2) noexcept {
     return WCONCAT(detail::wvalue(s1), detail::wvalue(s2));
 }
 
 template<typename A, typename B, typename C, typename... Rest,
          typename = detail::if_wstring<A>, typename = detail::if_wstring<B>>
-inline auto CONCAT(const A& s1, const B& s2, const C& s3, const Rest&... rest) noexcept {
-    return CONCAT(CONCAT(s1, s2), s3, rest...);
+inline detail::joined_wstring<A, B, C, Rest...>
+CONCAT(const A& s1, const B& s2, const C& s3, const Rest&... rest) noexcept {
+    // Widen first, so no partial result is cut to its own arguments' length.
+    const detail::joined_wstring<A, B, C, Rest...> first(detail::wvalue(s1));
+    return CONCAT(CONCAT(first, s2), s3, rest...);
 }
 
 /** INSERT(IN1, IN2, P): IN2 after the first P characters of IN1. */
 template<typename A, typename B, typename = detail::if_wstring<A>, typename = detail::if_wstring<B>>
-inline detail::wstring_value_t<A> INSERT(const A& s1, const B& s2, size_t pos) noexcept {
-    detail::wstring_value_t<A> result(detail::wvalue(s1));
+inline detail::joined_wstring<A, B> INSERT(const A& s1, const B& s2, size_t pos) noexcept {
+    detail::joined_wstring<A, B> result(detail::wvalue(s1));
     if (pos > result.length()) pos = result.length();
     result.insert(pos, detail::wvalue(s2).c_str());
     return result;
@@ -650,8 +662,8 @@ inline detail::wstring_value_t<S> DELETE_STR(const S& s, size_t len, size_t pos)
 }
 
 template<typename A, typename B, typename = detail::if_wstring<A>, typename = detail::if_wstring<B>>
-inline detail::wstring_value_t<A> REPLACE(const A& s1, const B& s2, size_t len, size_t pos) noexcept {
-    detail::wstring_value_t<A> result(detail::wvalue(s1));
+inline detail::joined_wstring<A, B> REPLACE(const A& s1, const B& s2, size_t len, size_t pos) noexcept {
+    detail::joined_wstring<A, B> result(detail::wvalue(s1));
     if (pos == 0) pos = 1;
     result.replace(pos - 1, len, detail::wvalue(s2).c_str());
     return result;
