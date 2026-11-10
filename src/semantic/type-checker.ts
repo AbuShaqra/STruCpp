@@ -23,6 +23,7 @@ import type {
   IECType,
   ElementaryType,
   ReferenceType,
+  EnumType,
   StructType,
   CompilationUnit,
   FunctionBlockDeclaration,
@@ -36,7 +37,7 @@ import type {
   VarDeclaration,
   AccessStep,
 } from "../frontend/ast.js";
-import type { SymbolTables, Scope } from "./symbol-table.js";
+import type { AnySymbol, SymbolTables, Scope } from "./symbol-table.js";
 import type { StdFunctionRegistry } from "./std-function-registry.js";
 import type { CompileError, SourceSpan } from "../types.js";
 import {
@@ -227,6 +228,20 @@ function referenceShapeOf(type: AccessType): ReferenceShape | undefined {
   };
 }
 
+const COMPARISON_OPS: ReadonlySet<string> = new Set([
+  "=",
+  "<>",
+  "<",
+  ">",
+  "<=",
+  ">=",
+]);
+
+/** The error for an arithmetic or logic operator given an enumeration. */
+function enumOperatorMessage(operator: string, enumType: IECType): string {
+  return `Operator '${operator}' cannot be applied to the enumeration ${typeNameUtil(enumType)}; convert it first, for example with TO_INT`;
+}
+
 // =============================================================================
 // Strict mode helpers
 // =============================================================================
@@ -415,8 +430,10 @@ export class TypeChecker {
 
         // Property getter/setter bodies
         for (const prop of fb.properties) {
+          this.currentPropertyName = prop.name.toUpperCase();
           if (prop.getter) this.checkStatements(prop.getter, scope);
           if (prop.setter) this.checkStatements(prop.setter, scope);
+          this.currentPropertyName = undefined;
         }
       }
       this.currentFBName = undefined;
@@ -867,6 +884,46 @@ export class TypeChecker {
   }
 
   /**
+   * The enumeration an enumeration value belongs to: `E#M`, `E.M`, or a bare
+   * member. A bare member of several enumerations has a type only once the
+   * analyzer settled it from its context (`enumType`).
+   */
+  private enumValueType(
+    expr: VariableExpression,
+    symbol: AnySymbol,
+  ): IECType | undefined {
+    if (expr.subscripts.length > 0 || expr.isDereference) return undefined;
+    const enumNamed = (name: string): EnumType | undefined => {
+      const type = this.symbolTables.lookupType(name)?.resolvedType;
+      return type?.typeKind === "enum" ? (type as EnumType) : undefined;
+    };
+    const hasMember = (type: EnumType, member: string): boolean =>
+      type.values.some((v) => v.toUpperCase() === member.toUpperCase());
+    if (symbol.kind === "type") {
+      const type = enumNamed(symbol.name);
+      return type !== undefined &&
+        expr.fieldAccess.length === 1 &&
+        hasMember(type, expr.fieldAccess[0]!)
+        ? type
+        : undefined;
+    }
+    if (symbol.kind !== "enumValue" || expr.fieldAccess.length > 0) {
+      return undefined;
+    }
+    // Inside a property, its own name is the value it returns or receives.
+    if (expr.name.toUpperCase() === this.currentPropertyName) return undefined;
+    if (expr.enumType !== undefined) return enumNamed(expr.enumType);
+    const owners = (this.ast?.types ?? []).filter(
+      (t) =>
+        t.definition.kind === "EnumDefinition" &&
+        t.definition.members.some(
+          (m) => m.name.toUpperCase() === expr.name.toUpperCase(),
+        ),
+    );
+    return owners.length === 1 ? enumNamed(owners[0]!.name) : undefined;
+  }
+
+  /**
    * Infer type of a variable expression, including access chain resolution.
    */
   private inferVariableType(
@@ -878,6 +935,9 @@ export class TypeChecker {
       // Don't report error here — Pass 3 undeclared-variable check handles this
       return undefined;
     }
+
+    const enumValueType = this.enumValueType(expr, symbol);
+    if (enumValueType) return enumValueType;
 
     // `PRG_A.x`: a member of the program's one instance (feature program_methods)
     const programMember =
@@ -1044,6 +1104,8 @@ export class TypeChecker {
     if (this.strict && STRICT_ARITHMETIC_OPS.has(expr.operator)) {
       this.checkStrictArithmetic(expr, leftType, rightType);
     }
+    // The result of arithmetic on an enumeration has no type to check further.
+    if (this.checkEnumOperands(expr, leftType, rightType)) return undefined;
 
     let type: IECType | undefined;
 
@@ -1084,6 +1146,47 @@ export class TypeChecker {
   }
 
   /**
+   * An enumeration is not a number: it has no arithmetic or logic, and it
+   * compares only with its own enumeration. A named type that may alias the
+   * enumeration is left alone. True when an arithmetic or logic operator was
+   * refused.
+   */
+  private checkEnumOperands(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): boolean {
+    const leftEnum = leftType.typeKind === "enum";
+    const rightEnum = rightType.typeKind === "enum";
+    if (!leftEnum && !rightEnum) return false;
+    const fail = (message: string): void =>
+      this.addError(
+        message,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+    if (!COMPARISON_OPS.has(expr.operator)) {
+      fail(enumOperatorMessage(expr.operator, leftEnum ? leftType : rightType));
+      return true;
+    }
+    const other = leftEnum ? rightType : leftType;
+    const differs =
+      leftEnum && rightEnum
+        ? typeNameUtil(leftType).toUpperCase() !==
+          typeNameUtil(rightType).toUpperCase()
+        : other.typeKind === "elementary" &&
+          ELEMENTARY_TYPES[(other as ElementaryType).name.toUpperCase()] !==
+            undefined;
+    if (differs) {
+      fail(
+        `Cannot compare ${typeNameUtil(leftType)} with ${typeNameUtil(rightType)}`,
+      );
+    }
+    return false;
+  }
+
+  /**
    * Infer type of a unary expression.
    */
   private inferUnaryType(
@@ -1093,6 +1196,16 @@ export class TypeChecker {
     const operandType = this.resolveExprType(expr.operand, scope);
 
     if (operandType === undefined) {
+      return undefined;
+    }
+
+    if (operandType.typeKind === "enum" && expr.operator !== "+") {
+      this.addError(
+        enumOperatorMessage(expr.operator, operandType),
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
       return undefined;
     }
 
@@ -1176,6 +1289,9 @@ export class TypeChecker {
       // the EN-input check (and bit/num operand rules) require.
       if (returnType && isGenericGroupType(returnType) && this.stdRegistry) {
         const desc = this.stdRegistry.lookup(nameUpper);
+        if (desc && this.refuseEnumOrderingArguments(expr, desc.params)) {
+          return undefined;
+        }
         const userArgs = stripEnEno(expr.arguments);
         const firstArgType = userArgs[0]?.value.resolvedType;
         const mappedName =
@@ -2139,7 +2255,29 @@ export class TypeChecker {
         }
         const startType = this.resolveExprType(stmt.start, scope);
         const endType = this.resolveExprType(stmt.end, scope);
-        if (stmt.step) this.resolveExprType(stmt.step, scope);
+        const stepType = stmt.step
+          ? this.resolveExprType(stmt.step, scope)
+          : undefined;
+        // An enumeration bound does not fit the integer control variable.
+        const bounds: Array<[Expression | undefined, IECType | undefined]> = [
+          [stmt.start, startType],
+          [stmt.end, endType],
+          [stmt.step, stepType],
+        ];
+        for (const [bound, boundType] of bounds) {
+          if (bound === undefined || boundType?.typeKind !== "enum") continue;
+          const control = scope.lookup(stmt.controlVariable);
+          const controlType =
+            control?.kind === "variable" || control?.kind === "constant"
+              ? control.type
+              : undefined;
+          this.addError(
+            `Cannot assign ${typeNameUtil(boundType)} to ${controlType ? typeNameUtil(controlType) : "the control variable"}`,
+            bound.sourceSpan.startLine,
+            bound.sourceSpan.startCol,
+            bound.sourceSpan.file,
+          );
+        }
 
         // Validate control variable type
         const controlSym = scope.lookup(stmt.controlVariable);
@@ -3420,6 +3558,35 @@ export class TypeChecker {
     }
   }
 
+  /**
+   * MAX, MIN and LIMIT order numbers, strings and times, not enumerations.
+   * True when an enumeration argument was refused.
+   */
+  private refuseEnumOrderingArguments(
+    expr: FunctionCallExpression,
+    params: ReadonlyArray<{ name: string; constraint: string }>,
+  ): boolean {
+    let refused = false;
+    stripEnEno(expr.arguments).forEach((arg, i) => {
+      const param = params[i];
+      const argType = arg.value.resolvedType;
+      if (
+        param?.constraint !== "ANY_ELEMENTARY" ||
+        argType?.typeKind !== "enum"
+      ) {
+        return;
+      }
+      refused = true;
+      this.addError(
+        `Argument '${param.name}' of '${expr.functionName.toUpperCase()}' expects ${param.constraint}, got ${typeNameUtil(argType)}`,
+        arg.value.sourceSpan.startLine,
+        arg.value.sourceSpan.startCol,
+        arg.value.sourceSpan.file,
+      );
+    });
+    return refused;
+  }
+
   private validateFunctionCallArgs(
     expr: FunctionCallExpression,
     _scope: Scope,
@@ -3431,6 +3598,7 @@ export class TypeChecker {
       this.stdRegistry.lookup(nameUpper) ??
       this.stdRegistry.resolveTypedTrunc(nameUpper);
     if (!desc) return; // User-defined or unknown — skip constraint checking
+    this.refuseEnumOrderingArguments(expr, desc.params);
 
     // Validate argument types against parameter constraints. Strip EN/ENO
     // first — they're handled by the codegen wrapper and don't map onto the
@@ -3545,6 +3713,8 @@ export class TypeChecker {
 
   /** The FUNCTION_BLOCK whose body, method or property is being checked (`THIS.member`). */
   private currentFBName: string | undefined;
+  /** The property whose GET or SET body is being checked, upper-cased. */
+  private currentPropertyName: string | undefined;
 
   /** The PROGRAM whose body or method is being checked (bare method calls). */
   private currentProgram: ProgramDeclaration | undefined;
