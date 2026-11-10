@@ -3393,6 +3393,7 @@ export class SemanticAnalyzer {
    */
   private validateExpressions(ast: CompilationUnit): void {
     for (const prog of ast.programs) {
+      this.callOwner = { programName: prog.name };
       const varTypeMap = this.buildVarTypeMap(prog.varBlocks);
       this.walkStatementsForExpressionValidation(prog.body, varTypeMap, ast);
       for (const method of prog.methods) {
@@ -3407,11 +3408,13 @@ export class SemanticAnalyzer {
         );
       }
     }
+    this.callOwner = {};
     for (const func of ast.functions) {
       const varTypeMap = this.buildVarTypeMap(func.varBlocks);
       this.walkStatementsForExpressionValidation(func.body, varTypeMap, ast);
     }
     for (const fb of ast.functionBlocks) {
+      this.callOwner = { fbName: fb.name };
       const varTypeMap = this.buildVarTypeMap(fb.varBlocks);
       this.walkStatementsForExpressionValidation(fb.body, varTypeMap, ast);
       for (const method of fb.methods) {
@@ -3434,6 +3437,33 @@ export class SemanticAnalyzer {
         }
       }
     }
+    this.callOwner = {};
+  }
+
+  /** The PROGRAM or FUNCTION_BLOCK whose bodies validateExpressions walks. */
+  private callOwner: UndeclaredVarContext = {};
+
+  /**
+   * True when the PROGRAM or FUNCTION_BLOCK of `ctx` declares, or inherits,
+   * a method `upper`: a bare call of it calls the method.
+   */
+  private hasOwnMethod(upper: string, ctx: UndeclaredVarContext): boolean {
+    const has = (methods: readonly { name: string }[] | undefined): boolean =>
+      methods?.some((m) => m.name.toUpperCase() === upper) === true;
+    if (ctx.programName !== undefined) {
+      const prog = this.symbolTables.globalScope.lookup(ctx.programName);
+      return prog?.kind === "program" && has(prog.declaration.methods);
+    }
+    const seen = new Set<string>();
+    let fbName = ctx.fbName;
+    while (fbName !== undefined && !seen.has(fbName.toUpperCase())) {
+      seen.add(fbName.toUpperCase());
+      const fb = this.symbolTables.globalScope.lookup(fbName);
+      if (fb?.kind !== "functionBlock") return false;
+      if (has(fb.declaration.methods)) return true;
+      fbName = fb.declaration.extends;
+    }
+    return false;
   }
 
   /**
@@ -3587,6 +3617,8 @@ export class SemanticAnalyzer {
    */
   private checkStdFunctionArgs(expr: FunctionCallExpression): void {
     const nameUpper = expr.functionName.toUpperCase();
+    // A method of the enclosing block is called, not a function of its name.
+    if (this.hasOwnMethod(nameUpper, this.callOwner)) return;
     const userArgs = stripEnEno(expr.arguments);
     const argCount = userArgs.length;
 

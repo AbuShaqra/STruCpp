@@ -4556,6 +4556,8 @@ export class CodeGenerator {
       )?.varBlocks;
     }
     const nameUpper = name.toUpperCase();
+    const ownMethod = this.ownMethodCalled(call);
+    if (ownMethod) return ownMethod.varBlocks;
     if (
       this.getFBInvocationType(name, call.instance) !== undefined ||
       this.stdRegistry.resolveConversion(nameUpper) ||
@@ -5913,6 +5915,8 @@ export class CodeGenerator {
       }
       case "FunctionCallExpression": {
         const fnUpper = expr.functionName.toUpperCase();
+        const ownMethod = this.ownMethodCalled(expr);
+        if (ownMethod) return ownMethod.returnType?.name.toUpperCase();
         // Check user-defined functions
         if (this.ast) {
           const funcDecl = this.ast.functions.find(
@@ -6381,6 +6385,18 @@ export class CodeGenerator {
       return `${this.currentFBExtends}::operator()(${args.join(", ")})`;
     }
 
+    // A method of the enclosing block wins, as the C++ member does.
+    const ownMethod = this.ownMethodCalled(expr);
+    if (ownMethod) {
+      const bound = this.generateMethodCallArgs(
+        this.currentFBName ?? this.currentProgramName,
+        ownMethod.name,
+        expr.arguments,
+        expr.sourceSpan,
+      );
+      return `${expr.functionName}(${bound.join(", ")})`;
+    }
+
     // A user FUNCTION wins over an operator or standard function of its name.
     const userFunction =
       this.ast?.functions.some((f) => f.name.toUpperCase() === nameUpper) ===
@@ -6569,6 +6585,24 @@ export class CodeGenerator {
     }
 
     return `${expr.functionName}(${args.join(", ")})`;
+  }
+
+  /**
+   * The method of the enclosing FUNCTION_BLOCK (inherited ones included) or
+   * PROGRAM a bare call `M(...)` names; an FB instance of the name is not one.
+   */
+  private ownMethodCalled(
+    expr: FunctionCallExpression,
+  ): MethodDeclaration | undefined {
+    const name = expr.functionName;
+    if (expr.instance || name.includes(".")) return undefined;
+    if (this.getFBInvocationType(name, expr.instance) !== undefined) {
+      return undefined;
+    }
+    return this.findMethodDeclaration(
+      this.currentFBName ?? this.currentProgramName,
+      name,
+    );
   }
 
   /** The type that owns the method of a dotted call `prefix.M(...)`:

@@ -1366,7 +1366,7 @@ export class TypeChecker {
 
     // A bare call inside a PROGRAM to one of its own methods (the method
     // shadows a FUNCTION of the same name, as a C++ member does)
-    const ownMethod = this.ownProgramMethod(expr.functionName);
+    const ownMethod = this.ownMethod(expr.functionName);
     if (ownMethod) {
       const retType = this.methodReturnType(ownMethod);
       if (retType) expr.resolvedType = retType;
@@ -1776,8 +1776,14 @@ export class TypeChecker {
     let methodName: string;
     if (parts.length === 1) {
       methodName = parts[0]!;
-      // A FUNCTION or a variable (an FB instance) of that name is called instead.
-      if (this.symbolTables.lookupFunction(methodName) !== undefined) return;
+      // A FUNCTION or a variable (an FB instance) of that name is called
+      // instead, unless the enclosing block has a method of that name.
+      if (
+        this.ownMethod(methodName) === undefined &&
+        this.symbolTables.lookupFunction(methodName) !== undefined
+      ) {
+        return;
+      }
       if (scope.lookup(methodName)?.kind === "variable") return;
       owner = enclosing;
     } else if (parts.length === 2) {
@@ -1860,7 +1866,7 @@ export class TypeChecker {
     const name = expr.functionName;
     if (name.includes(".") || this.findUserFunction(name)) return;
     if (scope.lookup(name)?.kind === "variable") return;
-    if (this.ownProgramMethod(name)) return;
+    if (this.ownMethod(name)) return;
     const upper = name.toUpperCase();
     const desc = this.stdRegistry.lookup(upper);
     let params = desc?.params;
@@ -1915,7 +1921,7 @@ export class TypeChecker {
     const name = expr.functionName;
     if (name.includes(".")) return;
     if (scope.lookup(name)?.kind === "variable") return;
-    if (this.ownProgramMethod(name)) return;
+    if (this.ownMethod(name)) return;
     let declaredName: string;
     let params: string[];
     const userFn = this.findUserFunction(name);
@@ -2173,11 +2179,19 @@ export class TypeChecker {
     );
   }
 
-  /** A bare `Name(...)` inside a PROGRAM that names one of its methods. */
-  private ownProgramMethod(name: string): MethodDeclaration | undefined {
-    if (!this.currentProgram || name.includes(".")) return undefined;
+  /**
+   * A bare `Name(...)` inside a PROGRAM or FUNCTION_BLOCK that names one of
+   * its methods, inherited ones included. The method is called, as the C++
+   * member shadows a FUNCTION or standard function of the same name.
+   */
+  private ownMethod(name: string): MethodDeclaration | undefined {
+    if (name.includes(".")) return undefined;
     const upper = name.toUpperCase();
-    return this.currentProgram.methods.find(
+    if (this.currentFBName !== undefined) {
+      const found = this.lookupChainMethod(this.currentFBName, name);
+      return typeof found === "object" ? found : undefined;
+    }
+    return this.currentProgram?.methods.find(
       (m) => m.name.toUpperCase() === upper,
     );
   }
@@ -3225,7 +3239,7 @@ export class TypeChecker {
     scope: Scope,
   ): boolean {
     if (expr.instance !== undefined) return true;
-    if (this.ownProgramMethod(expr.functionName)) return false;
+    if (this.ownMethod(expr.functionName)) return false;
     if (this.findUserFunction(expr.functionName)) return false;
     return scope.lookup(expr.functionName)?.kind === "variable";
   }
@@ -3754,7 +3768,7 @@ export class TypeChecker {
             })),
           ),
         );
-    const ownMethod = this.ownProgramMethod(expr.functionName);
+    const ownMethod = this.ownMethod(expr.functionName);
     if (ownMethod) return fromBlocks(ownMethod.varBlocks);
     const fn = this.findUserFunction(expr.functionName);
     if (fn) return fromBlocks(fn.varBlocks);
@@ -4392,7 +4406,11 @@ export class TypeChecker {
   private strictGenericArgs(
     expr: FunctionCallExpression,
   ): Expression[] | undefined {
-    if (!this.stdRegistry || this.findUserFunction(expr.functionName)) {
+    if (
+      !this.stdRegistry ||
+      this.findUserFunction(expr.functionName) ||
+      this.ownMethod(expr.functionName)
+    ) {
       return undefined;
     }
     const desc = this.stdRegistry.lookup(expr.functionName.toUpperCase());
