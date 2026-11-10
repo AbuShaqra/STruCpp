@@ -8,8 +8,8 @@
  * the symbol tables and the type checker treat it like a STRUCT. This module
  * holds the rules only a UNION has: its members share one storage, so each
  * must be data (no function block, interface or program instance, no
- * variable-length array), names are unique, there is no EXTENDS, and initial
- * values are not supported yet.
+ * variable-length array), names are unique, there is no EXTENDS, a member
+ * has no initial value, and an initial value of the UNION names one member.
  */
 
 import type {
@@ -263,64 +263,137 @@ function structInitializersIn(expr: Expression): StructInitializerExpression[] {
 }
 
 /**
- * The UNION an initial value `value` of type `ref` would set, looking through
- * aliases, arrays and the elements of structure initializers; else undefined.
+ * One problem with an initial value that sets a UNION: `value` is the
+ * expression to report at, `message` the diagnostic.
  */
-function unionInitialized(
+interface UnionInitProblem {
+  value: Expression;
+  message: string;
+}
+
+/**
+ * Collect the problems of initial value `value` of type `ref` where it sets a
+ * UNION, looking through aliases, arrays, STRUCT elements and FB inputs. A
+ * UNION takes a structure initializer naming exactly one member; that
+ * member's value is checked in turn. Any other value for a UNION is refused.
+ */
+function collectUnionInitProblems(
   ref: TypeReference,
   value: Expression,
   index: UnitIndex,
   depth: number,
-): string | undefined {
-  if (depth > 32) return undefined;
-  if ((ref.referenceKind ?? "none") !== "none") return undefined;
+  out: UnionInitProblem[],
+): void {
+  if (depth > 32) return;
+  if ((ref.referenceKind ?? "none") !== "none") return;
   if (ref.arrayDimensions && ref.elementTypeName !== undefined) {
-    if ((ref.elementReferenceChain ?? []).length > 0) return undefined;
-    return unionInitializedByName(ref.elementTypeName, value, index, depth);
+    if ((ref.elementReferenceChain ?? []).length > 0) return;
+    const elementName = ref.elementTypeName;
+    forEachArrayElement(value, (element) =>
+      collectNamedProblems(elementName, element, index, depth + 1, out),
+    );
+    return;
   }
-  return unionInitializedByName(ref.name, value, index, depth);
+  collectNamedProblems(ref.name, value, index, depth, out);
 }
 
-/** {@link unionInitialized} for a type given by name. */
-function unionInitializedByName(
+/** Calls `fn` for each element of an array initial value, through nested array literals. */
+function forEachArrayElement(
+  value: Expression,
+  fn: (element: Expression) => void,
+): void {
+  if (value.kind !== "ArrayLiteralExpression") {
+    fn(value);
+    return;
+  }
+  for (const element of value.elements) forEachArrayElement(element, fn);
+}
+
+/** {@link collectUnionInitProblems} for a type given by name. */
+function collectNamedProblems(
   name: string,
   value: Expression,
   index: UnitIndex,
   depth: number,
-): string | undefined {
+  out: UnionInitProblem[],
+): void {
   const decl = index.resolve(name);
   const def = decl?.definition;
-  if (decl && def && isUnionDefinition(def)) return decl.name;
+  if (decl && def && isUnionDefinition(def)) {
+    if (value.kind !== "StructInitializerExpression") {
+      out.push({
+        value,
+        message: `An initial value for UNION '${decl.name}' is not supported yet: name one member, as in (${def.fields[0]?.names[0] ?? "member"} := value)`,
+      });
+      return;
+    }
+    if (value.elements.length !== 1) {
+      out.push({
+        value,
+        message: `The initial value for UNION '${decl.name}' names ${value.elements.length} members: a UNION initial value sets one member`,
+      });
+      return;
+    }
+    const named = value.elements[0]!.name;
+    const upper = named.toUpperCase();
+    if (
+      !def.fields.some((f) => f.names.some((n) => n.toUpperCase() === upper))
+    ) {
+      out.push({
+        value,
+        message: `UNION '${decl.name}' has no member '${named}'`,
+      });
+      return;
+    }
+    collectFieldProblems(def.fields, value, index, depth, out);
+    return;
+  }
   if (def?.kind === "ArrayDefinition") {
-    return unionInitialized(def.elementType, value, index, depth + 1);
+    const elementType = def.elementType;
+    forEachArrayElement(value, (element) =>
+      collectUnionInitProblems(elementType, element, index, depth + 1, out),
+    );
+    return;
   }
   if (def?.kind === "TypeReference") {
-    return unionInitialized(def, value, index, depth + 1);
+    collectUnionInitProblems(def, value, index, depth + 1, out);
+    return;
   }
   const fields =
     def?.kind === "StructDefinition"
       ? def.fields
       : index.fbInputs.get(name.toUpperCase());
-  if (!fields) return undefined;
+  if (!fields) return;
   for (const init of structInitializersIn(value)) {
-    for (const element of init.elements) {
-      const upper = element.name.toUpperCase();
-      const field = fields.find((f) =>
-        f.names.some((n) => n.toUpperCase() === upper),
-      );
-      if (!field) continue;
-      const hit = unionInitialized(field.type, element.value, index, depth + 1);
-      if (hit !== undefined) return hit;
-    }
+    collectFieldProblems(fields, init, index, depth, out);
   }
-  return undefined;
+}
+
+/** The problems in the element values of `init`, by each element's field type. */
+function collectFieldProblems(
+  fields: readonly VarDeclaration[],
+  init: StructInitializerExpression,
+  index: UnitIndex,
+  depth: number,
+  out: UnionInitProblem[],
+): void {
+  for (const element of init.elements) {
+    const upper = element.name.toUpperCase();
+    const field = fields.find((f) =>
+      f.names.some((n) => n.toUpperCase() === upper),
+    );
+    if (!field) continue;
+    collectUnionInitProblems(field.type, element.value, index, depth + 1, out);
+  }
 }
 
 /**
- * Refuse an initial value that sets a UNION: a variable's, a STRUCT field's, a
+ * Check an initial value that sets a UNION: a variable's, a STRUCT field's, a
  * TYPE's default, also nested in a structure initializer or an array literal.
- * Members of a UNION are left to {@link validateUnionTypes}. A default shared
- * by several declarations (Annex B.1.3.3) is reported once.
+ * It must be a structure initializer naming exactly one member, `(f := 1.0)`,
+ * which writes that member into the zero-initialised storage. Members of a
+ * UNION are left to {@link validateUnionTypes}. A default shared by several
+ * declarations (Annex B.1.3.3) is reported once.
  */
 export function validateUnionInitializers(
   ast: CompilationUnit,
@@ -330,14 +403,13 @@ export function validateUnionInitializers(
   const index = new UnitIndex(ast);
   const reported = new Set<Expression>();
   const check = (ref: TypeReference, value: Expression): void => {
-    if (reported.has(value)) return;
-    const union = unionInitialized(ref, value, index, 0);
-    if (union === undefined) return;
-    reported.add(value);
-    report(
-      `An initial value for UNION '${union}' is not supported yet`,
-      value.sourceSpan,
-    );
+    const problems: UnionInitProblem[] = [];
+    collectUnionInitProblems(ref, value, index, 0, problems);
+    for (const problem of problems) {
+      if (reported.has(problem.value)) continue;
+      reported.add(problem.value);
+      report(problem.message, problem.value.sourceSpan);
+    }
   };
   walkAST(ast, (node) => {
     if (node.kind === "TypeDeclaration") {

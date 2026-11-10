@@ -312,10 +312,15 @@ END_TYPE
   declares no members: a UNION needs at least one`; at EXTENDS, `UNION 'U_X' cannot use EXTENDS: only a
   STRUCT may extend another type`; and a STRUCT cannot extend a UNION: `STRUCT 'ST_Y' cannot extend
   'U_A', a UNION: the base must be a STRUCT`.
-- Initial values are not supported yet: `Member 'F' of UNION 'U_A' has an initial value: initial values in
-  a UNION are not supported yet`, and any initial value that sets a UNION (a variable's, a STRUCT field's,
-  a TYPE default, an FB input's, also inside a structure initializer or an array literal): `An initial
-  value for UNION 'U_A' is not supported yet`.
+- An initial value that sets a UNION (a variable's, a STRUCT field's, a TYPE default, an FB input's, also
+  inside a structure initializer or an array literal) is a structure initializer naming one member,
+  `u : U_A := (f := 1.0);`: the storage is zeroed and that member written into it, so the other bytes stay
+  zero. More than one member is an error (`The initial value for UNION 'U_A' names 2 members: a UNION
+  initial value sets one member`), as are an unknown member (`UNION 'U_A' has no member 'ZZ'`) and any
+  other value, such as another UNION variable (`An initial value for UNION 'U_A' is not supported yet:
+  name one member, as in (F := value)`). A member's initial value in the UNION declaration itself is not
+  supported yet: `Member 'F' of UNION 'U_A' has an initial value: initial values in a UNION are not
+  supported yet`.
 - The language server outlines a UNION with the detail `UNION` and shows `UNION ... END_UNION` on hover.
 
 `fb_init` is in neither the default set nor `iec-3`. IEC 61131-3 Ed. 3 initialises an instance with `:=`

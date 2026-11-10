@@ -42,7 +42,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 
 | Type | Notes |
 |------|-------|
-| UNION | An extension (IEC 61131-3 Ed. 3 has no UNION; its overlay form is `STRUCT OVERLAP`, 6.4.4.7, not supported): the feature `union` (refused with no dialect flag and under `--dialect iec-3`). Parsed, analysed and compiled to C++ as one shared storage (host byte order, little-endian assumed). Members must be data and take no initial value yet; a UNION is assignment-compatible only with itself. Not supported yet at compile: REF/REF= of a member, a REFERENCE TO stored in a UNION, a library STRUCT member, RETAIN; members cannot be forced and the debug table leaves a UNION out, see [DIALECTS.md](DIALECTS.md) |
+| UNION | An extension (IEC 61131-3 Ed. 3 has no UNION; its overlay form is `STRUCT OVERLAP`, 6.4.4.7, not supported): the feature `union` (refused with no dialect flag and under `--dialect iec-3`). Parsed, analysed and compiled to C++ as one shared storage (host byte order, little-endian assumed). Members must be data and take no initial value in the declaration; an initial value of a UNION names one member, `(f := 1.0)`, written into zeroed storage; a UNION is assignment-compatible only with itself. Not supported yet at compile: REF/REF= of a member, a REFERENCE TO stored in a UNION, a library STRUCT member, RETAIN; members cannot be forced and the debug table leaves a UNION out, see [DIALECTS.md](DIALECTS.md) |
 
 ## Program Organization Units
 
@@ -227,7 +227,7 @@ edges on `CU` and `CD` leave `CV` unchanged. CODESYS does not document that case
 
 | Feature | Notes |
 |---------|-------|
-| UNION (parts) | Initial values, forcing and debugging of members, RETAIN, REF/REF= of a member, REFERENCE TO members (see above) |
+| UNION (parts) | Member initial values in the UNION declaration, an initial value other than one named member, forcing and debugging of members, RETAIN, REF/REF= of a member, REFERENCE TO members (see above) |
 | FB_exit | Destructor lifecycle method (FB_init is supported with the feature `fb_init`, see above) |
 | __QUERYINTERFACE | Runtime interface query |
 | Bit access (var.%X0) | Individual bit addressing |
