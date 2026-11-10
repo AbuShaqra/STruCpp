@@ -3,7 +3,7 @@
  * for a PROGRAM or FB member, a FUNCTION or METHOD local and a global. The
  * pointer is bound when its holder is created. A target that would not exist
  * yet where the pointer is created (a later local of the same FUNCTION or
- * METHOD, a later global) is refused.
+ * METHOD) is refused; globals are created in dependency order.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -132,16 +132,19 @@ TYPE ST : STRUCT x : INT; END_STRUCT END_TYPE`),
     ]);
   });
 
-  it("refuses a later global", () => {
-    expect(
-      errorsFor(`VAR_GLOBAL
+  it("accepts a later global, which is created first", () => {
+    const r = compile(
+      `VAR_GLOBAL
   gq : POINTER TO INT := ADR(glater);
   glater : INT;
 END_VAR
-PROGRAM Main END_PROGRAM`),
-    ).toEqual([
-      "The initial value of 'GQ' takes the address of 'GLATER', which is declared after it; declare 'GLATER' first or assign 'GQ' in the body",
-    ]);
+PROGRAM Main END_PROGRAM`,
+      {},
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.headerCode.indexOf("inline IEC_INT GLATER")).toBeLessThan(
+      r.headerCode.indexOf("inline IEC_Ptr<INT_t> GQ"),
+    );
   });
 
   it("refuses the address of the pointer itself", () => {
