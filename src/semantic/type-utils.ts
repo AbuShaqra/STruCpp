@@ -760,6 +760,24 @@ export function evalIntConst(e: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * The base an enumeration without a declared one is stored as: INT, or DINT
+ * when a value lies outside the INT range or is not a constant this can fold.
+ * Implicit values continue from the previous member, as in C++.
+ */
+export function implicitEnumBaseName(
+  members: ReadonlyArray<{ value?: unknown }>,
+): "INT" | "DINT" {
+  let next = 0;
+  for (const member of members) {
+    const value =
+      member.value === undefined ? next : evalIntConst(member.value);
+    if (value === undefined || value < -32768 || value > 32767) return "DINT";
+    next = value + 1;
+  }
+  return "INT";
+}
+
 /** One declared array dimension; `null` when its extent isn't known statically. */
 export type ArrayDimExtent = { start: number; end: number } | null;
 

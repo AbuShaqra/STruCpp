@@ -32,7 +32,11 @@ import { getProjectNamespace } from "../project-model.js";
 import { programsReachedByName } from "../semantic/program-access.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import { isElementaryType } from "../semantic/type-registry.js";
-import { evalIntConst, MAX_TYPE_ALIAS_DEPTH } from "../semantic/type-utils.js";
+import {
+  evalIntConst,
+  implicitEnumBaseName,
+  MAX_TYPE_ALIAS_DEPTH,
+} from "../semantic/type-utils.js";
 import { formatArrayElementAccess } from "./codegen-utils.js";
 import { mangledMemberName } from "./member-mangling.js";
 import { globalCppName } from "./global-naming.js";
@@ -662,8 +666,10 @@ export function generateDebugTable(
       }
       if (def.kind === "EnumDefinition") {
         // Enums are stored as their base type; treat as a scalar whose tag
-        // matches the base. Default INT if no baseType.
-        const baseName = def.baseType?.name?.toUpperCase() ?? "INT";
+        // matches the base. Without one, the base codegen picks (INT or DINT).
+        const baseName =
+          def.baseType?.name?.toUpperCase() ??
+          implicitEnumBaseName(def.members);
         if (IEC_NAME_TO_TAG[baseName] !== undefined) {
           addLeaf(path, cppExpr, baseName, flags);
           return;
@@ -996,6 +1002,11 @@ export function generateDebugTable(
     }
   }
 
+  // Arrays filled so far hold globals only: the first program instance starts
+  // a new array unless the current one is still empty.
+  const globalArrayCount =
+    tail().length > 0 ? arrays.length : arrays.length - 1;
+
   // Walk configurations → resources → tasks → instances.
   for (const config of projectModel.configurations) {
     for (const resource of config.resources) {
@@ -1047,6 +1058,7 @@ export function generateDebugTable(
   const retainLayoutHash = retainLayoutHashOf(retainVars);
   const debugTableCpp = renderCpp(
     arrays,
+    arrays.map((_, i) => i < globalArrayCount),
     configGlobal,
     configName,
     retainVars,
@@ -1088,6 +1100,7 @@ export function generateDebugTable(
 
 function renderCpp(
   arrays: Entry[][],
+  globalArrays: boolean[],
   configGlobal: string,
   configName: string,
   retainVars: Array<{ arrayIdx: number; elemIdx: number; path: string }>,
@@ -1159,6 +1172,19 @@ function renderCpp(
   lines.push("");
 
   lines.push(`const uint8_t debug_array_count = ${arrays.length};`);
+  lines.push("");
+
+  // Which arrays hold configuration globals and which a program instance's
+  // variables: the force table applies a global's force from every task.
+  lines.push(
+    `const uint8_t debug_array_kind[${arrays.length}] STRUCPP_DEBUG_FLASH = {`,
+  );
+  for (const isGlobal of globalArrays) {
+    lines.push(
+      `    ${isGlobal ? "DEBUG_ARRAY_GLOBAL" : "DEBUG_ARRAY_PROGRAM"},`,
+    );
+  }
+  lines.push("};");
   lines.push("");
 
   // --- Retain table --------------------------------------------------------

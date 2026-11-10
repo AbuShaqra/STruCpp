@@ -60,6 +60,7 @@ Program_MAIN::Program_MAIN()
 }
 
 void Program_MAIN::run() {
+    force::Scope __force_scope(this, sizeof(*this));
     FB();
     FB.ENO = true;
     X = FB.BUMP();
