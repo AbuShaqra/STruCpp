@@ -1022,6 +1022,8 @@ export class ASTBuilder {
     if (!simpleEnumNode) return undefined;
     const children = simpleEnumNode.children as CstChildren;
     if (!children.Assign) return undefined;
+    const qualified = getFirstToken(children.EnumLiteral);
+    if (qualified) return this.buildEnumLiteralExpression(qualified);
     // The enum members are Identifier tokens too; the default is the last one,
     // the only Identifier that follows the Assign token.
     const assign = getFirstToken(children.Assign);
@@ -1142,11 +1144,16 @@ export class ASTBuilder {
       };
     }
 
-    // Check for default value: := DefaultValue
+    // Check for default value: := DefaultValue or := Type#DefaultValue
     let defaultValue: string | undefined;
     const identifiers = getAllTokens(children.Identifier);
+    const qualified = getFirstToken(children.EnumLiteral);
     if (identifiers.length > 0) {
       defaultValue = identifiers[0]?.image;
+    } else if (qualified) {
+      defaultValue = qualified.image.substring(
+        qualified.image.indexOf("#") + 1,
+      );
     }
 
     return {
