@@ -443,8 +443,7 @@ END_PROGRAM`,
     ]);
   });
 
-  it("leaves an argument of an unrelated plain STRUCT as today", () => {
-    // Accepted by the analyzer today (and refused by the C++ compiler); not narrowed here.
+  it("refuses an argument of an unrelated plain STRUCT", () => {
     expect(
       messages(
         `TYPE ST_A : STRUCT a1 : INT; END_STRUCT; ST_C : STRUCT a1 : INT; END_STRUCT; END_TYPE
@@ -452,7 +451,10 @@ FUNCTION F_A : INT VAR_INPUT x : ST_A; END_VAR F_A := 1; END_FUNCTION
 PROGRAM P VAR c : ST_C; i : INT; END_VAR i := F_A(x := c); i := F_A(c); END_PROGRAM`,
         ON,
       ),
-    ).toEqual([]);
+    ).toEqual([
+      "3:56 Cannot assign ST_C to parameter 'X' of type ST_A",
+      "3:69 Cannot assign ST_C to parameter 'X' of type ST_A",
+    ]);
   });
 
   it("accepts the same type and member-wise copies", () => {

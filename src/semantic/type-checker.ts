@@ -2360,19 +2360,6 @@ export class TypeChecker {
       : `a structured variable is assignment-compatible only with the same type (${pair})`;
   }
 
-  /** A TYPE of this unit declared `EXTENDS` (feature struct_extends). */
-  private isDerivedStruct(name: string): boolean {
-    const upper = name.toUpperCase();
-    return (
-      this.ast?.types.some(
-        (t) =>
-          t.name.toUpperCase() === upper &&
-          t.definition.kind === "StructDefinition" &&
-          t.extends !== undefined,
-      ) ?? false
-    );
-  }
-
   /** A UNION TYPE of this unit (feature union). */
   private isUnionType(name: string): boolean {
     const upper = name.toUpperCase();
@@ -2476,7 +2463,7 @@ export class TypeChecker {
 
   /**
    * An argument of one STRUCT type bound to a VAR_INPUT or VAR_IN_OUT of
-   * another, when either is a derived STRUCT. Other STRUCT pairs are left as before.
+   * another (aliases name the same type). Only STRUCTs this compile declares.
    */
   private validateStructArguments(
     inputs: CallInput[] | undefined,
@@ -2507,8 +2494,16 @@ export class TypeChecker {
         );
         return;
       }
-      if (!this.isStructType(source) || !this.isStructType(target)) return;
-      if (!this.isDerivedStruct(source) && !this.isDerivedStruct(target)) {
+      if (
+        this.aliasTarget(source).toUpperCase() ===
+        this.aliasTarget(target).toUpperCase()
+      ) {
+        return;
+      }
+      if (
+        !this.isStructType(this.aliasTarget(source)) ||
+        !this.isStructType(this.aliasTarget(target))
+      ) {
         return;
       }
       const related = this.structRelation(target, source);
