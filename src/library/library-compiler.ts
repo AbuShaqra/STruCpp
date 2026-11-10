@@ -29,11 +29,13 @@ import {
 import type {
   LibraryFBEntry,
   LibraryManifest,
+  LibraryMethodEntry,
   LibraryVarType,
 } from "./library-manifest.js";
 import type {
   Expression,
   FunctionBlockDeclaration,
+  MethodDeclaration,
   TypeReference,
   VarBlock,
   VarDeclaration,
@@ -105,6 +107,42 @@ function serializeVarType(
     entry.referenceChain = typeRef.referenceChain;
   }
   return entry;
+}
+
+/** A method of a library FB for the manifest: its signature, no body. */
+function serializeMethod(method: MethodDeclaration): LibraryMethodEntry {
+  const parameters = method.varBlocks.flatMap((block) => {
+    const direction =
+      block.blockType === "VAR_INPUT"
+        ? ("input" as const)
+        : block.blockType === "VAR_OUTPUT"
+          ? ("output" as const)
+          : block.blockType === "VAR_IN_OUT"
+            ? ("inout" as const)
+            : undefined;
+    if (direction === undefined) return [];
+    return block.declarations.flatMap((decl) => {
+      const initialValue =
+        direction === "input" && decl.initialValue !== undefined
+          ? serializeInitialValue(decl.initialValue)
+          : undefined;
+      return decl.names.map((name) => ({
+        ...serializeVarType(name, decl.type),
+        direction,
+        ...(initialValue !== undefined ? { initialValue } : {}),
+      }));
+    });
+  });
+  return {
+    name: method.name,
+    ...(method.returnType
+      ? { returnType: serializeVarType(method.name, method.returnType) }
+      : {}),
+    parameters,
+    ...(method.visibility !== "PUBLIC"
+      ? { visibility: method.visibility }
+      : {}),
+  };
 }
 
 /**
@@ -685,6 +723,7 @@ export function compileLibrary(
               ...(fb.varBlocks.some((b) => b.blockType === "VAR_IN_OUT")
                 ? { inoutByReference: true as const }
                 : {}),
+              methods: fb.methods.map(serializeMethod),
               // The block's own VAR members, declared the same way the
               // interface arrays above are. A RETAINed instance retains these
               // too; without them a retained TON keeps Q and ET and loses the

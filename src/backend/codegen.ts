@@ -76,6 +76,7 @@ import {
   storedInstance,
 } from "../semantic/fb-init.js";
 import { wrapReferenceChain } from "./reference-types.js";
+import { libraryMethodDeclarations } from "../library/library-methods.js";
 import { TypeCodeGenerator, IEC_TO_CPP_VAR_TYPE } from "./type-codegen.js";
 import {
   formatArrayType,
@@ -594,6 +595,9 @@ export class CodeGenerator {
   /** Lazily built set of file-level VAR_GLOBAL names (see fileScopeGlobalNames). */
   private fileScopeGlobalNameCache?: Set<string>;
 
+  /** UPPER library FB name → its methods, from archives that list them. */
+  private libraryMethods: Map<string, MethodDeclaration[]> = new Map();
+
   /** Library FB field type map: "FBNAME.FIELDNAME" → type name (for field mangling in test codegen) */
   private libraryFBFieldTypes: Map<string, string> = new Map();
 
@@ -1032,6 +1036,12 @@ export class CodeGenerator {
    */
   registerLibraryArchives(archives: StlibArchive[]): void {
     for (const archive of archives) {
+      for (const fb of archive.manifest.functionBlocks) {
+        const methods = libraryMethodDeclarations(fb);
+        if (methods !== undefined && methods.length > 0) {
+          this.libraryMethods.set(fb.name.toUpperCase(), methods);
+        }
+      }
       this.registerLibraryFBTypes(
         archive.manifest.functionBlocks.map((fb) => {
           const mapVar = (v: LibraryField): LibraryField => {
@@ -6535,7 +6545,12 @@ export class CodeGenerator {
         fb ??
         this.ast.programs.find((p) => p.name.toUpperCase() === current) ??
         this.ast.interfaces.find((i) => i.name.toUpperCase() === current);
-      if (!owner) return undefined;
+      if (!owner) {
+        // A library FB from an archive that lists its methods
+        return this.libraryMethods
+          .get(current)
+          ?.find((m) => m.name.toUpperCase() === methodUpper);
+      }
       const found = owner.methods.find(
         (m) => m.name.toUpperCase() === methodUpper,
       );

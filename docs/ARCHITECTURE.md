@@ -70,6 +70,7 @@ src/
     library-manifest.ts      StlibArchive and LibraryManifest interfaces
     library-compiler.ts      Compile ST sources into .stlib archives
     library-loader.ts        Load, discover, and register library symbols
+    library-methods.ts       Method declarations of a library FB, rebuilt from its manifest entry
     library-utils.ts         File discovery, namespace extraction
     builtin-stdlib.ts        C++ runtime standard function manifest
     codesys-import/          CODESYS V2.3 (.lib) and V3 (.library) import
@@ -191,7 +192,7 @@ Libraries use a single-file `.stlib` archive format (JSON):
 
 ### Library Compilation
 
-`compileStlib()` compiles ST sources into a `.stlib` archive: parse -> codegen -> extract manifest from AST -> bundle C++ output + optional sources. Dependencies are flattened (transitive closure) and their C++ preambles are stripped to avoid duplication when consumers load them separately.
+`compileStlib()` compiles ST sources into a `.stlib` archive: parse -> codegen -> extract manifest from AST -> bundle C++ output + optional sources. Dependencies are flattened (transitive closure) and their C++ preambles are stripped to avoid duplication when consumers load them separately. Each function block entry lists its methods (`methods`: name, return type, parameters in C++ order with input defaults, visibility), so a consumer binds `inst.M(...)` arguments by name and fills omitted inputs; an archive built before that has no `methods`, and its method calls pass their arguments through as written.
 
 ### CODESYS Import
 
