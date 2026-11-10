@@ -78,8 +78,8 @@ alignment (`STRUCT a : BYTE; b : WORD; c : BOOL; END_STRUCT` is 6 bytes; on AVR
 everything is 1-byte aligned), an enumeration without a declared base is an
 `INT`, and `SIZEOF` returns those sizes. A `POINTER TO` of another shape reads
 and writes the target's real bytes: a `DWORD` as `ARRAY[0..3] OF BYTE`, a
-`REAL` as a `DWORD`, a `STRUCT` as bytes. (STRING / WSTRING still carry a stored
-length after their characters.)
+`REAL` as a `DWORD`, a `STRUCT` as bytes. A STRING is its characters and a NUL
+(see String Types).
 
 ### Pointer punning and strict aliasing
 
@@ -168,20 +168,31 @@ Used by standard function templates for type-safe dispatch.
 ```cpp
 template<size_t N = 254>
 class IECString {
-    char data_[N + 1];
-    size_t len_;
+    char data_[N + 1];       // NUL-terminated; nothing else
     // ...
 };
 
 template<size_t N = 254>
 class IECWString {
-    char32_t data_[N + 1];
-    size_t len_;
+    char16_t data_[N + 1];   // NUL-terminated UTF-16 code units
     // ...
 };
 ```
 
-Fixed-capacity strings matching IEC semantics. `N` defaults to 254 (IEC standard) but can be parameterized via `STRING(100)` declarations. String functions (LEFT, RIGHT, MID, CONCAT, FIND, etc.) have explicit overloads for `IECString<N>` to work around C++ template deduction limitations with implicit conversions.
+Fixed-capacity strings laid out as on a PLC: `STRING(N)` is `N + 1` bytes and
+`WSTRING(N)` is `2 * (N + 1)`, so `SIZEOF(STRING(80))` is 81. There is no stored
+length: the length is the position of the first NUL, at most `N` (`memchr` for
+STRING). Characters and a 0 written through a `POINTER TO ARRAY OF BYTE` over a
+string therefore change what `LEN` reports, and a string ends at an embedded
+`$00`. A constructed string is zero past its terminator. Comparisons and
+searches are bounded by the lengths, and every runtime operation that writes a
+string re-terminates it. `N` defaults to 254 but can be parameterized via
+`STRING(100)` declarations. String functions (LEFT, RIGHT, MID, CONCAT, FIND,
+etc.) have explicit overloads for `IECString<N>` to work around C++ template
+deduction limitations with implicit conversions.
+
+`IECStringVar<N>` / `IECWStringVar<N>`, the type of a STRING / WSTRING variable,
+hold exactly one `IECString<N>` / `IECWString<N>`.
 
 ## Array Types (`iec_array.hpp`)
 
