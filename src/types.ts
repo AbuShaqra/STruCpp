@@ -127,6 +127,13 @@ export interface CompileOptions {
    * Production compiles leave it off and see no output change.
    */
   emitChunkMarkers?: boolean;
+
+  /**
+   * Keep each POU's declared name in the C++ even when it collides with a
+   * runtime function (normally emitted as `NAME_`). The library compiler sets
+   * it: an archive's chunks and manifest are keyed by the declared names.
+   */
+  cppNamesAsDeclared?: boolean;
 }
 
 /**

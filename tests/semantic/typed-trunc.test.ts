@@ -130,7 +130,7 @@ END_FUNCTION
 ${prog("i : INT;", "i := TRUNC_INT(1, 2);")}`;
     const r = compile(src, { libraries });
     expect(r.errors).toEqual([]);
-    expect(r.cppCode).toContain("TRUNC_INT(");
+    expect(r.cppCode).toContain("TRUNC_INT_(1, 2)");
     expect(r.cppCode).not.toContain("IEC_REAL(");
   });
 });
