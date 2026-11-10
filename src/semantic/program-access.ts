@@ -296,6 +296,65 @@ export function findProgramSelfCalls(
   return found;
 }
 
+/**
+ * `PRG_A.x` and `PRG_A.fb(...)` written inside PRG_A itself (its body, methods
+ * and actions; feature program_methods) name the program's own member, so
+ * they are rewritten in place to `x` and `fb(...)`. Not rewritten: a POU
+ * declaring a name PRG_A, or a method declaring a local of the member's name.
+ */
+export function lowerProgramSelfMembers(ast: CompilationUnit): void {
+  for (const prog of ast.programs) {
+    const own = prog.name.toUpperCase();
+    const members = declaredNames(prog.varBlocks);
+    if (members.has(own)) continue;
+    const units = [
+      { body: prog.body, locals: new Set<string>() },
+      ...prog.methods.map((m) => ({
+        body: m.body,
+        locals: declaredNames(m.varBlocks),
+      })),
+    ];
+    for (const { body, locals } of units) {
+      if (locals.has(own)) continue;
+      const isMember = (name: string): boolean => {
+        const upper = name.toUpperCase();
+        return members.has(upper) && !locals.has(upper);
+      };
+      for (const stmt of body) {
+        walkAST(stmt, (node) => {
+          if (node.kind === "VariableExpression") {
+            const expr = node as VariableExpression;
+            const field = firstField(expr);
+            if (
+              expr.name.toUpperCase() !== own ||
+              field === undefined ||
+              !isMember(field)
+            ) {
+              return;
+            }
+            expr.name = field;
+            expr.fieldAccess = expr.fieldAccess.slice(1);
+            const rest = expr.accessChain?.slice(1) ?? [];
+            if (rest.length > 0) expr.accessChain = rest;
+            else delete expr.accessChain;
+          } else if (node.kind === "FunctionCallExpression") {
+            const call = node as FunctionCallExpression;
+            if (call.instance !== undefined) return;
+            const parts = call.functionName.split(".");
+            if (
+              parts.length === 2 &&
+              parts[0]!.toUpperCase() === own &&
+              isMember(parts[1]!)
+            ) {
+              call.functionName = parts[1]!;
+            }
+          }
+        });
+      }
+    }
+  }
+}
+
 /** Upper-case names of the PROGRAMs reached by name from another POU. */
 export function programsReachedByName(ast: CompilationUnit): Set<string> {
   return new Set(findProgramReaches(ast).map((r) => r.program));
