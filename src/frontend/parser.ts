@@ -826,7 +826,7 @@ export class STParser extends CstParser {
   /**
    * Simple enumeration type definition: (RED, YELLOW, GREEN)
    * Optionally with default value: (RED, YELLOW, GREEN) := RED, or the
-   * type-qualified := E_Color#RED
+   * type-qualified := E_Color#RED or := E_Color.RED
    * Optionally with a base type after the list: (RED, GREEN) DINT := RED.
    * That order is gated by the feature postfix_enum_base in the analyzer.
    */
@@ -847,7 +847,16 @@ export class STParser extends CstParser {
     this.OPTION(() => {
       this.CONSUME(tokens.Assign);
       this.OR([
-        { ALT: (): IToken => this.CONSUME(tokens.Identifier) },
+        {
+          ALT: (): void => {
+            this.CONSUME(tokens.Identifier);
+            // Dotted default: (RED, GREEN) := E_Color.RED
+            this.OPTION3(() => {
+              this.CONSUME(tokens.Dot);
+              this.CONSUME2(tokens.Identifier);
+            });
+          },
+        },
         // Type-qualified default: (RED, GREEN) := E_Color#RED
         { ALT: (): IToken => this.CONSUME(tokens.EnumLiteral) },
       ]);
