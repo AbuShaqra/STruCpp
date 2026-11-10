@@ -4500,7 +4500,7 @@ export class CodeGenerator {
     indent: string,
   ): void {
     const target = this.generateExpression(stmt.target);
-    const source = this.generateExpression(stmt.source);
+    const source = this.addressedOperand(stmt.source, "REF=", stmt);
     const targetKind =
       stmt.target.kind === "VariableExpression"
         ? this.refAssignTargetKind(stmt.target)
@@ -4882,7 +4882,7 @@ export class CodeGenerator {
           this.generateMethodCallExpression(expr),
         );
       case "RefExpression":
-        return `REF(${this.generateExpression(expr.operand)})`;
+        return `REF(${this.addressedOperand(expr.operand, "REF", expr)})`;
       case "DrefExpression":
         return `${this.generateExpression(expr.operand)}.deref()`;
       case "NewExpression": {
@@ -5194,7 +5194,70 @@ export class CodeGenerator {
       }
     }
 
+    if (this.reachesThroughReference(expr)) result = `${result}.target()`;
     return this.renderAccessTail(result, expr, nameUpper);
+  }
+
+  /**
+   * The object REF / ADR / REF= takes the address of: a shared global's
+   * canonical storage (`g->value`, unlocked, with a warning), else the
+   * operand as an lvalue.
+   */
+  private addressedOperand(
+    operand: Expression,
+    what: string,
+    at: { sourceSpan: SourceSpan },
+  ): string {
+    if (
+      operand.kind === "VariableExpression" &&
+      !operand.isDereference &&
+      this.programExternals.has(operand.name.toUpperCase())
+    ) {
+      this.codegenWarnings.push({
+        message:
+          `${what} of the shared global '${operand.name}': in a build with STRUCPP_THREADED, ` +
+          `accesses through the result are not serialized by the global's lock, ` +
+          `so another task using '${operand.name}' at the same time races with them`,
+        line: at.sourceSpan.startLine,
+        column: at.sourceSpan.startCol,
+        file: at.sourceSpan.file,
+      });
+      return this.renderInOutBound(operand);
+    }
+    return what === "ADR"
+      ? this.generateLvalue(operand)
+      : this.generateExpression(operand);
+  }
+
+  /**
+   * `r.member` / `r[i]` on a REFERENCE TO variable of the scope: the access
+   * applies to the bound object (`r.target()`), not to the reference.
+   */
+  private reachesThroughReference(expr: VariableExpression): boolean {
+    const upper = expr.name.toUpperCase();
+    if (
+      this.currentScopeVarRefKinds.get(upper) !== "reference_to" ||
+      this.isCurrentFunctionResult(upper) ||
+      expr.isDereference
+    ) {
+      return false;
+    }
+    const first = expr.accessChain?.[0];
+    if (first !== undefined) {
+      return (
+        first.kind === "subscript" ||
+        (first.kind === "field" &&
+          !/^\d+$/.test(first.name) &&
+          !(expr.namedBitIndex === true && expr.accessChain!.length === 1))
+      );
+    }
+    if (expr.subscripts.length > 0) return true;
+    const field = expr.fieldAccess[0];
+    return (
+      field !== undefined &&
+      !/^\d+$/.test(field) &&
+      !(expr.namedBitIndex === true && expr.fieldAccess.length === 1)
+    );
   }
 
   /**
@@ -6104,7 +6167,10 @@ export class CodeGenerator {
               : varType !== undefined &&
                   this.memberMangledNames.has(prefix.toUpperCase())
                 ? instance()
-                : prefix;
+                : this.currentScopeVarRefKinds.get(prefix.toUpperCase()) ===
+                    "reference_to"
+                  ? `${instance()}.target()`
+                  : prefix;
         return `${receiver}.${resolvedMethod}(${args.join(", ")})`;
       }
     }
@@ -6121,7 +6187,9 @@ export class CodeGenerator {
 
     // 0. ADR(x) → &(x) (CODESYS address-of operator)
     if (nameUpper === "ADR") {
-      const args = expr.arguments.map((arg) => this.generateLvalue(arg.value));
+      const args = expr.arguments.map((arg) =>
+        this.addressedOperand(arg.value, "ADR", expr),
+      );
       return `&(${args[0] ?? ""})`;
     }
 
@@ -6130,7 +6198,7 @@ export class CodeGenerator {
     // form). Assigning the result to a REF_TO variable binds it.
     if (nameUpper === "REF_LINK") {
       const args = expr.arguments.map((arg) =>
-        this.generateExpression(arg.value),
+        this.addressedOperand(arg.value, "REF_LINK", expr),
       );
       return `REF(${args[0] ?? ""})`;
     }

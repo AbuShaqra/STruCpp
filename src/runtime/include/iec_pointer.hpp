@@ -96,13 +96,38 @@ template<typename T> class IEC_REF_TO;
 template<typename T> class IEC_REFERENCE_TO;
 template<typename T> class IEC_Ptr;
 
+template<size_t MaxLen> class IECString;
+template<size_t MaxLen> class IECWString;
+template<size_t MaxLen> class IECStringVar;
+template<size_t MaxLen> class IECWStringVar;
+
 namespace detail {
 /**
- * The object a REF_TO T points at. A value lives in an IECVar<T>; a reference
- * or pointer variable is the IEC_REF_TO / IEC_REFERENCE_TO / IEC_Ptr object
- * itself, so REF_TO REF_TO INT points at an IEC_REF_TO<INT_t>.
+ * T is a class a variable holds as itself, not in an IECVar<T>: a STRUCT or
+ * a function block (a string value, an IECVar or a reference wrapper is not).
  */
-template<typename T> struct ref_target { using type = IECVar<T>; };
+template<typename T> struct stored_directly : std::is_class<T> {};
+template<typename U> struct stored_directly<IECVar<U>> : std::false_type {};
+template<size_t N> struct stored_directly<IECString<N>> : std::false_type {};
+template<size_t N> struct stored_directly<IECWString<N>> : std::false_type {};
+template<size_t N> struct stored_directly<IECStringVar<N>> : std::false_type {};
+template<size_t N> struct stored_directly<IECWStringVar<N>> : std::false_type {};
+template<typename U> struct stored_directly<IEC_REF_TO<U>> : std::false_type {};
+template<typename U> struct stored_directly<IEC_REFERENCE_TO<U>> : std::false_type {};
+template<typename U> struct stored_directly<IEC_Ptr<U>> : std::false_type {};
+
+/** The variable holding a T: T itself when stored directly, else IECVar<T>. */
+template<typename T> struct value_target {
+    using type = typename std::conditional<stored_directly<T>::value, T, IECVar<T>>::type;
+};
+
+/**
+ * The object a REF_TO T points at. A value lives in an IECVar<T>, a STRUCT or
+ * function block in itself; a reference or pointer variable is the
+ * IEC_REF_TO / IEC_REFERENCE_TO / IEC_Ptr object itself, so REF_TO REF_TO INT
+ * points at an IEC_REF_TO<INT_t>.
+ */
+template<typename T> struct ref_target { using type = typename value_target<T>::type; };
 template<typename U> struct ref_target<IEC_REF_TO<U>> { using type = IEC_REF_TO<U>; };
 template<typename U> struct ref_target<IEC_REFERENCE_TO<U>> { using type = IEC_REFERENCE_TO<U>; };
 template<typename U> struct ref_target<IEC_Ptr<U>> { using type = IEC_Ptr<U>; };
@@ -342,7 +367,9 @@ template<typename T>
 class IEC_REFERENCE_TO {
 public:
     using value_type = T;
-    using pointer_type = IECVar<T>*;
+    /** What the reference is bound to: IECVar<T>, or a STRUCT / function block itself. */
+    using target_type = typename detail::value_target<T>::type;
+    using pointer_type = target_type*;
 
 private:
     pointer_type ptr_;
@@ -366,7 +393,7 @@ public:
     /**
      * Constructor - initialize bound to a variable (REFERENCE TO X := target)
      */
-    explicit IEC_REFERENCE_TO(IECVar<T>& var) noexcept : ptr_(&var) {}
+    explicit IEC_REFERENCE_TO(target_type& var) noexcept : ptr_(&var) {}
 
     // Copy/move - default is fine
     IEC_REFERENCE_TO(const IEC_REFERENCE_TO&) = default;
@@ -377,7 +404,7 @@ public:
     /**
      * Bind to a new variable (REF= operator)
      */
-    void bind(IECVar<T>& var) noexcept { ptr_ = &var; }
+    void bind(target_type& var) noexcept { ptr_ = &var; }
 
     /**
      * Bind to what another reference is bound to (REF= from a reference).
@@ -403,14 +430,14 @@ public:
     /**
      * Get underlying IECVar reference
      */
-    IECVar<T>& target() { return bound(); }
-    const IECVar<T>& target() const { return bound(); }
+    target_type& target() { return bound(); }
+    const target_type& target() const { return bound(); }
 
 private:
     /**
      * The bound target; an unbound reference raises the NullReference fault
      */
-    IECVar<T>& bound() const {
+    target_type& bound() const {
         if (ptr_ == nullptr) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw NullReferenceException("REFERENCE TO");
@@ -545,6 +572,14 @@ inline IEC_REF_TO<IEC_REF_TO<T>> REF(IEC_REF_TO<T>& ref) noexcept {
 template<typename T>
 inline IEC_REF_TO<IEC_Ptr<T>> REF(IEC_Ptr<T>& ptr) noexcept {
     return IEC_REF_TO<IEC_Ptr<T>>(&ptr);
+}
+
+/**
+ * REF() of a STRUCT or function block variable, which holds the value itself.
+ */
+template<typename T, typename std::enable_if<detail::stored_directly<T>::value, int>::type = 0>
+inline IEC_REF_TO<T> REF(T& var) noexcept {
+    return IEC_REF_TO<T>(&var);
 }
 
 // Note: REF() for array elements and struct fields works automatically
