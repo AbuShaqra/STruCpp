@@ -288,9 +288,13 @@ END_PROGRAM
       ]);
     });
 
-    it(`invoking an FB member through a chain is refused clearly (${mode.name})`, () => {
-      expect(messages(program("  mid.h.fb();"), mode.options)).toEqual([
-        `${BODY_LINE}:9 'MID.H.FB' is a member, not a method; invoking a function block through a member chain is not supported`,
+    it(`invoking an FB member through a chain is accepted (${mode.name})`, () => {
+      expect(messages(program("  mid.h.fb();"), mode.options)).toEqual([]);
+    });
+
+    it(`calling a non-FB member through a chain is refused clearly (${mode.name})`, () => {
+      expect(messages(program("  mid.h.v();"), mode.options)).toEqual([
+        `${BODY_LINE}:9 'MID.H.V' is a member that is not a function block instance, not a method`,
       ]);
     });
 

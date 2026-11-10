@@ -1510,12 +1510,24 @@ export class TypeChecker {
       }
     };
     const upper = owner.name.toUpperCase();
+    const member =
+      owner.referenceKind === "none"
+        ? this.lookupMember(owner.name, expr.methodName)
+        : undefined;
+    // `a.b.fb(args)`: invoking a function block instance held in a member
     if (
-      owner.referenceKind === "none" &&
-      this.lookupMember(owner.name, expr.methodName) !== undefined
+      member !== undefined &&
+      member.type.referenceKind === "none" &&
+      member.type.arrayDimensions === undefined &&
+      (this.callTargetKind(member.type) === "fb" ||
+        this.symbolTables.lookupFunctionBlock(member.type.name) !== undefined)
     ) {
+      expr.fbInstanceCall = true;
+      return undefined;
+    }
+    if (member !== undefined) {
       error(
-        `'${this.chainText(object)}.${expr.methodName}' is a member, not a method; invoking a function block through a member chain is not supported`,
+        `'${this.chainText(object)}.${expr.methodName}' is a member that is not a function block instance, not a method`,
         expr.methodNameSpan ?? expr.sourceSpan,
       );
       return undefined;
