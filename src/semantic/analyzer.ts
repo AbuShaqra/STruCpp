@@ -1581,15 +1581,20 @@ export class SemanticAnalyzer {
         for (const name of decl.names) {
           try {
             const varType = this.resolveVarType(decl.type.name);
+            // A user global shadows a same-named library symbol.
+            const scope = this.symbolTables.globalScope;
+            const define = scope.definedByLibrary(name)
+              ? scope.defineOrReplace.bind(scope)
+              : scope.define.bind(scope);
             if (block.isConstant) {
-              this.symbolTables.globalScope.define({
+              define({
                 name,
                 kind: "constant",
                 declaration: decl,
                 type: varType,
               });
             } else {
-              this.symbolTables.globalScope.define({
+              define({
                 name,
                 kind: "variable",
                 declaration: decl,

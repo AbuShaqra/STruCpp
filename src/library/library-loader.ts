@@ -333,7 +333,7 @@ export function registerLibrarySymbols(
     };
 
     try {
-      symbolTables.globalScope.define({
+      symbolTables.globalScope.defineFromLibrary({
         name: fn.name,
         kind: "function",
         declaration: {
@@ -398,7 +398,7 @@ export function registerLibrarySymbols(
           } as ElementaryType));
 
     try {
-      symbolTables.globalScope.define({
+      symbolTables.globalScope.defineFromLibrary({
         name: t.name,
         kind: "type",
         declaration: {
@@ -436,7 +436,7 @@ export function registerLibrarySymbols(
   // interface.
   for (const fb of manifest.functionBlocks) {
     try {
-      symbolTables.globalScope.define({
+      symbolTables.globalScope.defineFromLibrary({
         name: fb.name,
         kind: "functionBlock",
         declaration: {
@@ -476,7 +476,7 @@ export function registerLibrarySymbols(
       sizeBits: 0,
     };
     try {
-      symbolTables.globalScope.define({
+      symbolTables.globalScope.defineFromLibrary({
         name: g.name,
         kind: "variable",
         type: varType,

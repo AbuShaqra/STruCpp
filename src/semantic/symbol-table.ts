@@ -197,6 +197,8 @@ export class DuplicateSymbolError extends Error {
  */
 export class Scope {
   private symbols: Map<string, AnySymbol> = new Map();
+  /** Symbols registered by a library; a user declaration may replace them. */
+  private librarySymbols: WeakSet<AnySymbol> = new WeakSet();
 
   constructor(
     public readonly name: string,
@@ -213,6 +215,24 @@ export class Scope {
       throw new DuplicateSymbolError(symbol.name, this.name);
     }
     this.symbols.set(normalizedName, symbol);
+  }
+
+  /**
+   * Define a symbol registered by a library. User declarations of the same
+   * name replace it instead of clashing with it (see `definedByLibrary`).
+   * @throws DuplicateSymbolError if symbol already exists in this scope
+   */
+  defineFromLibrary(symbol: AnySymbol): void {
+    this.define(symbol);
+    this.librarySymbols.add(symbol);
+  }
+
+  /**
+   * True when `name` is currently bound to a symbol a library registered.
+   */
+  definedByLibrary(name: string): boolean {
+    const symbol = this.symbols.get(name.toUpperCase());
+    return symbol !== undefined && this.librarySymbols.has(symbol);
   }
 
   /**
