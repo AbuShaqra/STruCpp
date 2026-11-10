@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <type_traits>
 #include "iec_types.hpp"
 
 namespace strucpp {
@@ -575,6 +576,111 @@ inline bool LT_WSTRING(const IECWString<MaxLen1>& s1, const IECWString<MaxLen2>&
 template<size_t MaxLen1, size_t MaxLen2>
 inline bool NE_WSTRING(const IECWString<MaxLen1>& s1, const IECWString<MaxLen2>& s2) noexcept {
     return s1 != s2;
+}
+
+// =============================================================================
+// Standard string functions on WSTRING (IEC 61131-3 ANY_STRING): LEN, LEFT,
+// RIGHT, MID, CONCAT, INSERT, DELETE, REPLACE, FIND on a WSTRING value or
+// variable, any length, with the STRING versions' argument order.
+// =============================================================================
+
+namespace detail {
+template<typename T> struct is_wstring : std::false_type {};
+template<size_t N> struct is_wstring<IECWString<N>> : std::true_type { static constexpr size_t len = N; };
+template<size_t N> struct is_wstring<IECWStringVar<N>> : std::true_type { static constexpr size_t len = N; };
+
+template<size_t N> inline IECWString<N> wvalue(const IECWString<N>& s) noexcept { return s; }
+template<size_t N> inline IECWString<N> wvalue(const IECWStringVar<N>& s) noexcept { return s.get(); }
+
+template<typename S> using wstring_value_t = IECWString<is_wstring<S>::len>;
+template<typename S, typename R = void>
+using if_wstring = typename std::enable_if<is_wstring<S>::value, R>::type;
+}  // namespace detail
+
+namespace detail {
+template<typename T> struct is_wstring_var : std::false_type {};
+template<size_t N> struct is_wstring_var<IECWStringVar<N>> : std::true_type {};
+/** Two WSTRING operands, at least one a variable (an IECWString pair uses its members). */
+template<typename A, typename B>
+using if_wstring_var_pair = typename std::enable_if<
+    is_wstring<A>::value && is_wstring<B>::value &&
+    (is_wstring_var<A>::value || is_wstring_var<B>::value), bool>::type;
+template<typename A>
+using if_wstring_var = typename std::enable_if<is_wstring_var<A>::value, bool>::type;
+}  // namespace detail
+
+// Comparison of a WSTRING variable with a WSTRING value, variable or literal
+template<typename A, typename B> inline detail::if_wstring_var_pair<A, B> operator==(const A& a, const B& b) noexcept { return detail::wvalue(a) == detail::wvalue(b); }
+template<typename A, typename B> inline detail::if_wstring_var_pair<A, B> operator!=(const A& a, const B& b) noexcept { return detail::wvalue(a) != detail::wvalue(b); }
+template<typename A, typename B> inline detail::if_wstring_var_pair<A, B> operator<(const A& a, const B& b) noexcept { return detail::wvalue(a) < detail::wvalue(b); }
+template<typename A, typename B> inline detail::if_wstring_var_pair<A, B> operator<=(const A& a, const B& b) noexcept { return detail::wvalue(a) <= detail::wvalue(b); }
+template<typename A, typename B> inline detail::if_wstring_var_pair<A, B> operator>(const A& a, const B& b) noexcept { return detail::wvalue(a) > detail::wvalue(b); }
+template<typename A, typename B> inline detail::if_wstring_var_pair<A, B> operator>=(const A& a, const B& b) noexcept { return detail::wvalue(a) >= detail::wvalue(b); }
+template<typename A> inline detail::if_wstring_var<A> operator==(const A& a, const char16_t* b) noexcept { return detail::wvalue(a) == b; }
+template<typename A> inline detail::if_wstring_var<A> operator!=(const A& a, const char16_t* b) noexcept { return detail::wvalue(a) != b; }
+template<typename A> inline detail::if_wstring_var<A> operator==(const char16_t* a, const A& b) noexcept { return detail::wvalue(b) == a; }
+template<typename A> inline detail::if_wstring_var<A> operator!=(const char16_t* a, const A& b) noexcept { return detail::wvalue(b) != a; }
+
+template<typename S, typename = detail::if_wstring<S>>
+inline size_t LEN(const S& s) noexcept {
+    return detail::wvalue(s).length();
+}
+
+template<typename S, typename = detail::if_wstring<S>>
+inline detail::wstring_value_t<S> LEFT(const S& s, size_t len) noexcept {
+    return WLEFT(detail::wvalue(s), len);
+}
+
+template<typename S, typename = detail::if_wstring<S>>
+inline detail::wstring_value_t<S> RIGHT(const S& s, size_t len) noexcept {
+    return WRIGHT(detail::wvalue(s), len);
+}
+
+/** MID(IN, L, P): L characters starting at position P, counted from 1. */
+template<typename S, typename = detail::if_wstring<S>>
+inline detail::wstring_value_t<S> MID(const S& s, size_t len, size_t pos) noexcept {
+    return WMID(detail::wvalue(s), pos, len);
+}
+
+template<typename A, typename B, typename = detail::if_wstring<A>, typename = detail::if_wstring<B>>
+inline IECWString<(detail::is_wstring<A>::len > detail::is_wstring<B>::len
+                       ? detail::is_wstring<A>::len
+                       : detail::is_wstring<B>::len)>
+CONCAT(const A& s1, const B& s2) noexcept {
+    return WCONCAT(detail::wvalue(s1), detail::wvalue(s2));
+}
+
+template<typename A, typename B, typename C, typename... Rest,
+         typename = detail::if_wstring<A>, typename = detail::if_wstring<B>>
+inline auto CONCAT(const A& s1, const B& s2, const C& s3, const Rest&... rest) noexcept {
+    return CONCAT(CONCAT(s1, s2), s3, rest...);
+}
+
+/** INSERT(IN1, IN2, P): IN2 after the first P characters of IN1. */
+template<typename A, typename B, typename = detail::if_wstring<A>, typename = detail::if_wstring<B>>
+inline detail::wstring_value_t<A> INSERT(const A& s1, const B& s2, size_t pos) noexcept {
+    detail::wstring_value_t<A> result(detail::wvalue(s1));
+    if (pos > result.length()) pos = result.length();
+    result.insert(pos, detail::wvalue(s2).c_str());
+    return result;
+}
+
+template<typename S, typename = detail::if_wstring<S>>
+inline detail::wstring_value_t<S> DELETE_STR(const S& s, size_t len, size_t pos) noexcept {
+    return WDELETE(detail::wvalue(s), len, pos);
+}
+
+template<typename A, typename B, typename = detail::if_wstring<A>, typename = detail::if_wstring<B>>
+inline detail::wstring_value_t<A> REPLACE(const A& s1, const B& s2, size_t len, size_t pos) noexcept {
+    detail::wstring_value_t<A> result(detail::wvalue(s1));
+    if (pos == 0) pos = 1;
+    result.replace(pos - 1, len, detail::wvalue(s2).c_str());
+    return result;
+}
+
+template<typename A, typename B, typename = detail::if_wstring<A>, typename = detail::if_wstring<B>>
+inline size_t FIND(const A& s1, const B& s2) noexcept {
+    return WFIND(detail::wvalue(s1), detail::wvalue(s2));
 }
 
 } // namespace strucpp
