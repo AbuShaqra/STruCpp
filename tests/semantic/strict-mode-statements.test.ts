@@ -263,9 +263,12 @@ describe("strict mode: row k, FB call parameters", () => {
     ]);
   });
   it("rejects an unknown parameter of a user FB", () => {
-    pin(prog("c : Cnt;", "c(zz := 1);", FB), [
-      "10: CNT has no input or output named ZZ",
-    ]);
+    // Also an error without --strict: the C++ would assign a missing member.
+    pin(
+      prog("c : Cnt;", "c(zz := 1);", FB),
+      ["10: CNT has no input or output named ZZ"],
+      ["10: CNT has no input or output named ZZ"],
+    );
   });
   it("accepts the FB's own inputs and outputs", () => {
     const src = prog(
@@ -282,7 +285,7 @@ describe("strict mode: row k, FB call parameters", () => {
       `FUNCTION_BLOCK Sub EXTENDS Cnt\nEND_FUNCTION_BLOCK\n` +
       prog("s : Sub;", "s(inc := 1);\n  s(nope := 1);");
     expect(msgs(src)).toEqual(["13: SUB has no input or output named NOPE"]);
-    expect(laxMsgs(src)).toEqual([]);
+    expect(laxMsgs(src)).toEqual(["13: SUB has no input or output named NOPE"]);
   });
 });
 
