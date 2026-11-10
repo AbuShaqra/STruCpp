@@ -858,6 +858,8 @@ export interface VariableExpression extends TypedNode {
   unionMember?: true;
   /** Set by the type checker when a REFERENCE TO is bound to this alias-typed variable, which compile cannot lower yet: the message. */
   aliasReferenceBinding?: string;
+  /** Set by the analyzer when a bare member of several enumerations is settled by the enum type it initialises or is assigned to: that enum's name. */
+  enumType?: string;
 }
 
 /**

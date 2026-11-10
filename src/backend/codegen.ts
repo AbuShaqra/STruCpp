@@ -5027,6 +5027,9 @@ export class CodeGenerator {
       result = `(*${result})`;
     }
 
+    // A member of several enums, settled by its target's type.
+    if (expr.enumType !== undefined) return `${expr.enumType}::${expr.name}`;
+
     // Bare enum member: Stopped → Irrigation_State::Stopped
     // Only qualify if the name is NOT a declared variable in the current scope
     // (a local variable named RED should not be rewritten as Color::RED).
