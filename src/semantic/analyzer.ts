@@ -50,6 +50,7 @@ import {
 } from "./program-access.js";
 import {
   GlobalListResolver,
+  type GlobalListScope,
   prepareGlobalLists,
   type GlobalListDiagnostic,
   type GlobalLists,
@@ -621,27 +622,35 @@ export class SemanticAnalyzer {
       aliases.push({ name, alias });
       return true;
     };
+    const listScope = (
+      scope: Scope,
+      ctx: UndeclaredVarContext,
+    ): GlobalListScope => ({
+      resolvesOtherwise: (name): boolean => {
+        const upper = name.toUpperCase();
+        return (
+          scope.lookup(upper) !== undefined ||
+          this.isContextName(upper, ctx) ||
+          this.stdRegistry.isStandardFunction(name) ||
+          this.enumMemberMap.has(upper)
+        );
+      },
+      hidesGlobal: (name): boolean => {
+        const upper = name.toUpperCase();
+        const hit = scope.lookup(upper);
+        if (hit !== globalScope.lookup(upper)) {
+          return !(hit?.kind === "variable" && hit.isExternal);
+        }
+        return this.isContextName(upper, ctx);
+      },
+      defineAlias,
+    });
     this.forEachPouBody(ast, (body, scope, ctx) => {
-      resolver.rewriteStatements(body, {
-        resolvesOtherwise: (name) => {
-          const upper = name.toUpperCase();
-          return (
-            scope.lookup(upper) !== undefined ||
-            this.isContextName(upper, ctx) ||
-            this.stdRegistry.isStandardFunction(name) ||
-            this.enumMemberMap.has(upper)
-          );
-        },
-        hidesGlobal: (name) => {
-          const upper = name.toUpperCase();
-          const hit = scope.lookup(upper);
-          if (hit !== globalScope.lookup(upper)) {
-            return !(hit?.kind === "variable" && hit.isExternal);
-          }
-          return this.isContextName(upper, ctx);
-        },
-        defineAlias,
-      });
+      resolver.rewriteStatements(body, listScope(scope, ctx));
+    });
+    // Initial values and init argument lists, in the scope that declares them.
+    this.forEachVarBlocks(ast, (blocks, scope, ctx) => {
+      resolver.rewriteDeclarations(blocks, listScope(scope, ctx));
     });
     // VAR_EXTERNAL cannot name a global two lists declare.
     const pous = [...ast.programs, ...ast.functions, ...ast.functionBlocks];
@@ -4910,6 +4919,46 @@ export class SemanticAnalyzer {
    * Call `visit` with each POU body (program, function, FB, method, property
    * accessor), the scope its names resolve in and its context.
    */
+  /** Visit the VAR blocks of the global scope, every POU and every method, with their scope. */
+  private forEachVarBlocks(
+    ast: CompilationUnit,
+    visit: (
+      blocks: VarBlock[],
+      scope: Scope,
+      ctx: UndeclaredVarContext,
+    ) => void,
+  ): void {
+    visit(ast.globalVarBlocks, this.symbolTables.globalScope, {});
+    for (const prog of ast.programs) {
+      const scope = this.symbolTables.getProgramScope(prog.name);
+      if (!scope) continue;
+      visit(prog.varBlocks, scope, { programName: prog.name });
+      for (const method of prog.methods) {
+        visit(
+          method.varBlocks,
+          this.symbolTables.getMethodScope(prog.name, method.name) ?? scope,
+          { programName: prog.name, methodName: method.name },
+        );
+      }
+    }
+    for (const func of ast.functions) {
+      const scope = this.symbolTables.getFunctionScope(func.name);
+      if (scope) visit(func.varBlocks, scope, { functionName: func.name });
+    }
+    for (const fb of ast.functionBlocks) {
+      const scope = this.symbolTables.getFBScope(fb.name);
+      if (!scope) continue;
+      visit(fb.varBlocks, scope, { fbName: fb.name });
+      for (const method of fb.methods) {
+        visit(
+          method.varBlocks,
+          this.symbolTables.getMethodScope(fb.name, method.name) ?? scope,
+          { fbName: fb.name, methodName: method.name },
+        );
+      }
+    }
+  }
+
   private forEachPouBody(
     ast: CompilationUnit,
     visit: (body: Statement[], scope: Scope, ctx: UndeclaredVarContext) => void,

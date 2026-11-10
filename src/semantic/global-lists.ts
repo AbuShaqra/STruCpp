@@ -234,6 +234,27 @@ export class GlobalListResolver {
   }
 
   /**
+   * Rewrite every qualified access in the initial values and init argument
+   * lists of `blocks` in place, as in a body.
+   */
+  rewriteDeclarations(
+    blocks: readonly VarBlock[],
+    scope: GlobalListScope,
+  ): void {
+    if (this.lists.lists.size === 0) return;
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (decl.initialValue) {
+          decl.initialValue = this.rewriteExpression(decl.initialValue, scope);
+        }
+        for (const arg of decl.fbInitArguments ?? []) {
+          arg.value = this.rewriteExpression(arg.value, scope);
+        }
+      }
+    }
+  }
+
+  /**
    * Report a plain use of `name` (a variable, an FB call or a VAR_EXTERNAL)
    * when two or more lists declare it and nothing else in the body does.
    */
