@@ -645,6 +645,10 @@ export class TypeChecker {
    * (`TYPE T : ST := (...)`) is not: g++ only sees it once a variable uses it.
    */
   private checkAllInitializerElements(ast: CompilationUnit): void {
+    // A type's own default has its own check and message.
+    this.typeDefaults = new Set(
+      ast.types.flatMap((t) => (t.defaultValue ? [t.defaultValue] : [])),
+    );
     walkAST(ast, (node) => {
       if (node.kind !== "VarDeclaration") return;
       const decl = node as VarDeclaration;
@@ -683,6 +687,12 @@ export class TypeChecker {
       return;
     }
     if (
+      value.kind !== "StructInitializerExpression" &&
+      type.arrayDimensions === undefined
+    ) {
+      this.checkEnumInitialValue(type.name, value);
+    }
+    if (
       value.kind !== "StructInitializerExpression" ||
       type.arrayDimensions !== undefined
     ) {
@@ -717,6 +727,64 @@ export class TypeChecker {
         span.startLine,
         span.startCol,
         span.file,
+      );
+    }
+  }
+
+  /**
+   * The initial value of a variable, field or element declared with an
+   * enumeration type (not an alias of one) is a value of that enumeration.
+   * A value whose type is not known here is left alone.
+   */
+  private checkEnumInitialValue(typeName: string, value: Expression): void {
+    if (this.typeDefaults.has(value)) return;
+    const target = this.symbolTables.lookupType(typeName)?.resolvedType;
+    if (target?.typeKind !== "enum") return;
+    const fail = (message: string): void =>
+      this.addError(
+        message,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+    // `E#Z` / `E.Z` naming no value of E
+    if (
+      value.kind === "VariableExpression" &&
+      value.fieldAccess.length === 1 &&
+      value.subscripts.length === 0 &&
+      !value.isDereference
+    ) {
+      const named = this.symbolTables.lookupType(value.name)?.resolvedType;
+      const member = value.fieldAccess[0]!;
+      if (
+        named?.typeKind === "enum" &&
+        !(named as EnumType).values.some(
+          (v) => v.toUpperCase() === member.toUpperCase(),
+        )
+      ) {
+        fail(
+          `'${member.toUpperCase()}' is not a value of enumeration ${typeNameUtil(named)}`,
+        );
+        return;
+      }
+    }
+    const valueType = this.resolveExprType(
+      value,
+      this.symbolTables.globalScope,
+    );
+    if (valueType === undefined) return;
+    const sameEnum =
+      valueType.typeKind === "enum" &&
+      typeNameUtil(valueType).toUpperCase() ===
+        typeNameUtil(target).toUpperCase();
+    const known =
+      valueType.typeKind === "enum" ||
+      (valueType.typeKind === "elementary" &&
+        ELEMENTARY_TYPES[(valueType as ElementaryType).name.toUpperCase()] !==
+          undefined);
+    if (!sameEnum && known) {
+      fail(
+        `Cannot assign ${typeNameUtil(valueType)} to ${typeNameUtil(target)}`,
       );
     }
   }
@@ -3897,6 +3965,8 @@ export class TypeChecker {
 
   /** The FUNCTION_BLOCK whose body, method or property is being checked (`THIS.member`). */
   private currentFBName: string | undefined;
+  /** The default values declared on types (`TYPE T : ... := value`). */
+  private typeDefaults: ReadonlySet<Expression> = new Set();
   /** The property whose GET or SET body is being checked, upper-cased. */
   private currentPropertyName: string | undefined;
 

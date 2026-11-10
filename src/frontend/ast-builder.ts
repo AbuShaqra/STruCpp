@@ -1041,10 +1041,27 @@ export class ASTBuilder {
     // the only Identifier that follows the Assign token.
     const assign = getFirstToken(children.Assign);
     const idents = getAllTokens(children.Identifier);
-    const defaultToken = assign
-      ? idents.find((t) => t.startOffset > assign.startOffset)
-      : undefined;
+    const after = assign
+      ? idents.filter((t) => t.startOffset > assign.startOffset)
+      : [];
+    const [defaultToken, memberToken] = after;
     if (!defaultToken) return undefined;
+    // `:= Type.MEMBER`, shaped as `Type#MEMBER` is, without the literal mark.
+    if (memberToken && children.Dot) {
+      return {
+        kind: "VariableExpression",
+        sourceSpan: {
+          ...tokenToSourceSpan(defaultToken),
+          endLine: memberToken.endLine ?? defaultToken.startLine ?? 0,
+          endCol: memberToken.endColumn ?? defaultToken.endColumn ?? 0,
+        },
+        name: defaultToken.image,
+        subscripts: [],
+        fieldAccess: [memberToken.image],
+        isDereference: false,
+        accessChain: [{ kind: "field", name: memberToken.image }],
+      };
+    }
     return {
       kind: "VariableExpression",
       sourceSpan: tokenToSourceSpan(defaultToken),
@@ -1162,7 +1179,8 @@ export class ASTBuilder {
     const identifiers = getAllTokens(children.Identifier);
     const qualified = getFirstToken(children.EnumLiteral);
     if (identifiers.length > 0) {
-      defaultValue = identifiers[0]?.image;
+      // `:= MEMBER`, or the member of `:= Type.MEMBER`
+      defaultValue = identifiers[identifiers.length - 1]?.image;
     } else if (qualified) {
       defaultValue = qualified.image.substring(
         qualified.image.indexOf("#") + 1,

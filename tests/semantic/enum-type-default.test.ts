@@ -50,6 +50,19 @@ describe("enumeration type default", () => {
     }
   });
 
+  it("parses a dotted default as Type.Member", () => {
+    const unit = parse(program("(A, B) := E2.B")).ast;
+    const td = unit?.types.find((t) => t.name === "E2");
+    expect(td?.defaultValue).toMatchObject({
+      kind: "VariableExpression",
+      name: "E2",
+      fieldAccess: ["B"],
+    });
+    if (td?.definition.kind === "EnumDefinition") {
+      expect(td.definition.defaultValue).toBe("B");
+    }
+  });
+
   for (const { name, options } of MODES) {
     describe(name, () => {
       it.each([
@@ -60,6 +73,9 @@ describe("enumeration type default", () => {
         "(A, B) := A",
         "INT (A := 1, B := 2) := E2#B",
         "INT (A := 1, B := 2) := B",
+        "(A, B) := E2.B",
+        "(A, B) := e2.b",
+        "INT (A := 1, B := 2) := E2.B",
       ])("accepts %s", (decl) => {
         expect(messages(program(decl), options)).toEqual([]);
       });
@@ -68,6 +84,9 @@ describe("enumeration type default", () => {
         ["(A, B) := E3#A", 21],
         ["(A, B) := C", 21],
         ["(A, B) := E2#Z", 21],
+        ["(A, B) := E3.A", 21],
+        ["(A, B) := E2.Z", 21],
+        ["INT (A := 1, B := 2) := E3.C", 35],
         ["INT (A := 1, B := 2) := E3#C", 35],
         ["INT (A := 1, B := 2) := 5", 35],
       ])("refuses %s", (decl, column) => {
