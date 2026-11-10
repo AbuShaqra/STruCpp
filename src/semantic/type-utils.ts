@@ -1040,3 +1040,29 @@ export function typeNamesHeldByTypeDefinition(def: TypeDefinition): string[] {
       return [];
   }
 }
+
+/**
+ * The enumeration `type` is: itself, or the one a chain of plain aliases
+ * (`TYPE E2A : E2;`) ends at. Undefined for any other type.
+ */
+export function enumBehindAlias(
+  types: readonly TypeDeclaration[],
+  type: TypeDeclaration,
+): TypeDeclaration | undefined {
+  let current: TypeDeclaration | undefined = type;
+  for (let depth = 0; current !== undefined && depth < 32; depth++) {
+    const def: TypeDeclaration["definition"] = current.definition;
+    if (def.kind === "EnumDefinition") return current;
+    if (
+      def.kind !== "TypeReference" ||
+      def.referenceKind !== "none" ||
+      def.arrayDimensions !== undefined ||
+      def.unresolvedArray !== undefined
+    ) {
+      return undefined;
+    }
+    const target = def.name.toUpperCase();
+    current = types.find((t) => t.name.toUpperCase() === target);
+  }
+  return undefined;
+}

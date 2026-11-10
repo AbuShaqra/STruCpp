@@ -47,7 +47,6 @@ describe("codegen: value-initialised scalar alias variables", () => {
       "T X{};",
       "T2 X2{};",
       "TT T{};",
-      "E2A E{};",
       "SRX R{3};",
       "T M{};",
     ]) {
@@ -67,5 +66,11 @@ describe("codegen: value-initialised scalar alias variables", () => {
     expect(h).toContain("IEC_INT I;");
     expect(h).toContain("T XI;");
     expect(h).toContain("IEC_E2 D;");
+  });
+
+  it("declares an enumeration alias variable as an enumeration variable", () => {
+    const h = lines(r.headerCode);
+    expect(h).toContain("IEC_E2A E{};");
+    expect(h).not.toContain("E2A E{};");
   });
 });
