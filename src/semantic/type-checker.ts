@@ -837,6 +837,7 @@ export class TypeChecker {
       this.resolveExprType(arg.value, scope);
     }
     this.validateReferenceArguments(expr, scope);
+    this.checkDottedMethodCall(expr, scope);
     const inputs =
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope);
@@ -1115,6 +1116,120 @@ export class TypeChecker {
       return { name: owner.name, referenceKind: "none" };
     }
     return owner;
+  }
+
+  /** Dotted calls already checked, so an expression visited twice reports once. */
+  private checkedDottedCalls = new WeakSet<FunctionCallExpression>();
+
+  /**
+   * Check `v.M(args)` on a variable: an instance of a function block or
+   * interface of this compile must have the method (its own, a base's or an
+   * action); a value that is no instance (elementary, STRING, STRUCT, enum,
+   * array, POINTER TO, REF_TO) has no methods. A REFERENCE TO is checked as
+   * its target. Library and unresolved types are not checked.
+   */
+  private checkDottedMethodCall(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    const parts = expr.functionName.split(".");
+    if (parts.length !== 2 || !this.ast) return;
+    if (this.checkedDottedCalls.has(expr)) return;
+    this.checkedDottedCalls.add(expr);
+    const [prefix, methodName] = parts as [string, string];
+    const prefixUpper = prefix.toUpperCase();
+    if (prefixUpper === "THIS" || prefixUpper === "SUPER") return;
+    const sym = scope.lookup(prefix);
+    if (sym?.kind !== "variable") return;
+    const type = (sym.declaration as VarDeclaration | undefined)?.type;
+    if (!type) return;
+    const span = expr.sourceSpan;
+    const notInstance = (): void =>
+      this.addError(
+        `Cannot call method '${methodName}' on '${prefix}': it is not a function block instance`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    const kind = this.callTargetKind(type);
+    if (kind === undefined) return;
+    const upper = this.aliasBase(type.name);
+    if (
+      kind !== "value" &&
+      this.lookupChainMethod(upper, methodName) !== "missing"
+    ) {
+      return;
+    }
+    const direct =
+      type.arrayDimensions === undefined &&
+      (type.referenceKind === "none" || type.referenceKind === "reference_to");
+    const member = direct ? this.lookupMember(upper, methodName) : undefined;
+    if (member !== undefined) {
+      if (this.callTargetKind(member.type) === "value") {
+        this.addError(
+          `Cannot call '${prefix}.${methodName}': it is a member that is not a function block instance, not a method`,
+          span.startLine,
+          span.startCol,
+          span.file,
+        );
+      }
+      return;
+    }
+    if (kind === "value") {
+      notInstance();
+      return;
+    }
+    const isFb = kind === "fb";
+    const owner =
+      this.ast.functionBlocks.find((f) => f.name.toUpperCase() === upper)
+        ?.name ??
+      this.ast.interfaces.find((i) => i.name.toUpperCase() === upper)?.name ??
+      upper;
+    this.addError(
+      `${isFb ? "Function block" : "Interface"} '${owner}' has no method '${methodName}'`,
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
+  }
+
+  /**
+   * What a declared type is as a call target: "value" when it surely has no
+   * methods (elementary, STRING, STRUCT, enum, array, POINTER TO, REF_TO),
+   * "fb" or "interface" when this compile declares it; undefined otherwise.
+   * A REFERENCE TO is its target.
+   */
+  private callTargetKind(
+    type: VarDeclaration["type"],
+  ): "value" | "fb" | "interface" | undefined {
+    if (!this.ast) return undefined;
+    if (
+      type.referenceKind === "pointer_to" ||
+      type.referenceKind === "ref_to"
+    ) {
+      return "value";
+    }
+    if (type.referenceChain !== undefined) return undefined;
+    if (type.arrayDimensions !== undefined) return "value";
+    const upper = this.aliasBase(type.name);
+    const def = this.ast.types.find(
+      (td) => td.name.toUpperCase() === upper,
+    )?.definition;
+    if (
+      ELEMENTARY_TYPES[upper] !== undefined ||
+      upper === "STRING" ||
+      upper === "WSTRING" ||
+      (def !== undefined && def.kind !== "TypeReference")
+    ) {
+      return "value";
+    }
+    if (this.ast.functionBlocks.some((f) => f.name.toUpperCase() === upper)) {
+      return "fb";
+    }
+    if (this.ast.interfaces.some((i) => i.name.toUpperCase() === upper)) {
+      return "interface";
+    }
+    return undefined;
   }
 
   /** Member-chain calls already checked, so an expression visited twice reports once. */
