@@ -77,6 +77,7 @@ import {
   fbInitInputs,
   storedInstance,
 } from "../semantic/fb-init.js";
+import { orderGlobals } from "../semantic/global-order.js";
 import { wrapReferenceChain } from "./reference-types.js";
 import {
   libraryFunctionDeclaration,
@@ -1788,43 +1789,52 @@ export class CodeGenerator {
         const upper = n.toUpperCase();
         return this.knownFBTypes.has(upper) || this.lateTypeNames.has(upper);
       });
-    let emittedAny = false;
-    for (const block of ast.globalVarBlocks) {
-      const constQualifier = block.isConstant ? "const " : "";
-      for (const decl of block.declarations) {
-        if (holdsFB(decl.type) !== late) continue;
-        if (!emittedAny) {
-          this.emitHeader("// Global variables");
-          emittedAny = true;
-        }
-        const cppType = this.mapTypeRefToCpp(decl.type);
-        for (const name of decl.names) {
-          // `inline`, not a static-local behind a reference: the debug table takes
-          // their address into PROGMEM, which needs a constant.
-          this.emitHeaderChunkMarker("begin", "inlineGlobal", name);
-          const cppName = globalCppName(name);
-          if (decl.initialValue) {
-            const initExpr = this.generateInitializer(
-              decl.initialValue,
-              cppType,
-              decl.type.name,
-            );
-            this.emitHeader(
-              `${constQualifier}inline ${cppType} ${cppName} = ${initExpr};`,
-            );
-          } else {
-            this.emitHeader(`inline ${cppType} ${cppName}{};`);
-          }
-          // List-qualified names of this global (named_global_lists), as references.
-          for (const a of decl.listAliases ?? []) {
-            if (a.name !== name) continue;
-            this.emitHeader(
-              `${constQualifier}inline ${cppType}& ${a.alias} = ${cppName};`,
-            );
-          }
-          this.emitHeaderChunkMarker("end", "inlineGlobal", name);
-        }
+    // Each global after the globals its initial value names; one that names
+    // a late global is late too.
+    const { order, dependencies } = orderGlobals(ast);
+    const lateNames = new Set<string>();
+    for (const item of order) {
+      const upper = item.name.toUpperCase();
+      if (
+        holdsFB(item.decl.type) ||
+        (dependencies.get(upper) ?? []).some((d) => lateNames.has(d))
+      ) {
+        lateNames.add(upper);
       }
+    }
+    let emittedAny = false;
+    for (const { block, decl, name } of order) {
+      if (lateNames.has(name.toUpperCase()) !== late) continue;
+      const constQualifier = block.isConstant ? "const " : "";
+      if (!emittedAny) {
+        this.emitHeader("// Global variables");
+        emittedAny = true;
+      }
+      const cppType = this.mapTypeRefToCpp(decl.type);
+      // `inline`, not a static-local behind a reference: the debug table takes
+      // their address into PROGMEM, which needs a constant.
+      this.emitHeaderChunkMarker("begin", "inlineGlobal", name);
+      const cppName = globalCppName(name);
+      if (decl.initialValue) {
+        const initExpr = this.generateInitializer(
+          decl.initialValue,
+          cppType,
+          decl.type.name,
+        );
+        this.emitHeader(
+          `${constQualifier}inline ${cppType} ${cppName} = ${initExpr};`,
+        );
+      } else {
+        this.emitHeader(`inline ${cppType} ${cppName}{};`);
+      }
+      // List-qualified names of this global (named_global_lists), as references.
+      for (const a of decl.listAliases ?? []) {
+        if (a.name !== name) continue;
+        this.emitHeader(
+          `${constQualifier}inline ${cppType}& ${a.alias} = ${cppName};`,
+        );
+      }
+      this.emitHeaderChunkMarker("end", "inlineGlobal", name);
     }
     if (emittedAny) this.emitHeader("");
   }

@@ -59,6 +59,7 @@ import {
   type AccessLookup,
   type AccessType,
 } from "./type-utils.js";
+import { orderGlobals } from "./global-order.js";
 import { stripEnEno, walkAST } from "../ast-utils.js";
 import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
 import { structExtends } from "./struct-extends.js";
@@ -357,8 +358,8 @@ export class TypeChecker {
     this.ast = ast;
     this.checkAllInitializerElements(ast);
 
-    // Globals are created in declaration order.
-    this.checkAddressInitialOrder(ast.globalVarBlocks);
+    this.checkGlobalInitialCycles(ast);
+    this.checkStructReferenceDefaults(ast);
 
     // Init arguments of global FB instances (feature fb_init)
     if (this.features.has("fb_init")) {
@@ -2023,11 +2024,61 @@ export class TypeChecker {
    * the standard considers an implicit assignment also passes here.
    */
   /**
+   * Globals are created in dependency order (see global-order.ts), so only
+   * initial values that depend on each other cannot be created.
+   */
+  private checkGlobalInitialCycles(ast: CompilationUnit): void {
+    const { cycles, order } = orderGlobals(ast);
+    for (const cycle of cycles) {
+      const quoted = cycle.map((n) => `'${n}'`);
+      const list =
+        quoted.length > 1
+          ? `${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]!}`
+          : quoted[0]!;
+      const span = order.find((i) => i.name.toUpperCase() === cycle[0])?.decl
+        .sourceSpan;
+      this.addError(
+        `The initial values of the globals ${list} depend on each other (${[...cycle, cycle[0]!].join(" -> ")})`,
+        span?.startLine ?? 0,
+        span?.startCol ?? 0,
+        span?.file,
+      );
+    }
+  }
+
+  /**
+   * A POINTER TO field of a STRUCT takes no address or pointer as its
+   * default: the type is created before any variable, and a copy of the
+   * STRUCT would keep the address of the instance it was copied from.
+   */
+  private checkStructReferenceDefaults(ast: CompilationUnit): void {
+    for (const type of ast.types) {
+      if (type.definition.kind !== "StructDefinition") continue;
+      for (const field of type.definition.fields) {
+        const value = field.initialValue;
+        if (
+          value === undefined ||
+          field.type.referenceKind !== "pointer_to" ||
+          isNullInitializer(value)
+        ) {
+          continue;
+        }
+        this.addError(
+          `POINTER TO initializers are not supported in a STRUCT; assign '${type.name.toUpperCase()}.${(field.names[0] ?? "").toUpperCase()}' in the body instead`,
+          value.sourceSpan.startLine,
+          value.sourceSpan.startCol,
+          value.sourceSpan.file,
+        );
+      }
+    }
+  }
+
+  /**
    * Where variables are created one after another (the locals of a FUNCTION
-   * or METHOD, the globals), `p : POINTER TO T := ADR(x);` cannot take the
-   * address of a variable of the same blocks declared after `p`. Parameters
-   * exist before any local. Members of a PROGRAM or FB are not checked: a
-   * member's address is known before the member is initialised.
+   * or METHOD), `p : POINTER TO T := ADR(x);` cannot take the address of a
+   * variable of the same blocks declared after `p`. Parameters exist before
+   * any local. Members of a PROGRAM or FB are not checked: a member's address
+   * is known before the member is initialised. Globals are ordered instead.
    */
   private checkAddressInitialOrder(blocks: readonly VarBlock[]): void {
     const declared = new Set<string>();
