@@ -227,12 +227,15 @@ characters (0x80 is U+20AC); the five unassigned ones (0x81, 0x8D, 0x8F, 0x90,
   transcodes the stored bytes, the length byte counts UTF-8 bytes, and a value
   whose UTF-8 form passes the 126-byte window is cut before the first character
   that does not fit whole. `handle_write` and `handle_set` (force) decode a UTF-8
-  payload to CP1252; a payload that is not UTF-8, or holds a character CP1252
-  lacks, is refused with `STATUS_NOT_ENCODABLE` (0x89) and the leaf is left as
+  payload to CP1252; a payload that is not UTF-8, holds a character CP1252
+  lacks or holds a NUL (the STRING would end there), is refused with
+  `STATUS_NOT_ENCODABLE` (0x89) and the leaf is left as
   it was.
 - `handle_ptr` (the copy-free path OPC-UA uses) returns the stored CP1252 bytes
   and their count, not UTF-8: a host that needs Unicode transcodes them
   (`cp1252::to_utf8`).
+- On AVR (with `LPM Rd, Z+`) the 32-entry table for 0x80-0x9F is in flash, read
+  without `<avr/pgmspace.h>`, which must stay out of user-variable TUs.
 - The REPL shows a STRING as UTF-8 and decodes UTF-8 input; the test framework
   shows STRING values and assertion messages as UTF-8.
 

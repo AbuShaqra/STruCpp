@@ -35,6 +35,7 @@ import type {
   Expression,
   TypeDeclaration,
 } from "../frontend/ast.js";
+import { translateIECString } from "./codegen-utils.js";
 import { TestCodeGenerator } from "./test-codegen.js";
 import { TypeCodeGenerator } from "./type-codegen.js";
 import type { StlibArchive } from "../library/library-manifest.js";
@@ -716,7 +717,10 @@ class TestFunctionGenerator {
 
   private generateAssertCall(lines: string[], assert: AssertCall): void {
     const line = assert.sourceSpan.startLine;
-    const msgArg = assert.message ? `, "${escapeString(assert.message)}"` : "";
+    // A STRING literal: Windows-1252 bytes, like every other STRING.
+    const msgArg = assert.message
+      ? `, "${translateIECString(assert.message)}"`
+      : "";
 
     switch (assert.assertType) {
       case "ASSERT_EQ":

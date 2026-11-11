@@ -27,15 +27,31 @@
 namespace strucpp {
 namespace cp1252 {
 
+// On AVR the table lives in flash, not SRAM. This header reaches TUs that name
+// user variables, so it must not include <avr/pgmspace.h> (its <avr/io.h>
+// register macros, SP or SREG, collide with IEC names; see debug_table.hpp):
+// the attribute is spelled directly and the word is read with LPM.
+#if defined(__AVR__) && defined(__AVR_HAVE_LPMX__)
+#define STRUCPP_CP1252_FLASH __attribute__((__progmem__))
+inline uint16_t cp1252_read_word(const uint16_t* p) noexcept {
+    uint16_t r;
+    __asm__("lpm %A0, Z+\n\tlpm %B0, Z" : "=r"(r), "+z"(p));
+    return r;
+}
+#else
+#define STRUCPP_CP1252_FLASH
+inline uint16_t cp1252_read_word(const uint16_t* p) noexcept { return *p; }
+#endif
+
 /** Code point of the CP1252 bytes 0x80-0x9F. */
 inline uint16_t high_code_point(unsigned char byte) noexcept {
-    static const uint16_t table[32] = {
+    static const uint16_t table[32] STRUCPP_CP1252_FLASH = {
         0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
         0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
         0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
         0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
     };
-    return table[byte - 0x80u];
+    return cp1252_read_word(&table[byte - 0x80u]);
 }
 
 /** The Unicode code point a CP1252 byte stands for. */
@@ -86,8 +102,9 @@ inline std::size_t to_utf8(const char* src, std::size_t n, uint8_t* out,
 /**
  * Decode UTF-8 `src[0..n)` into CP1252 bytes in `out` (room for `n` bytes is
  * always enough). Returns false, leaving `out` unspecified, when the input is
- * not well-formed UTF-8 or holds a character CP1252 lacks. `*out_len` is the
- * number of bytes written on success.
+ * not well-formed UTF-8, holds a character CP1252 lacks, or holds a NUL (a
+ * STRING ends at its first NUL, so one inside the text would cut it short).
+ * `*out_len` is the number of bytes written on success.
  */
 inline bool from_utf8(const uint8_t* src, std::size_t n, char* out,
                       std::size_t* out_len) noexcept {
@@ -97,7 +114,9 @@ inline bool from_utf8(const uint8_t* src, std::size_t n, char* out,
         const uint8_t b0 = src[i];
         uint32_t cp = 0;
         std::size_t extra = 0;
-        if (b0 < 0x80u) {
+        if (b0 == 0u) {
+            return false;  // a NUL would end the STRING inside the text
+        } else if (b0 < 0x80u) {
             cp = b0;
         } else if ((b0 & 0xE0u) == 0xC0u) {
             cp = b0 & 0x1Fu;

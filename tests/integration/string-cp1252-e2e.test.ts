@@ -18,6 +18,7 @@ import {
   hasGpp,
   createPCH,
   compileAndRunStandalone,
+  runE2ETestPipeline,
   RUNTIME_INCLUDE_PATH,
   cxxEnv,
   CXX_STD,
@@ -206,6 +207,9 @@ int main() {
   bytes("forced read", buf + 1, "\\xC3\\x9C", 2);
   handle_set(${s}, false, nullptr, 0);
   // A character CP1252 lacks, or bytes that are not UTF-8, are refused.
+  unsigned char nul[4] = { 3, 'a', 0, 'b' };
+  eq("write NUL", handle_write(${s}, nul, 4), STATUS_NOT_ENCODABLE);
+  eq("force NUL", handle_set(${s}, true, nul, 4), STATUS_NOT_ENCODABLE);
   unsigned char snow[4] = { 3, 0xE2, 0x98, 0x83 };
   unsigned char bad[2] = { 1, 0xFF };
   eq("write snowman", handle_write(${s}, snow, 4), STATUS_NOT_ENCODABLE);
@@ -226,5 +230,26 @@ int main() {
       { encoding: "utf-8", env: cxxEnv },
     );
     expect(execSync(`"${bin}"`, { encoding: "utf-8" }).trim()).toBe("ALL_OK");
+  });
+
+  it("shows an assertion message and STRING values as UTF-8", () => {
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST: `PROGRAM P
+  VAR s : STRING := 'ä'; END_VAR
+END_PROGRAM
+`,
+      testST: `TEST 'Umlaut'
+  VAR uut : P; END_VAR
+  uut();
+  ASSERT_EQ(uut.s, 'ö', 'Meldung äöü $$5');
+END_TEST
+`,
+      testFileName: "test_umlaut.st",
+      tempDirPrefix: "strucpp-cp1252-msg-",
+    });
+    expect(exitCode).toBe(1);
+    expect(stdout).toContain("Message: Meldung äöü $5");
+    expect(stdout).toContain("'ö'");
+    expect(stdout).toContain("'ä'");
   });
 });

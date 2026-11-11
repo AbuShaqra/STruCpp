@@ -422,6 +422,8 @@ TEST(StringConversionTest, Utf8Transcoding) {
     EXPECT_FALSE(cp1252::from_utf8(truncated, sizeof(truncated), cp, &n));
     const uint8_t overlong[] = { 0xC1, 0x81 };
     EXPECT_FALSE(cp1252::from_utf8(overlong, sizeof(overlong), cp, &n));
+    const uint8_t nul[] = { 'a', 0x00, 'b' };
+    EXPECT_FALSE(cp1252::from_utf8(nul, sizeof(nul), cp, &n));
 }
 
 TEST(TimeVarTest, Forcing) {
