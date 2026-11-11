@@ -842,6 +842,8 @@ export interface FunctionCallExpression extends TypedNode {
   selfCaret?: true;
   /** Set when written with a global variable list prefix (`LIST.fb()`), which was removed. */
   globalList?: string;
+  /** Set by the type checker: the library whose FUNCTION of a standard function's name is called. */
+  libraryFunction?: string;
 }
 
 /**
