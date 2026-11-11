@@ -6691,6 +6691,52 @@ export class CodeGenerator {
   protected generateFunctionCallExpression(
     expr: FunctionCallExpression,
   ): string {
+    return this.qualifyHiddenFunctionCall(
+      expr,
+      this.generateFunctionCallExpressionUnqualified(expr),
+    );
+  }
+
+  /**
+   * A FUNCTION or standard function called where a variable of its name (a
+   * local, parameter or member, in any case) hides it in the C++ scope: the
+   * call is qualified by the namespace the function lives in.
+   */
+  private qualifyHiddenFunctionCall(
+    expr: FunctionCallExpression,
+    call: string,
+  ): string {
+    const name = expr.functionName;
+    if (expr.instance !== undefined || name.includes(".")) return call;
+    const upper = name.toUpperCase();
+    const hidden =
+      this.currentScopeVarTypes.has(upper) ||
+      this.inheritedMemberTypeName(upper) !== undefined;
+    if (!hidden) return call;
+    if (this.getFBInvocationType(name, undefined) !== undefined) return call;
+    if (this.ownMethodCalled(expr) !== undefined) return call;
+    if (this.reachedProgramNamed(name) !== undefined) return call;
+    // Only a plain call `NAME(...)`; anything else is left as generated.
+    if (!/^[A-Za-z_][A-Za-z0-9_]*\(/.test(call)) return call;
+    const userFunction =
+      this.ast?.functions.some((f) => f.name.toUpperCase() === upper) === true;
+    const runtime =
+      !userFunction &&
+      this.libraryFunctionDeclaration(upper) === undefined &&
+      (this.stdRegistry.lookup(upper) !== undefined ||
+        this.stdRegistry.resolveConversion(upper) !== undefined ||
+        this.typedTrunc(upper) !== undefined);
+    const ns = runtime
+      ? "strucpp"
+      : this.projectModel
+        ? getProjectNamespace(this.projectModel)
+        : "strucpp";
+    return `::${ns}::${call}`;
+  }
+
+  private generateFunctionCallExpressionUnqualified(
+    expr: FunctionCallExpression,
+  ): string {
     // Handle dotted method calls: THIS.method, SUPER.method, instance.method
     if (expr.functionName.includes(".")) {
       const dotIdx = expr.functionName.indexOf(".");
