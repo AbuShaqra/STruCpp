@@ -77,6 +77,8 @@ export interface VariableSymbol extends BaseSymbol {
   cppName?: string | undefined;
   /** Set on a global reached through a list-qualified name (`name` is then `LIST.NAME`). */
   globalList?: string;
+  /** A library block's member from a PUBLIC or PRIVATE `VAR` section. */
+  access?: "PUBLIC" | "PRIVATE";
 }
 
 /**

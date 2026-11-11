@@ -4,8 +4,10 @@ FUNCTION_BLOCK Sensor
 END_FUNCTION_BLOCK
 
 FUNCTION_BLOCK Controller
-  VAR
+  VAR PUBLIC
     sensor : Sensor;
+  END_VAR
+  VAR_OUTPUT
     reading : INT;
     processed : BOOL;
   END_VAR

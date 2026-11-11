@@ -283,7 +283,7 @@ END_PROGRAM`);
 TYPE RA : ARRAY[0..1] OF REF_TO INT; END_TYPE
 TYPE S : STRUCT rs : ARRAY[0..1] OF REF_TO INT; END_STRUCT; END_TYPE
 FUNCTION_BLOCK BaseFB
-VAR o : REF_TO INT; END_VAR
+VAR PUBLIC o : REF_TO INT; END_VAR
 END_FUNCTION_BLOCK
 FUNCTION_BLOCK DerivedFB EXTENDS BaseFB
 END_FUNCTION_BLOCK
@@ -378,7 +378,8 @@ VAR m : Motor; v : Valve; a : INT; b : INT; END_VAR
 m(cmd := Rev);
 v(cmd := Open);
 a := m.speed;
-IF m.cmd = Rev THEN b := v.pos; END_IF;
+m.cmd := Rev;
+b := v.pos;
 END_PROGRAM
 `;
     const out = run(

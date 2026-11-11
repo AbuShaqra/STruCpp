@@ -149,6 +149,7 @@ function makeVarSymbol(
     // Only present when the library's codegen mangled the member; the walk
     // prefers it over re-deriving the rule against the wrong unit.
     ...(v.cppName !== undefined ? { cppName: v.cppName } : {}),
+    ...(v.access !== undefined ? { access: v.access } : {}),
   };
 }
 

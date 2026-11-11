@@ -67,6 +67,9 @@ FUNCTION_BLOCK Actuator
   VAR_OUTPUT
     status : INT;
   END_VAR
+  METHOD GetCommand : INT
+    GetCommand := command;
+  END_METHOD
   status := command * 2;
 END_FUNCTION_BLOCK
 `;
@@ -76,7 +79,7 @@ TEST 'Mocked FB retains input assignments'
   MOCK act;
   act.command := 50;
   act();
-  ASSERT_EQ(act.command, 50);
+  ASSERT_EQ(act.GetCommand(), 50);
   ASSERT_EQ(act.status, 0);
 END_TEST
 `;
@@ -247,7 +250,7 @@ FUNCTION ReadSensor : INT
 END_FUNCTION
 
 FUNCTION_BLOCK Controller
-  VAR
+  VAR_OUTPUT
     reading : INT;
   END_VAR
   reading := ReadSensor(channel := 1);
@@ -309,6 +312,8 @@ END_FUNCTION_BLOCK
 FUNCTION_BLOCK Controller
   VAR
     logger : Logger;
+  END_VAR
+  VAR_OUTPUT
     result : INT;
   END_VAR
   logger();

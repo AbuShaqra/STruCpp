@@ -83,7 +83,7 @@ END_PROGRAM
   it("an FB action through an instance", () => {
     const out = run(
       `FUNCTION_BLOCK Counter
-VAR n : INT; END_VAR
+VAR_OUTPUT n : INT; END_VAR
   n := n + 1;
   ACTION Reset:
     n := 0;
@@ -180,7 +180,7 @@ END_PROGRAM
     const out = run(
       `FUNCTION_BLOCK Counter
 VAR_INPUT delta : INT; END_VAR
-VAR n : INT; END_VAR
+VAR_OUTPUT n : INT; END_VAR
   Inc();
   ACTION Inc:
     n := n + delta;

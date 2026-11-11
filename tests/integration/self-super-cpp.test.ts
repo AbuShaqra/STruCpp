@@ -14,7 +14,8 @@ import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 const describeIfGpp = hasGpp ? describe : describe.skip;
 
 const HIERARCHY = `FUNCTION_BLOCK FB_A
-VAR baseN : INT := 7; count : INT; END_VAR
+VAR baseN : INT := 7; END_VAR
+VAR_OUTPUT count : INT; END_VAR
 METHOD Value : INT
   Value := 1;
 END_METHOD

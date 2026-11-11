@@ -1099,7 +1099,7 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
           END_PROPERTY
         END_FUNCTION_BLOCK
         FUNCTION_BLOCK Controller
-          VAR motor : Motor; END_VAR
+          VAR PUBLIC motor : Motor; END_VAR
         END_FUNCTION_BLOCK
         PROGRAM Main
           VAR
@@ -1124,7 +1124,7 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
           END_PROPERTY
         END_FUNCTION_BLOCK
         FUNCTION_BLOCK Controller
-          VAR motor : Motor; END_VAR
+          VAR PUBLIC motor : Motor; END_VAR
         END_FUNCTION_BLOCK
         PROGRAM Main
           VAR ctrl : Controller; END_VAR

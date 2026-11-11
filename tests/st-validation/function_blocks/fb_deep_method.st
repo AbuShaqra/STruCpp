@@ -1,14 +1,16 @@
 FUNCTION_BLOCK Inner
   VAR_INPUT seed : INT; END_VAR
-  VAR_OUTPUT val : INT; END_VAR
+  VAR PUBLIC val : INT; END_VAR
   METHOD PUBLIC GetVal : INT
     GetVal := val + seed;
   END_METHOD
 END_FUNCTION_BLOCK
 
 FUNCTION_BLOCK Outer
-  VAR
+  VAR PUBLIC
     m : Inner;
+  END_VAR
+  VAR
     cached : INT;
   END_VAR
   METHOD PUBLIC ReadInner : INT

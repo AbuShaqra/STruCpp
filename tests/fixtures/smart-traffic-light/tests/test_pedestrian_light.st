@@ -99,5 +99,5 @@ TEST 'PedestrianLight resets when traffic goes GREEN'
 
   ASSERT_EQ(ped.currentState, TrafficState.GREEN, 'Traffic should be GREEN');
   ASSERT_EQ(ped.pedestrianState, PedestrianState.DONT_WALK, 'Ped should be DONT_WALK');
-  ASSERT_FALSE(ped.walkRequest, 'Walk request should be cleared');
+  ASSERT_FALSE(ped.walkPending, 'Walk request should be cleared');
 END_TEST

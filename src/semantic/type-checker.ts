@@ -11,6 +11,10 @@
  */
 
 import type {
+  ASTNode,
+  RefAssignStatement,
+  VarAccess,
+  AssignmentStatement,
   Expression,
   BinaryExpression,
   UnaryExpression,
@@ -341,6 +345,19 @@ function strictIsExactWidening(from: string, to: string): boolean {
   return false;
 }
 
+/** How a function block member may be reached from outside the block. */
+type MemberKind = "internal" | "external" | "input" | "output" | "inout";
+
+/** The member kind each declaring block gives its variables. */
+const MEMBER_KIND: Partial<Record<VarBlock["blockType"], MemberKind>> = {
+  VAR: "internal",
+  VAR_TEMP: "internal",
+  VAR_EXTERNAL: "external",
+  VAR_INPUT: "input",
+  VAR_OUTPUT: "output",
+  VAR_IN_OUT: "inout",
+};
+
 export class TypeChecker {
   private errors: CompileError[] = [];
   private warnings: CompileError[] = [];
@@ -374,6 +391,16 @@ export class TypeChecker {
     this.warnings = [];
     this.strictReported.clear();
     this.ast = ast;
+    this.writeTargets = new Set();
+    walkAST(ast, (node) => {
+      if (node.kind === "AssignmentStatement") {
+        this.writeTargets.add((node as AssignmentStatement).target);
+      } else if (node.kind === "RefAssignStatement") {
+        this.writeTargets.add((node as RefAssignStatement).target);
+      } else if (node.kind === "Argument" && (node as Argument).isOutput) {
+        this.writeTargets.add((node as Argument).value);
+      }
+    });
     this.checkAllInitializerElements(ast);
 
     this.checkGlobalInitialCycles(ast);
@@ -621,6 +648,158 @@ export class TypeChecker {
     return true;
   }
 
+  /**
+   * The function block declaring `member` of `typeName` (or of a base) as an
+   * internal variable (VAR, VAR_TEMP) or a VAR_EXTERNAL; undefined for an
+   * interface variable or a name that is no FB member.
+   */
+  private internalMemberOwner(
+    typeName: string,
+    member: string,
+  ): { name: string; kind: MemberKind; access?: VarAccess } | undefined {
+    const upper = member.toUpperCase();
+    const seen = new Set<string>();
+    let current: string | undefined = typeName.toUpperCase();
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      const name: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name,
+      );
+      if (fb !== undefined) {
+        for (const block of fb.varBlocks) {
+          const declared = block.declarations.some((d) =>
+            d.names.some((n) => n.toUpperCase() === upper),
+          );
+          if (!declared) continue;
+          const kind = MEMBER_KIND[block.blockType];
+          if (kind === undefined) return undefined;
+          const access = block.access?.[0];
+          return access !== undefined
+            ? { name: fb.name, kind, access }
+            : { name: fb.name, kind };
+        }
+        current = fb.extends?.toUpperCase();
+        continue;
+      }
+      const lib = this.symbolTables.lookupFunctionBlock(name);
+      if (lib?.libraryName === undefined) return undefined;
+      const named = (v: { name: string }): boolean =>
+        v.name.toUpperCase() === upper;
+      if (lib.inputs.some(named)) return { name: lib.name, kind: "input" };
+      if (lib.outputs.some(named)) return { name: lib.name, kind: "output" };
+      if (lib.inouts.some(named)) return { name: lib.name, kind: "inout" };
+      const local = lib.locals.find(named);
+      if (local !== undefined) {
+        return local.access !== undefined
+          ? { name: lib.name, kind: "internal", access: local.access }
+          : { name: lib.name, kind: "internal" };
+      }
+      if ((lib.temps ?? []).some(named)) {
+        return { name: lib.name, kind: "internal" };
+      }
+      current = lib.declaration.extends?.toUpperCase();
+    }
+    return undefined;
+  }
+
+  /** The function block `name` and the blocks it EXTENDS, upper case. */
+  private fbLineage(name: string): Set<string> {
+    const out = new Set<string>();
+    let current: string | undefined = name.toUpperCase();
+    while (current !== undefined && !out.has(current)) {
+      out.add(current);
+      const upper: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === upper,
+      );
+      current =
+        fb !== undefined
+          ? fb.extends?.toUpperCase()
+          : this.symbolTables
+              .lookupFunctionBlock(upper)
+              ?.declaration.extends?.toUpperCase();
+    }
+    return out;
+  }
+
+  /**
+   * Refuse `inst.x` (or `x := ...` in an instance initializer) where x is an
+   * internal variable or VAR_EXTERNAL of the instance's block, outside that
+   * block and the blocks derived from it (`context`, the current block).
+   */
+  private refuseInternalMember(
+    typeName: string,
+    member: string,
+    expr: { sourceSpan: SourceSpan },
+    context: string | undefined = this.currentFBName,
+    initializer = false,
+  ): void {
+    const upper = member.toUpperCase();
+    if (upper === "EN" || upper === "ENO") return;
+    const owner = this.internalMemberOwner(this.aliasBase(typeName), member);
+    if (owner === undefined) return;
+    // An instance initializer writes; an access path writes when it is the target.
+    const write = initializer || this.writeTargets.has(expr as Expression);
+    if (
+      (owner.kind === "input" && write) ||
+      (owner.kind === "output" && !write)
+    ) {
+      return;
+    }
+    if (owner.access === "PUBLIC") return;
+    const ownerUpper = owner.name.toUpperCase();
+    const inside =
+      context !== undefined &&
+      (owner.access === "PRIVATE"
+        ? context.toUpperCase() === ownerUpper
+        : this.fbLineage(context).has(ownerUpper));
+    if (inside) return;
+    const span = expr.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}:internal:${member.toUpperCase()}`;
+    if (this.unknownMemberReported.has(key)) return;
+    this.unknownMemberReported.add(key);
+    const fb = `FUNCTION_BLOCK '${owner.name}'`;
+    const message = {
+      internal:
+        owner.access === "PRIVATE"
+          ? `'${member}' is a PRIVATE variable of ${fb}; only '${owner.name}' itself can access it`
+          : `'${member}' is an internal variable of ${fb} and cannot be accessed from outside`,
+      external: `'${member}' is a VAR_EXTERNAL of ${fb}, not a member it exposes, and cannot be accessed from outside`,
+      input: `'${member}' is a VAR_INPUT of ${fb}; from outside it can be written, not read`,
+      output: `'${member}' is a VAR_OUTPUT of ${fb}; from outside it can be read, not written`,
+      inout: `'${member}' is a VAR_IN_OUT of ${fb}; from outside it is bound in the call, not accessed through the instance`,
+    }[owner.kind];
+    this.addError(message, span.startLine, span.startCol, span.file);
+  }
+
+  /** `THIS.x` / `SUPER.x` in a block: x may be a base's PRIVATE variable. */
+  private refuseSelfMember(expr: VariableExpression): void {
+    const self = expr.name.toUpperCase();
+    if (
+      (self !== "THIS" && self !== "SUPER") ||
+      this.currentFBName === undefined
+    ) {
+      return;
+    }
+    const first = expr.accessChain?.[0];
+    const member =
+      first !== undefined
+        ? first.kind === "field"
+          ? first.name
+          : undefined
+        : expr.fieldAccess[0];
+    if (member === undefined) return;
+    const fb = this.ast?.functionBlocks.find(
+      (f) => f.name.toUpperCase() === this.currentFBName?.toUpperCase(),
+    );
+    const type = self === "THIS" ? this.currentFBName : fb?.extends;
+    if (type !== undefined) this.refuseInternalMember(type, member, expr);
+  }
+
+  /** Assignment and REF= targets and `=>` output targets of the unit: the access paths that write. */
+  private writeTargets = new Set<Expression>();
+
   /** Unknown-member reports already made, so an expression visited twice reports once. */
   private unknownMemberReported = new Set<string>();
 
@@ -683,13 +862,21 @@ export class TypeChecker {
     this.typeDefaults = new Set(
       ast.types.flatMap((t) => (t.defaultValue ? [t.defaultValue] : [])),
     );
-    walkAST(ast, (node) => {
-      if (node.kind !== "VarDeclaration") return;
-      const decl = node as VarDeclaration;
-      if (decl.initialValue) {
-        this.checkInitializerElements(decl.type, decl.initialValue);
-      }
-    });
+    // Declarations of a function block, with the block as the context of
+    // its initializers, then every other declaration.
+    const seen = new Set<VarDeclaration>();
+    const visit = (root: ASTNode, context: string | undefined): void =>
+      walkAST(root, (node) => {
+        if (node.kind !== "VarDeclaration") return;
+        const decl = node as VarDeclaration;
+        if (seen.has(decl)) return;
+        seen.add(decl);
+        if (decl.initialValue) {
+          this.checkInitializerElements(decl.type, decl.initialValue, context);
+        }
+      });
+    for (const fb of ast.functionBlocks) visit(fb, fb.name);
+    visit(ast, undefined);
   }
 
   /**
@@ -700,6 +887,7 @@ export class TypeChecker {
   private checkInitializerElements(
     type: AccessType | undefined,
     value: Expression,
+    context?: string,
   ): void {
     if (
       !this.ast ||
@@ -717,7 +905,9 @@ export class TypeChecker {
             ? { name: type.elementTypeName, referenceKind: "none" }
             : undefined
           : resolveArrayElementAccessType(type.name, this.ast);
-      for (const e of value.elements) this.checkInitializerElements(element, e);
+      for (const e of value.elements) {
+        this.checkInitializerElements(element, e, context);
+      }
       return;
     }
     if (
@@ -735,8 +925,9 @@ export class TypeChecker {
     const upper = this.aliasBase(type.name);
     for (const el of value.elements) {
       const field = resolveFieldDeclaration(upper, el.name, this.ast);
+      this.refuseInternalMember(upper, el.name, el, context, true);
       if (field) {
-        this.checkInitializerElements(field.type, el.value);
+        this.checkInitializerElements(field.type, el.value, context);
         continue;
       }
       if (this.resolveFieldTypeAnywhere(upper, el.name) !== undefined) continue;
@@ -1062,6 +1253,7 @@ export class TypeChecker {
   ): IECType | undefined {
     const symbol = scope.lookup(expr.name);
     if (symbol === undefined) {
+      this.refuseSelfMember(expr);
       // Don't report error here — Pass 3 undeclared-variable check handles this
       return undefined;
     }
@@ -1113,6 +1305,7 @@ export class TypeChecker {
             step.name,
           );
           if (fieldType) {
+            this.refuseInternalMember(currentTypeName, step.name, expr);
             currentTypeName = fieldType;
             currentType = this.resolveNamedType(fieldType);
           } else {
@@ -1192,6 +1385,7 @@ export class TypeChecker {
               field,
             );
             if (fieldType) {
+              this.refuseInternalMember(currentTypeName, field, expr);
               currentTypeName = fieldType;
               currentType = this.resolveNamedType(fieldType);
             } else {
@@ -1772,6 +1966,8 @@ export class TypeChecker {
       (type.referenceKind === "none" || type.referenceKind === "reference_to");
     const member = direct ? this.lookupMember(upper, methodName) : undefined;
     if (member !== undefined) {
+      // `inst.fb(...)` reaches the member: the same access rule as `inst.fb`.
+      this.refuseInternalMember(upper, methodName, expr);
       if (this.callTargetKind(member.type) === "value") {
         this.addError(
           `Cannot call '${prefix}.${methodName}': it is a member that is not a function block instance, not a method`,
@@ -3835,6 +4031,11 @@ export class TypeChecker {
       if (current === undefined) return;
       if (step.kind === "field") {
         if (this.isInOutMemberOf(current.name, step.name)) {
+          // From outside the block it is refused as an access (refuseInternalMember).
+          const inside =
+            this.currentFBName !== undefined &&
+            this.fbLineage(this.currentFBName).has(current.name.toUpperCase());
+          if (!inside) return;
           this.inOutDiagnostic(
             `'${step.name}' is a VAR_IN_OUT of '${current.name}' and cannot be written from outside the function block`,
             "the write goes to the variable the last call bound",

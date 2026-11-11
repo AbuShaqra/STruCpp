@@ -3,7 +3,7 @@
 /**
  * E2E: properties of a library function block, own and inherited, read and
  * written by a consumer, also from a local block that EXTENDS the library
- * block; a VAR_TEMP member and a base's input. Built with g++ and run.
+ * block, and a base's input written. Built with g++ and run.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -78,7 +78,7 @@ p.k := 2;
 p();
 a := p.Val;
 p.Val := 3;
-b := p.RO + d.Own + d.Twice() + p.t;
+b := p.RO + d.Own + d.Twice();
 d.Val := 4;
 c := d.Val + d.RO;
 l.Val := 2;
@@ -105,6 +105,6 @@ int main() {
 }
 `,
     });
-    expect(stdout).toBe("9 129 12 26 abc");
+    expect(stdout).toBe("9 120 12 26 abc");
   });
 });

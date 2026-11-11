@@ -31,6 +31,9 @@ describe.skipIf(!hasGpp)("structure initializer elements — g++ e2e", () => {
       TYPE T_P : ST_P; END_TYPE
       FUNCTION_BLOCK FB_A
       VAR_INPUT i : INT; END_VAR
+      METHOD GetI : INT
+        GetI := i;
+      END_METHOD
       END_FUNCTION_BLOCK
       FUNCTION_BLOCK FB_B EXTENDS FB_A
       END_FUNCTION_BLOCK
@@ -41,7 +44,7 @@ describe.skipIf(!hasGpp)("structure initializer elements — g++ e2e", () => {
         r1 := q.p.a * 100 + q.arr[0].b * 10 + q.arr[1].a;
         r2 := d.a * 10 + d.d;
         r3 := t.b;
-        r4 := f.i;
+        r4 := f.GetI();
       END_PROGRAM
     `,
       { headerFileName: "generated.hpp", features: ["+struct_extends"] },

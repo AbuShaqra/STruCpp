@@ -29,7 +29,7 @@ const PROFILE: DialectProfile = {
 
 /** An FB with an FB_init that takes `p : INT` and `s : STRING`. */
 const FB_A = `FUNCTION_BLOCK FB_A
-VAR v : INT; END_VAR
+VAR PUBLIC v : INT; END_VAR
 METHOD FB_init : BOOL
 VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; p : INT; s : STRING; END_VAR
 v := p;

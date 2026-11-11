@@ -22,7 +22,7 @@ const FBS = `
     o := o + k + 1;
   END_FUNCTION_BLOCK
   FUNCTION_BLOCK FBH
-  VAR sub : FBS; END_VAR
+  VAR PUBLIC sub : FBS; END_VAR
   END_FUNCTION_BLOCK
 `;
 

@@ -33,7 +33,7 @@ describe.skipIf(!hasGpp)(
         o := o + k + 1;
       END_FUNCTION_BLOCK
       FUNCTION_BLOCK FBH
-      VAR sub : FBS; END_VAR
+      VAR PUBLIC sub : FBS; END_VAR
       VAR_OUTPUT so : INT; END_VAR
         so := sub.o;
       END_FUNCTION_BLOCK

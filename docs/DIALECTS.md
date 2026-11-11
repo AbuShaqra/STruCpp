@@ -460,7 +460,7 @@ form stays refused:
 
 The variable rule: a VAR_INPUT is read and written (Ed. 3 6.6.3.4 lets an input be set apart from the call),
 a VAR_OUTPUT is only read (6.6.3.4: outputs are read, not modified, from outside), a plain VAR is read and
-written (as for a function block instance here, which has no PUBLIC/PRIVATE on VAR), a CONSTANT is only
+written (unlike a function block instance, whose VAR is internal unless its section is `VAR PUBLIC`), a CONSTANT is only
 read; VAR_TEMP, VAR_IN_OUT and VAR_EXTERNAL are not reachable. A write is an assignment, a `REF=` target or a
 `=>` capture. Other errors: `PROGRAM PRG_A has no variable 'X'`, `PROGRAM PRG_A has no method or action 'M'`,
 `VAR_OUTPUT 'Q' of PROGRAM PRG_A is read-only outside PRG_A`, `PROGRAM PRG_A has no result: call it as a

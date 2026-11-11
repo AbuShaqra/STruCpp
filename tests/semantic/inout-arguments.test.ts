@@ -149,14 +149,6 @@ describe("arguments of VAR_IN_OUT parameters", () => {
       error: "VAR_IN_OUT 'X' is not assigned in this call",
       fallback: "a temporary is passed in its place",
     },
-    {
-      what: "a write to an instance's in-out from outside",
-      vars: "a : INT;",
-      body: "f(x := a); f.x := 3;",
-      error:
-        "'X' is a VAR_IN_OUT of 'FB_I' and cannot be written from outside the function block",
-      fallback: "the write goes to the variable the last call bound",
-    },
   ];
 
   describe("forms that compile: warnings outside iec-3", () => {
@@ -177,6 +169,17 @@ describe("arguments of VAR_IN_OUT parameters", () => {
         const d = diagnostics(program(c.vars, c.body), IEC);
         expect(d.errors).toEqual([`1: ${c.error}`]);
       });
+    }
+  });
+
+  it("refuses reading or writing an instance's in-out from outside, in every dialect", () => {
+    const message =
+      "'X' is a VAR_IN_OUT of FUNCTION_BLOCK 'FB_I'; from outside it is bound in the call, not accessed through the instance";
+    for (const options of [...LENIENT.map((m) => m.options), IEC]) {
+      for (const body of ["f(x := a); f.x := 3;", "f(x := a); a := f.x;"]) {
+        const d = diagnostics(program("a : INT;", body), options);
+        expect(d.errors).toEqual([`1: ${message}`]);
+      }
     }
   });
 
@@ -208,13 +211,12 @@ VAR inner : FB_I; END_VAR
   inner(x := p.a);
 END_FUNCTION_BLOCK
 PROGRAM MAIN
-VAR fp : FB_P; st : ST_P; arr : ARRAY[1..2] OF INT; a : INT; r : INT; seen : INT; END_VAR
+VAR fp : FB_P; st : ST_P; arr : ARRAY[1..2] OF INT; a : INT; r : INT; END_VAR
 VAR_TEMP t : INT; END_VAR
   fp(p := st, x := arr[1]);
   fp(st, a);
   fp(p := st, x := t);
   r := FN(x := st.a);
-  seen := fp.x;
 END_PROGRAM
 `;
     for (const options of [...LENIENT.map((m) => m.options), IEC]) {

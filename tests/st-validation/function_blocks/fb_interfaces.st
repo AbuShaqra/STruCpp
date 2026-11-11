@@ -5,7 +5,7 @@ INTERFACE IMovable
 END_INTERFACE
 
 FUNCTION_BLOCK Robot IMPLEMENTS IMovable
-  VAR
+  VAR_OUTPUT
     posX : INT;
     posY : INT;
   END_VAR

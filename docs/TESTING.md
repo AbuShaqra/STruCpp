@@ -154,7 +154,7 @@ TEST "controller uses sensor"
 END_TEST
 ```
 
-`MOCK instance` prevents the FB's body from executing but preserves its output values and tracks call count. Nested paths are supported: `MOCK config.device.sensor`.
+`MOCK instance` prevents the FB's body from executing but preserves its output values and tracks call count. Nested paths are supported: `MOCK config.device.sensor`. A test follows the member access rule of any code outside a function block (inputs written, outputs read, `VAR PUBLIC` sections; see the FUNCTION_BLOCK row of [IEC_COMPLIANCE.md](IEC_COMPLIANCE.md)), with one exception: it may reach an instance it MOCKs, and the instances on the path to it, even when they are internal (`MOCK ctrl.sensor; ASSERT_EQ(ctrl.sensor.value, 0);`). Members of the mocked instance itself follow the normal rule.
 
 ### Mock Functions
 

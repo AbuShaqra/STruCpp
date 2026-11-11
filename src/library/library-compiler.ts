@@ -227,6 +227,8 @@ function serializeLocal(
   if (cppName !== name) entry.cppName = cppName;
   if (block.isConstant) entry.readOnly = true;
   if (block.isRetain) entry.retain = true;
+  const access = block.access?.[0];
+  if (access === "PUBLIC" || access === "PRIVATE") entry.access = access;
   return entry;
 }
 

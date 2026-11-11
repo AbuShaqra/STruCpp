@@ -9,6 +9,9 @@
 
 import type {
   Argument,
+  ASTNode,
+  RefAssignStatement,
+  VarAccess,
   ArrayLiteralExpression,
   AssertCall,
   AssignmentStatement,
@@ -1865,6 +1868,9 @@ export class SemanticAnalyzer {
     // Validate property write access (read-only check)
     this.validatePropertyAccess(ast);
 
+    // Variable access specifiers only on a FUNCTION_BLOCK's VAR sections
+    this.validateVarAccessSpecifiers(ast);
+
     // Validate access modifier enforcement
     this.validateAccessModifiers(ast);
 
@@ -3275,6 +3281,41 @@ export class SemanticAnalyzer {
         }
       }
     }
+  }
+
+  /**
+   * A variable access specifier (PUBLIC, PRIVATE, PROTECTED, INTERNAL) is
+   * allowed on a FUNCTION_BLOCK's own VAR section only, once (Ed. 3 6.6.5.10:
+   * improper uses are errors).
+   */
+  private validateVarAccessSpecifiers(ast: CompilationUnit): void {
+    const allowed = new Set<VarBlock>(
+      ast.functionBlocks.flatMap((fb) =>
+        fb.varBlocks.filter((b) => b.blockType === "VAR"),
+      ),
+    );
+    walkAST(ast, (node) => {
+      if (node.kind !== "VarBlock") return;
+      const block = node as VarBlock;
+      const access = block.access ?? [];
+      if (access.length === 0) return;
+      const at = block.sourceSpan;
+      if (!allowed.has(block)) {
+        this.addError(
+          `${access[0]!} applies only to a VAR section of a FUNCTION_BLOCK, not to ${block.blockType} here`,
+          at.startLine,
+          at.startCol,
+          at.file,
+        );
+      } else if (access.length > 1) {
+        this.addError(
+          `A VAR section takes one access specifier, not ${access.join(" and ")}`,
+          at.startLine,
+          at.startCol,
+          at.file,
+        );
+      }
+    });
   }
 
   /**
@@ -5580,6 +5621,56 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * A bare name in a derived block reaching a base's `VAR PRIVATE` variable
+   * (Ed. 3 6.6.5.10: PRIVATE is not accessible to derived blocks).
+   */
+  private refuseInheritedPrivate(
+    upper: string,
+    ctx: UndeclaredVarContext,
+    span: { startLine: number; startCol: number; file?: string },
+  ): void {
+    if (ctx.fbName === undefined) return;
+    const own = this.symbolTables.globalScope.lookup(ctx.fbName);
+    if (own?.kind !== "functionBlock") return;
+    if (this.symbolTables.getFBScope(ctx.fbName)?.lookupLocal(upper)) return;
+    const visited = new Set<string>();
+    let base = own.declaration.extends;
+    while (base !== undefined && !visited.has(base.toUpperCase())) {
+      visited.add(base.toUpperCase());
+      const sym = this.symbolTables.globalScope.lookup(base);
+      if (sym?.kind !== "functionBlock") return;
+      const block = sym.declaration.varBlocks.find((b) =>
+        b.declarations.some((d) =>
+          d.names.some((n) => n.toUpperCase() === upper),
+        ),
+      );
+      const libMember = sym.locals.find((v) => v.name.toUpperCase() === upper);
+      const declared = block !== undefined || libMember !== undefined;
+      if (declared) {
+        const priv =
+          block?.blockType === "VAR" && block.access?.[0] === "PRIVATE"
+            ? true
+            : libMember?.access === "PRIVATE";
+        if (priv) {
+          this.addError(
+            `'${upper}' is a PRIVATE variable of FUNCTION_BLOCK '${sym.name}'; only '${sym.name}' itself can access it`,
+            span.startLine,
+            span.startCol,
+            span.file,
+          );
+        }
+        return;
+      }
+      if (
+        sym.declaration.properties.some((p) => p.name.toUpperCase() === upper)
+      ) {
+        return;
+      }
+      base = sym.declaration.extends;
+    }
+  }
+
+  /**
    * True when `upper` names, in the body `ctx` describes, an inherited FB
    * member (EXTENDS chain), the function/method/property return variable, or
    * THIS/SUPER inside an FB.
@@ -5743,7 +5834,10 @@ export class SemanticAnalyzer {
     if (scopeHit && scopeHit.kind !== "enumValue") return;
 
     // 1b-4. Inherited FB members, return variables, THIS / SUPER
-    if (this.isContextName(upper, ctx)) return;
+    if (this.isContextName(upper, ctx)) {
+      this.refuseInheritedPrivate(upper, ctx, sourceSpan);
+      return;
+    }
 
     // 5. Standard functions (safety net)
     if (this.stdRegistry.isStandardFunction(name)) return;
@@ -5824,6 +5918,7 @@ export class SemanticAnalyzer {
     // Walk SETUP body
     if (testFile.setup) {
       this.walkTestStatementsForUndeclaredVars(testFile.setup.body, setupScope);
+      this.checkTestMemberAccess(testFile.setup.body, setupScope);
     }
 
     // Walk TEARDOWN body (runs in setup context)
@@ -5832,16 +5927,121 @@ export class SemanticAnalyzer {
         testFile.teardown.body,
         setupScope,
       );
+      this.checkTestMemberAccess(testFile.teardown.body, setupScope);
     }
 
     // Walk each TEST body with scope = SETUP vars + TEST-local vars
     for (const tc of testFile.testCases) {
       const testScope = this.buildTestScope(tc.varBlocks, setupScope);
       this.walkTestStatementsForUndeclaredVars(tc.body, testScope);
+      this.checkTestMemberAccess(
+        tc.body,
+        testScope,
+        testFile.setup?.body ?? [],
+      );
     }
 
     this.testTypeNames.clear();
     return { errors: [...this.errors], warnings: [...this.warnings] };
+  }
+
+  /**
+   * A test body is outside every function block: `inst.x` follows the same
+   * rule as in a PROGRAM (inputs written, outputs read, PUBLIC sections; no
+   * internal variable, in-out or VAR_EXTERNAL), except on the path to an
+   * instance the test or its SETUP MOCKs; from the mock down the rule holds.
+   */
+  private checkTestMemberAccess(
+    stmts: TestStatement[],
+    scope: Scope,
+    inherited: readonly TestStatement[] = [],
+  ): void {
+    // The instances this test (or its SETUP) MOCKs, and the path to them, may be private.
+    const mocked = [...inherited, ...stmts].flatMap((stmt) =>
+      stmt.kind === "MockFBStatement"
+        ? [stmt.instancePath.map((p) => p.toUpperCase())]
+        : [],
+    );
+    const onMockPath = (path: string[]): boolean =>
+      mocked.some(
+        (m) =>
+          path.length <= m.length && path.every((part, i) => part === m[i]),
+      );
+    const roots: ASTNode[] = stmts.flatMap((stmt): ASTNode[] => {
+      switch (stmt.kind) {
+        case "AssertCall":
+          return stmt.args;
+        case "AdvanceTimeStatement":
+          return [stmt.duration];
+        case "MockFunctionStatement":
+          return [stmt.returnValue];
+        case "MockVerifyCallCountStatement":
+          return [stmt.expectedCount];
+        case "MockFBStatement":
+        case "MockVerifyCalledStatement":
+          return [];
+        default:
+          return [stmt as ASTNode];
+      }
+    });
+    const writes = new Set<Expression>();
+    for (const stmt of roots) {
+      walkAST(stmt, (node) => {
+        if (node.kind === "AssignmentStatement") {
+          writes.add((node as AssignmentStatement).target);
+        } else if (node.kind === "RefAssignStatement") {
+          writes.add((node as RefAssignStatement).target);
+        } else if (node.kind === "Argument" && (node as Argument).isOutput) {
+          writes.add((node as Argument).value);
+        }
+      });
+    }
+    for (const stmt of roots) {
+      walkAST(stmt, (node) => {
+        if (node.kind !== "VariableExpression") return;
+        const expr = node as VariableExpression;
+        const sym = scope.lookup(expr.name);
+        if (sym?.kind !== "variable") return;
+        let typeName: string | undefined = sym.declaration?.type?.name;
+        const path = [expr.name.toUpperCase()];
+        for (const step of expr.accessChain ??
+          expr.fieldAccess.map((name) => ({ kind: "field" as const, name }))) {
+          if (step.kind !== "field" || typeName === undefined) return;
+          const fb = this.symbolTables.lookupFunctionBlock(typeName);
+          if (fb === undefined) return;
+          const found = testMemberOf(this.symbolTables, fb.name, step.name);
+          if (found === undefined) return;
+          path.push(step.name.toUpperCase());
+          const write = writes.has(expr);
+          const refused =
+            !onMockPath(path) &&
+            found.access !== "PUBLIC" &&
+            !(found.kind === "input" && write) &&
+            !(found.kind === "output" && !write);
+          if (refused) {
+            const fbText = `FUNCTION_BLOCK '${found.owner}'`;
+            const message = {
+              internal:
+                found.access === "PRIVATE"
+                  ? `'${step.name}' is a PRIVATE variable of ${fbText}; only '${found.owner}' itself can access it`
+                  : `'${step.name}' is an internal variable of ${fbText} and cannot be accessed from outside`,
+              external: `'${step.name}' is a VAR_EXTERNAL of ${fbText}, not a member it exposes, and cannot be accessed from outside`,
+              input: `'${step.name}' is a VAR_INPUT of ${fbText}; from outside it can be written, not read`,
+              output: `'${step.name}' is a VAR_OUTPUT of ${fbText}; from outside it can be read, not written`,
+              inout: `'${step.name}' is a VAR_IN_OUT of ${fbText}; from outside it is bound in the call, not accessed through the instance`,
+            }[found.kind];
+            this.addError(
+              message,
+              expr.sourceSpan.startLine,
+              expr.sourceSpan.startCol,
+              expr.sourceSpan.file,
+            );
+            return;
+          }
+          typeName = found.type;
+        }
+      });
+    }
   }
 
   /** Scope holding the TYPEs hoisted from a test file's inline enumerations and subranges. */
@@ -6141,4 +6341,75 @@ function typeText(type: TypeReference): string {
   return type.maxLength === undefined
     ? type.name
     : `${type.name}(${String(type.maxLength)})`;
+}
+
+/** A member of function block `fbName` (or of a base): where and how it is declared. */
+function testMemberOf(
+  tables: SymbolTables,
+  fbName: string,
+  member: string,
+):
+  | {
+      owner: string;
+      kind: "input" | "output" | "inout" | "internal" | "external";
+      access?: VarAccess;
+      type: string;
+    }
+  | undefined {
+  const upper = member.toUpperCase();
+  const seen = new Set<string>();
+  let current: string | undefined = fbName;
+  while (current !== undefined && !seen.has(current.toUpperCase())) {
+    seen.add(current.toUpperCase());
+    const fb = tables.lookupFunctionBlock(current);
+    if (fb === undefined) return undefined;
+    const named = (v: { name: string }): boolean =>
+      v.name.toUpperCase() === upper;
+    const kinds = {
+      VAR: "internal",
+      VAR_TEMP: "internal",
+      VAR_EXTERNAL: "external",
+      VAR_INPUT: "input",
+      VAR_OUTPUT: "output",
+      VAR_IN_OUT: "inout",
+    } as const;
+    for (const block of fb.declaration.varBlocks) {
+      const decl = block.declarations.find((d) =>
+        d.names.some((n) => n.toUpperCase() === upper),
+      );
+      if (decl === undefined) continue;
+      const kind = (
+        kinds as Partial<Record<string, (typeof kinds)[keyof typeof kinds]>>
+      )[block.blockType];
+      if (kind === undefined) return undefined;
+      const access = block.access?.[0];
+      return {
+        owner: fb.name,
+        kind,
+        type: decl.type.name,
+        ...(access !== undefined ? { access } : {}),
+      };
+    }
+    const lib = (
+      [
+        [fb.inputs, "input"],
+        [fb.outputs, "output"],
+        [fb.inouts, "inout"],
+        [fb.locals, "internal"],
+        [fb.temps ?? [], "internal"],
+      ] as const
+    )
+      .map(([list, kind]) => ({ hit: list.find(named), kind }))
+      .find((x) => x.hit !== undefined);
+    if (lib?.hit !== undefined) {
+      return {
+        owner: fb.name,
+        kind: lib.kind,
+        type: lib.hit.declaration.type.name,
+        ...(lib.hit.access !== undefined ? { access: lib.hit.access } : {}),
+      };
+    }
+    current = fb.declaration.extends;
+  }
+  return undefined;
 }
