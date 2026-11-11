@@ -488,6 +488,7 @@ export class ProjectModelBuilder {
     this.functionBlocks = new Map();
     this.configurations = [];
     this.fileScopeGlobals = collectFileScopeGlobals(ast);
+    this.unit = ast;
 
     // First pass: collect all program, function, and function block declarations
     for (const prog of ast.programs) {
@@ -701,6 +702,65 @@ export class ProjectModelBuilder {
     });
   }
 
+  /** The unit being built, for the function blocks an instance reaches. */
+  private unit: CompilationUnit | undefined;
+
+  /**
+   * The VAR_EXTERNAL names of the function blocks a POU's `varBlocks` hold
+   * (members, ARRAY elements, STRUCT fields, nested blocks, bases, methods),
+   * each with the block that declares it.
+   */
+  private externalsReachedBy(
+    varBlocks: readonly VarBlock[],
+  ): Array<{ name: string; fb: string }> {
+    const ast = this.unit;
+    if (ast === undefined) return [];
+    const out: Array<{ name: string; fb: string }> = [];
+    const seen = new Set<string>();
+    const visitType = (typeName: string | undefined): void => {
+      if (typeName === undefined) return;
+      const upper = typeName.toUpperCase();
+      if (seen.has(upper)) return;
+      seen.add(upper);
+      const fb = ast.functionBlocks.find((f) => f.name.toUpperCase() === upper);
+      if (fb !== undefined) {
+        const blocks = [
+          ...fb.varBlocks,
+          ...fb.methods.flatMap((m) => m.varBlocks),
+        ];
+        for (const block of blocks) {
+          for (const decl of block.declarations) {
+            if (block.blockType === "VAR_EXTERNAL") {
+              for (const name of decl.names) out.push({ name, fb: fb.name });
+            } else {
+              visitType(decl.type.elementTypeName ?? decl.type.name);
+            }
+          }
+        }
+        visitType(fb.extends);
+        return;
+      }
+      const type = ast.types.find((t) => t.name.toUpperCase() === upper);
+      const def = type?.definition;
+      if (def?.kind === "StructDefinition") {
+        for (const field of def.fields) {
+          visitType(field.type.elementTypeName ?? field.type.name);
+        }
+      } else if (def?.kind === "ArrayDefinition") {
+        visitType(def.elementType.name);
+      } else if (def?.kind === "TypeReference") {
+        visitType(def.name);
+      }
+    };
+    for (const block of varBlocks) {
+      if (block.blockType === "VAR_EXTERNAL") continue;
+      for (const decl of block.declarations) {
+        visitType(decl.type.elementTypeName ?? decl.type.name);
+      }
+    }
+    return out;
+  }
+
   /**
    * A RESOURCE declares only VAR_GLOBAL blocks, under names no other block of
    * the configuration declares, and its globals are reached only by the
@@ -782,6 +842,29 @@ export class ProjectModelBuilder {
           }
           this.addError(
             `Program instance '${instance.instanceName}' of RESOURCE '${resource.name}' reaches '${ext.name}', a global of RESOURCE '${owner}'`,
+            instance.sourceSpan.startLine,
+            instance.sourceSpan.startCol,
+            instance.sourceSpan.file,
+          );
+        }
+        // Through the function blocks the program holds
+        const progAst = this.unit?.programs.find(
+          (p) => p.name.toUpperCase() === instance.programType.toUpperCase(),
+        );
+        const reported = new Set<string>();
+        for (const ext of this.externalsReachedBy(progAst?.varBlocks ?? [])) {
+          const owner = declaredBy.get(ext.name.toUpperCase());
+          const key = `${ext.fb}.${ext.name}`.toUpperCase();
+          if (
+            owner === undefined ||
+            owner.toUpperCase() === resource.name.toUpperCase() ||
+            reported.has(key)
+          ) {
+            continue;
+          }
+          reported.add(key);
+          this.addError(
+            `Program instance '${instance.instanceName}' of RESOURCE '${resource.name}' reaches '${ext.name}', a global of RESOURCE '${owner}', through FUNCTION_BLOCK '${ext.fb}'`,
             instance.sourceSpan.startLine,
             instance.sourceSpan.startCol,
             instance.sourceSpan.file,
