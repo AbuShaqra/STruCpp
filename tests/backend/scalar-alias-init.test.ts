@@ -46,7 +46,7 @@ describe("codegen: value-initialised scalar alias variables", () => {
     for (const decl of [
       "T X{};",
       "T2 X2{};",
-      "TT T{};",
+      "TT T_{};",
       "SRX R{3};",
       "T M{};",
     ]) {
