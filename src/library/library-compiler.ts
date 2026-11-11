@@ -14,6 +14,7 @@ import type {
   StlibArchive,
 } from "./library-manifest.js";
 import { compile } from "../index.js";
+import { resolveDialect } from "../dialect.js";
 import { buildChunks } from "./library-chunks.js";
 import type { MemberManglingContext } from "../backend/member-mangling.js";
 import {
@@ -498,7 +499,12 @@ function compileNativeEntries(
 /** Dialect options a library compile forwards to the ST compiler. */
 export type LibraryDialectOptions = Pick<
   import("../types.js").CompileOptions,
-  "dialect" | "dialectFiles" | "dialectPath" | "features" | "dialectIO"
+  | "dialect"
+  | "dialectFiles"
+  | "dialectPath"
+  | "features"
+  | "dialectIO"
+  | "pragmaDefines"
 >;
 
 /**
@@ -651,6 +657,7 @@ export function compileLibrary(
   if (options.dialectPath) compileOpts.dialectPath = options.dialectPath;
   if (options.features) compileOpts.features = options.features;
   if (options.dialectIO) compileOpts.dialectIO = options.dialectIO;
+  if (options.pragmaDefines) compileOpts.pragmaDefines = options.pragmaDefines;
   if (options.dependencies) {
     compileOpts.libraries = options.dependencies;
   }
@@ -981,6 +988,21 @@ export function compileStlib(
     Object.keys(options.globalConstants).length > 0
   ) {
     archive.globalConstants = options.globalConstants;
+  }
+  // Present exactly when the sources were compiled with conditional pragmas
+  // resolved, so a reader of `sources` can resolve them the same way.
+  const dialect = resolveDialect(
+    {
+      ...(options.dialect !== undefined ? { dialect: options.dialect } : {}),
+      ...(options.dialectFiles ? { dialectFiles: options.dialectFiles } : {}),
+      ...(options.dialectPath ? { dialectPath: options.dialectPath } : {}),
+      ...(options.features ? { features: options.features } : {}),
+    },
+    options.dialectIO?.readFile,
+    options.dialectIO?.listDir,
+  );
+  if (dialect.features.has("conditional_pragmas")) {
+    archive.pragmaDefines = { ...(options.pragmaDefines ?? {}) };
   }
 
   return {

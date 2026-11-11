@@ -95,6 +95,7 @@ Errors and warnings appear as you type. The compiler runs in the background, hig
 | `strucpp.formatOnSave` | `false` | Format ST files on save |
 | `strucpp.dialect` | `null` | Dialect profile object for diagnostics and builds (`null`: compiler default) |
 | `strucpp.features` | `null` | Feature overrides (`+id`, `-id`) applied after the dialect profile |
+| `strucpp.pragmaDefines` | `null` | Conditional-pragma defines (name → value, `""` for a bare name), like `-D`; used only when the dialect has `conditional_pragmas` |
 
 ## Commands
 

@@ -339,3 +339,195 @@ describe("DocumentManager dialect selection", () => {
     });
   });
 });
+
+const COND_PROGRAM = `PROGRAM Main
+VAR x : INT; END_VAR
+{IF defined(SIM)}
+x := not valid st;
+{END_IF}
+  x := nope;
+END_PROGRAM`;
+
+const WITH_COND = profile("test-cond", ["conditional_pragmas"]);
+
+describe("pragmaDefines setting", () => {
+  it("accepts a name → string map and absent values", () => {
+    expect(parseDialectSettings(undefined, undefined, { SIM: "", MODE: "fast" })).toEqual({
+      ok: true,
+      settings: { pragmaDefines: { SIM: "", MODE: "fast" } },
+    });
+    expect(parseDialectSettings(null, null, null)).toEqual({ ok: true, settings: {} });
+    expect(parseDialectSettings(null, null, {})).toEqual({ ok: true, settings: {} });
+  });
+
+  it("rejects a non-object, a non-string value and a key that is not an identifier", () => {
+    expect(parseDialectSettings(null, null, ["SIM"])).toEqual({
+      ok: false,
+      message: "'pragmaDefines' must be an object",
+    });
+    expect(parseDialectSettings(null, null, { SIM: 1 })).toEqual({
+      ok: false,
+      message: `'pragmaDefines' value of "SIM" must be a string`,
+    });
+    expect(parseDialectSettings(null, null, { "1X": "" })).toEqual({
+      ok: false,
+      message: `'pragmaDefines' key "1X" is not an identifier`,
+    });
+  });
+
+  it("dialectOptions carries pragmaDefines only when non-empty", () => {
+    expect(dialectOptions({})).not.toHaveProperty("pragmaDefines");
+    expect(dialectOptions({ pragmaDefines: {} })).not.toHaveProperty("pragmaDefines");
+    expect(dialectOptions({ pragmaDefines: { SIM: "" } })).toEqual({
+      pragmaDefines: { SIM: "" },
+    });
+  });
+});
+
+describe("DocumentManager conditional pragmas", () => {
+  it("analysis options carry the defines", () => {
+    const { dm, calls } = recordingManager();
+    dm.setDialect({ dialect: WITH_COND, pragmaDefines: { SIM: "" } });
+    dm.onDocumentOpen("file:///main.st", PLAIN_PROGRAM);
+    expect(calls[0]).toMatchObject({ pragmaDefines: { SIM: "" } });
+  });
+
+  it("without the feature each directive is an error at its position", () => {
+    const dm = new DocumentManager(analyze, NullWorkspaceFs);
+    dm.setDialect({ dialect: IEC_ONLY });
+    const state = dm.onDocumentOpen("file:///main.st", COND_PROGRAM);
+    const refusals = (state.analysisResult?.errors ?? []).filter((e) =>
+      e.message.startsWith("Conditional compilation pragmas are not supported"),
+    );
+    expect(refusals.map((e) => [e.line, e.column])).toEqual([
+      [3, 1],
+      [5, 1],
+    ]);
+  });
+
+  it("with the feature the dead branch is not checked and positions are kept", () => {
+    const dm = new DocumentManager(analyze, NullWorkspaceFs);
+    dm.setDialect({ dialect: WITH_COND });
+    const state = dm.onDocumentOpen("file:///main.st", COND_PROGRAM);
+    const errors = (state.analysisResult?.errors ?? []).filter((e) => e.severity === "error");
+    expect(errors.length).toBeGreaterThan(0);
+    for (const e of errors) expect([e.line, e.column]).toEqual([6, 8]);
+  });
+
+  it("define names from the setting are case-sensitive", () => {
+    const lines = (defines: Record<string, string>): number[] => {
+      const dm = new DocumentManager(analyze, NullWorkspaceFs);
+      dm.setDialect({ dialect: WITH_COND, pragmaDefines: defines });
+      const state = dm.onDocumentOpen("file:///main.st", COND_PROGRAM);
+      return (state.analysisResult?.errors ?? [])
+        .filter((e) => e.severity === "error")
+        .map((e) => e.line);
+    };
+    expect(lines({ SIM: "" })).toContain(4);
+    expect(lines({ sim: "" })).not.toContain(4);
+    expect(lines({ Sim: "" })).not.toContain(4);
+  });
+
+  it("a source {define} selects a branch; {undefine} keeps a setting define", () => {
+    const src = `PROGRAM Main
+VAR x : INT; END_VAR
+{define Local}
+{undefine SIM}
+{IF defined(Local) AND defined(SIM) AND NOT project_defined(Local)}
+x := 1;
+{ELSE}
+x := not valid st;
+{END_IF}
+END_PROGRAM`;
+    const dm = new DocumentManager(analyze, NullWorkspaceFs);
+    dm.setDialect({ dialect: WITH_COND, pragmaDefines: { SIM: "" } });
+    const state = dm.onDocumentOpen("file:///main.st", src);
+    expect(messages(state.analysisResult)).toEqual([]);
+  });
+
+  it("test files take the pass, and their errors keep their line and column", () => {
+    const test = `TEST 't'
+{IF defined(SIM)}
+  ASSERT_TRUE(TRUE);
+{END_IF}
+{ELSE}
+END_TEST`;
+    const dm = new DocumentManager(analyze, NullWorkspaceFs);
+    dm.setDialect({ dialect: WITH_COND });
+    const state = dm.onDocumentOpen("file:///test_main.st", test);
+    expect(messages(state.analysisResult)).toContain(
+      "5: {ELSE} without a matching {IF}",
+    );
+    const err = state.analysisResult?.errors.find((e) => e.message.startsWith("{ELSE}"));
+    expect(err).toMatchObject({ line: 5, column: 1 });
+
+    const off = new DocumentManager(analyze, NullWorkspaceFs);
+    off.setDialect({ dialect: IEC_ONLY });
+    const refused = off.onDocumentOpen("file:///test_main.st", test);
+    const first = refused.analysisResult?.errors.find((e) =>
+      e.message.startsWith("Conditional compilation pragmas"),
+    );
+    expect(first).toMatchObject({ line: 2, column: 1 });
+  });
+});
+
+describe("library documents built with conditional pragmas", () => {
+  const LIB_SRC = `{IF defined(FAST)}
+FUNCTION_BLOCK Fast
+END_FUNCTION_BLOCK
+{ELSE}
+FUNCTION_BLOCK Slow
+END_FUNCTION_BLOCK
+{END_IF}
+FUNCTION Pick : INT
+{IF defined(FAST)}
+Pick := 1;
+{ELSE}
+Pick := nope;
+{END_IF}
+END_FUNCTION`;
+
+  function fastLib(): ReturnType<typeof compileStlib> {
+    const lib = compileStlib([{ source: LIB_SRC, fileName: "pick.st" }], {
+      name: "condlib",
+      version: "1.0.0",
+      namespace: "condlib",
+      features: ["+conditional_pragmas"],
+      pragmaDefines: { FAST: "" },
+    });
+    expect(lib.errors).toEqual([]);
+    expect(lib.archive.pragmaDefines).toEqual({ FAST: "" });
+    return lib;
+  }
+
+  it("are analysed with the archive's feature and defines, not the workspace's", () => {
+    const { dm, calls } = recordingManager();
+    dm.setLibraryArchiveCache("condlib", fastLib().archive);
+    dm.setDialect({ dialect: IEC_ONLY, pragmaDefines: { OTHER: "" } });
+    const state = dm.onDocumentOpen("strucpp-lib:/condlib/sources/pick.st", LIB_SRC);
+    expect(calls[0]).toMatchObject({
+      features: ["+conditional_pragmas"],
+      pragmaDefines: { FAST: "" },
+    });
+    expect(messages(state.analysisResult)).toEqual([]);
+  });
+
+  it("declaration search skips the archive's inactive branches", () => {
+    const dm = new DocumentManager(analyze, NullWorkspaceFs);
+    dm.setLibraryArchiveCache("condlib", fastLib().archive);
+    expect(dm.findSymbolInLibrarySources("Fast")).toEqual({
+      uri: "strucpp-lib:/condlib/sources/pick.st",
+      line: 1,
+    });
+    expect(dm.findSymbolInLibrarySources("Slow")).toBeUndefined();
+  });
+
+  it("workspace documents keep the workspace selection", () => {
+    const { dm, calls } = recordingManager();
+    dm.setLibraryArchiveCache("condlib", fastLib().archive);
+    dm.setDialect({ dialect: WITH_COND, pragmaDefines: { SIM: "" } });
+    dm.onDocumentOpen("file:///main.st", PLAIN_PROGRAM);
+    expect(calls[0]?.pragmaDefines).toEqual({ SIM: "" });
+    expect(calls[0]?.features).toBeUndefined();
+  });
+});

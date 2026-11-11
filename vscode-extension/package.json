@@ -250,6 +250,12 @@
           "items": { "type": "string" },
           "default": null,
           "markdownDescription": "Feature overrides applied after the dialect profile: `+id`, `-id` or `id`."
+        },
+        "strucpp.pragmaDefines": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "string" },
+          "default": null,
+          "markdownDescription": "Names for conditional pragmas (`{IF defined(NAME)}`, `hasvalue(NAME, 'v')`), as `-D` gives them: name → value, `\"\"` for a bare name. Names are case-sensitive. Used only when the dialect has the feature `conditional_pragmas`."
         }
       }
     },

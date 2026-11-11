@@ -8,6 +8,9 @@ STruC++ is an IEC 61131-3 Structured Text to C++14 compiler written in TypeScrip
 ST Source
   |
   v
+Conditional pragmas          src/frontend/conditional-pragmas.ts (feature conditional_pragmas;
+  | active text, same lines  inactive branches blanked; then IL->ST, src/il/)
+  v
 Lexer (Chevrotain)          src/frontend/lexer.ts
   | tokens
   v
@@ -46,6 +49,7 @@ src/
 
   frontend/
     lexer.ts                 Chevrotain tokenizer (~50 keywords, literals, operators)
+    conditional-pragmas.ts   {IF}/{ELSIF}/{ELSE}/{END_IF}, {define}/{undefine}, line-preserving blanking
     parser.ts                LL(3) grammar with error recovery
     ast.ts                   AST node interfaces (CompilationUnit, POU types, expressions)
     ast-builder.ts           CST-to-AST visitor
@@ -211,7 +215,7 @@ strucpp --decompile-lib lib.stlib -o dir  # Extract ST sources from .stlib
 strucpp --import-lib codesys.lib -o dir   # Convert CODESYS library to .stlib
 ```
 
-Key flags: `-L <dir>` (library search path), `-D NAME=VALUE` (global constants), `--no-default-libs`, `--cxx-flags`, `--no-source`.
+Key flags: `-L <dir>` (library search path), `-D NAME[=VALUE]` (conditional-pragma define; an integer VALUE is also a global constant), `--no-default-libs`, `--cxx-flags`, `--no-source`.
 
 ## Testing
 

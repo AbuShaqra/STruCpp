@@ -60,6 +60,16 @@ import {
   type DialectRequest,
   type ResolvedDialect,
 } from "./dialect.js";
+import type { ILexingResult } from "chevrotain";
+import { tokenize } from "./frontend/lexer.js";
+import {
+  applyConditionalPragmas,
+  conditionalPragmaHint,
+  sourcePrepFor,
+  validatePragmaDefines,
+  withPragmaHint,
+  type SourcePrep,
+} from "./frontend/conditional-pragmas.js";
 
 /**
  * Default compilation options
@@ -102,6 +112,7 @@ function validateCompileOptions(options: CompileOptions): void {
       );
     }
   }
+  validatePragmaDefines(options.pragmaDefines);
 }
 
 /** The dialect fields of the compile options, as a resolveDialect request. */
@@ -468,6 +479,59 @@ function userDeclarationSpan(
 }
 
 // ---------------------------------------------------------------------------
+// Source preparation: conditional pragmas, then IL
+// ---------------------------------------------------------------------------
+
+/**
+ * One source file before parsing: conditional pragmas resolved (when the
+ * feature is on), then IL bodies transpiled to ST, so IL only sees active
+ * text. `stopsOnError` is true when either step had something to report or
+ * rewrite; compile mode stops there on errors.
+ */
+function prepareFile(
+  text: string,
+  fileName: string | undefined,
+  prep: SourcePrep,
+  lex: (s: string) => ILexingResult,
+): {
+  text: string;
+  errors: CompileError[];
+  stopsOnError: boolean;
+  blankedLines: number[];
+} {
+  const errors: CompileError[] = [];
+  let out = text;
+  let stopsOnError = false;
+  let blankedLines: number[] = [];
+  if (prep.enabled) {
+    const pragmaResult = applyConditionalPragmas(text, prep.defines, lex);
+    out = pragmaResult.text;
+    blankedLines = pragmaResult.blankedLines;
+    if (pragmaResult.errors.length > 0) {
+      errors.push(...toCompileErrors(pragmaResult.errors, fileName));
+      stopsOnError = true;
+    }
+  }
+  const ilResult = transpileILSource(out, fileName);
+  if (ilResult.hasIL) {
+    out = ilResult.stSource;
+    stopsOnError = true;
+    for (const err of ilResult.errors) {
+      const entry: CompileError = {
+        message: err.message,
+        line: err.line,
+        column: err.column,
+        severity: err.severity,
+      };
+      if (err.file) entry.file = err.file;
+      else if (fileName !== undefined) entry.file = fileName;
+      errors.push(entry);
+    }
+  }
+  return { text: out, errors, stopsOnError, blankedLines };
+}
+
+// ---------------------------------------------------------------------------
 // Shared pipeline
 // ---------------------------------------------------------------------------
 
@@ -529,34 +593,39 @@ function runPipeline(
   }
   fbInit = dialect.features.has("fb_init");
 
-  // Phase 0: IL→ST transpilation (if source contains IL bodies)
+  const prep = sourcePrepFor(dialect, mergedOptions.pragmaDefines);
+  const pragmaHint = prep.enabled ? "" : conditionalPragmaHint(dialect);
+
+  // Phase 0: conditional pragmas, then IL→ST transpilation
   let effectiveSource = source;
+  /** File name → lines the conditional-pragma pass blanked. */
+  const blankedByFile = new Map<string, ReadonlySet<number>>();
   {
-    const ilResult = transpileILSource(source, mergedOptions.fileName);
-    if (ilResult.hasIL) {
-      effectiveSource = ilResult.stSource;
-      for (const err of ilResult.errors) {
-        const entry: CompileError = {
-          message: err.message,
-          line: err.line,
-          column: err.column,
-          severity: err.severity,
-        };
-        if (err.file) entry.file = err.file;
-        errors.push(entry);
-      }
-      if (errors.length > 0 && !continueOnError) {
-        return {
-          ast,
-          projectModel,
-          symbolTables,
-          errors,
-          warnings,
-          allArchives,
-          mergedOptions,
-          fbInit,
-        };
-      }
+    const prepared = prepareFile(
+      source,
+      mergedOptions.fileName,
+      prep,
+      tokenize,
+    );
+    effectiveSource = prepared.text;
+    if (prepared.blankedLines.length > 0) {
+      blankedByFile.set(
+        mergedOptions.fileName ?? "main.st",
+        new Set(prepared.blankedLines),
+      );
+    }
+    errors.push(...prepared.errors);
+    if (prepared.stopsOnError && errors.length > 0 && !continueOnError) {
+      return {
+        ast,
+        projectModel,
+        symbolTables,
+        errors,
+        warnings,
+        allArchives,
+        mergedOptions,
+        fbInit,
+      };
     }
   }
 
@@ -571,7 +640,12 @@ function runPipeline(
     ),
   );
   if (parseResult.errors.length > 0) {
-    errors.push(...toCompileErrors(parseResult.errors, mergedOptions.fileName));
+    errors.push(
+      ...withPragmaHint(
+        toCompileErrors(parseResult.errors, mergedOptions.fileName),
+        pragmaHint,
+      ),
+    );
     // In analyze mode, continue with partial CST from Chevrotain recovery.
     // In compile mode, abort immediately.
     if (!continueOnError) {
@@ -630,27 +704,22 @@ function runPipeline(
     // found 'LD'" error.
     if (mergedOptions.additionalSources) {
       for (const addlSource of mergedOptions.additionalSources) {
-        let effectiveAddlSource = addlSource.source;
-        const addlIlResult = transpileILSource(
+        const prepared = prepareFile(
           addlSource.source,
           addlSource.fileName,
+          prep,
+          tokenize,
         );
-        if (addlIlResult.hasIL) {
-          effectiveAddlSource = addlIlResult.stSource;
-          for (const err of addlIlResult.errors) {
-            const entry: CompileError = {
-              message: err.message,
-              line: err.line,
-              column: err.column,
-              severity: err.severity,
-            };
-            if (err.file) entry.file = err.file;
-            else entry.file = addlSource.fileName;
-            errors.push(entry);
-          }
-          if (errors.length > 0 && !continueOnError) {
-            continue;
-          }
+        const effectiveAddlSource = prepared.text;
+        if (prepared.blankedLines.length > 0) {
+          blankedByFile.set(
+            addlSource.fileName,
+            new Set(prepared.blankedLines),
+          );
+        }
+        errors.push(...prepared.errors);
+        if (prepared.stopsOnError && errors.length > 0 && !continueOnError) {
+          continue;
         }
 
         const addlParseResult = parseSource(effectiveAddlSource);
@@ -663,7 +732,10 @@ function runPipeline(
         );
         if (addlParseResult.errors.length > 0) {
           errors.push(
-            ...toCompileErrors(addlParseResult.errors, addlSource.fileName),
+            ...withPragmaHint(
+              toCompileErrors(addlParseResult.errors, addlSource.fileName),
+              pragmaHint,
+            ),
           );
           // In compile mode, skip files with parse errors.
           // In analyze mode, try to build from the partial CST.
@@ -939,8 +1011,8 @@ function runPipeline(
   // Skipped silently when no AST is available — the fields remain unset
   // and downstream code falls back to plain (file, line) display.
   if (ast) {
-    annotateErrorsWithPouContext(errors, ast);
-    annotateErrorsWithPouContext(warnings, ast);
+    annotateErrorsWithPouContext(errors, ast, blankedByFile);
+    annotateErrorsWithPouContext(warnings, ast, blankedByFile);
   }
 
   return {
@@ -1272,7 +1344,12 @@ export function parse(source: string): {
   // Parse ST source to CST
   const parseResult = parseSource(source);
   if (parseResult.errors.length > 0) {
-    errors.push(...toCompileErrors(parseResult.errors));
+    errors.push(
+      ...withPragmaHint(
+        toCompileErrors(parseResult.errors),
+        conditionalPragmaHint(resolveDialect({})),
+      ),
+    );
     return { errors };
   }
 
@@ -1299,6 +1376,31 @@ export function parse(source: string): {
     return { errors };
   }
 }
+
+/**
+ * Resolve the conditional pragmas of one ST source as if the dialect had the
+ * feature `conditional_pragmas`: directives and inactive branches are blanked
+ * line-preservingly. For tools that show or search sources compiled with
+ * defines (for example a library's persisted sources).
+ *
+ * @param source - The ST source text
+ * @param pragmaDefines - Define names and values (`''` for a bare name)
+ * @returns The blanked text and positioned errors
+ */
+export function resolveConditionalPragmas(
+  source: string,
+  pragmaDefines?: Record<string, string>,
+): { text: string; errors: CompileError[] } {
+  validatePragmaDefines(pragmaDefines);
+  const defines = new Map(Object.entries(pragmaDefines ?? {}));
+  const result = applyConditionalPragmas(source, defines, tokenize);
+  return { text: result.text, errors: toCompileErrors(result.errors) };
+}
+
+export {
+  isPragmaDefineName,
+  validatePragmaDefines,
+} from "./frontend/conditional-pragmas.js";
 
 /**
  * Get the version of the STruC++ compiler.
@@ -1460,6 +1562,17 @@ export type {
   DialectIO,
 } from "./dialect.js";
 
+// Conditional pragmas (feature conditional_pragmas)
+export {
+  applyConditionalPragmas,
+  sourcePrepFor,
+} from "./frontend/conditional-pragmas.js";
+export type {
+  PragmaDirectiveError,
+  ConditionalPragmaResult,
+  SourcePrep,
+} from "./frontend/conditional-pragmas.js";
+
 // Re-export library system
 export { compileLibrary, compileStlib } from "./library/library-compiler.js";
 export {
@@ -1502,6 +1615,7 @@ export { extractIncludePaths, splitCxxFlags } from "./cxx-flags.js";
 
 // Test framework
 export { parseTestFile } from "./testing/test-parser.js";
+export type { TestFileParseOptions } from "./testing/test-parser.js";
 export { analyzeTestFile } from "./semantic/analyzer.js";
 export {
   generateTestMain,

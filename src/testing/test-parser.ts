@@ -13,26 +13,99 @@ import { toCompileErrors } from "../frontend/parse-errors.js";
 import { buildTestAST } from "../frontend/ast-builder.js";
 import { lowerTestInlineTypes } from "../frontend/lower-inline-types.js";
 import type { TestFile } from "./test-model.js";
-import type { CompileError } from "../types.js";
+import type { CompileError, CompileOptions } from "../types.js";
+import { tokenizeTest } from "../frontend/lexer.js";
+import { DialectError, resolveDialect } from "../dialect.js";
+import {
+  applyConditionalPragmas,
+  conditionalPragmaHint,
+  sourcePrepFor,
+  validatePragmaDefines,
+  withPragmaHint,
+} from "../frontend/conditional-pragmas.js";
+
+/** Compile options a test file is parsed under. */
+export type TestFileParseOptions = Pick<
+  CompileOptions,
+  | "dialect"
+  | "dialectFiles"
+  | "dialectPath"
+  | "features"
+  | "dialectIO"
+  | "pragmaDefines"
+>;
 
 /**
  * Parse a test file source string into a TestFile model.
  *
  * @param source - The test file source code
  * @param fileName - The test file name (for error reporting and output)
+ * @param options - Dialect and pragma defines (default dialect when
+ *   omitted). Conditional pragmas are resolved when the dialect has the
+ *   feature conditional_pragmas and refused otherwise.
+ * @throws TypeError when `options.pragmaDefines` is not a name → string map
  * @returns The parsed TestFile and any errors
  */
 export function parseTestFile(
   source: string,
   fileName: string,
+  options?: TestFileParseOptions,
 ): { testFile?: TestFile; errors: CompileError[] } {
   const errors: CompileError[] = [];
 
+  const opts: TestFileParseOptions = options ?? {};
+  validatePragmaDefines(opts.pragmaDefines);
+  let text = source;
+  let pragmaHint = "";
+  let dialect;
+  try {
+    dialect = resolveDialect(
+      {
+        ...(opts.dialect !== undefined ? { dialect: opts.dialect } : {}),
+        ...(opts.dialectFiles ? { dialectFiles: opts.dialectFiles } : {}),
+        ...(opts.dialectPath ? { dialectPath: opts.dialectPath } : {}),
+        ...(opts.features ? { features: opts.features } : {}),
+      },
+      opts.dialectIO?.readFile,
+      opts.dialectIO?.listDir,
+    );
+  } catch (e) {
+    if (!(e instanceof DialectError)) throw e;
+    errors.push({
+      message: e.message,
+      line: 0,
+      column: 0,
+      severity: "error",
+      file: fileName,
+    });
+    return { errors };
+  }
+  const prep = sourcePrepFor(dialect, opts.pragmaDefines);
+  if (prep.enabled) {
+    const pragmaResult = applyConditionalPragmas(
+      source,
+      prep.defines,
+      tokenizeTest,
+    );
+    if (pragmaResult.errors.length > 0) {
+      errors.push(...toCompileErrors(pragmaResult.errors, fileName));
+      return { errors };
+    }
+    text = pragmaResult.text;
+  } else {
+    pragmaHint = conditionalPragmaHint(dialect);
+  }
+
   // Parse with the test lexer/parser
-  const parseResult = parseTestSource(source);
+  const parseResult = parseTestSource(text);
 
   if (parseResult.errors.length > 0) {
-    errors.push(...toCompileErrors(parseResult.errors, fileName));
+    errors.push(
+      ...withPragmaHint(
+        toCompileErrors(parseResult.errors, fileName),
+        pragmaHint,
+      ),
+    );
     return { errors };
   }
 
