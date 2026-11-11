@@ -2657,8 +2657,8 @@ export class TypeChecker {
   }
 
   /**
-   * A POINTER TO field of a STRUCT takes no address or pointer as its
-   * default: the type is created before any variable, and a copy of the
+   * A POINTER TO, REF_TO or REFERENCE TO field of a STRUCT takes no address
+   * or reference as its default: the type is created before any variable, and a copy of the
    * STRUCT would keep the address of the instance it was copied from.
    */
   private checkStructReferenceDefaults(ast: CompilationUnit): void {
@@ -2666,15 +2666,23 @@ export class TypeChecker {
       if (type.definition.kind !== "StructDefinition") continue;
       for (const field of type.definition.fields) {
         const value = field.initialValue;
+        const kind = field.type.referenceChain?.[0] ?? field.type.referenceKind;
+        const spelled = {
+          pointer_to: "POINTER TO",
+          ref_to: "REF_TO",
+          reference_to: "REFERENCE TO",
+        }[kind as "pointer_to" | "ref_to" | "reference_to"] as
+          | string
+          | undefined;
         if (
           value === undefined ||
-          field.type.referenceKind !== "pointer_to" ||
-          isNullInitializer(value)
+          spelled === undefined ||
+          (kind !== "reference_to" && isNullInitializer(value))
         ) {
           continue;
         }
         this.addError(
-          `POINTER TO initializers are not supported in a STRUCT; assign '${type.name.toUpperCase()}.${(field.names[0] ?? "").toUpperCase()}' in the body instead`,
+          `${spelled} initializers are not supported in a STRUCT; assign '${type.name.toUpperCase()}.${(field.names[0] ?? "").toUpperCase()}' in the body instead`,
           value.sourceSpan.startLine,
           value.sourceSpan.startCol,
           value.sourceSpan.file,

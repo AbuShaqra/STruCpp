@@ -43,6 +43,7 @@ import type {
 import { mergeCompilationUnits } from "./merge.js";
 import { lowerInlineTypes } from "./frontend/lower-inline-types.js";
 import { resolveArrayBounds } from "./semantic/array-bounds.js";
+import { foldStructFieldDefaults } from "./semantic/struct-defaults.js";
 import { lowerActions } from "./semantic/lower-actions.js";
 import { lowerAccessorLocals } from "./semantic/lower-accessor-locals.js";
 import { lowerProgramSelfMembers } from "./semantic/program-access.js";
@@ -791,6 +792,7 @@ function runPipeline(
     // action bodies as it does in the owner's methods.
     const loweringErrors = [
       ...resolveArrayBounds(ast, mergedOptions.globalConstants ?? {}),
+      ...foldStructFieldDefaults(ast, mergedOptions.globalConstants ?? {}),
       ...lowerActions(ast),
       ...lowerAccessorLocals(ast),
       ...lowerInlineTypes(ast),

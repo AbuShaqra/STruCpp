@@ -91,7 +91,7 @@ describe("structure initializers — file-level VAR_GLOBAL", () => {
     `);
     expectOk(result);
     // The struct keeps its own member defaults …
-    expect(result.headerCode).toContain("IEC_REAL LO = 4;");
+    expect(result.headerCode).toContain("IEC_REAL LO = 4.0;");
     // … and only the named element is overwritten.
     expect(result.headerCode).toContain(
       "strucpp::iec_struct_init<SCALE>([](auto& v0) { v0.HI = 22.0; })",
