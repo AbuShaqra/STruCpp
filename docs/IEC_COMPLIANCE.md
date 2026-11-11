@@ -159,7 +159,7 @@ parameters. A FUNCTION, FUNCTION_BLOCK, INTERFACE or TYPE named like a function 
 and the REPL keep the ST name. So is a variable, STRUCT field or local named like a user type, whatever its
 case, that another declaration of the same PROGRAM, FUNCTION_BLOCK (with its methods), FUNCTION or STRUCT
 uses (`s3 : STRING(3)` next to `a : S3`): the name would otherwise hide the type in the C++ class or body.
-A FUNCTION or METHOD parameter keeps its name.
+A FUNCTION or METHOD parameter keeps its name. A FUNCTION or standard function called where a variable of its name, in any case, is in scope (a local, a parameter or a member that is no FB instance) is reached through its namespace in the C++; an FB instance of that name is what the call invokes, and its call has no value.
 
 **REAL/LREAL to integer.** `REAL_TO_*` and `LREAL_TO_*` to an integer type round to nearest (half away from
 zero), saturate at the target's range and give 0 for NaN, instead of the undefined behaviour of a plain C++

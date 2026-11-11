@@ -1431,6 +1431,7 @@ export class TypeChecker {
 
     // An FB instance in scope is invoked (no return value)
     if (!expr.instance && this.calledInstance(expr.functionName, scope)) {
+      this.refuseInstanceCallValue(expr, scope);
       return undefined;
     }
 
@@ -2838,6 +2839,9 @@ export class TypeChecker {
       }
 
       case "FunctionCallStatement": {
+        if (stmt.call.kind === "FunctionCallExpression") {
+          this.statementCalls.add(stmt.call);
+        }
         // resolveExprType already validates function call args
         this.resolveExprType(stmt.call, scope);
         if (this.strict && stmt.call.kind === "FunctionCallExpression") {
@@ -4294,6 +4298,33 @@ export class TypeChecker {
         condExpr.sourceSpan.file,
       );
     }
+  }
+
+  /** Calls written as statements (their value, if any, is discarded). */
+  private statementCalls = new WeakSet<FunctionCallExpression>();
+  /** Calls already checked by refuseInstanceCallValue. */
+  private checkedInstanceCallValues = new WeakSet<FunctionCallExpression>();
+
+  /**
+   * `x := fb(...)`: a FUNCTION_BLOCK instance call used as a value, which it
+   * has none of (also where a FUNCTION of its name exists, which the
+   * instance hides).
+   */
+  private refuseInstanceCallValue(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (this.statementCalls.has(expr)) return;
+    if (this.checkedInstanceCallValues.has(expr)) return;
+    this.checkedInstanceCallValues.add(expr);
+    const sym = scope.lookup(expr.functionName);
+    if (sym?.kind === "program") return;
+    this.addError(
+      `'${expr.functionName}' is a FUNCTION_BLOCK instance: its call has no value`,
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
   }
 
   /** Calls already checked by checkBoundDimension. */
