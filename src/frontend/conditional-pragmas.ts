@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2025 Autonomy®
 /**
- * Conditional-compilation pragmas (`{IF}`, `{ELSIF}`, `{ELSE}`, `{END_IF}`),
- * a vendor-toolchain extension enabled by the dialect feature
+ * Conditional-compilation pragmas (`{IF}`, `{ELSIF}`, `{ELSE}`, `{END_IF}`,
+ * `{define}`, `{undefine}`), a vendor-toolchain extension enabled by the dialect feature
  * `conditional_pragmas`. Not IEC 61131-3.
  *
  * {@link applyConditionalPragmas} blanks every directive and every inactive
@@ -85,7 +85,7 @@ export function validatePragmaDefines(defines: unknown): void {
 /** Whether the pass runs, and the defines it evaluates against. */
 export interface SourcePrep {
   enabled: boolean;
-  /** Define names in upper case → value (`''` for a bare name). */
+  /** Project define names (case-sensitive) → value (`''` for a bare name). */
   defines: Map<string, string>;
 }
 
@@ -93,17 +93,16 @@ export interface SourcePrep {
  * The conditional-pragma settings of one compile.
  *
  * @param dialect - The resolved dialect; the pass runs when it has `conditional_pragmas`
- * @param pragmaDefines - Define names and values; names compare case-insensitively
+ * @param pragmaDefines - Project define names and values; names are case-sensitive
  */
 export function sourcePrepFor(
   dialect: ResolvedDialect,
   pragmaDefines?: Record<string, string>,
 ): SourcePrep {
-  const defines = new Map<string, string>();
-  for (const [name, value] of Object.entries(pragmaDefines ?? {})) {
-    defines.set(name.toUpperCase(), value);
-  }
-  return { enabled: dialect.features.has("conditional_pragmas"), defines };
+  return {
+    enabled: dialect.features.has("conditional_pragmas"),
+    defines: new Map(Object.entries(pragmaDefines ?? {})),
+  };
 }
 
 /** Prefix of the lexer error for a conditional pragma when the feature is off. */
@@ -178,7 +177,7 @@ type CondToken =
 type CondNode =
   | { kind: "and" | "or"; left: CondNode; right: CondNode }
   | { kind: "not"; operand: CondNode }
-  | { kind: "defined"; name: string }
+  | { kind: "defined"; name: string; projectOnly: boolean }
   | { kind: "hasvalue"; name: string; value: string }
   | { kind: "false" };
 
@@ -377,12 +376,12 @@ class ConditionParser {
         return { kind: "false" };
       }
       this.expectPunct(")");
-      return { kind: "defined", name: name.toUpperCase() };
+      return { kind: "defined", name, projectOnly: false };
     }
     if (upper === "PROJECT_DEFINED") {
       const name = this.expectName();
       this.expectPunct(")");
-      return { kind: "defined", name: name.toUpperCase() };
+      return { kind: "defined", name, projectOnly: true };
     }
     if (upper === "HASVALUE") {
       const name = this.expectName();
@@ -391,7 +390,7 @@ class ConditionParser {
       if (v.kind !== "string") throw this.unexpected(v, "a quoted value");
       this.next();
       this.expectPunct(")");
-      return { kind: "hasvalue", name: name.toUpperCase(), value: v.text };
+      return { kind: "hasvalue", name, value: v.text };
     }
     this.problems.push({
       message: REFUSED_OPERATORS.has(upper)
@@ -404,24 +403,88 @@ class ConditionParser {
   }
 }
 
-function evaluate(
-  node: CondNode,
-  defines: ReadonlyMap<string, string>,
-): boolean {
+/** Defines in effect at one point of a file. */
+interface DefineScope {
+  /** Project defines (`-D`, `pragmaDefines`); never changed by the source. */
+  project: ReadonlyMap<string, string>;
+  /** `{define}`s of this file seen so far and not undefined. */
+  source: ReadonlyMap<string, string>;
+}
+
+/** Value of `name`: a source define shadows a project define of the same name. */
+function defineValue(scope: DefineScope, name: string): string | undefined {
+  return scope.source.get(name) ?? scope.project.get(name);
+}
+
+function evaluate(node: CondNode, scope: DefineScope): boolean {
   switch (node.kind) {
     case "and":
-      return evaluate(node.left, defines) && evaluate(node.right, defines);
+      return evaluate(node.left, scope) && evaluate(node.right, scope);
     case "or":
-      return evaluate(node.left, defines) || evaluate(node.right, defines);
+      return evaluate(node.left, scope) || evaluate(node.right, scope);
     case "not":
-      return !evaluate(node.operand, defines);
+      return !evaluate(node.operand, scope);
     case "defined":
-      return defines.has(node.name);
+      return (
+        scope.project.has(node.name) ||
+        (!node.projectOnly && scope.source.has(node.name))
+      );
     case "hasvalue":
-      return defines.get(node.name) === node.value;
+      return defineValue(scope, node.name) === node.value;
     case "false":
       return false;
   }
+}
+
+/** A parsed `{define NAME ['value']}` or `{undefine NAME}`. */
+interface DefineAction {
+  name: string;
+  /** The value of a `{define}`; undefined for `{undefine}`. */
+  value?: string;
+}
+
+/**
+ * Parse the text after `define` / `undefine`: a name, then for `{define}` an
+ * optional single-quoted value. Throws {@link ConditionSyntaxError}.
+ */
+function parseDefineAction(
+  keyword: "DEFINE" | "UNDEFINE",
+  rest: string,
+  restOffset: number,
+  closeOffset: number,
+): DefineAction {
+  const what = `Malformed {${keyword.toLowerCase()}}`;
+  const toks = lexCondition(rest, restOffset);
+  const at = (t: CondToken): number =>
+    t.kind === "end" ? closeOffset : t.offset;
+  const first = toks[0]!;
+  if (first.kind !== "name") {
+    throw new ConditionSyntaxError(`${what}: expected a name`, at(first));
+  }
+  let i = 1;
+  let value: string | undefined;
+  if (keyword === "DEFINE") {
+    value = "";
+    const v = toks[i]!;
+    if (v.kind === "string") {
+      value = v.text;
+      i++;
+    } else if (v.kind === "bad" && v.text === "unterminated string") {
+      throw new ConditionSyntaxError(`${what}: unterminated string`, v.offset);
+    } else if (v.kind !== "end") {
+      throw new ConditionSyntaxError(
+        `${what}: expected a quoted value or '}'`,
+        v.offset,
+      );
+    }
+  }
+  const extra = toks[i]!;
+  if (extra.kind !== "end") {
+    throw new ConditionSyntaxError(`${what}: expected '}'`, extra.offset);
+  }
+  return value === undefined
+    ? { name: first.text }
+    : { name: first.text, value };
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +503,8 @@ interface Directive {
   restOffset: number;
   /** Parsed condition of an IF/ELSIF; undefined when it failed to parse. */
   condition?: CondNode;
+  /** Parsed `{define}` / `{undefine}`; undefined when it failed to parse. */
+  action?: DefineAction;
 }
 
 interface Frame {
@@ -467,15 +532,17 @@ function lengthStableCopy(source: string): string {
 }
 
 /** A line that starts with a conditional directive (inside a string it is an error). */
-const DIRECTIVE_LINE = /^[ \t]*\{\s*(?:IF|ELSIF|ELSE|END_IF)\b/i;
+const DIRECTIVE_LINE =
+  /^[ \t]*\{\s*(?:IF|ELSIF|ELSE|END_IF|DEFINE|UNDEFINE)\b/i;
 
 /**
- * Resolve the conditional-compilation directives of `source` against
- * `defines`. Problems in the text come back as positioned errors; only an
- * internal bug propagates as an exception.
+ * Resolve the conditional-compilation directives of `source` against the
+ * project `defines` and the file's own `{define}`s, in textual order. Problems
+ * in the text come back as positioned errors; only an internal bug propagates
+ * as an exception.
  *
  * @param source - The source text
- * @param defines - Define names in upper case → value
+ * @param defines - Project define names (case-sensitive) → value
  * @param lex - The lexer for this kind of file; its pragma group and string tokens are read
  * @returns The text with directives and inactive branches blanked, and the errors
  */
@@ -555,11 +622,12 @@ export function applyConditionalPragmas(
     };
     directives.push(d);
     if (keyword === "DEFINE" || keyword === "UNDEFINE") {
-      report(
-        `{${keyword.toLowerCase()}} is not supported; pass defines with -D`,
-        d.start,
-        image.length,
-      );
+      try {
+        d.action = parseDefineAction(keyword, d.rest, d.restOffset, d.end - 1);
+      } catch (e) {
+        if (!(e instanceof ConditionSyntaxError)) throw e;
+        report(e.message, e.offset, 1);
+      }
     } else if (keyword === "IF" || keyword === "ELSIF") {
       if (d.rest.trim() === "") {
         report(
@@ -596,8 +664,10 @@ export function applyConditionalPragmas(
   const stack: Frame[] = [];
   const isActive = (): boolean =>
     stack.length === 0 || stack[stack.length - 1]!.active;
+  const sourceDefines = new Map<string, string>();
+  const scope: DefineScope = { project: defines, source: sourceDefines };
   const choose = (d: Directive): boolean =>
-    d.condition !== undefined && evaluate(d.condition, defines);
+    d.condition !== undefined && evaluate(d.condition, scope);
 
   const parts: string[] = [];
   let cursor = 0;
@@ -648,7 +718,13 @@ export function applyConditionalPragmas(
         if (!top) report("{END_IF} without a matching {IF}", d.start, length);
         else stack.pop();
         break;
-      default:
+      case "DEFINE":
+        if (d.action && isActive()) {
+          sourceDefines.set(d.action.name, d.action.value ?? "");
+        }
+        break;
+      case "UNDEFINE":
+        if (d.action && isActive()) sourceDefines.delete(d.action.name);
         break;
     }
   }

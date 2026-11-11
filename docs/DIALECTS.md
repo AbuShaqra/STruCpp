@@ -79,7 +79,7 @@ the root. A profile without `extends` has only its own features.
 | `trunc_dint`         | `TRUNC(x)` returns DINT for an LREAL too (not only a REAL)   |
 | `interface_zero`     | `itf := 0` stores NULL in an interface variable              |
 | `end_semicolon_optional` | under `--strict`, `END_IF` and the like need no `;`      |
-| `conditional_pragmas` | `{IF}`/`{ELSIF}`/`{ELSE}`/`{END_IF}` with `defined()`, `project_defined()`, `hasvalue()`, `AND`/`OR`/`NOT`; defines from `-D` ([below](#conditional-pragmas)) |
+| `conditional_pragmas` | `{IF}`/`{ELSIF}`/`{ELSE}`/`{END_IF}` with `defined()`, `project_defined()`, `hasvalue()`, `AND`/`OR`/`NOT`; defines from `-D` and from `{define}`/`{undefine}` in the source ([below](#conditional-pragmas)) |
 
 ## Refusals
 
@@ -101,7 +101,7 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `TYPE U_A : UNION ... END_UNION`            | `union`              | `UNION type 'U_A' needs the feature union`                                           |
 | `fb : FB_A(p := 1);` (init arguments)       | `fb_init`            | `The init argument list of 'FB' needs the feature fb_init` (at `(`)                  |
 | `itf := 0` (interface variable)             | `interface_zero`     | `Assigning 0 to interface I_A needs the feature interface_zero` (at the `0`)         |
-| `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive). `{define}`/`{undefine}` stay refused with the feature on ([below](#conditional-pragmas)) |
+| `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive). With the feature on, `{define}`/`{undefine}` are accepted ([below](#conditional-pragmas)) |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
@@ -534,32 +534,44 @@ strucpp main.st -o main.cpp --feature +conditional_pragmas -D MODE=fast
   holds is compiled; the others are not. A directive inside a comment, a string or `{external ...}` is not
   a directive.
 - **Conditions.** `or := and (OR and)*`, `and := not (AND not)*`, `not := NOT not | primary`,
-  `primary := '(' or ')' | call`. Keywords and operator names are case-insensitive.
+  `primary := '(' or ')' | call`. Keywords and operator names are case-insensitive; whitespace may
+  separate an operator from its `(` (`defined (SIM)`, `hasvalue (MODE, '1')`).
 
   | Operator | True when |
   | --- | --- |
-  | `defined(NAME)` | `NAME` is defined |
-  | `project_defined(NAME)` | the same as `defined(NAME)` here (an inference, see below) |
-  | `hasvalue(NAME, 'text')` | `NAME` is defined and its value is exactly `text`; a bare `-D NAME` has the value `''` |
+  | `defined(NAME)` | `NAME` is a project define or a source define in effect |
+  | `project_defined(NAME)` | `NAME` is a project define (`-D`, `pragmaDefines`); a source `{define}` does not count |
+  | `hasvalue(NAME, 'text')` | `NAME` is defined and its value is exactly `text` (single quotes); a bare define has the value `''` |
 
-- **Defines.** `-D NAME` (or `-DNAME`, `--define NAME`) defines `NAME` with the value `''`; `-D NAME=VALUE`
-  defines it with the value `VALUE`, and an integer `VALUE` is also a global constant, as before. A name must
-  be an identifier. Through the library API the defines are `pragmaDefines`, a name → string map, kept
-  separate from `globalConstants`: a library's or the caller's global constants never make a name
-  `defined()`.
+- **Define names are case-sensitive**, unlike ST identifiers: `-D Sim` makes `defined(Sim)` true and
+  `defined(SIM)` false. Directive keywords and operator names are not.
+- **Project defines.** `-D NAME` (or `-DNAME`, `--define NAME`) defines `NAME` with the value `''`;
+  `-D NAME=VALUE` defines it with the value `VALUE`, and an integer `VALUE` is also a global constant, as
+  before (that constant is an ST identifier, so it is case-insensitive). A name must be an identifier.
+  Through the library API the defines are `pragmaDefines`, a name → string map, kept separate from
+  `globalConstants`: a library's or the caller's global constants never make a name `defined()`.
+- **Source defines.** `{define NAME}` defines `NAME` with the value `''`; `{define NAME 'text'}` with the
+  value `text` (single quotes, no escapes). A source define is in effect from its directive to the end of
+  that file, or until `{undefine NAME}`; it never reaches another file. A later `{define}` of the same name
+  replaces the value. A `{define}` or `{undefine}` in an inactive branch has no effect. `{undefine NAME}`
+  removes only a source define: it cannot remove a project define, and has no effect (and no diagnostic)
+  on one or on an unknown name. While a source define is in effect, `hasvalue` reads its value even if a
+  project define has the same name. Conditions are evaluated in textual order with the source defines in
+  effect at that point. Malformed directives are errors at the offending character:
+  `Malformed {define}: expected a name` (also `{undefine}`),
+  `Malformed {define}: expected a quoted value or '}'`, `Malformed {define}: unterminated string`, and
+  `Malformed {define}: expected '}'` for extra text (also `{undefine}`).
 - **Refused operators.** `defined(variable:x)`, `defined(type:T)`, `defined(pou:P)`, `hasattribute`,
   `hastype`, `hasconstantvalue` and `hasconstanttype` are errors, `Conditional pragma operator '<op>' is not
   supported`, at the operator. Their answer depends on the symbols a compile sees, which differ between the
   CLI, the language server and the library compiler. Any other name is `unknown operator '<x>' in a
   conditional pragma`; a syntax error is `Malformed conditional pragma expression: expected ...` at the
   offending character.
-- **Not supported.** `{define ...}` and `{undefine ...}` are errors, `{define} is not supported; pass
-  defines with -D`.
 - **Structure errors**, each at its directive: `{END_IF} without a matching {IF}`, `{ELSIF} without a
   matching {IF}`, `{ELSE} without a matching {IF}`, `{ELSIF} after {ELSE}`, `second {ELSE} in one {IF}`,
   and `{IF} has no matching {END_IF}` at the `{IF}` (the block is then closed at the end of the file).
-- **Every condition is checked**, inactive branches included, so the errors do not depend on the defines.
-  Conditions are only evaluated to choose a branch.
+- **Every condition and every `{define}`/`{undefine}` is checked**, inactive branches included, so the
+  errors do not depend on the defines. Conditions are only evaluated to choose a branch.
 - **Line-preserving.** Every directive and every inactive branch is replaced by spaces, line breaks kept
   (`\r\n`, `\n` and `\r`), before anything else reads the file (IL included). The pass itself moves no
   line or column, so diagnostics, `#line` directives and debug positions keep the ones they would have
@@ -582,8 +594,14 @@ strucpp main.st -o main.cpp --feature +conditional_pragmas -D MODE=fast
   flags, and the language server analyses and searches a library's sources with the feature on and the
   archive's own defines, not the workspace's. `resolveConditionalPragmas(source, pragmaDefines)` is exported
   for other tools that show such sources.
-- **Not verified against the vendor toolchains** (inferences): define names compare case-insensitively;
-  `project_defined` is treated as `defined`; `hasvalue` compares the text exactly, with single quotes.
+- **Confirmed behaviour.** Case-sensitive define names, single-quoted `hasvalue` values, the scope of
+  `{define}`/`{undefine}` and the rule that `{undefine}` cannot remove a project define match common
+  vendor toolchains. `project_defined` testing the project defines only is from the CODESYS documentation
+  (V3.5 SP20 and later); it is accepted for CODESYS code.
+- **Not verified against the vendor toolchains** (inferences): a source `{define}` shadowing the value of a
+  project define of the same name for `hasvalue`; a `hasvalue` text compared exactly, with no escapes.
+- **Follow-up.** The symbol operators above stay refused until a compile can answer them the same way in
+  every entry point.
 
 ## Strict checks a feature relaxes
 

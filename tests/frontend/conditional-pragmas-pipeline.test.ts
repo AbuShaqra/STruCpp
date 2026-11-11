@@ -130,7 +130,8 @@ describe.each(ACCEPTING)("accepted: $name", ({ options }) => {
   const cases: Array<[Record<string, string> | undefined, string]> = [
     [undefined, "X(3)"],
     [{ SIM: "" }, "X(1)"],
-    [{ sim: "" }, "X(1)"],
+    [{ sim: "" }, "X(3)"],
+    [{ Sim: "" }, "X(3)"],
     [{ MODE: "fast" }, "X(2)"],
     [{ MODE: "slow" }, "X(3)"],
   ];
@@ -516,6 +517,143 @@ describe("bodyLine does not depend on the defines", () => {
     const off = at();
     expect(on).toMatchObject({ line: 8, section: "body", bodyLine: 6 });
     expect(off).toMatchObject({ line: 8, section: "body", bodyLine: 6 });
+  });
+});
+
+describe("define names are case-sensitive per entry point", () => {
+  const SRC = `PROGRAM Main
+VAR x : INT; END_VAR
+{IF defined(Sim)}
+x := 1;
+{ELSE}
+x := 2;
+{END_IF}
+END_PROGRAM
+`;
+  const on = { features: ["+conditional_pragmas"] };
+
+  it("compile() and analyze() match the -D name exactly", () => {
+    const exact = compile(SRC, { ...on, pragmaDefines: { Sim: "" } });
+    expect(exact.success).toBe(true);
+    expect(exact.cppCode).toMatch(/X = 1/);
+    const upper = compile(SRC, { ...on, pragmaDefines: { SIM: "" } });
+    expect(upper.success).toBe(true);
+    expect(upper.cppCode).toMatch(/X = 2/);
+    expect(analyze(SRC, { ...on, pragmaDefines: { SIM: "" } }).errors).toEqual(
+      [],
+    );
+  });
+
+  it("parseTestFile() matches the name exactly", () => {
+    const test = `TEST 'case'
+{IF defined(Sim)}
+  ASSERT_TRUE(TRUE);
+{ELSE}
+  ASSERT_TRUE(FALSE);
+{END_IF}
+END_TEST
+`;
+    const exact = parseTestFile(test, "t.st", {
+      ...on,
+      pragmaDefines: { Sim: "" },
+    });
+    expect(exact.errors).toEqual([]);
+    expect(JSON.stringify(exact.testFile)).toContain('"value":true');
+    const upper = parseTestFile(test, "t.st", {
+      ...on,
+      pragmaDefines: { SIM: "" },
+    });
+    expect(upper.errors).toEqual([]);
+    expect(JSON.stringify(upper.testFile)).toContain('"value":false');
+  });
+
+  it("resolveConditionalPragmas() matches the name exactly", () => {
+    const src = "{IF defined(Sim)}\na;\n{END_IF}\n";
+    expect(resolveConditionalPragmas(src, { Sim: "" }).text).toContain("a;");
+    expect(resolveConditionalPragmas(src, { SIM: "" }).text).not.toContain(
+      "a;",
+    );
+  });
+
+  it("a -D integer constant stays case-insensitive as an ST identifier", () => {
+    const src = `PROGRAM Main
+VAR x : INT; END_VAR
+{IF defined(LIMIT)}
+x := limit;
+{END_IF}
+END_PROGRAM
+`;
+    const r = compile(src, {
+      ...on,
+      pragmaDefines: { LIMIT: "5" },
+      globalConstants: { LIMIT: 5 },
+    });
+    expect(r.errors).toEqual([]);
+    expect(r.success).toBe(true);
+  });
+});
+
+describe("{define} in a compiled program", () => {
+  it("selects a branch and leaves the project defines alone", () => {
+    const src = `PROGRAM Main
+VAR x : INT; END_VAR
+{define Level '2'}
+{undefine SIM}
+{IF hasvalue(Level, '2') AND defined(SIM) AND NOT project_defined(Level)}
+x := 7;
+{ELSE}
+x := 8;
+{END_IF}
+END_PROGRAM
+`;
+    const r = compile(src, {
+      features: ["+conditional_pragmas"],
+      pragmaDefines: { SIM: "" },
+    });
+    expect(r.errors).toEqual([]);
+    expect(r.cppCode).toMatch(/X = 7/);
+  });
+
+  it("a malformed {define} fails compile() at its position", () => {
+    const r = compile("PROGRAM Main\n{define X 1}\nEND_PROGRAM\n", {
+      features: ["+conditional_pragmas"],
+    });
+    expect(r.success).toBe(false);
+    expect(at(r.errors)).toContainEqual(
+      expect.stringContaining(
+        "Malformed {define}: expected a quoted value or '}'",
+      ),
+    );
+  });
+
+  it("a source define does not leak into an additional source", () => {
+    const r = compile(
+      `PROGRAM Main
+VAR x : INT; END_VAR
+{define LOCAL}
+x := 1;
+END_PROGRAM
+`,
+      {
+        features: ["+conditional_pragmas"],
+        additionalSources: [
+          {
+            fileName: "other.st",
+            source: `FUNCTION F : INT
+{IF defined(LOCAL)}
+F := 1;
+{ELSE}
+F := 2;
+{END_IF}
+END_FUNCTION
+`,
+          },
+        ],
+      },
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.cppCode).toMatch(/F_result = 2/);
+    expect(r.cppCode).not.toMatch(/F_result = 1/);
   });
 });
 

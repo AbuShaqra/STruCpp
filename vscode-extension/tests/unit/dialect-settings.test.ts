@@ -414,6 +414,37 @@ describe("DocumentManager conditional pragmas", () => {
     for (const e of errors) expect([e.line, e.column]).toEqual([6, 8]);
   });
 
+  it("define names from the setting are case-sensitive", () => {
+    const lines = (defines: Record<string, string>): number[] => {
+      const dm = new DocumentManager(analyze, NullWorkspaceFs);
+      dm.setDialect({ dialect: WITH_COND, pragmaDefines: defines });
+      const state = dm.onDocumentOpen("file:///main.st", COND_PROGRAM);
+      return (state.analysisResult?.errors ?? [])
+        .filter((e) => e.severity === "error")
+        .map((e) => e.line);
+    };
+    expect(lines({ SIM: "" })).toContain(4);
+    expect(lines({ sim: "" })).not.toContain(4);
+    expect(lines({ Sim: "" })).not.toContain(4);
+  });
+
+  it("a source {define} selects a branch; {undefine} keeps a setting define", () => {
+    const src = `PROGRAM Main
+VAR x : INT; END_VAR
+{define Local}
+{undefine SIM}
+{IF defined(Local) AND defined(SIM) AND NOT project_defined(Local)}
+x := 1;
+{ELSE}
+x := not valid st;
+{END_IF}
+END_PROGRAM`;
+    const dm = new DocumentManager(analyze, NullWorkspaceFs);
+    dm.setDialect({ dialect: WITH_COND, pragmaDefines: { SIM: "" } });
+    const state = dm.onDocumentOpen("file:///main.st", src);
+    expect(messages(state.analysisResult)).toEqual([]);
+  });
+
   it("test files take the pass, and their errors keep their line and column", () => {
     const test = `TEST 't'
 {IF defined(SIM)}

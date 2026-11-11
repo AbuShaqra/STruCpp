@@ -1392,10 +1392,7 @@ export function resolveConditionalPragmas(
   pragmaDefines?: Record<string, string>,
 ): { text: string; errors: CompileError[] } {
   validatePragmaDefines(pragmaDefines);
-  const defines = new Map<string, string>();
-  for (const [name, value] of Object.entries(pragmaDefines ?? {})) {
-    defines.set(name.toUpperCase(), value);
-  }
+  const defines = new Map(Object.entries(pragmaDefines ?? {}));
   const result = applyConditionalPragmas(source, defines, tokenize);
   return { text: result.text, errors: toCompileErrors(result.errors) };
 }

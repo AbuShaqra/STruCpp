@@ -19,7 +19,7 @@ import {
 import { resolveDialect } from "../../src/dialect.js";
 
 function defs(o: Record<string, string> = {}): Map<string, string> {
-  return new Map(Object.entries(o).map(([k, v]) => [k.toUpperCase(), v]));
+  return new Map(Object.entries(o));
 }
 
 function run(
@@ -209,8 +209,17 @@ describe("operators", () => {
   const cases: Array<[string, Record<string, string>, boolean]> = [
     ["defined(A)", { A: "" }, true],
     ["defined(A)", {}, false],
-    ["defined(a)", { A: "" }, true],
-    ["DEFINED(A)", { a: "" }, true],
+    ["defined(a)", { A: "" }, false],
+    ["defined(Sim)", { Sim: "" }, true],
+    ["defined(SIM)", { Sim: "" }, false],
+    ["DEFINED(A)", { A: "" }, true],
+    ["Defined(a)", { a: "" }, true],
+    ["defined (A)", { A: "" }, true],
+    ["defined\t( A )", { A: "" }, true],
+    ["project_defined (A)", { A: "" }, true],
+    ["PROJECT_DEFINED(a)", { A: "" }, false],
+    ["hasvalue (M, '1')", { M: "1" }, true],
+    ["hasvalue ( M , '1' )", { M: "1" }, true],
     ["project_defined(A)", { A: "" }, true],
     ["project_defined(A)", {}, false],
     ["hasvalue(M, 'fast')", { M: "fast" }, true],
@@ -218,7 +227,8 @@ describe("operators", () => {
     ["hasvalue(M, 'fast')", { M: "" }, false],
     ["hasvalue(M, '')", { M: "" }, true],
     ["hasvalue(M, 'fast')", {}, false],
-    ["HASVALUE(m, 'x')", { M: "x" }, true],
+    ["HASVALUE(m, 'x')", { m: "x" }, true],
+    ["hasvalue(m, 'x')", { M: "x" }, false],
     ["NOT defined(A)", {}, true],
     ["not defined(A)", { A: "" }, false],
     ["NOT NOT defined(A)", { A: "" }, true],
@@ -268,13 +278,52 @@ describe("errors", () => {
     ]);
   });
 
-  it("{define} and {undefine} are refused and blanked", () => {
-    const src = "{define X}\n {undefine Y}\nz;";
-    expect(errs(src)).toEqual([
-      "1:1 {define} is not supported; pass defines with -D",
-      "2:2 {undefine} is not supported; pass defines with -D",
+  it("malformed {define} and {undefine} at the offending character", () => {
+    expect(errs("{define}")).toEqual([
+      "1:8 Malformed {define}: expected a name",
     ]);
-    expect(kept(src)).toEqual(["z;"]);
+    expect(errs("{undefine   }")).toEqual([
+      "1:13 Malformed {undefine}: expected a name",
+    ]);
+    expect(errs("{define 1X}")).toEqual([
+      "1:9 Malformed {define}: expected a name",
+    ]);
+    expect(errs("{define 'v'}")).toEqual([
+      "1:9 Malformed {define}: expected a name",
+    ]);
+    expect(errs("{define X 1}")).toEqual([
+      "1:11 Malformed {define}: expected a quoted value or '}'",
+    ]);
+    expect(errs('{define X "v"}')).toEqual([
+      "1:11 Malformed {define}: expected a quoted value or '}'",
+    ]);
+    expect(errs("{define X 'v}")).toEqual([
+      "1:11 Malformed {define}: unterminated string",
+    ]);
+    expect(errs("{define X 'v' Y}")).toEqual([
+      "1:15 Malformed {define}: expected '}'",
+    ]);
+    expect(errs("{define X.Y}")).toEqual([
+      "1:10 Malformed {define}: expected a quoted value or '}'",
+    ]);
+    expect(errs("{undefine X 'v'}")).toEqual([
+      "1:13 Malformed {undefine}: expected '}'",
+    ]);
+    expect(errs("{undefine X Y}")).toEqual([
+      "1:13 Malformed {undefine}: expected '}'",
+    ]);
+  });
+
+  it("a malformed {define} has no effect and is reported in a dead branch too", () => {
+    const src =
+      "{IF defined(A)}\n{define B 1}\n{END_IF}\n{define C 'x' y}\n{IF defined(C)}\nc;\n{END_IF}";
+    const expected = [
+      "2:11 Malformed {define}: expected a quoted value or '}'",
+      "4:15 Malformed {define}: expected '}'",
+    ];
+    expect(errs(src)).toEqual(expected);
+    expect(errs(src, { A: "" })).toEqual(expected);
+    expect(kept(src)).toEqual([]);
   });
 
   it("refused operators at the operator's column", () => {
@@ -362,7 +411,7 @@ describe("errors", () => {
 });
 
 describe("sourcePrepFor", () => {
-  it("is enabled by the feature and upper-cases the define names", () => {
+  it("is enabled by the feature and keeps the define names as given", () => {
     const off = sourcePrepFor(resolveDialect({}), { sim: "" });
     expect(off.enabled).toBe(false);
     const on = sourcePrepFor(
@@ -371,8 +420,8 @@ describe("sourcePrepFor", () => {
     );
     expect(on.enabled).toBe(true);
     expect([...on.defines]).toEqual([
-      ["SIM", ""],
-      ["MODE", "fast"],
+      ["sim", ""],
+      ["Mode", "fast"],
     ]);
     expect(sourcePrepFor(resolveDialect({ dialect: "iec-3" })).enabled).toBe(
       false,
@@ -437,6 +486,168 @@ describe("blankedLines", () => {
       "a;\n{IF defined(A)}\nb;\n\n{ELSE}\nc; {IF defined(B)} d; {END_IF}\n{END_IF}\n";
     expect(applyConditionalPragmas(src, defs(), tokenize).blankedLines).toEqual(
       [2, 3, 5, 7],
+    );
+  });
+});
+
+describe("{define} and {undefine} in source", () => {
+  it("are blanked and keep lines and columns", () => {
+    const src = "a;\n  {define X 'v'}  b;\n{undefine X}\nc;";
+    const r = run(src);
+    expect(r.errors).toEqual([]);
+    expect(r.text.length).toBe(src.length);
+    expect(r.text).toBe(
+      src
+        .replace("{define X 'v'}", " ".repeat(14))
+        .replace("{undefine X}", " ".repeat(12)),
+    );
+  });
+
+  it("a bare {define} has the value ''", () => {
+    const src =
+      "{define X}\n{IF defined(X)}\nd;\n{END_IF}\n{IF hasvalue(X, '')}\ne;\n{END_IF}";
+    expect(errs(src)).toEqual([]);
+    expect(kept(src)).toEqual(["d;", "e;"]);
+  });
+
+  it("a {define} with a value selects by hasvalue", () => {
+    const src = [
+      "{define identifier '1'}",
+      "{IF hasvalue (identifier, '1')}",
+      "one;",
+      "{ELSIF hasvalue(identifier, '2')}",
+      "two;",
+      "{END_IF}",
+    ].join("\n");
+    expect(errs(src)).toEqual([]);
+    expect(kept(src)).toEqual(["one;"]);
+  });
+
+  it("applies from the directive onward, not before", () => {
+    const src =
+      "{IF defined(X)}\nbefore;\n{END_IF}\n{define X}\n{IF defined(X)}\nafter;\n{END_IF}";
+    expect(kept(src)).toEqual(["after;"]);
+  });
+
+  it("a later {define} replaces the value", () => {
+    const src = [
+      "{define M 'a'}",
+      "{define M 'b'}",
+      "{IF hasvalue(M, 'a')}",
+      "a;",
+      "{ELSIF hasvalue(M, 'b')}",
+      "b;",
+      "{END_IF}",
+    ].join("\n");
+    expect(kept(src)).toEqual(["b;"]);
+  });
+
+  it("{undefine} removes a source define until the end of the file", () => {
+    const src =
+      "{define X}\n{undefine X}\n{IF defined(X)}\nx;\n{ELSE}\nnx;\n{END_IF}";
+    expect(errs(src)).toEqual([]);
+    expect(kept(src)).toEqual(["nx;"]);
+  });
+
+  it("{undefine} of an unknown name is not an error", () => {
+    expect(errs("{undefine NOPE}\nz;")).toEqual([]);
+  });
+
+  it("{undefine} cannot remove a project define", () => {
+    const src =
+      "{undefine SIM}\n{IF defined(SIM)}\ns;\n{END_IF}\n{IF project_defined(SIM)}\np;\n{END_IF}";
+    expect(errs(src, { SIM: "" })).toEqual([]);
+    expect(kept(src, { SIM: "" })).toEqual(["s;", "p;"]);
+  });
+
+  it("a source define shadows a project value until undefined", () => {
+    const src = [
+      "{define M 'src'}",
+      "{IF hasvalue(M, 'src')}",
+      "src;",
+      "{END_IF}",
+      "{undefine M}",
+      "{IF hasvalue(M, 'prj')}",
+      "prj;",
+      "{END_IF}",
+    ].join("\n");
+    expect(kept(src, { M: "prj" })).toEqual(["src;", "prj;"]);
+  });
+
+  it("a {define} or {undefine} in an inactive branch has no effect", () => {
+    const src = [
+      "{IF defined(A)}",
+      "{define X}",
+      "{undefine SRC}",
+      "{END_IF}",
+      "{IF defined(X)}",
+      "x;",
+      "{END_IF}",
+      "{IF defined(SRC)}",
+      "src;",
+      "{END_IF}",
+    ].join("\n");
+    const withSrc = "{define SRC}\n" + src;
+    expect(kept(withSrc)).toEqual(["src;"]);
+    expect(kept(withSrc, { A: "" })).toEqual(["x;"]);
+  });
+
+  it("a {define} in an active branch applies after the {END_IF}", () => {
+    const src =
+      "{IF defined(A)}\n{define X}\n{END_IF}\n{IF defined(X)}\nx;\n{END_IF}";
+    expect(kept(src, { A: "" })).toEqual(["x;"]);
+    expect(kept(src)).toEqual([]);
+  });
+
+  it("project_defined ignores a source define; defined sees both", () => {
+    const src = [
+      "{define LOCAL}",
+      "{IF project_defined(LOCAL)}",
+      "p;",
+      "{ELSIF defined(LOCAL)}",
+      "d;",
+      "{END_IF}",
+    ].join("\n");
+    expect(kept(src)).toEqual(["d;"]);
+    expect(kept(src, { LOCAL: "" })).toEqual(["p;"]);
+  });
+
+  it("source define names are case-sensitive; keywords are not", () => {
+    const src = [
+      "{DEFINE Sim}",
+      "{IF defined(SIM)}",
+      "upper;",
+      "{ELSIF DEFINED(Sim)}",
+      "exact;",
+      "{END_IF}",
+      "{Undefine Sim}",
+      "{IF defined(Sim)}",
+      "still;",
+      "{END_IF}",
+    ].join("\n");
+    expect(errs(src)).toEqual([]);
+    expect(kept(src)).toEqual(["exact;"]);
+  });
+
+  it("source defines do not leak to the next file", () => {
+    const first = run("{define X}\nz;");
+    expect(first.errors).toEqual([]);
+    expect(kept("{IF defined(X)}\nx;\n{END_IF}")).toEqual([]);
+  });
+
+  it("works with the test lexer", () => {
+    const src =
+      "{define T '1'}\nTEST 't'\n{IF hasvalue(T, '1')}\nASSERT_TRUE(TRUE);\n{END_IF}\nEND_TEST\n";
+    const r = applyConditionalPragmas(src, defs(), tokenizeTest);
+    expect(r.errors).toEqual([]);
+    expect(r.text).toContain("ASSERT_TRUE");
+  });
+
+  it("a {define} swallowed by a multi-line string is an error", () => {
+    const src =
+      "{IF defined(A)}\ns := 'oops;\n{define X}\nb := 'q';\n{END_IF}\n";
+    expect(errs(src)).toContain(
+      "3:1 Conditional pragma directive inside a string literal that spans lines",
     );
   });
 });

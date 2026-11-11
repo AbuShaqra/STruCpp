@@ -49,7 +49,7 @@ src/
 
   frontend/
     lexer.ts                 Chevrotain tokenizer (~50 keywords, literals, operators)
-    conditional-pragmas.ts   {IF}/{ELSIF}/{ELSE}/{END_IF} resolution, line-preserving blanking
+    conditional-pragmas.ts   {IF}/{ELSIF}/{ELSE}/{END_IF}, {define}/{undefine}, line-preserving blanking
     parser.ts                LL(3) grammar with error recovery
     ast.ts                   AST node interfaces (CompilationUnit, POU types, expressions)
     ast-builder.ts           CST-to-AST visitor

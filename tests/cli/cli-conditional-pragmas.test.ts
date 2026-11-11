@@ -126,6 +126,8 @@ describe("accepted with the feature", () => {
     ["--define SIM", ["--define", "SIM"], "X(1)"],
     ["-D MODE=fast", ["-D", "MODE=fast"], "X(2)"],
     ["-DMODE=slow", ["-DMODE=slow"], "X(3)"],
+    ["-D sim (names are case-sensitive)", ["-D", "sim"], "X(3)"],
+    ["-D Mode=fast (names are case-sensitive)", ["-D", "Mode=fast"], "X(3)"],
   ])("--strict + profile, %s", (_n, defines, init) => {
     const r = compileWith(`ok-${defines.join("")}`, [
       "--strict",

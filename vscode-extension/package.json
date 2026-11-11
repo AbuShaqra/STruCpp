@@ -255,7 +255,7 @@
           "type": ["object", "null"],
           "additionalProperties": { "type": "string" },
           "default": null,
-          "markdownDescription": "Names for conditional pragmas (`{IF defined(NAME)}`, `hasvalue(NAME, 'v')`), as `-D` gives them: name → value, `\"\"` for a bare name. Used only when the dialect has the feature `conditional_pragmas`."
+          "markdownDescription": "Names for conditional pragmas (`{IF defined(NAME)}`, `hasvalue(NAME, 'v')`), as `-D` gives them: name → value, `\"\"` for a bare name. Names are case-sensitive. Used only when the dialect has the feature `conditional_pragmas`."
         }
       }
     },

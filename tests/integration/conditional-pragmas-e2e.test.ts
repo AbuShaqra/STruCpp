@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2025 Autonomy®
 /**
- * E2E for conditional pragmas: one program, built with g++ and run under
- * three sets of defines, prints the result of the branch that was active.
+ * E2E for conditional pragmas: programs built with g++ and run under
+ * different defines print the result of the branches that were active.
  * The dead branches hold code that does not compile.
  */
 
@@ -83,6 +83,49 @@ describe.skipIf(!hasGpp)("conditional pragmas end to end", () => {
       mainCode: MAIN,
     });
     expect(stdout).toBe(expected);
+  });
+
+  it("source {define}/{undefine} and project_defined select the branches", () => {
+    const src = `PROGRAM Main
+VAR
+  out : INT;
+END_VAR
+{define Level '2'}
+{undefine Sim}
+{IF hasvalue(Level, '1')}
+  out := 1 + no_such_variable;
+{ELSIF hasvalue (Level, '2')}
+  out := 20;
+{END_IF}
+{IF defined(Sim)}
+  out := out + 3;
+{END_IF}
+{IF defined(SIM)}
+  out := out + 1000;
+{END_IF}
+{IF project_defined(Level)}
+  out := out + 500;
+{ELSIF defined (Level)}
+  out := out + 400;
+{END_IF}
+END_PROGRAM
+`;
+    const result = compile(src, {
+      strict: true,
+      features: ["+conditional_pragmas"],
+      pragmaDefines: { Sim: "" },
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.success).toBe(true);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "cond_source_define",
+      mainCode: MAIN,
+    });
+    expect(stdout).toBe("423");
   });
 
   it("without the feature the program does not compile", () => {

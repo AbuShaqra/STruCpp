@@ -54,6 +54,18 @@ describe("compileStlib with pragmaDefines", () => {
     expect(none).not.toContain("100");
   });
 
+  it("matches define names case-sensitively and records them as given", () => {
+    const lower = chunkText({ fast: "" });
+    expect(lower).toContain("+ 7");
+    expect(lower).not.toContain("100");
+    const r = compileStlib([{ source: LIB, fileName: "lib.st" }], {
+      ...BASE,
+      features: ["+conditional_pragmas"],
+      pragmaDefines: { Fast: "" },
+    });
+    expect(r.archive.pragmaDefines).toEqual({ Fast: "" });
+  });
+
   it("records the defines in the archive exactly when the feature is on", () => {
     const withDefines = compileStlib([{ source: LIB, fileName: "lib.st" }], {
       ...BASE,
