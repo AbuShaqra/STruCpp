@@ -123,7 +123,7 @@ variable:
 
 | Call | Purpose |
 |------|---------|
-| `set(ptr, bytes, size, flags, apply)` | Force a variable; writes it now. Returns `Ok`, `Full`, `TooLarge` or `BadArgument` |
+| `set(ptr, bytes, size, flags, apply, lock)` | Force a variable; writes it now. `lock` (optional, used under `STRUCPP_THREADED`) is the `std::mutex` of the shared global the variable lives in. Returns `Ok`, `Full`, `TooLarge` or `BadArgument` |
 | `clear(ptr)` / `clear_all()` | Stop forcing; the variable keeps its current value |
 | `is_forced(ptr)`, `read(ptr, dest, cap)`, `value_ptr(ptr, &size)` | Query a force |
 | `apply_all()`, `apply_owned(base, len)` | Write forced values in |
@@ -142,6 +142,24 @@ through the table; `handle_set` marks a force on a configuration global
 `FLAG_GLOBAL` from the generated `debug_array_kind[]` (`DEBUG_ARRAY_GLOBAL` /
 `DEBUG_ARRAY_PROGRAM` per array). The pointer `handle_ptr` returns for a forced
 leaf is its slot, valid until the force changes.
+
+Under `STRUCPP_THREADED` a configuration global is also written under its own
+lock (the `GlobalVar` mutex the program's accesses take): the generated table
+provides `debug_leaf_lock(arr, elem)` for every leaf of a `DEBUG_ARRAY_GLOBAL`
+array, `handle_set` hands it to the force slot, and `handle_read` /
+`handle_write` hold it around the access. The force table writes such a slot
+with both locks held, the global's taken first (a global's lock may be held
+while the table lock is taken, never the reverse), and only while the slot
+still holds that variable and lock, so a write never uses a value a slot that
+was cleared, re-forced or reused no longer has. Without `STRUCPP_THREADED`
+none of this is compiled. A hand-written debug table (as in the runtime's own
+tests) must define `void* debug_leaf_lock(uint8_t arr, uint16_t elem) noexcept`
+in `strucpp::debug` in a threaded build; returning `nullptr` is valid when no
+leaf is a global.
+
+The dispatch's `TypeOps::force` op takes a fourth argument in every build, the
+leaf's lock (`void*`, null when there is none); `force_impl`, `force_string`
+and `force_wstring` default it to null.
 
 For a source-level debugger that has stopped the program (the VS Code
 extension), the header exports `strucpp_force_capture(void* ptr, unsigned size)`

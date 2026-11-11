@@ -157,70 +157,81 @@ describe("C++ runtime unit tests (GoogleTest)", () => {
     }
   });
 
-  describe.skipIf(toolchainMissing !== undefined)("build and run", () => {
-    let buildDir = "";
-    let configure: StepResult = { ok: false, output: "" };
-    let gtestUnavailable = false;
+  // The plain build, and a STRUCPP_THREADED one (the force table's locks).
+  for (const [variant, flags] of [
+    ["build and run", []],
+    [
+      "build and run (STRUCPP_THREADED)",
+      ["-DCMAKE_CXX_FLAGS=-DSTRUCPP_THREADED -pthread"],
+    ],
+  ] as const) {
+    describe.skipIf(toolchainMissing !== undefined)(variant, () => {
+      let buildDir = "";
+      let configure: StepResult = { ok: false, output: "" };
+      let gtestUnavailable = false;
 
-    beforeAll(() => {
-      buildDir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-runtime-"));
-      const args = [
-        "-S",
-        RUNTIME_DIR,
-        "-B",
-        buildDir,
-        "-DCMAKE_BUILD_TYPE=Debug",
-      ];
-      if (cxx !== undefined) args.push(`-DCMAKE_CXX_COMPILER=${cxx}`);
-      const gtestSrc = process.env.STRUCPP_GTEST_SOURCE_DIR;
-      if (gtestSrc)
-        args.push(`-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=${gtestSrc}`);
-      configure = run("cmake", args, buildDir);
-      gtestUnavailable = !configure.ok && isGtestUnavailable(configure.output);
-    }, STEP_TIMEOUT_MS);
+      beforeAll(() => {
+        buildDir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-runtime-"));
+        const args = [
+          "-S",
+          RUNTIME_DIR,
+          "-B",
+          buildDir,
+          "-DCMAKE_BUILD_TYPE=Debug",
+          ...flags,
+        ];
+        if (cxx !== undefined) args.push(`-DCMAKE_CXX_COMPILER=${cxx}`);
+        const gtestSrc = process.env.STRUCPP_GTEST_SOURCE_DIR;
+        if (gtestSrc)
+          args.push(`-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=${gtestSrc}`);
+        configure = run("cmake", args, buildDir);
+        gtestUnavailable =
+          !configure.ok && isGtestUnavailable(configure.output);
+      }, STEP_TIMEOUT_MS);
 
-    afterAll(() => {
-      if (buildDir) fs.rmSync(buildDir, { recursive: true, force: true });
-    });
+      afterAll(() => {
+        if (buildDir) fs.rmSync(buildDir, { recursive: true, force: true });
+      });
 
-    it(
-      "builds runtime_tests and passes ctest",
-      (ctx) => {
-        if (gtestUnavailable) {
-          if (REQUIRE_RUNTIME_TESTS) {
-            expect.fail(
-              `STRUCPP_REQUIRE_RUNTIME_TESTS=1 but googletest could not be fetched:\n${configure.output}`,
+      it(
+        "builds runtime_tests and passes ctest",
+        (ctx) => {
+          if (gtestUnavailable) {
+            if (REQUIRE_RUNTIME_TESTS) {
+              expect.fail(
+                `STRUCPP_REQUIRE_RUNTIME_TESTS=1 but googletest could not be fetched:\n${configure.output}`,
+              );
+            }
+            console.warn(
+              "[runtime-cpp-tests] skipped: googletest is not installed and could not be fetched " +
+                "(offline?). Install it, or set STRUCPP_GTEST_SOURCE_DIR to a googletest checkout.",
             );
+            ctx.skip();
+            return;
           }
-          console.warn(
-            "[runtime-cpp-tests] skipped: googletest is not installed and could not be fetched " +
-              "(offline?). Install it, or set STRUCPP_GTEST_SOURCE_DIR to a googletest checkout.",
+          expect(
+            configure.ok,
+            `cmake configure failed:\n${configure.output}`,
+          ).toBe(true);
+
+          const jobs = jobCount();
+          const build = run(
+            "cmake",
+            ["--build", buildDir, "--parallel", jobs],
+            buildDir,
           );
-          ctx.skip();
-          return;
-        }
-        expect(
-          configure.ok,
-          `cmake configure failed:\n${configure.output}`,
-        ).toBe(true);
+          expect(build.ok, `cmake build failed:\n${build.output}`).toBe(true);
 
-        const jobs = jobCount();
-        const build = run(
-          "cmake",
-          ["--build", buildDir, "--parallel", jobs],
-          buildDir,
-        );
-        expect(build.ok, `cmake build failed:\n${build.output}`).toBe(true);
-
-        const ctest = run(
-          "ctest",
-          ["--output-on-failure", "-j", jobs],
-          buildDir,
-        );
-        expect(ctest.ok, `ctest failed:\n${ctest.output}`).toBe(true);
-        expect(ctest.output).toMatch(/100% tests passed/);
-      },
-      STEP_TIMEOUT_MS,
-    );
-  });
+          const ctest = run(
+            "ctest",
+            ["--output-on-failure", "-j", jobs],
+            buildDir,
+          );
+          expect(ctest.ok, `ctest failed:\n${ctest.output}`).toBe(true);
+          expect(ctest.output).toMatch(/100% tests passed/);
+        },
+        STEP_TIMEOUT_MS,
+      );
+    });
+  }
 });

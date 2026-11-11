@@ -1179,6 +1179,32 @@ function renderCpp(
   lines.push(`const uint8_t debug_array_count = ${arrays.length};`);
   lines.push("");
 
+  // The lock of the shared global each global leaf lives in (threaded builds):
+  // the debugger and the force table write a global under it.
+  lines.push("#ifdef STRUCPP_THREADED");
+  lines.push("void* debug_leaf_lock(uint8_t arr, uint16_t elem) noexcept {");
+  lines.push("    switch (arr) {");
+  arrays.forEach((bucket, ai) => {
+    if (globalArrays[ai] !== true || bucket.length === 0) return;
+    lines.push(`        case ${ai}: {`);
+    lines.push(`            static void* const locks[${bucket.length}] = {`);
+    for (const e of bucket) {
+      const root = e.cppExpr.substring(0, e.cppExpr.indexOf(".value"));
+      lines.push(`                &${root}.mutex(),  // ${e.path}`);
+    }
+    lines.push("            };");
+    lines.push(
+      `            return elem < ${bucket.length} ? locks[elem] : nullptr;`,
+    );
+    lines.push("        }");
+  });
+  lines.push("        default:");
+  lines.push("            return nullptr;");
+  lines.push("    }");
+  lines.push("}");
+  lines.push("#endif");
+  lines.push("");
+
   // Which arrays hold configuration globals and which a program instance's
   // variables: the force table applies a global's force from every task.
   lines.push(
