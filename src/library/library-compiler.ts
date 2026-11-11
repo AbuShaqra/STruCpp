@@ -18,6 +18,7 @@ import { buildChunks } from "./library-chunks.js";
 import type { MemberManglingContext } from "../backend/member-mangling.js";
 import {
   mangledMemberName,
+  typeShadowingMemberNames,
   userDefinedTypeNames,
 } from "../backend/member-mangling.js";
 import {
@@ -669,6 +670,7 @@ export function compileLibrary(
   // place that knows which of its type names are user-defined and which
   // interface methods each block implements. See serializeLocal().
   const userTypes = userDefinedTypeNames(ast);
+  const shadowingNames = typeShadowingMemberNames(ast);
   const ifaceMethods = new Map<string, Set<string>>();
   {
     const byInterface = new Map<string, Set<string>>();
@@ -693,6 +695,7 @@ export function compileLibrary(
   ): MemberManglingContext => ({
     isUserDefinedType: (n) => userTypes.has(n.toUpperCase()),
     interfaceMethods: ifaceMethods.get(fb.name.toUpperCase()),
+    shadowingNames,
   });
 
   // Slice emitted code into per-symbol chunks via the boundary

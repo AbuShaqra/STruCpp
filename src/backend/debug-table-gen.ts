@@ -38,7 +38,10 @@ import {
   MAX_TYPE_ALIAS_DEPTH,
 } from "../semantic/type-utils.js";
 import { formatArrayElementAccess } from "./codegen-utils.js";
-import { mangledMemberName } from "./member-mangling.js";
+import {
+  mangledMemberName,
+  typeShadowingMemberNames,
+} from "./member-mangling.js";
 import { globalCppName } from "./global-naming.js";
 
 // ---------------------------------------------------------------------------
@@ -411,6 +414,7 @@ export function generateDebugTable(
    * leaves `Time : TIME` unmangled, so mangling it here would name a member
    * that does not exist.
    */
+  const shadowingNames = typeShadowingMemberNames(ast);
   const isUserDefinedType = (typeName: string): boolean => {
     const upper = typeName.toUpperCase();
     if (isElementaryType(upper)) return false;
@@ -944,6 +948,7 @@ export function generateDebugTable(
   ): string =>
     mangledMemberName(varName, typeRef?.name, {
       isUserDefinedType,
+      shadowingNames,
       interfaceMethods:
         ownerTypeName !== undefined
           ? fbInterfaceMethods.get(ownerTypeName.toUpperCase())

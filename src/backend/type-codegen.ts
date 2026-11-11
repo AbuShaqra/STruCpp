@@ -70,6 +70,8 @@ export interface TypeCodeGenOptions {
    *  back to "anything that is not elementary", all a bare TypeCodeGenerator
    *  can tell from a list of type declarations. */
   isUserDefinedType: (typeName: string) => boolean;
+  /** Member names that hide a user type of their scope (member-mangling.ts). */
+  shadowingNames?: ReadonlySet<string> | undefined;
 }
 
 /**
@@ -437,6 +439,7 @@ export class TypeCodeGenerator {
   private structFieldEmitName(fieldName: string, type: TypeReference): string {
     return mangledMemberName(fieldName, type.name, {
       isUserDefinedType: this.options.isUserDefinedType,
+      shadowingNames: this.options.shadowingNames,
     });
   }
 

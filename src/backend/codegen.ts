@@ -92,7 +92,11 @@ import {
   isComparisonExpr,
   translateIECString,
 } from "./codegen-utils.js";
-import { mangledMemberName, needsMemberMangling } from "./member-mangling.js";
+import {
+  mangledMemberName,
+  needsMemberMangling,
+  typeShadowingMemberNames,
+} from "./member-mangling.js";
 import { globalCppName, RUNTIME_NAMESPACE_NAMES } from "./global-naming.js";
 import {
   getTypeBits,
@@ -1572,6 +1576,7 @@ export class CodeGenerator {
       // Struct fields must mangle by the same rule as everything else that
       // names them, and only codegen knows the FB / program type names.
       isUserDefinedType: (t) => this.isUserDefinedType(t),
+      shadowingNames: this.shadowingNames(),
     });
     if (ast.types.length > 0) {
       const lateStructNames = new Set(lateStructs.map((n) => n.toUpperCase()));
@@ -2696,7 +2701,7 @@ export class CodeGenerator {
             const initValue = decl.initialValue
               ? ` = ${this.generateInitializer(decl.initialValue, cppType, decl.type.name)}`
               : this.scalarTypeInit(decl.type);
-            this.emit(`    ${cppType} ${name}${initValue};`);
+            this.emit(`    ${cppType} ${this.localCppName(name)}${initValue};`);
           }
         }
       }
@@ -3041,7 +3046,9 @@ export class CodeGenerator {
               const initValue = decl.initialValue
                 ? ` = ${this.generateInitializer(decl.initialValue, cppType, decl.type.name)}`
                 : this.scalarTypeInit(decl.type);
-              this.emit(`    ${cppType} ${name}${initValue};`);
+              this.emit(
+                `    ${cppType} ${this.localCppName(name)}${initValue};`,
+              );
             }
           }
         }
@@ -5594,6 +5601,27 @@ export class CodeGenerator {
       : this.generateExpression(operand);
   }
 
+  /** {@link typeShadowingMemberNames} of the unit, computed once per AST. */
+  private shadowingNamesCache:
+    | { ast: CompilationUnit; names: Set<string> }
+    | undefined;
+
+  private shadowingNames(): Set<string> | undefined {
+    if (!this.ast) return undefined;
+    if (this.shadowingNamesCache?.ast !== this.ast) {
+      this.shadowingNamesCache = {
+        ast: this.ast,
+        names: typeShadowingMemberNames(this.ast),
+      };
+    }
+    return this.shadowingNamesCache.names;
+  }
+
+  /** A local's C++ name: renamed as the body names it (see enterScope). */
+  private localCppName(name: string): string {
+    return this.memberMangledNames.get(name.toUpperCase()) ?? name;
+  }
+
   /** Set while a REF= target is generated: it names the reference itself. */
   private keepReferenceWrapper = false;
 
@@ -7345,6 +7373,9 @@ export class CodeGenerator {
   ): string {
     const u = typeName.toUpperCase();
     if (!memberNames.has(u)) return "";
+    // A member named like a user type is renamed (member-mangling.ts), so it
+    // no longer hides the type.
+    if (this.isUserDefinedType(typeName)) return "";
     // Enums are emitted as `using IEC_X = IEC_ENUM<X>` aliases, which cannot be
     // named with an elaborated `struct`/`class` specifier. They also never need
     // disambiguation here because the member is already mangled (name_).
@@ -7819,15 +7850,25 @@ export class CodeGenerator {
               decl.type.referenceKind,
             );
           }
-          // Detect member name collisions with type name (GCC -Wchanges-meaning)
+          // The shared rule: a name colliding with a user type or an
+          // implemented interface method (see member-mangling.ts).
+          // A parameter keeps its name (the signature spells it as written).
+          const isParameter =
+            stackBlocks.includes(block) &&
+            (block.blockType === "VAR_INPUT" ||
+              block.blockType === "VAR_OUTPUT" ||
+              block.blockType === "VAR_IN_OUT");
           if (
-            this.isUserDefinedType(decl.type.name) &&
-            name.toUpperCase() === cppType.toUpperCase()
+            (this.isUserDefinedType(decl.type.name) &&
+              name.toUpperCase() === cppType.toUpperCase()) ||
+            (isParameter
+              ? this.currentFBInterfaceMethods.has(name.toUpperCase())
+              : needsMemberMangling(name, decl.type.name, {
+                  isUserDefinedType: (t) => this.isUserDefinedType(t),
+                  shadowingNames: this.shadowingNames(),
+                  interfaceMethods: this.currentFBInterfaceMethods,
+                }))
           ) {
-            this.memberMangledNames.set(name.toUpperCase(), `${name}_`);
-          }
-          // Detect member name collisions with interface method names
-          if (this.currentFBInterfaceMethods.has(name.toUpperCase())) {
             this.memberMangledNames.set(name.toUpperCase(), `${name}_`);
           }
         }
@@ -8665,6 +8706,7 @@ export class CodeGenerator {
     // methods in scope are that FB's.
     const mangled = mangledMemberName(name, stTypeName, {
       isUserDefinedType: (t) => this.isUserDefinedType(t),
+      shadowingNames: this.shadowingNames(),
       interfaceMethods: this.currentFBInterfaceMethods,
     });
     if (mangled !== name) {
@@ -8710,6 +8752,7 @@ export class CodeGenerator {
   ): boolean {
     return needsMemberMangling(fieldName, fieldTypeName, {
       isUserDefinedType: (t) => this.isUserDefinedType(t),
+      shadowingNames: this.shadowingNames(),
       interfaceMethods:
         parentTypeName !== undefined
           ? this.fbInterfaceMethodNames.get(parentTypeName.toUpperCase())

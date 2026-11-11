@@ -11,6 +11,10 @@
  *      a member that changes the meaning of its type name within the class
  *      (`-Wchanges-meaning`), so it is emitted as `RUNNINGLIGHTS_`.
  *
+ *      The same holds for a member named like another user-defined type that
+ *      a declaration of the same scope uses (`s3 : STRING(3)` next to
+ *      `a : S3`): see {@link typeShadowingMemberNames}.
+ *
  *   2. **The member's name matches an interface method the owning FB
  *      implements.** `VAR Start : BOOL` inside a `FUNCTION_BLOCK ... IMPLEMENTS
  *      IMotor` that declares `METHOD Start` would otherwise redeclare the method
@@ -28,7 +32,13 @@
  * {@link MemberManglingContext} rather than being computed here.
  */
 
-import type { CompilationUnit } from "../frontend/ast.js";
+import type {
+  CompilationUnit,
+  MethodDeclaration,
+  TypeReference,
+  VarBlock,
+  VarDeclaration,
+} from "../frontend/ast.js";
 
 /**
  * Upper-cased names of every user-defined type in a compilation unit — function
@@ -70,6 +80,87 @@ export interface MemberManglingContext {
    * has no owner in hand, which skips that check rather than guessing.
    */
   interfaceMethods?: ReadonlySet<string> | undefined;
+
+  /**
+   * Upper-cased member names that hide a user type their scope uses
+   * ({@link typeShadowingMemberNames}). Omitted where unknown.
+   */
+  shadowingNames?: ReadonlySet<string> | undefined;
+}
+
+/** The declarations of one scope: each type used, with the name it declares. */
+type ScopeDeclarations = Array<{ name?: string; type: string }>;
+
+/**
+ * Upper-cased names that a scope (a PROGRAM, FUNCTION_BLOCK with its methods
+ * and properties, FUNCTION or STRUCT) gives a variable while another of its
+ * declarations is of the user type of that name: the C++ name would hide the
+ * type. A variable named like its own type alone is rule 1, not this.
+ */
+export function typeShadowingMemberNames(ast: CompilationUnit): Set<string> {
+  const userTypes = userDefinedTypeNames(ast);
+  const result = new Set<string>();
+  const scopes: ScopeDeclarations[] = [];
+  const add = (scope: ScopeDeclarations, blocks: readonly VarBlock[]): void => {
+    for (const block of blocks) {
+      for (const decl of block.declarations) addDecl(scope, decl);
+    }
+  };
+  const addDecl = (scope: ScopeDeclarations, decl: VarDeclaration): void => {
+    for (const name of decl.names) {
+      scope.push({ name: name.toUpperCase(), type: typeNameOf(decl.type) });
+    }
+  };
+  const typeNameOf = (type: TypeReference): string =>
+    (type.arrayDimensions !== undefined && type.elementTypeName !== undefined
+      ? type.elementTypeName
+      : type.name
+    ).toUpperCase();
+  const withMethods = (
+    blocks: readonly VarBlock[],
+    methods: readonly MethodDeclaration[],
+    extraTypes: readonly TypeReference[],
+  ): ScopeDeclarations => {
+    const scope: ScopeDeclarations = [];
+    add(scope, blocks);
+    for (const m of methods) {
+      add(scope, m.varBlocks);
+      if (m.returnType) scope.push({ type: typeNameOf(m.returnType) });
+    }
+    for (const t of extraTypes) scope.push({ type: typeNameOf(t) });
+    return scope;
+  };
+  for (const fb of ast.functionBlocks) {
+    scopes.push(
+      withMethods(
+        fb.varBlocks,
+        fb.methods,
+        fb.properties.map((p) => p.type),
+      ),
+    );
+  }
+  for (const prog of ast.programs) {
+    scopes.push(withMethods(prog.varBlocks, prog.methods, []));
+  }
+  for (const fn of ast.functions) {
+    scopes.push(withMethods(fn.varBlocks, [], [fn.returnType]));
+  }
+  for (const type of ast.types) {
+    if (type.definition.kind !== "StructDefinition") continue;
+    const scope: ScopeDeclarations = [];
+    for (const decl of type.definition.fields) addDecl(scope, decl);
+    scopes.push(scope);
+  }
+  for (const scope of scopes) {
+    for (const entry of scope) {
+      const name = entry.name;
+      if (name === undefined || !userTypes.has(name)) continue;
+      if (scope.some((other) => other !== entry && other.type === name)) {
+        result.add(name);
+      }
+    }
+  }
+  return result;
 }
 
 /**
@@ -94,6 +185,10 @@ export function needsMemberMangling(
   ) {
     return true;
   }
+
+  // Named like a user type that the same declaring scope uses for another
+  // declaration: the member would hide the type there.
+  if (ctx.shadowingNames?.has(upperMember) === true) return true;
 
   return ctx.interfaceMethods?.has(upperMember) === true;
 }

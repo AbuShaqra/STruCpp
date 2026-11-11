@@ -13,7 +13,11 @@ import type { ProjectModel } from "../project-model.js";
 import type { LineMapEntry } from "../types.js";
 import { getProjectNamespace } from "../project-model.js";
 import { programsReachedByName } from "../semantic/program-access.js";
-import { mangledMemberName, userDefinedTypeNames } from "./member-mangling.js";
+import {
+  mangledMemberName,
+  typeShadowingMemberNames,
+  userDefinedTypeNames,
+} from "./member-mangling.js";
 
 /**
  * Escape ST source for embedding in a C++ raw string literal with delimiter STRUCPP_SRC.
@@ -253,6 +257,7 @@ function emitVarDescriptors(
   const ctx = {
     isUserDefinedType: (typeName: string): boolean =>
       userTypes.has(typeName.toUpperCase()),
+    shadowingNames: typeShadowingMemberNames(ast),
   };
   for (const prog of programs) {
     if (prog.vars.length > 0) {
