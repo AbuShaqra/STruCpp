@@ -58,6 +58,7 @@ import {
   resolveDialect,
 } from "../dialect.js";
 import { isGlobalListName } from "../semantic/global-lists.js";
+import { isPragmaDefineName } from "../frontend/conditional-pragmas.js";
 import { nodeDialectIO } from "./dialect-io.js";
 import {
   formatDiagnostic,
@@ -565,9 +566,6 @@ function checkDialect(options: CLIOptions): void {
   }
 }
 
-/** A `-D` name: an IEC identifier. */
-const DEFINE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
 /**
  * Parse a `-D` value, `NAME` or `NAME=VALUE`. Every name is a conditional
  * pragma define (`''` for a bare name); a VALUE that parses as an integer
@@ -580,7 +578,7 @@ function parseDefine(
 ): string | undefined {
   const eqIdx = input.indexOf("=");
   const name = eqIdx >= 0 ? input.substring(0, eqIdx) : input;
-  if (!DEFINE_NAME_RE.test(name)) {
+  if (!isPragmaDefineName(name)) {
     return `-D needs NAME or NAME=VALUE with an identifier name, got '${input}'`;
   }
   if (eqIdx < 0) {
@@ -1105,6 +1103,17 @@ function decompileLibMode(options: CLIOptions): void {
   console.log(
     `Extracted ${archive.sources.length} file(s) from ${archive.manifest.name} v${archive.manifest.version}`,
   );
+  if (archive.pragmaDefines !== undefined) {
+    const flags = Object.entries(archive.pragmaDefines).map(([name, value]) =>
+      value === ""
+        ? `-D ${name}`
+        : `-D ${name}=${/[\s"'\\$]/.test(value) ? JSON.stringify(value) : value}`,
+    );
+    console.log(
+      "Compiled with conditional pragmas (feature conditional_pragmas)" +
+        (flags.length > 0 ? `; defines: ${flags.join(" ")}` : "; no defines"),
+    );
+  }
 }
 
 /**

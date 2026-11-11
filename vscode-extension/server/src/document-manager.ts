@@ -15,7 +15,11 @@ import type {
   CompileOptions,
   StlibArchive,
 } from "strucpp";
-import { parseTestFile, analyzeTestFile } from "strucpp";
+import {
+  parseTestFile,
+  analyzeTestFile,
+  resolveConditionalPragmas,
+} from "strucpp";
 import { isTestFile } from "../../shared/test-utils.js";
 import { NullWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js";
 import { dialectOptions, type DialectSettings } from "./dialect-settings.js";
@@ -125,12 +129,41 @@ export class DocumentManager {
   /** Cache a library's source files and archive for strucpp-lib: document analysis. */
   setLibraryArchiveCache(libName: string, archive: StlibArchive, filePath?: string): void {
     if (archive.sources && archive.sources.length > 0) {
-      this.librarySources.set(libName, archive.sources);
+      // Sources of a library built with conditional pragmas are kept with the
+      // archive's inactive branches blanked (same lines), so sibling analysis
+      // and declaration search see what was compiled.
+      const defines = archive.pragmaDefines;
+      this.librarySources.set(
+        libName,
+        defines === undefined
+          ? archive.sources
+          : archive.sources.map((src) => ({
+              ...src,
+              source: resolveConditionalPragmas(src.source, defines).text,
+            })),
+      );
     }
     this.libraryArchives.set(libName, archive);
     if (filePath) {
       this.libraryFilePaths.set(libName, filePath);
     }
+  }
+
+  /**
+   * Options that make a strucpp-lib: document resolve its conditional
+   * pragmas as the library build did: the feature on and the archive's own
+   * defines (not the workspace's). Empty when the archive records none.
+   */
+  private libraryPragmaOptions(
+    libName: string,
+  ): Pick<Partial<CompileOptions>, "features" | "pragmaDefines"> {
+    const defines = this.libraryArchives.get(libName)?.pragmaDefines;
+    if (defines === undefined) return {};
+    const base = this.getDialectOptions().features ?? [];
+    return {
+      features: [...base, "+conditional_pragmas"],
+      pragmaDefines: { ...defines },
+    };
   }
 
   clearLibraryArchiveCache(): void {
@@ -546,6 +579,7 @@ export class DocumentManager {
       ...(additionalSources.length > 0 ? { additionalSources } : {}),
       ...libraryOption,
       ...this.getDialectOptions(),
+      ...(libMatch ? this.libraryPragmaOptions(libMatch[1]) : {}),
     };
 
     // Test files use TEST/END_TEST syntax that the standard parser doesn't

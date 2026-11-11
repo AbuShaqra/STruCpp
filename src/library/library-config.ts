@@ -29,6 +29,7 @@
  * absent, and the caller falls back to its own constants.
  */
 
+import { isPragmaDefineName } from "../frontend/conditional-pragmas.js";
 import type { StlibArchive } from "./library-manifest.js";
 
 /**
@@ -164,7 +165,7 @@ function validatePragmaDefines(
   }
   const out: Record<string, string> = {};
   for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    if (!isPragmaDefineName(key)) {
       throw new Error(
         `${path}: pragmaDefines key "${key}" is not an identifier`,
       );

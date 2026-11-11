@@ -439,3 +439,64 @@ END_TEST`;
     expect(first).toMatchObject({ line: 2, column: 1 });
   });
 });
+
+describe("library documents built with conditional pragmas", () => {
+  const LIB_SRC = `{IF defined(FAST)}
+FUNCTION_BLOCK Fast
+END_FUNCTION_BLOCK
+{ELSE}
+FUNCTION_BLOCK Slow
+END_FUNCTION_BLOCK
+{END_IF}
+FUNCTION Pick : INT
+{IF defined(FAST)}
+Pick := 1;
+{ELSE}
+Pick := nope;
+{END_IF}
+END_FUNCTION`;
+
+  function fastLib(): ReturnType<typeof compileStlib> {
+    const lib = compileStlib([{ source: LIB_SRC, fileName: "pick.st" }], {
+      name: "condlib",
+      version: "1.0.0",
+      namespace: "condlib",
+      features: ["+conditional_pragmas"],
+      pragmaDefines: { FAST: "" },
+    });
+    expect(lib.errors).toEqual([]);
+    expect(lib.archive.pragmaDefines).toEqual({ FAST: "" });
+    return lib;
+  }
+
+  it("are analysed with the archive's feature and defines, not the workspace's", () => {
+    const { dm, calls } = recordingManager();
+    dm.setLibraryArchiveCache("condlib", fastLib().archive);
+    dm.setDialect({ dialect: IEC_ONLY, pragmaDefines: { OTHER: "" } });
+    const state = dm.onDocumentOpen("strucpp-lib:/condlib/sources/pick.st", LIB_SRC);
+    expect(calls[0]).toMatchObject({
+      features: ["+conditional_pragmas"],
+      pragmaDefines: { FAST: "" },
+    });
+    expect(messages(state.analysisResult)).toEqual([]);
+  });
+
+  it("declaration search skips the archive's inactive branches", () => {
+    const dm = new DocumentManager(analyze, NullWorkspaceFs);
+    dm.setLibraryArchiveCache("condlib", fastLib().archive);
+    expect(dm.findSymbolInLibrarySources("Fast")).toEqual({
+      uri: "strucpp-lib:/condlib/sources/pick.st",
+      line: 1,
+    });
+    expect(dm.findSymbolInLibrarySources("Slow")).toBeUndefined();
+  });
+
+  it("workspace documents keep the workspace selection", () => {
+    const { dm, calls } = recordingManager();
+    dm.setLibraryArchiveCache("condlib", fastLib().archive);
+    dm.setDialect({ dialect: WITH_COND, pragmaDefines: { SIM: "" } });
+    dm.onDocumentOpen("file:///main.st", PLAIN_PROGRAM);
+    expect(calls[0]?.pragmaDefines).toEqual({ SIM: "" });
+    expect(calls[0]?.features).toBeUndefined();
+  });
+});

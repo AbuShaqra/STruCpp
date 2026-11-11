@@ -101,7 +101,7 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `TYPE U_A : UNION ... END_UNION`            | `union`              | `UNION type 'U_A' needs the feature union`                                           |
 | `fb : FB_A(p := 1);` (init arguments)       | `fb_init`            | `The init argument list of 'FB' needs the feature fb_init` (at `(`)                  |
 | `itf := 0` (interface variable)             | `interface_zero`     | `Assigning 0 to interface I_A needs the feature interface_zero` (at the `0`)         |
-| `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive) |
+| `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive). `{define}`/`{undefine}` stay refused with the feature on ([below](#conditional-pragmas)) |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
@@ -496,8 +496,11 @@ and column (listed by `--check --json`, exit 0). Their contents are not interpre
 `{external ...}` and, under `conditional_pragmas`, the conditional ones. Without that feature
 conditional-compilation pragmas (`{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`,
 `{undefine ...}`, any case) are an error, `Conditional compilation pragmas are not supported: {...}; they
-need the feature conditional_pragmas`, because skipping them would compile every branch. A pragma ends at
-the first `}`; an unclosed `{` is the error `Unterminated pragma: '{' has no closing '}'`.
+need the feature conditional_pragmas`, because skipping them would compile every branch. `compile()`,
+`analyze()`, the CLI, the language server, `parse()` and `parseTestFile()` all give that text (`parse()`
+and `parseTestFile()` without options under the default dialect); only the raw lexer entry points
+`tokenize()` and `tokenizeTest()` report the bare `Conditional compilation pragmas are not supported: {...}`.
+A pragma ends at the first `}`; an unclosed `{` is the error `Unterminated pragma: '{' has no closing '}'`.
 
 ## Conditional pragmas
 
@@ -558,16 +561,27 @@ strucpp main.st -o main.cpp --feature +conditional_pragmas -D MODE=fast
 - **Every condition is checked**, inactive branches included, so the errors do not depend on the defines.
   Conditions are only evaluated to choose a branch.
 - **Line-preserving.** Every directive and every inactive branch is replaced by spaces, line breaks kept
-  (`\r\n`, `\n` and `\r`), before anything else reads the file (IL included). Every diagnostic, `#line`
-  directive and debug position therefore keeps its original line and column.
+  (`\r\n`, `\n` and `\r`), before anything else reads the file (IL included). The pass itself moves no
+  line or column, so diagnostics, `#line` directives and debug positions keep the ones they would have
+  without it. That is the original position everywhere except in and after IL bodies, whose transpilation
+  does not yet keep lines (a known limit, with or without pragmas). In `--check --json` a body's
+  `bodyLine` counts from its leading directive and inactive lines, so it is the same whatever the defines.
+- **Strings across lines.** A string literal holding a raw line break that starts with a directive (an
+  unbalanced quote in an inactive branch, typically) is the error `Conditional pragma directive inside a
+  string literal that spans lines` at that directive, instead of silently swallowing it.
 - **Inactive code is not checked.** It is not lexed, parsed or analysed, so it may hold code that does not
   compile; its `{attribute ...}` pragmas give no warning and its `{external ...}` blocks are dropped.
 - **Limits.** A pragma ends at the first `}`, so a `hasvalue` text cannot contain `}`; strings take no
   escapes.
-- **Test files.** `parseTestFile(source, fileName, options)` takes the dialect fields and `pragmaDefines`;
-  without `options` it refuses conditional pragmas as before. `--test` passes the dialect flags and `-D`.
-- **Libraries.** `compileStlib` takes `pragmaDefines` and records them in the archive as `pragmaDefines`
-  when there are any, so a rebuild from the archive's sources can use the same ones.
+- **Test files.** `parseTestFile(source, fileName, options)` takes the dialect fields and `pragmaDefines`
+  (a bad map throws a `TypeError`, as in `compile()`); without `options` it uses the default dialect and so
+  refuses conditional pragmas. `--test` passes the dialect flags and `-D`.
+- **Libraries.** `compileStlib` takes `pragmaDefines`. When the dialect has `conditional_pragmas`, the
+  archive records `pragmaDefines` (empty when no define was given); otherwise it has no such key. A reader of
+  the archive's sources resolves them the same way: `--decompile-lib` prints the recorded defines as `-D`
+  flags, and the language server analyses and searches a library's sources with the feature on and the
+  archive's own defines, not the workspace's. `resolveConditionalPragmas(source, pragmaDefines)` is exported
+  for other tools that show such sources.
 - **Not verified against the vendor toolchains** (inferences): define names compare case-insensitively;
   `project_defined` is treated as `defined`; `hasvalue` compares the text exactly, with single quotes.
 
@@ -608,7 +622,8 @@ Unknown top-level keys and wrongly typed values are refused the same way.
 
 `compile()` and `compileStlib()` take `dialect` (an id or a profile object), `dialectFiles`, `dialectPath`,
 `features`, `dialectIO` and `pragmaDefines` (a name → string map for conditional pragmas; a key that is not
-an identifier or a value that is not a string throws a `TypeError`). `compile()` and `analyze()` also take `globalListName` (and the same key on each
+an identifier or a value that is not a string throws a `TypeError`; `validatePragmaDefines()` and
+`isPragmaDefineName()` are exported with that one rule). `compile()` and `analyze()` also take `globalListName` (and the same key on each
 `additionalSources` entry) for `named_global_lists`; a name that is not an identifier throws a `TypeError`. The core never reads files: pass `nodeDialectIO` from `strucpp/node` (or your
 own `{readFile, listDir}`) with `dialectFiles` or `dialectPath`. A bad profile is a compile error
 (line 0). `resolveDialect()` and `profilesWithFeature()` are exported for callers that resolve themselves.
@@ -622,7 +637,9 @@ configuration, at start-up and on `workspace/didChangeConfiguration`:
 - `features`: an array of `+id`, `-id` or `id` overrides, or `null`/absent;
 - `pragmaDefines`: a name → string map for conditional pragmas (like `-D`), or `null`/absent.
 
-The server reads no profile files. Diagnostics of open, workspace and library documents and the
+The server reads no profile files. A library's own sources (`strucpp-lib:` documents) are the exception
+to `pragmaDefines`: they use the defines recorded in the archive ([above](#conditional-pragmas)).
+Diagnostics of open, workspace and library documents and the
 compile, build, debug-build, library and test requests all use the selection. A change re-analyses the
 open documents. A rejected value keeps the previous selection and shows
 `STruC++: dialect profile rejected: <message>`. The browser server has no configuration channel.

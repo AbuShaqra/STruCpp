@@ -66,6 +66,7 @@ import {
   applyConditionalPragmas,
   conditionalPragmaHint,
   sourcePrepFor,
+  validatePragmaDefines,
   withPragmaHint,
   type SourcePrep,
 } from "./frontend/conditional-pragmas.js";
@@ -113,33 +114,6 @@ function validateCompileOptions(options: CompileOptions): void {
   }
   validatePragmaDefines(options.pragmaDefines);
 }
-
-/** Throw a TypeError unless `defines` maps identifiers to strings. */
-export function validatePragmaDefines(defines: unknown): void {
-  if (defines === undefined) return;
-  if (
-    typeof defines !== "object" ||
-    defines === null ||
-    Array.isArray(defines)
-  ) {
-    throw new TypeError("pragmaDefines must be an object of name → string");
-  }
-  for (const [name, value] of Object.entries(defines)) {
-    if (!PRAGMA_DEFINE_NAME_RE.test(name)) {
-      throw new TypeError(
-        `pragmaDefines key ${JSON.stringify(name)} is not an identifier`,
-      );
-    }
-    if (typeof value !== "string") {
-      throw new TypeError(
-        `pragmaDefines[${JSON.stringify(name)}] must be a string`,
-      );
-    }
-  }
-}
-
-/** A define name: an IEC identifier. */
-const PRAGMA_DEFINE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** The dialect fields of the compile options, as a resolveDialect request. */
 function dialectRequestFromOptions(
@@ -519,13 +493,20 @@ function prepareFile(
   fileName: string | undefined,
   prep: SourcePrep,
   lex: (s: string) => ILexingResult,
-): { text: string; errors: CompileError[]; stopsOnError: boolean } {
+): {
+  text: string;
+  errors: CompileError[];
+  stopsOnError: boolean;
+  blankedLines: number[];
+} {
   const errors: CompileError[] = [];
   let out = text;
   let stopsOnError = false;
+  let blankedLines: number[] = [];
   if (prep.enabled) {
     const pragmaResult = applyConditionalPragmas(text, prep.defines, lex);
     out = pragmaResult.text;
+    blankedLines = pragmaResult.blankedLines;
     if (pragmaResult.errors.length > 0) {
       errors.push(...toCompileErrors(pragmaResult.errors, fileName));
       stopsOnError = true;
@@ -547,7 +528,7 @@ function prepareFile(
       errors.push(entry);
     }
   }
-  return { text: out, errors, stopsOnError };
+  return { text: out, errors, stopsOnError, blankedLines };
 }
 
 // ---------------------------------------------------------------------------
@@ -617,6 +598,8 @@ function runPipeline(
 
   // Phase 0: conditional pragmas, then IL→ST transpilation
   let effectiveSource = source;
+  /** File name → lines the conditional-pragma pass blanked. */
+  const blankedByFile = new Map<string, ReadonlySet<number>>();
   {
     const prepared = prepareFile(
       source,
@@ -625,6 +608,12 @@ function runPipeline(
       tokenize,
     );
     effectiveSource = prepared.text;
+    if (prepared.blankedLines.length > 0) {
+      blankedByFile.set(
+        mergedOptions.fileName ?? "main.st",
+        new Set(prepared.blankedLines),
+      );
+    }
     errors.push(...prepared.errors);
     if (prepared.stopsOnError && errors.length > 0 && !continueOnError) {
       return {
@@ -722,6 +711,12 @@ function runPipeline(
           tokenize,
         );
         const effectiveAddlSource = prepared.text;
+        if (prepared.blankedLines.length > 0) {
+          blankedByFile.set(
+            addlSource.fileName,
+            new Set(prepared.blankedLines),
+          );
+        }
         errors.push(...prepared.errors);
         if (prepared.stopsOnError && errors.length > 0 && !continueOnError) {
           continue;
@@ -1016,8 +1011,8 @@ function runPipeline(
   // Skipped silently when no AST is available — the fields remain unset
   // and downstream code falls back to plain (file, line) display.
   if (ast) {
-    annotateErrorsWithPouContext(errors, ast);
-    annotateErrorsWithPouContext(warnings, ast);
+    annotateErrorsWithPouContext(errors, ast, blankedByFile);
+    annotateErrorsWithPouContext(warnings, ast, blankedByFile);
   }
 
   return {
@@ -1349,7 +1344,12 @@ export function parse(source: string): {
   // Parse ST source to CST
   const parseResult = parseSource(source);
   if (parseResult.errors.length > 0) {
-    errors.push(...toCompileErrors(parseResult.errors));
+    errors.push(
+      ...withPragmaHint(
+        toCompileErrors(parseResult.errors),
+        conditionalPragmaHint(resolveDialect({})),
+      ),
+    );
     return { errors };
   }
 
@@ -1376,6 +1376,34 @@ export function parse(source: string): {
     return { errors };
   }
 }
+
+/**
+ * Resolve the conditional pragmas of one ST source as if the dialect had the
+ * feature `conditional_pragmas`: directives and inactive branches are blanked
+ * line-preservingly. For tools that show or search sources compiled with
+ * defines (for example a library's persisted sources).
+ *
+ * @param source - The ST source text
+ * @param pragmaDefines - Define names and values (`''` for a bare name)
+ * @returns The blanked text and positioned errors
+ */
+export function resolveConditionalPragmas(
+  source: string,
+  pragmaDefines?: Record<string, string>,
+): { text: string; errors: CompileError[] } {
+  validatePragmaDefines(pragmaDefines);
+  const defines = new Map<string, string>();
+  for (const [name, value] of Object.entries(pragmaDefines ?? {})) {
+    defines.set(name.toUpperCase(), value);
+  }
+  const result = applyConditionalPragmas(source, defines, tokenize);
+  return { text: result.text, errors: toCompileErrors(result.errors) };
+}
+
+export {
+  isPragmaDefineName,
+  validatePragmaDefines,
+} from "./frontend/conditional-pragmas.js";
 
 /**
  * Get the version of the STruC++ compiler.

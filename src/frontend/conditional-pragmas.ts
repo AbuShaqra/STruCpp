@@ -13,12 +13,11 @@
  * Pure: no Node APIs.
  */
 
-import type { ILexingResult, IToken } from "chevrotain";
+import type { ILexingResult } from "chevrotain";
 import {
   PRAGMA_GROUP,
   hasConditionalPragma,
   isConditionalPragma,
-  pragmaSourceText,
 } from "./lexer.js";
 import { profilesWithFeature, type ResolvedDialect } from "../dialect.js";
 import type { CompileError } from "../types.js";
@@ -39,6 +38,48 @@ export interface ConditionalPragmaResult {
   /** The source with directives and inactive branches blanked. */
   text: string;
   errors: PragmaDirectiveError[];
+  /** 1-based lines that held text and are blank after the pass. */
+  blankedLines: number[];
+}
+
+/** A define name: an IEC identifier. The one rule every entry point applies. */
+const PRAGMA_DEFINE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * True if `name` is a valid conditional-pragma define name (an identifier).
+ *
+ * @param name - The candidate define name
+ */
+export function isPragmaDefineName(name: string): boolean {
+  return PRAGMA_DEFINE_NAME_RE.test(name);
+}
+
+/**
+ * Throw a TypeError unless `defines` is undefined or maps identifiers to strings.
+ *
+ * @param defines - A `pragmaDefines` value from a caller
+ */
+export function validatePragmaDefines(defines: unknown): void {
+  if (defines === undefined) return;
+  if (
+    typeof defines !== "object" ||
+    defines === null ||
+    Array.isArray(defines)
+  ) {
+    throw new TypeError("pragmaDefines must be an object of name → string");
+  }
+  for (const [name, value] of Object.entries(defines)) {
+    if (!isPragmaDefineName(name)) {
+      throw new TypeError(
+        `pragmaDefines key ${JSON.stringify(name)} is not an identifier`,
+      );
+    }
+    if (typeof value !== "string") {
+      throw new TypeError(
+        `pragmaDefines[${JSON.stringify(name)}] must be a string`,
+      );
+    }
+  }
 }
 
 /** Whether the pass runs, and the defines it evaluates against. */
@@ -415,12 +456,27 @@ function blank(text: string, start: number, end: number): string {
 }
 
 /**
+ * A copy of `source` with the same length in UTF-16 units whose upper-case
+ * form also keeps that length, so the lexer's offsets line up with `source`.
+ * Characters that change length when upper-cased (`ß`, `ﬁ`) become `_`.
+ */
+function lengthStableCopy(source: string): string {
+  return source.replace(/[^\p{ASCII}]/gu, (c) =>
+    c.toUpperCase().length === c.length ? c : "_".repeat(c.length),
+  );
+}
+
+/** A line that starts with a conditional directive (inside a string it is an error). */
+const DIRECTIVE_LINE = /^[ \t]*\{\s*(?:IF|ELSIF|ELSE|END_IF)\b/i;
+
+/**
  * Resolve the conditional-compilation directives of `source` against
- * `defines`. Never throws.
+ * `defines`. Problems in the text come back as positioned errors; only an
+ * internal bug propagates as an exception.
  *
  * @param source - The source text
  * @param defines - Define names in upper case → value
- * @param lex - The lexer for this kind of file; only its pragma group is read
+ * @param lex - The lexer for this kind of file; its pragma group and string tokens are read
  * @returns The text with directives and inactive branches blanked, and the errors
  */
 export function applyConditionalPragmas(
@@ -428,25 +484,65 @@ export function applyConditionalPragmas(
   defines: ReadonlyMap<string, string>,
   lex: (s: string) => ILexingResult,
 ): ConditionalPragmaResult {
-  if (!hasConditionalPragma(source)) return { text: source, errors: [] };
-  let pragmas: IToken[];
-  try {
-    pragmas = lex(source).groups[PRAGMA_GROUP] ?? [];
-  } catch {
-    return { text: source, errors: [] };
+  if (!hasConditionalPragma(source)) {
+    return { text: source, errors: [], blankedLines: [] };
   }
+  let lexed: ILexingResult;
+  try {
+    lexed = lex(lengthStableCopy(source));
+  } catch {
+    return { text: source, errors: [], blankedLines: [] };
+  }
+  const pragmas = lexed.groups[PRAGMA_GROUP] ?? [];
   const starts = lineStarts(source);
   const errors: PragmaDirectiveError[] = [];
   const report = (message: string, offset: number, length: number): void => {
     errors.push({ message, ...lineColAt(starts, offset), length, offset });
   };
 
+  // A string literal with a raw line break can swallow directives of a dead
+  // branch (an unbalanced quote); refuse instead of silently dropping them.
+  for (const tok of lexed.tokens) {
+    if (!/[\r\n]/.test(tok.image)) continue;
+    const text = source.substring(
+      tok.startOffset,
+      tok.startOffset + tok.image.length,
+    );
+    const lineBreak = /\r\n?|\n/g;
+    let m: RegExpExecArray | null;
+    while ((m = lineBreak.exec(text)) !== null) {
+      const lineStart = m.index + m[0].length;
+      const rest = text.substring(lineStart);
+      const hit = DIRECTIVE_LINE.exec(rest);
+      if (hit) {
+        const brace = tok.startOffset + lineStart + hit[0].indexOf("{");
+        report(
+          "Conditional pragma directive inside a string literal that spans lines",
+          brace,
+          1,
+        );
+      }
+    }
+  }
+
   const directives: Directive[] = [];
   for (const tok of [...pragmas].sort(
     (a, b) => a.startOffset - b.startOffset,
   )) {
-    const image = pragmaSourceText(tok, source);
-    if (!isConditionalPragma(image)) continue;
+    const image = source.substring(
+      tok.startOffset,
+      tok.startOffset + tok.image.length,
+    );
+    if (!isConditionalPragma(image)) {
+      if (isConditionalPragma(tok.image)) {
+        report(
+          "Internal error: conditional pragma offsets do not match the source",
+          tok.startOffset,
+          1,
+        );
+      }
+      continue;
+    }
     const m = DIRECTIVE.exec(image)!;
     const keyword = m[2]!.toUpperCase() as Directive["keyword"];
     const restStart = 1 + m[1]!.length + m[2]!.length;
@@ -492,7 +588,10 @@ export function applyConditionalPragmas(
       );
     }
   }
-  if (directives.length === 0) return { text: source, errors: [] };
+  if (directives.length === 0) {
+    errors.sort((a, b) => a.offset - b.offset);
+    return { text: source, errors, blankedLines: [] };
+  }
 
   const stack: Frame[] = [];
   const isActive = (): boolean =>
@@ -566,5 +665,26 @@ export function applyConditionalPragmas(
     );
   }
   errors.sort((a, b) => a.offset - b.offset);
-  return { text: parts.join(""), errors };
+  const text = parts.join("");
+  return { text, errors, blankedLines: newlyBlankLines(source, text, starts) };
+}
+
+/** Lines (1-based) with non-blank text in `before` and only blanks in `after`. */
+function newlyBlankLines(
+  before: string,
+  after: string,
+  starts: readonly number[],
+): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < starts.length; i++) {
+    const from = starts[i]!;
+    const to = i + 1 < starts.length ? starts[i + 1]! : before.length;
+    if (
+      /\S/.test(before.substring(from, to)) &&
+      !/\S/.test(after.substring(from, to))
+    ) {
+      out.push(i + 1);
+    }
+  }
+  return out;
 }

@@ -215,7 +215,7 @@ strucpp --decompile-lib lib.stlib -o dir  # Extract ST sources from .stlib
 strucpp --import-lib codesys.lib -o dir   # Convert CODESYS library to .stlib
 ```
 
-Key flags: `-L <dir>` (library search path), `-D NAME=VALUE` (global constants), `--no-default-libs`, `--cxx-flags`, `--no-source`.
+Key flags: `-L <dir>` (library search path), `-D NAME[=VALUE]` (conditional-pragma define; an integer VALUE is also a global constant), `--no-default-libs`, `--cxx-flags`, `--no-source`.
 
 ## Testing
 

@@ -156,6 +156,24 @@ function spanOfStatements(
   return { start, end };
 }
 
+/**
+ * Move a body's start back over the lines the conditional-pragma pass
+ * blanked right before it (directives, inactive branches), so `bodyLine`
+ * does not depend on which branch the defines select.
+ */
+function extendBodyOverBlankedLines(
+  range: PouSectionRange,
+  blankedLines: ReadonlyMap<string, ReadonlySet<number>>,
+): void {
+  const blanked = blankedLines.get(range.file);
+  if (!blanked || !range.bodySpan) return;
+  let floor = range.pouStartLine;
+  for (const s of range.varBlockSpans) floor = Math.max(floor, s.end);
+  let start = range.bodySpan.start;
+  while (start - 1 > floor && blanked.has(start - 1)) start--;
+  range.bodySpan = { start, end: range.bodySpan.end };
+}
+
 function lineInside(
   line: number,
   span: { start: number; end: number },
@@ -174,14 +192,21 @@ function lineInside(
  * synthetic `_types.st` / `_config.st` chunks the editor splits out)
  * also fall through unchanged — those map to non-POU sections in the
  * editor and don't need POU-relative location.
+ *
+ * `blankedLines` (file → lines the conditional-pragma pass blanked) lets a
+ * body start at its leading directive lines, whichever branch is active.
  */
 export function annotateErrorsWithPouContext(
   errors: CompileError[],
   ast: CompilationUnit,
+  blankedLines?: ReadonlyMap<string, ReadonlySet<number>>,
 ): void {
   if (errors.length === 0) return;
   const ranges = buildPouRanges(ast);
   if (ranges.length === 0) return;
+  if (blankedLines && blankedLines.size > 0) {
+    for (const r of ranges) extendBodyOverBlankedLines(r, blankedLines);
+  }
 
   for (const err of errors) {
     if (err.line <= 0) continue;

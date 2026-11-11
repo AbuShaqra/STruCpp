@@ -379,3 +379,64 @@ describe("sourcePrepFor", () => {
     );
   });
 });
+
+describe("characters whose upper case changes length", () => {
+  const SRC = [
+    "PROGRAM Main",
+    "VAR",
+    "  maß : INT := 5;",
+    "  ﬁx : INT;",
+    "END_VAR",
+    "{IF defined(SIM)} x := 1; {END_IF}",
+    "y := 7;",
+    "{attribute 'x'}",
+    "END_PROGRAM",
+    "",
+  ].join("\n");
+
+  it("blanks each directive exactly, so later active text survives", () => {
+    const r = run(SRC);
+    expect(r.errors).toEqual([]);
+    expect(r.text.length).toBe(SRC.length);
+    const lines = r.text.split("\n");
+    expect(lines[5]!.trim()).toBe("");
+    expect(lines[6]).toBe("y := 7;");
+    expect(lines[7]).toBe("{attribute 'x'}");
+  });
+
+  it("reads the condition from the source text", () => {
+    const src = SRC.replace("defined(SIM)", "hasvalue(MODE, 'ä')");
+    expect(run(src, { MODE: "ä" }).text.split("\n")[5]!.trim()).toBe("x := 1;");
+  });
+});
+
+describe("string literals that span lines", () => {
+  it("a directive swallowed by a string in a dead branch is an error", () => {
+    const src = [
+      "{IF defined(A)}",
+      "s := 'oops;",
+      "{ELSE}",
+      "b := 'q';",
+      "{END_IF}",
+      "",
+    ].join("\n");
+    expect(errs(src)).toEqual([
+      "3:1 Conditional pragma directive inside a string literal that spans lines",
+    ]);
+  });
+
+  it("a multi-line string without a directive line is not an error", () => {
+    const src = "{IF defined(A)}\ns := 'a\nb';\n{END_IF}\n";
+    expect(run(src).errors).toEqual([]);
+  });
+});
+
+describe("blankedLines", () => {
+  it("lists lines that held text and are blank after the pass", () => {
+    const src =
+      "a;\n{IF defined(A)}\nb;\n\n{ELSE}\nc; {IF defined(B)} d; {END_IF}\n{END_IF}\n";
+    expect(applyConditionalPragmas(src, defs(), tokenize).blankedLines).toEqual(
+      [2, 3, 5, 7],
+    );
+  });
+});

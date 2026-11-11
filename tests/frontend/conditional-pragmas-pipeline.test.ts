@@ -14,11 +14,14 @@ import {
   compile,
   analyze,
   parseTestFile,
+  parse,
+  resolveConditionalPragmas,
   KNOWN_FEATURES,
   DEFAULT_FEATURES,
   resolveDialect,
 } from "../../src/index.js";
 import { nodeDialectIO } from "../../src/node/dialect-io.js";
+import { tokenize } from "../../src/frontend/lexer.js";
 import type { CompileError, CompileOptions } from "../../src/types.js";
 
 let dir = "";
@@ -374,14 +377,26 @@ describe("parseTestFile", () => {
 END_TEST
 `;
 
-  it("without options refuses conditional pragmas as before", () => {
+  it("without options uses the default dialect and refuses with the hint", () => {
     const r = parseTestFile(TEST_SRC, "t.st");
     expect(r.errors.map((e) => [e.line, e.column])).toEqual([
       [2, 1],
       [4, 1],
       [6, 1],
     ]);
-    expect(r.errors[0]!.message).toBe(`${REFUSAL}: {IF defined(SIM)}`);
+    expect(r.errors[0]!.message).toBe(`${REFUSAL}: {IF defined(SIM)}${HINT}`);
+  });
+
+  it("throws a TypeError for bad pragmaDefines, like compile()", () => {
+    expect(() =>
+      parseTestFile(TEST_SRC, "t.st", { pragmaDefines: { "1X": "" } }),
+    ).toThrow(TypeError);
+    const notString = { pragmaDefines: { SIM: 1 } } as unknown as Parameters<
+      typeof parseTestFile
+    >[2];
+    expect(() => parseTestFile(TEST_SRC, "t.st", notString)).toThrow(
+      /must be a string/,
+    );
   });
 
   it("with options but no feature refuses with the hint", () => {
@@ -429,5 +444,90 @@ describe("dialect profiles", () => {
     expect(
       resolveDialect({ dialect: "iec-3" }).features.has("conditional_pragmas"),
     ).toBe(false);
+  });
+});
+
+describe("refusal text per entry point", () => {
+  const SRC = "PROGRAM Main\n{IF defined(SIM)}\n{END_IF}\nEND_PROGRAM\n";
+  const FULL = `${REFUSAL}: {IF defined(SIM)}${HINT}`;
+
+  it("compile(), analyze() and parse() append the feature hint", () => {
+    expect(compile(SRC).errors[0]!.message).toBe(FULL);
+    expect(analyze(SRC).errors[0]!.message).toBe(FULL);
+    expect(parse(SRC).errors[0]!.message).toBe(FULL);
+  });
+
+  it("tokenize() is the raw lexer and gives the bare text", () => {
+    expect(tokenize(SRC).errors[0]!.message).toBe(
+      `${REFUSAL}: {IF defined(SIM)}`,
+    );
+  });
+});
+
+describe("length-changing upper case before a directive", () => {
+  it("keeps the active statement after the directive", () => {
+    const src = [
+      "PROGRAM Main",
+      "VAR",
+      "  maß : INT := 5;",
+      "  x : INT;",
+      "  y : INT;",
+      "END_VAR",
+      "{IF defined(SIM)} x := 1; {END_IF}",
+      "y := 7;",
+      "{attribute 'x'}",
+      "END_PROGRAM",
+      "",
+    ].join("\n");
+    const r = compile(src, { features: ["+conditional_pragmas"] });
+    expect(r.errors).toEqual([]);
+    expect(r.cppCode).toMatch(/Y\s*=\s*7/);
+    expect(r.cppCode).not.toMatch(/X\s*=\s*1\b/);
+  });
+});
+
+describe("bodyLine does not depend on the defines", () => {
+  const SRC = [
+    "PROGRAM Main",
+    "VAR x : INT; END_VAR",
+    "{IF defined(SIM)}",
+    "x := 1;",
+    "{ELSE}",
+    "x := 2;",
+    "{END_IF}",
+    "x := qq;",
+    "END_PROGRAM",
+    "",
+  ].join("\n");
+
+  it("the same body-relative line with and without the define", () => {
+    const at = (defines?: Record<string, string>): CompileError => {
+      const r = analyze(SRC, {
+        features: ["+conditional_pragmas"],
+        ...(defines ? { pragmaDefines: defines } : {}),
+      });
+      const e = r.errors.find(
+        (x) => x.message.includes("QQ") || x.message.includes("qq"),
+      );
+      expect(e).toBeDefined();
+      return e!;
+    };
+    const on = at({ SIM: "" });
+    const off = at();
+    expect(on).toMatchObject({ line: 8, section: "body", bodyLine: 6 });
+    expect(off).toMatchObject({ line: 8, section: "body", bodyLine: 6 });
+  });
+});
+
+describe("resolveConditionalPragmas", () => {
+  it("blanks with the given defines and validates them", () => {
+    const src = "{IF defined(A)}\na;\n{ELSE}\nb;\n{END_IF}\n";
+    expect(resolveConditionalPragmas(src, { A: "" }).text.split("\n")[1]).toBe(
+      "a;",
+    );
+    expect(resolveConditionalPragmas(src).text.split("\n")[3]).toBe("b;");
+    expect(() => resolveConditionalPragmas(src, { "1X": "" })).toThrow(
+      TypeError,
+    );
   });
 });

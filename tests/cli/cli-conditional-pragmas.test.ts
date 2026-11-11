@@ -336,6 +336,16 @@ END_FUNCTION
     expect(code).not.toContain("+ 7");
     expect(archive.pragmaDefines).toEqual({ FAST: "" });
 
+    const out = join(d, "extracted");
+    const dec = run(["--decompile-lib", join(d, "f.stlib"), "-o", out]);
+    expect(dec.status).toBe(0);
+    expect(dec.out).toContain(
+      "Compiled with conditional pragmas (feature conditional_pragmas); defines: -D FAST",
+    );
+    expect(readFileSync(join(out, "lib.st"), "utf-8")).toContain(
+      "{IF defined(FAST)}",
+    );
+
     const refused = run(["--compile-lib", st, "-o", d, "--lib-name", "g"]);
     expect(refused.status).toBe(1);
     expect(refused.out + refused.err).toContain(

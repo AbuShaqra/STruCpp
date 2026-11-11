@@ -14,6 +14,7 @@ import type {
   StlibArchive,
 } from "./library-manifest.js";
 import { compile } from "../index.js";
+import { resolveDialect } from "../dialect.js";
 import { buildChunks } from "./library-chunks.js";
 import type { MemberManglingContext } from "../backend/member-mangling.js";
 import {
@@ -988,8 +989,20 @@ export function compileStlib(
   ) {
     archive.globalConstants = options.globalConstants;
   }
-  if (options.pragmaDefines && Object.keys(options.pragmaDefines).length > 0) {
-    archive.pragmaDefines = { ...options.pragmaDefines };
+  // Present exactly when the sources were compiled with conditional pragmas
+  // resolved, so a reader of `sources` can resolve them the same way.
+  const dialect = resolveDialect(
+    {
+      ...(options.dialect !== undefined ? { dialect: options.dialect } : {}),
+      ...(options.dialectFiles ? { dialectFiles: options.dialectFiles } : {}),
+      ...(options.dialectPath ? { dialectPath: options.dialectPath } : {}),
+      ...(options.features ? { features: options.features } : {}),
+    },
+    options.dialectIO?.readFile,
+    options.dialectIO?.listDir,
+  );
+  if (dialect.features.has("conditional_pragmas")) {
+    archive.pragmaDefines = { ...(options.pragmaDefines ?? {}) };
   }
 
   return {

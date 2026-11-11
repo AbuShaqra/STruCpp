@@ -11,6 +11,7 @@
  */
 
 import {
+  isPragmaDefineName,
   resolveDialect,
   type CompileOptions,
   type DialectProfile,
@@ -38,12 +39,10 @@ function isPlainObject(value: unknown): value is object {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const DEFINE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
 /** A `pragmaDefines` problem, or undefined when the value is a name → string map. */
 function pragmaDefinesProblem(value: object): string | undefined {
   for (const [name, v] of Object.entries(value)) {
-    if (!DEFINE_NAME.test(name)) {
+    if (!isPragmaDefineName(name)) {
       return `'pragmaDefines' key ${JSON.stringify(name)} is not an identifier`;
     }
     if (typeof v !== "string") {

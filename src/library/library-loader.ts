@@ -25,6 +25,7 @@ import type {
   VarDeclaration,
 } from "../frontend/ast.js";
 import { createDefaultSourceSpan } from "../frontend/ast.js";
+import { isPragmaDefineName } from "../frontend/conditional-pragmas.js";
 import { ELEMENTARY_TYPES } from "../semantic/type-utils.js";
 
 /**
@@ -622,6 +623,11 @@ export function loadStlibArchive(json: unknown): StlibArchive {
     }
     const out: Record<string, string> = {};
     for (const [key, val] of Object.entries(pd as Record<string, unknown>)) {
+      if (!isPragmaDefineName(key)) {
+        throw new LibraryManifestError(
+          `Invalid stlib archive: pragmaDefines key ${JSON.stringify(key)} is not an identifier`,
+        );
+      }
       if (typeof val !== "string") {
         throw new LibraryManifestError(
           `Invalid stlib archive: pragmaDefines["${key}"] must be a string, got ${typeof val}`,

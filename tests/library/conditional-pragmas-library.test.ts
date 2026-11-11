@@ -21,6 +21,12 @@ F := a + 7;
 END_FUNCTION
 `;
 
+const PLAIN_LIB = `FUNCTION G : INT
+VAR_INPUT a : INT; END_VAR
+G := a;
+END_FUNCTION
+`;
+
 const BASE = { name: "cond-lib", version: "1.0.0", namespace: "cond_lib" };
 
 function chunkText(defines?: Record<string, string>): string {
@@ -48,7 +54,7 @@ describe("compileStlib with pragmaDefines", () => {
     expect(none).not.toContain("100");
   });
 
-  it("records the defines in the archive, and only when there are some", () => {
+  it("records the defines in the archive exactly when the feature is on", () => {
     const withDefines = compileStlib([{ source: LIB, fileName: "lib.st" }], {
       ...BASE,
       features: ["+conditional_pragmas"],
@@ -58,11 +64,20 @@ describe("compileStlib with pragmaDefines", () => {
     const loaded = loadStlibFromString(JSON.stringify(withDefines.archive));
     expect(loaded.pragmaDefines).toEqual({ FAST: "" });
 
-    const without = compileStlib([{ source: LIB, fileName: "lib.st" }], {
+    // Feature on, no define: recorded empty, so readers still resolve pragmas.
+    const noDefines = compileStlib([{ source: LIB, fileName: "lib.st" }], {
       ...BASE,
       features: ["+conditional_pragmas"],
     });
-    expect("pragmaDefines" in without.archive).toBe(false);
+    expect(noDefines.archive.pragmaDefines).toEqual({});
+
+    // Feature off: no key, even with defines (they only fed global constants).
+    const plain = compileStlib([{ source: PLAIN_LIB, fileName: "plain.st" }], {
+      ...BASE,
+      pragmaDefines: { FAST: "" },
+    });
+    expect(plain.success).toBe(true);
+    expect("pragmaDefines" in plain.archive).toBe(false);
   });
 
   it("without the feature the library is refused with the hint", () => {
@@ -89,6 +104,17 @@ describe("compileStlib with pragmaDefines", () => {
     const notMap = { ...r.archive, pragmaDefines: ["FAST"] };
     expect(() => loadStlibFromString(JSON.stringify(notMap))).toThrow(
       /pragmaDefines must be an object/,
+    );
+  });
+
+  it("the loader refuses a pragmaDefines key that is not an identifier", () => {
+    const r = compileStlib([{ source: LIB, fileName: "lib.st" }], {
+      ...BASE,
+      features: ["+conditional_pragmas"],
+    });
+    const raw = { ...r.archive, pragmaDefines: { "1 X": "" } };
+    expect(() => loadStlibFromString(JSON.stringify(raw))).toThrow(
+      /pragmaDefines key "1 X" is not an identifier/,
     );
   });
 });

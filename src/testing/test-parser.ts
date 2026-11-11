@@ -20,6 +20,7 @@ import {
   applyConditionalPragmas,
   conditionalPragmaHint,
   sourcePrepFor,
+  validatePragmaDefines,
   withPragmaHint,
 } from "../frontend/conditional-pragmas.js";
 
@@ -39,9 +40,10 @@ export type TestFileParseOptions = Pick<
  *
  * @param source - The test file source code
  * @param fileName - The test file name (for error reporting and output)
- * @param options - Dialect and pragma defines. Without them conditional
- *   pragmas are refused; with them they are resolved when the dialect has
- *   the feature conditional_pragmas.
+ * @param options - Dialect and pragma defines (default dialect when
+ *   omitted). Conditional pragmas are resolved when the dialect has the
+ *   feature conditional_pragmas and refused otherwise.
+ * @throws TypeError when `options.pragmaDefines` is not a name → string map
  * @returns The parsed TestFile and any errors
  */
 export function parseTestFile(
@@ -51,51 +53,47 @@ export function parseTestFile(
 ): { testFile?: TestFile; errors: CompileError[] } {
   const errors: CompileError[] = [];
 
+  const opts: TestFileParseOptions = options ?? {};
+  validatePragmaDefines(opts.pragmaDefines);
   let text = source;
   let pragmaHint = "";
-  if (options !== undefined) {
-    let dialect;
-    try {
-      dialect = resolveDialect(
-        {
-          ...(options.dialect !== undefined
-            ? { dialect: options.dialect }
-            : {}),
-          ...(options.dialectFiles
-            ? { dialectFiles: options.dialectFiles }
-            : {}),
-          ...(options.dialectPath ? { dialectPath: options.dialectPath } : {}),
-          ...(options.features ? { features: options.features } : {}),
-        },
-        options.dialectIO?.readFile,
-        options.dialectIO?.listDir,
-      );
-    } catch (e) {
-      if (!(e instanceof DialectError)) throw e;
-      errors.push({
-        message: e.message,
-        line: 0,
-        column: 0,
-        severity: "error",
-        file: fileName,
-      });
+  let dialect;
+  try {
+    dialect = resolveDialect(
+      {
+        ...(opts.dialect !== undefined ? { dialect: opts.dialect } : {}),
+        ...(opts.dialectFiles ? { dialectFiles: opts.dialectFiles } : {}),
+        ...(opts.dialectPath ? { dialectPath: opts.dialectPath } : {}),
+        ...(opts.features ? { features: opts.features } : {}),
+      },
+      opts.dialectIO?.readFile,
+      opts.dialectIO?.listDir,
+    );
+  } catch (e) {
+    if (!(e instanceof DialectError)) throw e;
+    errors.push({
+      message: e.message,
+      line: 0,
+      column: 0,
+      severity: "error",
+      file: fileName,
+    });
+    return { errors };
+  }
+  const prep = sourcePrepFor(dialect, opts.pragmaDefines);
+  if (prep.enabled) {
+    const pragmaResult = applyConditionalPragmas(
+      source,
+      prep.defines,
+      tokenizeTest,
+    );
+    if (pragmaResult.errors.length > 0) {
+      errors.push(...toCompileErrors(pragmaResult.errors, fileName));
       return { errors };
     }
-    const prep = sourcePrepFor(dialect, options.pragmaDefines);
-    if (prep.enabled) {
-      const pragmaResult = applyConditionalPragmas(
-        source,
-        prep.defines,
-        tokenizeTest,
-      );
-      if (pragmaResult.errors.length > 0) {
-        errors.push(...toCompileErrors(pragmaResult.errors, fileName));
-        return { errors };
-      }
-      text = pragmaResult.text;
-    } else {
-      pragmaHint = conditionalPragmaHint(dialect);
-    }
+    text = pragmaResult.text;
+  } else {
+    pragmaHint = conditionalPragmaHint(dialect);
   }
 
   // Parse with the test lexer/parser

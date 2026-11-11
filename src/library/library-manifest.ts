@@ -446,8 +446,9 @@ export interface StlibArchive {
   sources?: Array<{ fileName: string; source: string; category?: string }>;
   /** Global constants required by this library (e.g., STRING_LENGTH, LIST_LENGTH) */
   globalConstants?: Record<string, number>;
-  /** Conditional-pragma defines the library was compiled with; a rebuild from
-   *  its sources needs the same ones. Absent when none were given. */
+  /** Conditional-pragma defines the library was compiled with (`''` for a
+   *  bare name). Present, possibly empty, exactly when the dialect had the
+   *  feature `conditional_pragmas`; a rebuild from `sources` needs the same. */
   pragmaDefines?: Record<string, string>;
   /** Reserved for future library-to-library dependency resolution */
   dependencies: Array<{ name: string; version: string }>;
