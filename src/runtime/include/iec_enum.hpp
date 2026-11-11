@@ -241,4 +241,11 @@ inline std::ostream& operator<<(std::ostream& os, const IEC_ENUM_Var<EnumType>& 
  *   using Status_Var = IEC_ENUM_Var<Status>;
  */
 
+// Raw enumerator of an enumeration variable or value, as iec_unwrap gives a
+// raw value of an IECVar: lets SEL / MUX mix a variable with a literal.
+template<typename EnumType>
+inline EnumType iec_unwrap(const IEC_ENUM_Var<EnumType>& v) noexcept {
+    return static_cast<EnumType>(v);
+}
+
 }  // namespace strucpp

@@ -542,6 +542,17 @@ inline T MUX(IEC_INT k, T in0, T in1, Args... rest) noexcept {
     return MUX(IEC_INT(iec_unwrap(k) - 1), in1, rest...);
 }
 
+// Inputs of different C++ types (an enumeration variable next to a literal
+// of its enumeration): selected as their common raw type.
+template<typename T, typename U, typename... Args,
+    std::enable_if_t<!std::is_same<std::decay_t<T>, std::decay_t<U>>::value, int> = 0>
+inline auto MUX(IEC_INT k, T in0, U in1, Args... rest) noexcept {
+    using CT = std::common_type_t<decltype(iec_unwrap(in0)),
+        decltype(iec_unwrap(in1)), decltype(iec_unwrap(rest))...>;
+    return MUX(k, static_cast<CT>(iec_unwrap(in0)),
+        static_cast<CT>(iec_unwrap(in1)), static_cast<CT>(iec_unwrap(rest))...);
+}
+
 // =============================================================================
 // Comparison Functions (ANY_ELEMENTARY -> BOOL)
 // =============================================================================
