@@ -5642,7 +5642,8 @@ export class SemanticAnalyzer {
 
   /**
    * A bare name in a derived block reaching a base's `VAR PRIVATE` variable
-   * (Ed. 3 6.6.5.10: PRIVATE is not accessible to derived blocks).
+   * or PRIVATE property (Ed. 3 6.6.5.10: PRIVATE is not accessible to derived
+   * blocks).
    */
   private refuseInheritedPrivate(
     upper: string,
@@ -5653,6 +5654,11 @@ export class SemanticAnalyzer {
     const own = this.symbolTables.globalScope.lookup(ctx.fbName);
     if (own?.kind !== "functionBlock") return;
     if (this.symbolTables.getFBScope(ctx.fbName)?.lookupLocal(upper)) return;
+    if (
+      own.declaration.properties.some((p) => p.name.toUpperCase() === upper)
+    ) {
+      return;
+    }
     const visited = new Set<string>();
     let base = own.declaration.extends;
     while (base !== undefined && !visited.has(base.toUpperCase())) {
@@ -5681,9 +5687,18 @@ export class SemanticAnalyzer {
         }
         return;
       }
-      if (
-        sym.declaration.properties.some((p) => p.name.toUpperCase() === upper)
-      ) {
+      const prop = sym.declaration.properties.find(
+        (p) => p.name.toUpperCase() === upper,
+      );
+      if (prop !== undefined) {
+        if (prop.visibility === "PRIVATE") {
+          this.addError(
+            `Cannot access PRIVATE property '${upper}' of '${sym.name}' from outside '${sym.name}'.`,
+            span.startLine,
+            span.startCol,
+            span.file,
+          );
+        }
         return;
       }
       base = sym.declaration.extends;
