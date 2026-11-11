@@ -35,10 +35,10 @@
  * as forcing always has.
  *
  * A slot may carry the lock of the shared global its variable lives in
- * (set()'s `lock`). Such a slot is written with that lock held and the table
- * lock released, so the table lock is never held while a global's lock is
- * taken: a global's lock may be held while the table lock is taken, never
- * the reverse.
+ * (set()'s `lock`). Such a slot is written with both locks held, the global's
+ * taken first: a global's lock may be held while the table lock is taken,
+ * never the reverse. Holding both keeps a write from using a value the slot
+ * no longer has (cleared, re-forced or reused meanwhile).
  */
 
 #pragma once
@@ -230,8 +230,8 @@ inline Status put(Table& t, Slot<N> (&into)[M], Slot<N2> (&other)[M2], void* ptr
         }
     }
     fill(*s, ptr, bytes, size, flags, apply, lock);
-    // A slot under a global's lock is written by set(), outside the table lock.
-    if (lock == nullptr) apply_slot(*s);
+    // With a global's lock, set() holds it here too (taken before the table lock).
+    apply_slot(*s);
     return Status::Ok;
 }
 
@@ -268,22 +268,27 @@ inline Status set_locked(Table& t, void* ptr, const void* bytes, uint16_t size,
 
 #ifdef STRUCPP_THREADED
 /**
- * Write slot `i` of `pool` under its global's lock, with the table lock
- * released: the value is copied out under the table lock first.
+ * Write slot `i` of `pool` under its global's lock and the table lock, taken
+ * in that order: the slot's lock is read under the table lock, which is then
+ * released, the global's lock taken and the table lock retaken; the slot is
+ * written only if it still holds the same variable and lock.
  */
 template <std::size_t N, std::size_t M>
 inline void apply_unlocked(Table& t, Slot<N> (&pool)[M], std::size_t i,
                            std::uintptr_t lo, std::uintptr_t hi, bool all) noexcept {
-    Slot<N> copy;
+    std::mutex* gl;
+    void* ptr;
     {
         Lock lock(t);
         const Slot<N>& s = pool[i];
         if (!s.used || s.lock == nullptr) return;
         if (!all && !owned(s.ptr, s.flags, lo, hi)) return;
-        copy = s;
+        gl = s.lock; ptr = s.ptr;
     }
-    std::lock_guard<std::mutex> guard(*copy.lock);
-    apply_slot(copy);
+    std::lock_guard<std::mutex> guard(*gl);
+    Lock lock(t);
+    const Slot<N>& s = pool[i];
+    if (s.used && s.ptr == ptr && s.lock == gl) apply_slot(s);
 }
 
 /** Write every slot carrying a global's lock (owned ones unless `all`). */
@@ -319,28 +324,23 @@ inline bool clear_locked(Table& t, const void* ptr) noexcept {
 
 /**
  * Force the variable at `ptr` to the `size` bytes at `bytes` and write them
- * into it now. Forcing a forced variable again replaces its value.
+ * into it now. Forcing a forced variable again replaces its value. `lock` is
+ * the std::mutex of the shared global the variable lives in: under
+ * STRUCPP_THREADED the write (now and at every apply) holds it; otherwise it
+ * is ignored.
  */
 inline Status set(void* ptr, const void* bytes, uint16_t size, uint8_t flags = 0,
                   ApplyFn apply = nullptr, void* lock = nullptr) noexcept {
     detail::Table& t = detail::table();
-    Status status;
-    {
-        detail::Lock table_lock(t);
-        status = detail::set_locked(t, ptr, bytes, size, flags, apply, lock);
-    }
 #ifdef STRUCPP_THREADED
-    // `lock`: the variable lives in a shared global; write it under that lock.
-    if (status == Status::Ok && lock != nullptr) {
+    if (lock != nullptr) {
         std::lock_guard<std::mutex> guard(*static_cast<std::mutex*>(lock));
-        if (apply != nullptr) {
-            apply(ptr, static_cast<const uint8_t*>(bytes), size);
-        } else {
-            std::memcpy(ptr, bytes, size);
-        }
+        detail::Lock table_lock(t);
+        return detail::set_locked(t, ptr, bytes, size, flags, apply, lock);
     }
 #endif
-    return status;
+    detail::Lock table_lock(t);
+    return detail::set_locked(t, ptr, bytes, size, flags, apply, lock);
 }
 
 /** Stop forcing the variable at `ptr`; it keeps its current value. False if it was not forced. */

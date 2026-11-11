@@ -40,6 +40,10 @@ const Entry* const debug_arrays[]    = { g_arr_0 };
 const uint16_t     debug_array_counts[] = { sizeof(g_arr_0) / sizeof(g_arr_0[0]) };
 const uint8_t      debug_array_count    = 1;
 const uint8_t      debug_array_kind[]   = { DEBUG_ARRAY_PROGRAM };
+#ifdef STRUCPP_THREADED
+// A hand-written table provides the leaf locks too: no leaf here is a global.
+void* debug_leaf_lock(uint8_t, uint16_t) noexcept { return nullptr; }
+#endif
 } }
 
 // ---------------------------------------------------------------------------

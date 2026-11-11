@@ -148,9 +148,18 @@ lock (the `GlobalVar` mutex the program's accesses take): the generated table
 provides `debug_leaf_lock(arr, elem)` for every leaf of a `DEBUG_ARRAY_GLOBAL`
 array, `handle_set` hands it to the force slot, and `handle_read` /
 `handle_write` hold it around the access. The force table writes such a slot
-with its table lock released, so the table lock is never held while a global's
-lock is taken (a global's lock may be held while the table lock is taken, never
-the reverse). Without `STRUCPP_THREADED` none of this is compiled.
+with both locks held, the global's taken first (a global's lock may be held
+while the table lock is taken, never the reverse), and only while the slot
+still holds that variable and lock, so a write never uses a value a slot that
+was cleared, re-forced or reused no longer has. Without `STRUCPP_THREADED`
+none of this is compiled. A hand-written debug table (as in the runtime's own
+tests) must define `void* debug_leaf_lock(uint8_t arr, uint16_t elem) noexcept`
+in `strucpp::debug` in a threaded build; returning `nullptr` is valid when no
+leaf is a global.
+
+The dispatch's `TypeOps::force` op takes a fourth argument in every build, the
+leaf's lock (`void*`, null when there is none); `force_impl`, `force_string`
+and `force_wstring` default it to null.
 
 For a source-level debugger that has stopped the program (the VS Code
 extension), the header exports `strucpp_force_capture(void* ptr, unsigned size)`

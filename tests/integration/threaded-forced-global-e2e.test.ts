@@ -76,6 +76,42 @@ int main() {
 }
 `;
 
+/**
+ * A task applying a forced global races the debugger re-forcing and clearing
+ * it: the task must never write a value the slot no longer holds.
+ */
+const STALE = `#include "iec_force.hpp"
+#include <atomic>
+#include <cstdio>
+#include <mutex>
+#include <thread>
+using namespace strucpp;
+struct G { std::mutex m; int32_t v = 0; } g;
+std::atomic<bool> stop{false};
+std::atomic<long> passes{0};
+int main() {
+  std::thread t([&] { while (!stop) { force::apply_owned(nullptr, 0); passes++; } });
+  long staleUnforce = 0, staleReforce = 0;
+  for (int i = 1; i <= 50000; ++i) {
+    int32_t a = i, b = -i;
+    force::set(&g.v, &a, 4, force::FLAG_GLOBAL, nullptr, &g.m);
+    force::set(&g.v, &b, 4, force::FLAG_GLOBAL, nullptr, &g.m);
+    for (int k = 0; k < 20; ++k) {
+      std::lock_guard<std::mutex> l(g.m);
+      if (g.v == a) { staleReforce++; break; }
+    }
+    force::clear(&g.v);
+    { std::lock_guard<std::mutex> l(g.m); g.v = 999999; }
+    long p0 = passes.load();
+    while (passes.load() < p0 + 2) {}
+    { std::lock_guard<std::mutex> l(g.m); if (g.v != 999999) staleUnforce++; }
+  }
+  stop = true;
+  t.join();
+  std::printf("%ld %ld\\n", staleReforce, staleUnforce);
+}
+`;
+
 /** Whether g++ links a -fsanitize=thread program here. */
 function hasTsan(dir: string): boolean {
   const probe = path.join(dir, "tsan_probe.cpp");
@@ -118,9 +154,22 @@ describe.skipIf(!hasGpp)("threaded forced global — g++ e2e", () => {
     );
     const out = execSync(`"${exe}" 2>&1`, {
       encoding: "utf-8",
-      env: { ...process.env, TSAN_OPTIONS: "halt_on_error=0" },
+      env: {
+        ...process.env,
+        TSAN_OPTIONS: "halt_on_error=0 detect_deadlocks=1",
+      },
     });
     expect(out).not.toContain("ThreadSanitizer");
     expect(out.trim()).toBe("done");
+  }, 300000);
+
+  it("never writes a value a re-forced or cleared slot no longer holds", () => {
+    const src = path.join(dir, "stale.cpp");
+    const exe = path.join(dir, "stale");
+    fs.writeFileSync(src, STALE);
+    execSync(
+      `g++ -std=c++14 -O1 -DSTRUCPP_THREADED -I"${RUNTIME_INCLUDE_PATH}" "${src}" -o "${exe}" -pthread 2>&1`,
+    );
+    expect(execSync(`"${exe}"`, { encoding: "utf-8" }).trim()).toBe("0 0");
   }, 300000);
 });
