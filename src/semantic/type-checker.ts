@@ -1114,6 +1114,7 @@ export class TypeChecker {
           // Also resolve the index expressions
           for (const idx of step.indices) {
             this.resolveExprType(idx, scope);
+            this.refuseEnumIndex(idx);
           }
         } else if (step.kind === "dereference") {
           inUnion = false;
@@ -1134,6 +1135,7 @@ export class TypeChecker {
       if (expr.subscripts.length > 0 && currentTypeName) {
         for (const sub of expr.subscripts) {
           this.resolveExprType(sub, scope);
+          this.refuseEnumIndex(sub);
         }
         const elemType = resolveArrayElementType(currentTypeName, this.ast);
         if (elemType) {
@@ -1390,6 +1392,7 @@ export class TypeChecker {
     this.validateInterfaceArguments(inputs, expr.arguments);
     this.markPointerZeroArguments(inputs, expr.arguments);
     this.validateStructArguments(inputs, expr.arguments);
+    this.validateEnumArguments(inputs, expr.arguments);
     this.validateReferenceToArguments(inputs, expr.arguments, scope);
     this.validateInOutArguments(
       inputs,
@@ -1568,6 +1571,7 @@ export class TypeChecker {
       const chainInputs = this.methodInputsOf(owner?.name, expr.methodName);
       this.validateInterfaceArguments(chainInputs, expr.arguments);
       this.validateStructArguments(chainInputs, expr.arguments);
+      this.validateEnumArguments(chainInputs, expr.arguments);
       this.validateReferenceToArguments(chainInputs, expr.arguments, scope);
       this.validateInOutArguments(
         chainInputs,
@@ -1591,6 +1595,7 @@ export class TypeChecker {
     const methodInputs = this.methodInputs(objType, expr, scope);
     this.validateInterfaceArguments(methodInputs, expr.arguments);
     this.validateStructArguments(methodInputs, expr.arguments);
+    this.validateEnumArguments(methodInputs, expr.arguments);
     this.validateReferenceToArguments(methodInputs, expr.arguments, scope);
     this.validateInOutArguments(
       methodInputs,
@@ -2707,6 +2712,8 @@ export class TypeChecker {
           for (const label of c.labels) {
             this.resolveExprType(label.start, scope);
             if (label.end) this.resolveExprType(label.end, scope);
+            this.validateCaseLabelType(selectorType, label.start);
+            if (label.end) this.validateCaseLabelType(selectorType, label.end);
           }
           this.checkStatements(c.statements, scope);
         }
@@ -3237,6 +3244,54 @@ export class TypeChecker {
    * An argument of one STRUCT type bound to a VAR_INPUT or VAR_IN_OUT of
    * another (aliases name the same type). Only STRUCTs this compile declares.
    */
+  /**
+   * An enumeration value bound to an input of another type (an integer, or
+   * another enumeration), or a value of another type bound to an enumeration
+   * input: the C++ enum class converts neither way.
+   */
+  private validateEnumArguments(
+    inputs: CallInput[] | undefined,
+    args: readonly Argument[],
+  ): void {
+    if (!inputs) return;
+    stripEnEno([...args]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (!input || input.inOut) return;
+      const refKind = input.type.referenceKind;
+      if (refKind !== undefined && refKind !== "none") return;
+      if (input.type.arrayDimensions !== undefined) return;
+      const valueType = arg.value.resolvedType;
+      if (valueType === undefined) return;
+      const paramType = this.resolveNamedType(input.type.name);
+      if (paramType === undefined) return;
+      const argEnum = valueType.typeKind === "enum";
+      const paramEnum = paramType.typeKind === "enum";
+      if (!argEnum && !paramEnum) return;
+      if (
+        argEnum &&
+        paramEnum &&
+        typeNameUtil(valueType).toUpperCase() ===
+          typeNameUtil(paramType).toUpperCase()
+      ) {
+        return;
+      }
+      // Only an elementary value against an enumeration, or the reverse.
+      const other = argEnum ? paramType : valueType;
+      if (other.typeKind !== "enum" && other.typeKind !== "elementary") return;
+      this.addError(
+        `Cannot assign ${typeNameUtil(valueType)} to parameter '${input.name}' of type ${typeNameUtil(paramType)}`,
+        arg.value.sourceSpan.startLine,
+        arg.value.sourceSpan.startCol,
+        arg.value.sourceSpan.file,
+      );
+    });
+  }
+
   private validateStructArguments(
     inputs: CallInput[] | undefined,
     args: readonly Argument[],
@@ -4230,6 +4285,54 @@ export class TypeChecker {
         condExpr.sourceSpan.file,
       );
     }
+  }
+
+  /** Indices already checked by refuseEnumIndex. */
+  private checkedEnumIndices = new WeakSet<Expression>();
+
+  /** An enumeration value as an array index: the C++ enum class is no index. */
+  private refuseEnumIndex(index: Expression): void {
+    if (this.checkedEnumIndices.has(index)) return;
+    this.checkedEnumIndices.add(index);
+    const type = index.resolvedType;
+    if (type?.typeKind !== "enum") return;
+    this.addError(
+      `Array index must be an integer, got ${typeNameUtil(type)}`,
+      index.sourceSpan.startLine,
+      index.sourceSpan.startCol,
+      index.sourceSpan.file,
+    );
+  }
+
+  /**
+   * A CASE label of another type than an enumeration selector, or an
+   * enumeration label of an integer selector: never equal in the C++.
+   */
+  private validateCaseLabelType(
+    selectorType: IECType | undefined,
+    label: Expression,
+  ): void {
+    const labelType = label.resolvedType;
+    if (selectorType === undefined || labelType === undefined) return;
+    const selectorEnum = selectorType.typeKind === "enum";
+    const labelEnum = labelType.typeKind === "enum";
+    if (!selectorEnum && !labelEnum) return;
+    if (
+      selectorEnum &&
+      labelEnum &&
+      typeNameUtil(selectorType).toUpperCase() ===
+        typeNameUtil(labelType).toUpperCase()
+    ) {
+      return;
+    }
+    const other = selectorEnum ? labelType : selectorType;
+    if (other.typeKind !== "enum" && other.typeKind !== "elementary") return;
+    this.addError(
+      `CASE label of type ${typeNameUtil(labelType)} does not match the selector of type ${typeNameUtil(selectorType)}`,
+      label.sourceSpan.startLine,
+      label.sourceSpan.startCol,
+      label.sourceSpan.file,
+    );
   }
 
   private validateCaseSelector(
