@@ -46,7 +46,7 @@ export type IECWireFormat =
   | "date-ns-i64"
   /** TOD — int64 nanoseconds since midnight, formatted as `TOD#…` */
   | "tod-ns-i64"
-  /** STRING — 1 length byte + 126 UTF-8 bytes (strucpp default cap). */
+  /** STRING — 1 length byte + 126 UTF-8 bytes, transcoded from the stored Windows-1252 bytes. */
   | "len8-utf8"
   /** WSTRING — 1 length byte + 126 UTF-16 LE code units. */
   | "len8-utf16le";

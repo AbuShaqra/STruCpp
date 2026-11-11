@@ -6,6 +6,7 @@
 
 import type { Expression } from "../frontend/ast.js";
 import { exactIntegerLiteralValue } from "../literal-utils.js";
+import { cp1252Byte } from "../byte-utils.js";
 
 const COMPARISON_OPERATORS: ReadonlySet<string> = new Set([
   "=",
@@ -165,6 +166,10 @@ function octalEscape(code: number): string {
  * left over would escape the next `"` and end the C++ string early. `$XX` is
  * written in octal too, since a hex escape would swallow hex digits after it.
  *
+ * A STRING literal's characters above 0x7F become their Windows-1252 byte, in
+ * octal: a STRING is stored one CP1252 byte per character. The analyzer refuses
+ * a character CP1252 lacks, so the `?` written for one is never compiled.
+ *
  * Shared by the expression emitter and the type generator: a STRING literal has
  * to lower identically whether it appears in a statement, a variable
  * initialiser, or a STRUCT element default. `wide` is set for WSTRING literals
@@ -252,6 +257,12 @@ export function translateIECString(inner: string, wide = false): string {
     } else if (ch < " " || ch === "\x7f") {
       // A raw control character, CR and LF above all: never into the C++ raw
       result += octalEscape(ch.charCodeAt(0));
+    } else if (!wide && ch > "\x7f") {
+      // A STRING holds Windows-1252 bytes, one per character.
+      const codePoint = inner.codePointAt(i)!;
+      const byte = cp1252Byte(codePoint);
+      if (codePoint > 0xffff) i++;
+      result += byte !== undefined ? octalEscape(byte) : "?";
     } else {
       result += ch;
     }

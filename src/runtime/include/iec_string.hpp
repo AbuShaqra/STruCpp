@@ -48,6 +48,7 @@
 #include "iec_types.hpp"
 #include "iec_var.hpp"
 #include "iec_traits.hpp"
+#include "iec_cp1252.hpp"
 
 namespace strucpp {
 

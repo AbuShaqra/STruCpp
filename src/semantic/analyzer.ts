@@ -114,6 +114,7 @@ import {
   IEC_INTEGER_MIN,
   integerTypeRange,
 } from "../literal-utils.js";
+import { cp1252Byte } from "../byte-utils.js";
 
 // =============================================================================
 // Located Variable Address Parsing
@@ -1902,6 +1903,7 @@ export class SemanticAnalyzer {
 
     // Validate that integer literals fit an IEC integer type
     this.validateIntegerLiteralRange(ast);
+    this.validateStringLiteralCharset(ast);
 
     // TODO: Implement additional semantic validation
     // - Check CASE statement coverage
@@ -2331,6 +2333,33 @@ export class SemanticAnalyzer {
         span.startCol,
         span.file,
       );
+    });
+  }
+
+  /**
+   * Reject a character Windows-1252 cannot hold in a STRING literal: a STRING
+   * stores one CP1252 byte per character. A WSTRING literal holds any.
+   */
+  private validateStringLiteralCharset(ast: CompilationUnit): void {
+    walkAST(ast, (node) => {
+      if (node.kind !== "LiteralExpression") return;
+      const literal = node as LiteralExpression;
+      if (literal.literalType !== "STRING") return;
+      const raw = literal.rawValue;
+      for (let i = raw.indexOf("'") + 1; i < raw.length; i++) {
+        const codePoint = raw.codePointAt(i)!;
+        if (codePoint <= 0x7f || cp1252Byte(codePoint) !== undefined) continue;
+        const span = literal.sourceSpan;
+        const sameLine = !raw.substring(0, i).includes("\n");
+        const hex = codePoint.toString(16).toUpperCase().padStart(4, "0");
+        this.addError(
+          `Character '${String.fromCodePoint(codePoint)}' (U+${hex}) cannot be stored in a STRING, which holds Windows-1252 characters; use a WSTRING literal ("...") for it`,
+          span.startLine,
+          sameLine ? span.startCol + i : span.startCol,
+          span.file,
+        );
+        return;
+      }
     });
   }
 

@@ -59,21 +59,29 @@ inline std::string to_display_string(const bool& value) {
     return value ? "TRUE" : "FALSE";
 }
 
-// const char* specialization
+/** STRING text (Windows-1252 bytes) as UTF-8, for the console and JSON. */
+inline std::string cp1252_display(const char* value) {
+    const size_t n = std::strlen(value);
+    std::string out(n * 3, '\0');
+    out.resize(cp1252::to_utf8(value, n, reinterpret_cast<uint8_t*>(&out[0]), out.size()));
+    return out;
+}
+
+// const char* specialization (a STRING literal: Windows-1252 bytes)
 inline std::string to_display_string(const char* value) {
-    return value ? std::string("'") + value + "'" : "(null)";
+    return value ? std::string("'") + cp1252_display(value) + "'" : "(null)";
 }
 
 // Overload for IECString (has .c_str() directly)
 template<size_t N>
 inline std::string to_display_string(const strucpp::IECString<N>& value) {
-    return std::string("'") + value.c_str() + "'";
+    return std::string("'") + cp1252_display(value.c_str()) + "'";
 }
 
 // Overload for IECStringVar (has .get().c_str())
 template<size_t N>
 inline std::string to_display_string(const strucpp::IECStringVar<N>& value) {
-    return std::string("'") + value.get().c_str() + "'";
+    return std::string("'") + cp1252_display(value.get().c_str()) + "'";
 }
 
 // ============================================================================
@@ -142,7 +150,7 @@ struct TestContext {
      */
     void print_message(const char* msg) {
         if (msg && msg[0] != '\0') {
-            printf("         Message: %s\n", msg);
+            printf("         Message: %s\n", cp1252_display(msg).c_str());
         }
     }
 
@@ -158,7 +166,7 @@ struct TestContext {
             rec.detail = detail;
             rec.file = test_file;
             rec.line = line;
-            if (msg && msg[0] != '\0') rec.message = msg;
+            if (msg && msg[0] != '\0') rec.message = cp1252_display(msg);
             rec.expected = expected;
             rec.actual = actual;
             failure_records.push_back(std::move(rec));

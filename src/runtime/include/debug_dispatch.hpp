@@ -71,6 +71,10 @@ constexpr uint8_t STATUS_READ_ONLY       = 0x87;
 // need is taken (iec_force.hpp: STRUCPP_FORCE_SLOTS / _STRING_SLOTS). The
 // leaf is left as it was; unforcing another leaf frees a slot.
 constexpr uint8_t STATUS_FORCE_TABLE_FULL = 0x88;
+// Returned when a STRING write or force carries a payload that is not
+// well-formed UTF-8, or holds a character Windows-1252 lacks: a STRING stores
+// one CP1252 byte per character. The leaf is left as it was.
+constexpr uint8_t STATUS_NOT_ENCODABLE   = 0x89;
 
 // ---------------------------------------------------------------------------
 // Templated per-type helpers. One instantiation per IEC elementary type;
@@ -169,6 +173,12 @@ inline const void* ptr_impl(const void* p, uint16_t* len) noexcept {
 // `src/frontend/utils/variable-sizes.ts` — `len8-utf8` / `len8-utf16le`):
 //
 //   STRING:  [ uint8 length ][ DEBUG_STRING_CAP bytes UTF-8 payload ]
+//            A STRING is stored as Windows-1252 bytes (iec_cp1252.hpp): a read
+//            transcodes them to UTF-8, the length is the UTF-8 byte count, and
+//            a value whose UTF-8 form passes DEBUG_STRING_CAP is cut before the
+//            first character that does not fit whole. A write or force decodes
+//            the UTF-8 payload to CP1252; a payload that is not UTF-8, or holds
+//            a character CP1252 lacks, is refused with STATUS_NOT_ENCODABLE.
 //            ^ 1 byte         ^ 126 bytes (always — content past the
 //                               declared length is unused but the
 //                               wire width is fixed)
@@ -219,35 +229,43 @@ inline void read_string(const void* p, uint8_t* dest) noexcept {
     std::size_t actual_len = 0;
     const char* src = string_view_of(p, &actual_len);
     const uint8_t wire_len = static_cast<uint8_t>(
-        actual_len < DEBUG_STRING_CAP ? actual_len : DEBUG_STRING_CAP);
+        cp1252::to_utf8(src, actual_len, dest + 1, DEBUG_STRING_CAP));
     dest[0] = wire_len;
-    if (wire_len > 0) {
-        std::memcpy(dest + 1, src, wire_len);
-    }
     if (wire_len < DEBUG_STRING_CAP) {
         std::memset(dest + 1 + wire_len, 0, DEBUG_STRING_CAP - wire_len);
     }
 }
 
+/** Decode a STRING wire payload to CP1252 in `out`; false when it cannot be. */
+inline bool decode_string(const uint8_t* bytes, char* out, std::size_t* out_len) noexcept {
+    const uint8_t wire_len = bytes[0] < DEBUG_STRING_CAP ? bytes[0] : DEBUG_STRING_CAP;
+    return cp1252::from_utf8(bytes + 1, wire_len, out, out_len);
+}
+
 inline void write_string(void* p, const uint8_t* bytes) noexcept {
     if (force::is_forced(p)) return;
+    char value[DEBUG_STRING_CAP];
+    std::size_t n = 0;
+    if (!decode_string(bytes, value, &n)) return;  // validate_payload refused it
     auto* var = static_cast<IECStringVar<254>*>(p);
-    const uint8_t wire_len = bytes[0] < DEBUG_STRING_CAP ? bytes[0] : DEBUG_STRING_CAP;
-    var->set(IECString<254>(reinterpret_cast<const char*>(bytes + 1), wire_len));
+    var->set(IECString<254>(value, n));
 }
 
 inline uint8_t force_string(void* p, const uint8_t* bytes, uint8_t flags,
                             void* lock = nullptr) noexcept {
-    const uint8_t wire_len = bytes[0] < DEBUG_STRING_CAP ? bytes[0] : DEBUG_STRING_CAP;
     char value[DEBUG_STRING_CAP + 1];
-    std::memcpy(value, bytes + 1, wire_len);
-    value[wire_len] = '\0';
-    return force_status(force::set(p, value, static_cast<uint16_t>(wire_len + 1u),
+    std::size_t n = 0;
+    if (!decode_string(bytes, value, &n)) return STATUS_NOT_ENCODABLE;
+    value[n] = '\0';
+    return force_status(force::set(p, value, static_cast<uint16_t>(n + 1u),
                                    flags, &apply_string, lock));
 }
 
 // The payload only — NOT the [len][payload] wire form read_string() builds.
-// `len` is the character count; a forced leaf is served from its slot.
+// `len` is the byte count; a forced leaf is served from its slot. The bytes are
+// the stored Windows-1252 characters, one byte each, NOT UTF-8: a caller that
+// needs Unicode (an OPC-UA String is UTF-8) transcodes them, e.g. with
+// cp1252::to_utf8.
 //
 // Deliberately NOT capped at DEBUG_STRING_CAP. That cap is the Modbus debug
 // FRAME budget: the wire form spends one byte on the length prefix and the
@@ -617,7 +635,7 @@ private:
  *
  * Scalars are fixed-width: `len` must cover the type's size.
  *
- * Strings are length-prefixed: `bytes[0]` is the character (STRING) or
+ * Strings are length-prefixed: `bytes[0]` is the UTF-8 byte (STRING) or
  * code-unit (WSTRING) count, and force_string / write_string read exactly that
  * many, so `len` must cover `1 + count` -- `1 + 2 * count` for WSTRING -- and
  * NOT `type_ops[tag].size`, which is the padded width the READ path emits. A
@@ -638,6 +656,11 @@ inline uint8_t validate_payload(uint8_t tag, const uint8_t* bytes, uint16_t len)
             1u + (tag == TAG_WSTRING ? static_cast<uint16_t>(count) * 2u
                                      : static_cast<uint16_t>(count)));
         if (len < need) return STATUS_DATA_TOO_LARGE;
+        if (tag == TAG_STRING) {
+            char value[DEBUG_STRING_CAP];
+            std::size_t n = 0;
+            if (!decode_string(bytes, value, &n)) return STATUS_NOT_ENCODABLE;
+        }
         return STATUS_OK;
     }
 
@@ -647,7 +670,8 @@ inline uint8_t validate_payload(uint8_t tag, const uint8_t* bytes, uint16_t len)
 
 /** Set (force or unforce) a variable. Returns STATUS_OK, or the refusal:
  *  STATUS_OUT_OF_BOUNDS, STATUS_READ_ONLY, STATUS_DATA_TOO_LARGE, or
- *  STATUS_FORCE_TABLE_FULL when every force-table slot the value needs is taken. */
+ *  STATUS_FORCE_TABLE_FULL when every force-table slot the value needs is taken,
+ *  or STATUS_NOT_ENCODABLE for a STRING payload CP1252 cannot hold. */
 inline uint8_t handle_set(uint8_t arr, uint16_t elem, bool forcing,
                           const uint8_t* bytes, uint16_t len) noexcept {
     Entry e = read_entry(arr, elem);
