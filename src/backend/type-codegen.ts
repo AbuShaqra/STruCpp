@@ -72,6 +72,8 @@ export interface TypeCodeGenOptions {
   isUserDefinedType: (typeName: string) => boolean;
   /** Member names that hide a user type of their scope (member-mangling.ts). */
   shadowingNames?: ReadonlySet<string> | undefined;
+  /** Whether a type name is an INTERFACE: a field or element of one holds a reference (`IEC_ITF`). */
+  isInterfaceType?: ((typeName: string) => boolean) | undefined;
 }
 
 /**
@@ -729,6 +731,11 @@ export class TypeCodeGenerator {
     // Enum types → IEC_<Name> (resolves to IEC_ENUM<Name> via alias)
     if (this.knownEnumNames.has(upperName)) {
       return `IEC_${typeName}`;
+    }
+
+    // An INTERFACE field or element holds a nullable reference, as a variable does
+    if (this.options.isInterfaceType?.(typeName) === true) {
+      return `IEC_ITF<${typeName}>`;
     }
 
     // Composite types (struct, array, FB) → bare name

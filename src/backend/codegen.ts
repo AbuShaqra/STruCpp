@@ -949,9 +949,12 @@ export class CodeGenerator {
               typeRef.elementTypeName,
               elementLength,
             )
-          : // An enumeration element is the variable a scalar gets (IEC_E), as in a
-            // STRUCT field or named ARRAY type, so REF/ADR of it see one type.
-            this.mapVarTypeToCpp(typeRef.elementTypeName);
+          : this.isInterfaceType(typeRef.elementTypeName)
+            ? // An INTERFACE element holds a nullable reference, as a variable does.
+              `IEC_ITF<${typeRef.elementTypeName}>`
+            : // An enumeration element is the variable a scalar gets (IEC_E), as in a
+              // STRUCT field or named ARRAY type, so REF/ADR of it see one type.
+              this.mapVarTypeToCpp(typeRef.elementTypeName);
       baseType = formatArrayType(elemCpp, typeRef.arrayDimensions);
     } else if (
       typeRef.elementReferenceChain &&
@@ -1598,6 +1601,7 @@ export class CodeGenerator {
       // names them, and only codegen knows the FB / program type names.
       isUserDefinedType: (t) => this.isUserDefinedType(t),
       shadowingNames: this.shadowingNames(),
+      isInterfaceType: (t): boolean => this.isInterfaceType(t),
     });
     if (ast.types.length > 0) {
       const lateStructNames = new Set(lateStructs.map((n) => n.toUpperCase()));
