@@ -1815,7 +1815,10 @@ export class TypeChecker {
       return;
     }
     const upper = this.aliasBase(type.name);
-    if (this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper)) {
+    if (
+      this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper) ===
+      true
+    ) {
       return;
     }
     if (this.resolveFieldTypeAnywhere(upper, methodName) !== undefined) return;
