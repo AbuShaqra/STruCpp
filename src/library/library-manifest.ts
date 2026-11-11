@@ -132,6 +132,20 @@ export interface LibraryMethodEntry {
 }
 
 /**
+ * A property of a library function block: its type and which accessors it has.
+ */
+export interface LibraryPropertyEntry {
+  /** Property name, as the block's C++ accessors `get_<name>`/`set_<name>` spell it. */
+  name: string;
+  /** Property type (its `name` is the property's). */
+  type: LibraryVarType;
+  /** The property has a GET accessor. */
+  get?: true;
+  /** The property has a SET accessor. */
+  set?: true;
+}
+
+/**
  * Library function block entry in a manifest.
  */
 export interface LibraryFBEntry {
@@ -198,6 +212,16 @@ export interface LibraryFBEntry {
    * whose method calls pass their arguments through as written.
    */
   methods?: LibraryMethodEntry[];
+  /**
+   * The block's own properties. Present, possibly empty, on an archive that
+   * lists them: a consumer then reads and writes them through their accessors
+   * and, with `temps` and `extends`, knows every member of the block.
+   */
+  properties?: LibraryPropertyEntry[];
+  /** `VAR_TEMP` members, when the block has any (members of the C++ class). */
+  temps?: LibraryVarType[];
+  /** The function block this one EXTENDS. */
+  extends?: string;
   /** Block-level help text shown in editor hover dialogs. Authored in
    *  the library's `library.json` and merged into the manifest at build
    *  time (see scripts/generate-*.mjs). Optional so existing archives
