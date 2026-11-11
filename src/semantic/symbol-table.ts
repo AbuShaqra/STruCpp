@@ -100,6 +100,8 @@ export interface FunctionSymbol extends BaseSymbol {
   declaration: FunctionDeclaration;
   returnType: IECType;
   parameters: VariableSymbol[];
+  /** Name of the library this function came from, set only by `registerLibrarySymbols`. */
+  libraryName?: string;
 }
 
 /**

@@ -72,6 +72,7 @@ import { stripEnEno, walkAST } from "../ast-utils.js";
 import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
 import { structExtends } from "./struct-extends.js";
 import { bindStdFunctionArguments } from "./std-function-args.js";
+import { STD_FUNCTIONS_LIBRARY } from "../library/library-manifest.js";
 import {
   fbIndex,
   fbInitArgumentScope,
@@ -1770,6 +1771,10 @@ export class TypeChecker {
     // Check user-defined functions in symbol tables
     const funcSymbol = this.symbolTables.lookupFunction(expr.functionName);
     if (funcSymbol !== undefined) {
+      // A standard function listed by the std-function library keeps its constraints.
+      if (funcSymbol.libraryName === STD_FUNCTIONS_LIBRARY) {
+        this.validateFunctionCallArgs(expr, scope);
+      }
       let returnType = funcSymbol.returnType;
       // Overloaded standard functions are published in the builtin stdlib
       // manifest with their generic return *constraint* (e.g. NOT -> ANY_BIT,
@@ -2296,6 +2301,8 @@ export class TypeChecker {
   private boundStdFunctionCalls = new WeakSet<FunctionCallExpression>();
   /** Standard function calls whose named arguments could not be bound. */
   private unboundStdFunctionCalls = new WeakSet<FunctionCallExpression>();
+  /** Calls whose enumeration ordering arguments were checked, and whether one was refused. */
+  private enumOrderingChecked = new WeakMap<FunctionCallExpression, boolean>();
 
   /**
    * A standard function call with named arguments: put its arguments in the
@@ -4889,6 +4896,8 @@ export class TypeChecker {
     expr: FunctionCallExpression,
     params: ReadonlyArray<{ name: string; constraint: string }>,
   ): boolean {
+    const known = this.enumOrderingChecked.get(expr);
+    if (known !== undefined) return known;
     let refused = false;
     stripEnEno(expr.arguments).forEach((arg, i) => {
       const param = params[i];
@@ -4907,6 +4916,7 @@ export class TypeChecker {
         arg.value.sourceSpan.file,
       );
     });
+    this.enumOrderingChecked.set(expr, refused);
     return refused;
   }
 
@@ -4935,7 +4945,14 @@ export class TypeChecker {
       const param = desc.params[i]!;
       const argType = arg.value.resolvedType;
 
-      if (!argType || argType.typeKind !== "elementary") continue;
+      // A generic result left unrefined (ANY_ELEMENTARY) is not checked.
+      if (
+        !argType ||
+        argType.typeKind !== "elementary" ||
+        isGenericGroupType(argType)
+      ) {
+        continue;
+      }
 
       // An alias (`TYPE TS : STRING(20)`) is checked as its base type.
       const argDisplay = (argType as ElementaryType).name;
