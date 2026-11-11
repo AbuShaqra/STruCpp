@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 #include <type_traits>
+#include <utility>
 #include "iec_array.hpp"
 #include "iec_struct.hpp"
 #include "iec_enum.hpp"
@@ -27,6 +28,22 @@
 #include "iec_std_lib.hpp"
 
 using namespace strucpp;
+
+/**
+ * Empties the global force table before and after each forcing test, so a
+ * slot left by an aborted test never points at a dead stack object.
+ */
+class ForceTableTest : public ::testing::Test {
+protected:
+    void SetUp() override { force::clear_all(); }
+    void TearDown() override { force::clear_all(); }
+};
+
+using IECArrayForcingTest = ForceTableTest;
+using IECEnumForcingTest = ForceTableTest;
+using IECSubrangeForcingTest = ForceTableTest;
+using IECStructForcingTest = ForceTableTest;
+using IECPointerForcingTest = ForceTableTest;
 
 // =============================================================================
 // Array Tests
@@ -74,9 +91,11 @@ TEST(IECArrayTest, Array1D_BoundsCheckedAccess) {
     EXPECT_THROW(arr.at(4), std::out_of_range);
 }
 
-TEST(IECArrayTest, Array1D_ElementForcing) {
-    force::clear_all();
+TEST_F(IECArrayForcingTest, Array1D_ElementForcing) {
     using IntArray = IEC_ARRAY_1D<INT_t, ArrayBounds<1, 3>>;
+    // The force table writes raw bytes: an element must be just its value.
+    static_assert(sizeof(std::declval<IntArray&>()[1]) == sizeof(INT_t),
+                  "array element must be exactly one INT_t");
     IntArray arr;
 
     arr[1] = 10;
@@ -253,11 +272,11 @@ TEST(IECEnumTest, EnumValue_BasicOperations) {
     EXPECT_FALSE(light == TrafficLight::RED);
 }
 
-TEST(IECEnumTest, EnumVar_Forcing) {
-    force::clear_all();
-    IEC_ENUM_Var<TrafficLight> light;
+TEST_F(IECEnumForcingTest, EnumVar_Forcing) {
     // The force table writes raw bytes: the var must be just its value.
-    EXPECT_EQ(sizeof light, sizeof(TrafficLight));
+    static_assert(sizeof(IEC_ENUM_Var<TrafficLight>) == sizeof(TrafficLight),
+                  "IEC_ENUM_Var must be exactly its enum value");
+    IEC_ENUM_Var<TrafficLight> light;
 
     light = TrafficLight::RED;
     EXPECT_EQ(light.get().get(), TrafficLight::RED);
@@ -337,12 +356,13 @@ TEST(IECSubrangeTest, SubrangeValue_Arithmetic) {
     EXPECT_EQ(a / b, 1);
 }
 
-TEST(IECSubrangeTest, SubrangeVar_Forcing) {
-    force::clear_all();
+TEST_F(IECSubrangeForcingTest, SubrangeVar_Forcing) {
     using Percentage = IEC_SUBRANGE_Var<int16_t, 0, 100>;
+    // The force table writes raw bytes: the var must be just its value.
+    static_assert(sizeof(Percentage) == sizeof(int16_t),
+                  "IEC_SUBRANGE_Var must be exactly its base value");
 
     Percentage pct;
-    EXPECT_EQ(sizeof pct, sizeof(int16_t));
     pct = 50;
     EXPECT_EQ(static_cast<int16_t>(pct.get()), 50);
 
@@ -412,8 +432,10 @@ TEST(IECStructTest, Struct_TypeName) {
     EXPECT_STREQ(p.type_name(), "Point");
 }
 
-TEST(IECStructTest, Struct_FieldForcing) {
-    force::clear_all();
+TEST_F(IECStructForcingTest, Struct_FieldForcing) {
+    // The force table writes raw bytes: a field must be just its value.
+    static_assert(sizeof(Point::x) == sizeof(REAL_t),
+                  "Point::x must be exactly one REAL_t");
     Point p;
 
     p.x = 10.0f;
@@ -848,14 +870,14 @@ TEST(IECPointerTest, Pointer_Reassignment) {
     EXPECT_EQ(ptr.deref().get(), 200);
 }
 
-TEST(IECPointerTest, Pointer_Forcing) {
-    force::clear_all();
+TEST_F(IECPointerForcingTest, Pointer_Forcing) {
+    // The force table writes raw bytes: REF_TO must be just the address.
+    static_assert(sizeof(REF_TO<INT_t>) == sizeof(IEC_INT*),
+                  "REF_TO must be exactly one pointer");
     IEC_INT target1(100);
     IEC_INT target2(200);
     REF_TO<INT_t> ptr = REF(target1);
-    // The force table writes raw bytes: REF_TO must be just the address.
     IEC_INT* const forced = &target2;
-    ASSERT_EQ(sizeof ptr, sizeof forced);
 
     EXPECT_EQ(ptr.deref().get(), 100);
     EXPECT_FALSE(force::is_forced(&ptr));
@@ -871,16 +893,18 @@ TEST(IECPointerTest, Pointer_Forcing) {
     force::apply_all();
     EXPECT_EQ(ptr.deref().get(), 200);
 
-    // Unforce
+    // Unforce: clear() restores nothing, the forced target stays until a write.
     EXPECT_TRUE(force::clear(&ptr));
     EXPECT_FALSE(force::is_forced(&ptr));
+    EXPECT_EQ(ptr.deref().get(), 200);
+    force::apply_all();
+    EXPECT_EQ(ptr.deref().get(), 200);
     ptr = REF(target1);
     force::apply_all();
     EXPECT_EQ(ptr.deref().get(), 100);
 }
 
-TEST(IECPointerTest, Pointer_ForceToNull) {
-    force::clear_all();
+TEST_F(IECPointerForcingTest, Pointer_ForceToNull) {
     IEC_INT target(42);
     REF_TO<INT_t> ptr = REF(target);
 
@@ -892,8 +916,14 @@ TEST(IECPointerTest, Pointer_ForceToNull) {
     EXPECT_TRUE(force::is_forced(&ptr));
     EXPECT_TRUE(ptr.is_null());
 
-    // Unforce, then rebind as the program would
+    // Unforce: clear() restores nothing and apply_all no longer touches the slot.
     EXPECT_TRUE(force::clear(&ptr));
+    EXPECT_FALSE(force::is_forced(&ptr));
+    EXPECT_TRUE(ptr.is_null());
+    force::apply_all();
+    EXPECT_TRUE(ptr.is_null());
+
+    // Rebind as the program would
     ptr = REF(target);
     force::apply_all();
     EXPECT_FALSE(ptr.is_null());

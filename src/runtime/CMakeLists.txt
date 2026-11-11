@@ -39,13 +39,19 @@ option(BUILD_TESTING "Build tests" ON)
 if(BUILD_TESTING)
     enable_testing()
 
-    # Google Test: an installed package first (works offline), else fetch v1.14.0.
-    # FETCHCONTENT_SOURCE_DIR_GOOGLETEST points the fetch at a local checkout.
-    find_package(GTest QUIET)
+    # Google Test: FETCHCONTENT_SOURCE_DIR_GOOGLETEST (a local checkout) wins; else an
+    # installed package (works offline, any version); else fetch v1.14.0.
+    if(NOT FETCHCONTENT_SOURCE_DIR_GOOGLETEST)
+        find_package(GTest QUIET)
+    endif()
     if(TARGET GTest::gtest_main)
         message(STATUS "googletest: using installed package ${GTest_VERSION}")
     else()
-        message(STATUS "googletest: not installed, fetching v1.14.0")
+        if(FETCHCONTENT_SOURCE_DIR_GOOGLETEST)
+            message(STATUS "googletest: using local checkout ${FETCHCONTENT_SOURCE_DIR_GOOGLETEST}")
+        else()
+            message(STATUS "googletest: not installed, fetching v1.14.0")
+        endif()
         include(FetchContent)
         FetchContent_Declare(
             googletest

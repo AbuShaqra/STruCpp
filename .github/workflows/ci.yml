@@ -73,6 +73,8 @@ jobs:
 
       - name: Run tests with coverage
         run: npm run test:coverage -- --run
+        env:
+          STRUCPP_REQUIRE_RUNTIME_TESTS: "1"
 
   extension:
     name: Extension Build & Test

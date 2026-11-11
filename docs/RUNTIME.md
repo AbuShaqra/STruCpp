@@ -322,8 +322,21 @@ The headers have their own GoogleTest suite, built by `src/runtime/CMakeLists.tx
 cmake -S src/runtime -B build/runtime && cmake --build build/runtime -j && ctest --test-dir build/runtime --output-on-failure
 ```
 
-`npm test` runs the same steps in a temporary build directory. googletest comes
-from an installed package when CMake finds one, otherwise it is fetched (v1.14.0);
-set `STRUCPP_GTEST_SOURCE_DIR` (passed as `FETCHCONTENT_SOURCE_DIR_GOOGLETEST`) to
-use a local checkout offline. The test is skipped, with the reason printed, when
-cmake or a C++ compiler is missing or googletest cannot be obtained.
+googletest is taken, in this order, from a local checkout passed as
+`-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=<dir>` (works offline), from an installed
+package when CMake finds one (any version, not necessarily v1.14.0), or fetched
+from GitHub (v1.14.0).
+
+`npm test` runs the same steps in a temporary build directory
+(`tests/integration/runtime-cpp-tests.test.ts`). That runner, not CMake, reads
+these environment variables:
+
+| Variable | Effect |
+|----------|--------|
+| `STRUCPP_GTEST_SOURCE_DIR` | Forwarded as `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST` |
+| `STRUCPP_REQUIRE_RUNTIME_TESTS=1` | A skip becomes a failure (set in CI) |
+| `STRUCPP_RUNTIME_TEST_JOBS` | Build and ctest parallelism (default: half the cores, at most 4) |
+
+Without `STRUCPP_REQUIRE_RUNTIME_TESTS=1` the test is skipped, with the reason
+printed, when cmake or a C++ compiler is missing or the googletest clone fails
+for a network reason. Any other configure, build or test failure fails.
