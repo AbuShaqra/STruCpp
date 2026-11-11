@@ -1571,22 +1571,34 @@ export class STParser extends CstParser {
     ) {
       return true;
     }
-    if (this.LA(2).tokenType !== tokens.LBracket) return false;
-
-    // Walk to the matching `]`, allowing nested subscripts in the index
-    // expressions (`a[b[i]]`). 64 tokens covers any realistic index list.
+    // `units[0](`, also after field steps (`GVL_A.units[0](`, `a.b[i](`):
+    // a path whose last step is a subscript, followed directly by `(`.
+    // 64 tokens covers any realistic path and index list.
     const MAX_LOOKAHEAD = 64;
-    let depth = 0;
-    for (let i = 2; i <= MAX_LOOKAHEAD; i++) {
-      const tokenType = this.LA(i)?.tokenType;
-      if (tokenType === undefined) return false;
-      if (tokenType === tokens.LBracket) {
-        depth++;
-      } else if (tokenType === tokens.RBracket) {
-        depth--;
-        if (depth === 0) return this.LA(i + 1)?.tokenType === tokens.LParen;
-      } else if (tokenType === tokens.Semicolon) {
-        return false;
+    let i = 2;
+    let subscripted = false;
+    while (i <= MAX_LOOKAHEAD) {
+      const t = this.LA(i)?.tokenType;
+      if (t === undefined) return false;
+      if (
+        t === tokens.Dot &&
+        this.isIdentifierOrKeywordToken(this.LA(i + 1).tokenType)
+      ) {
+        subscripted = false;
+        i += 2;
+      } else if (t === tokens.LBracket) {
+        // Walk to the matching `]`, allowing nested subscripts (`a[b[i]]`)
+        let depth = 0;
+        for (; i <= MAX_LOOKAHEAD; i++) {
+          const inner = this.LA(i)?.tokenType;
+          if (inner === undefined || inner === tokens.Semicolon) return false;
+          if (inner === tokens.LBracket) depth++;
+          else if (inner === tokens.RBracket && --depth === 0) break;
+        }
+        subscripted = true;
+        i++;
+      } else {
+        return t === tokens.LParen && subscripted;
       }
     }
     return false;

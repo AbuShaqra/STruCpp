@@ -376,7 +376,13 @@ export class GlobalListResolver {
       }
       case "FunctionCallExpression":
         for (const arg of expr.arguments) arg.value = ex(arg.value);
-        if (expr.instance) expr.instance = ex(expr.instance);
+        if (expr.instance) {
+          expr.instance = ex(expr.instance);
+          // `GVL_A.units[0](...)`: the call names the global the path now starts at.
+          if (expr.instance.kind === "VariableExpression") {
+            expr.functionName = expr.instance.name;
+          }
+        }
         this.rewriteCallee(expr, scope);
         return expr;
       case "MethodCallExpression":
