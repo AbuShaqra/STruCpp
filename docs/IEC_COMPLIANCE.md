@@ -74,7 +74,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | Array initialization | Supported | `:= [1, 2, 3]` and the bracket-less `:= 1, 2, 3`. Multi-dimensional arrays take either a flat row-major list or a nested one (`:= [[1, 2], [3, 4]]`), where each inner list fills one row from its own bound. Nesting depth and value count are validated against the declared dimensions |
 | Array repetition | Supported | `:= [10(0)]`, `:= [3(1), 2(5)]`, `:= [7, 4(2), 9]`. The repeated value may be a structure initializer. Max count 65536 |
 | Structure initialization | Supported | `:= (x := 1.0, y := 2.0)`; nested, in array literals, and for FB instances (IEC 6.6.3.3, needs no feature; init arguments after the type, `fb : FB_A(p := 1)`, are the feature `fb_init`). Omitted elements keep their own declared default. Only valid as a declaration's initial value, as in the standard — one written inside a statement is rejected |
-| STRUCT element defaults | Supported | Scalar, array-literal and structure-initializer defaults on a STRUCT element all carry their values |
+| STRUCT element defaults | Supported | Scalar, array-literal and structure-initializer defaults on a STRUCT element all carry their values. A default is a constant expression: a VAR_GLOBAL CONSTANT it names, declared before or after the type, plain or qualified by its global variable list (`GVL_C.cDefault`), is folded to its value; a global variable is an error, in every dialect. A REAL literal keeps its decimal point (`3.0 / 2.0` is 1.5). A POINTER TO, REF_TO or REFERENCE TO element takes no address or reference as its default (REF_TO and POINTER TO may default to NULL): assign it in the body |
 
 ### Initialization gaps
 
