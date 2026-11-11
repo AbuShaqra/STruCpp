@@ -32,10 +32,10 @@ describe.skipIf(!hasGpp)("nested FB call chain — g++ e2e", () => {
       END_FUNCTION_BLOCK
       TYPE ST : STRUCT f : FBS; END_STRUCT END_TYPE
       FUNCTION_BLOCK FBH
-      VAR sub : FBS; s : ST; arr : ARRAY[0..1] OF ST; END_VAR
+      VAR PUBLIC sub : FBS; s : ST; arr : ARRAY[0..1] OF ST; END_VAR
       END_FUNCTION_BLOCK
       FUNCTION_BLOCK FBT
-      VAR h : FBH; END_VAR
+      VAR PUBLIC h : FBH; END_VAR
       VAR_OUTPUT q : INT; END_VAR
       METHOD Run
         THIS.h.sub(k := 10);
@@ -50,7 +50,7 @@ describe.skipIf(!hasGpp)("nested FB call chain — g++ e2e", () => {
         a.h.sub(4);
         a.h.s.f(k := 5);
         a.h.arr[i].f(k := 6);
-        a.h.arr[i].f.o := a.h.arr[i].f.o + 1;
+        a.h.arr[i].f(k := 1);
         a.Run();
         a();
         g.h.sub(k := 7);

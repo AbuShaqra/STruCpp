@@ -38,10 +38,10 @@ FUNCTION_BLOCK FB_LeafX EXTENDS FB_Leaf
 END_FUNCTION_BLOCK
 TYPE ST_Holder : STRUCT fb : FB_Leaf; arr : ARRAY[1..2] OF FB_Leaf; v : INT; END_STRUCT; END_TYPE
 FUNCTION_BLOCK FB_Mid
-VAR leaf : FB_Leaf; derived : FB_LeafX; h : ST_Holder; leaves : ARRAY[1..3] OF FB_Leaf; v : INT; END_VAR
+VAR PUBLIC leaf : FB_Leaf; derived : FB_LeafX; h : ST_Holder; leaves : ARRAY[1..3] OF FB_Leaf; v : INT; END_VAR
 END_FUNCTION_BLOCK
 FUNCTION_BLOCK FB_Top
-VAR mid : FB_Mid; END_VAR
+VAR PUBLIC mid : FB_Mid; END_VAR
 END_FUNCTION_BLOCK
 `;
 
@@ -173,7 +173,7 @@ describe("member-chain method calls are accepted in every dialect", () => {
   for (const mode of MODES) {
     it(`THIS.f.M() and SUPER.f.M() (${mode.name})`, () => {
       const src = `${TYPES}FUNCTION_BLOCK FB_Base
-VAR mid : FB_Mid; END_VAR
+VAR PUBLIC mid : FB_Mid; END_VAR
 END_FUNCTION_BLOCK
 FUNCTION_BLOCK FB_User EXTENDS FB_Base
 VAR x : INT; END_VAR
@@ -269,7 +269,7 @@ METHOD PROTECTED Guarded : INT
 END_METHOD
 END_FUNCTION_BLOCK
 FUNCTION_BLOCK FB_Box
-VAR s : FB_Secret; END_VAR
+VAR PUBLIC s : FB_Secret; END_VAR
 END_FUNCTION_BLOCK
 FUNCTION_BLOCK FB_Kid EXTENDS FB_Secret
 VAR box : FB_Box; x : INT; END_VAR

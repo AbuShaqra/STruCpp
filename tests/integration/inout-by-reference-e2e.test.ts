@@ -207,7 +207,7 @@ VAR t : INT; END_VAR
   Bump := t;
 END_METHOD
 METHOD Peek : INT
-  Peek := inner.x;
+  Peek := inner.Value();
 END_METHOD
 END_FUNCTION_BLOCK
 PROGRAM MAIN
@@ -225,7 +225,7 @@ END_PROGRAM`;
     expect(out).toBe("fault1 1 fault2");
   });
 
-  it("the warned forms build: another type by copy, an omitted in-out keeps its binding, an outside write", () => {
+  it("the warned forms build: another type by copy, an omitted in-out keeps its binding", () => {
     const result = compile(
       `TYPE T_AL : INT; END_TYPE
 FUNCTION_BLOCK FB_I
@@ -244,8 +244,6 @@ VAR f : FB_I; a : INT; b : SINT; al : T_AL := 0; r : INT; out : INT; END_VAR
   f(x := b);
   f(x := al);
   f(x := a);
-  f.x := f.x + 100;
-  out := f.x;
   r := FN(x := b);
   r := FN();
 END_PROGRAM`,
@@ -254,7 +252,7 @@ END_PROGRAM`,
     expect(result.errors).toEqual([]);
     expect(
       result.warnings.filter((w) => w.message.includes("VAR_IN_OUT")),
-    ).toHaveLength(6);
+    ).toHaveLength(5);
     const out = compileAndRunStandalone({
       tempDir,
       pchPath,
@@ -263,9 +261,9 @@ END_PROGRAM`,
       testName: "warned",
       mainCode: `#include <iostream>\nint main() {\n using namespace strucpp;\n Program_MAIN m; m.run();\n std::cout << m.A.get() << ' ' << (int)m.B.get() << ' ' << m.AL << ' ' << m.OUT.get() << std::endl;\n return 0;\n}\n`,
     });
-    // a: +1, +1 (omitted, still bound to a), +1, then +100 written through
-    // the binding; b: +1 by copy, +10 through FN by copy; al: +1 by copy.
-    expect(out).toBe("103 11 1 103");
+    // a: +1, +1 (omitted, still bound to a), +1; b: +1 by copy, +10 through
+    // FN by copy; al: +1 by copy. An outside access to f.x is refused now.
+    expect(out).toBe("3 11 1 0");
   });
 
   it("a UNION member is passed by copy", () => {

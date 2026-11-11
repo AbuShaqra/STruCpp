@@ -107,6 +107,9 @@ export interface LibraryVarType {
   /** The declaring block was `VAR RETAIN`: retained in every instance, whether
    *  or not the instance itself was declared RETAIN. */
   retain?: true;
+  /** The declaring `VAR` section's access specifier, when PUBLIC or PRIVATE
+   *  (PROTECTED, the default, and INTERNAL are left out). */
+  access?: "PUBLIC" | "PRIVATE";
 }
 
 /**

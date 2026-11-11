@@ -35,7 +35,7 @@ describe("PROPERTY inherited from a base FB", () => {
     const code = cpp(`${BASE}
       FUNCTION_BLOCK FBB EXTENDS FBA END_FUNCTION_BLOCK
       FUNCTION_BLOCK FBC EXTENDS FBB END_FUNCTION_BLOCK
-      FUNCTION_BLOCK FBH VAR c : FBC; END_VAR END_FUNCTION_BLOCK
+      FUNCTION_BLOCK FBH VAR PUBLIC c : FBC; END_VAR END_FUNCTION_BLOCK
       PROGRAM Main
       VAR b : FBB; h : FBH; x : INT; END_VAR
         x := b.P;
@@ -64,7 +64,7 @@ describe("PROPERTY inherited from a base FB", () => {
 
   it("keeps a derived FB's variable of the same name a variable", () => {
     const code = cpp(`${BASE}
-      FUNCTION_BLOCK FBB EXTENDS FBA VAR p : INT; END_VAR END_FUNCTION_BLOCK
+      FUNCTION_BLOCK FBB EXTENDS FBA VAR PUBLIC p : INT; END_VAR END_FUNCTION_BLOCK
       PROGRAM Main
       VAR b : FBB; x : INT; END_VAR
         x := b.p;

@@ -527,13 +527,22 @@ export class STParser extends CstParser {
     // carries. Contradictory or repeated qualifiers are a semantic error, not a
     // grammar one — `validateVarModifiers` reports them with a source span,
     // which reads far better than a parser "expecting END_VAR".
-    this.MANY2(() => {
-      this.OR2([
-        { ALT: () => this.CONSUME(tokens.CONSTANT) },
-        { ALT: () => this.CONSUME(tokens.RETAIN) },
-        { ALT: () => this.CONSUME(tokens.NON_RETAIN) },
-        { ALT: () => this.CONSUME(tokens.PERSISTENT) },
-      ]);
+    this.MANY2({
+      GATE: (): boolean => this.isVarQualifierAhead(),
+      DEF: (): void => {
+        this.OR2([
+          { ALT: (): IToken => this.CONSUME(tokens.CONSTANT) },
+          { ALT: (): IToken => this.CONSUME(tokens.RETAIN) },
+          { ALT: (): IToken => this.CONSUME(tokens.NON_RETAIN) },
+          { ALT: (): IToken => this.CONSUME(tokens.PERSISTENT) },
+          // Variable access specifiers (Ed. 3 Table 53, 11a-11d); INTERNAL is
+          // no keyword (the MANY2 gate admits it only before a non-declaration).
+          { ALT: (): IToken => this.CONSUME(tokens.PUBLIC) },
+          { ALT: (): IToken => this.CONSUME(tokens.PRIVATE) },
+          { ALT: (): IToken => this.CONSUME(tokens.PROTECTED) },
+          { ALT: (): IToken => this.CONSUME(tokens.Identifier) },
+        ]);
+      },
     });
     this.MANY(() => {
       this.SUBRULE(this.varDeclaration);
@@ -1275,6 +1284,30 @@ export class STParser extends CstParser {
   /**
    * Lookahead helper to detect if next token starts a VAR block.
    */
+  /** A VAR section qualifier next: CONSTANT, RETAIN, ..., or an access specifier. */
+  private isVarQualifierAhead(): boolean {
+    const t = this.LA(1).tokenType;
+    if (
+      t === tokens.CONSTANT ||
+      t === tokens.RETAIN ||
+      t === tokens.NON_RETAIN ||
+      t === tokens.PERSISTENT ||
+      t === tokens.PUBLIC ||
+      t === tokens.PRIVATE ||
+      t === tokens.PROTECTED
+    ) {
+      return true;
+    }
+    const next = this.LA(2).tokenType;
+    return (
+      t === tokens.Identifier &&
+      this.LA(1).image.toUpperCase() === "INTERNAL" &&
+      next !== tokens.Colon &&
+      next !== tokens.Comma &&
+      next !== tokens.AT
+    );
+  }
+
   private isVarBlockAhead(): boolean {
     const t = this.LA(1).tokenType;
     return (

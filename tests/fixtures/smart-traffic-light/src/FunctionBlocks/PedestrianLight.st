@@ -12,6 +12,7 @@ FUNCTION_BLOCK PedestrianLight EXTENDS TrafficLight
     pedestrianState : PedestrianState := PedestrianState.DONT_WALK;
     walkLight       : BOOL := FALSE;
     dontWalkLight   : BOOL := TRUE;
+    walkPending     : BOOL := FALSE;  (* the walk request still open *)
   END_VAR
 
   VAR
@@ -85,4 +86,5 @@ FUNCTION_BLOCK PedestrianLight EXTENDS TrafficLight
                (pedestrianState = PedestrianState.FLASHING AND flashOn);
   dontWalkLight := (pedestrianState = PedestrianState.DONT_WALK) OR
                    (pedestrianState = PedestrianState.FLASHING AND NOT flashOn);
+  walkPending := walkRequest;
 END_FUNCTION_BLOCK

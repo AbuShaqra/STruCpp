@@ -113,7 +113,7 @@ describe("library FB properties", () => {
       it("accepts properties, temps, base members and methods", () => {
         expect(
           errors(
-            "a := p.Val; p.Val := 3; a := d.Val + d.RO + d.Own + d.t + d.k + d.Twice();",
+            "a := p.Val; p.Val := 3; d.k := 2; a := d.Val + d.RO + d.Own + d.Twice();",
             options,
           ),
         ).toEqual([]);
@@ -125,6 +125,15 @@ describe("library FB properties", () => {
         ]);
         expect(errors("d.RO := 1;", options)).toEqual([
           "Property 'RO' of 'FB_DER' is read-only (no SET accessor).",
+        ]);
+      });
+
+      it("refuses a VAR_TEMP member and an input read from outside", () => {
+        expect(errors("a := d.t;", options)).toEqual([
+          "'T' is an internal variable of FUNCTION_BLOCK 'FB_PROP' and cannot be accessed from outside",
+        ]);
+        expect(errors("a := d.k;", options)).toEqual([
+          "'K' is a VAR_INPUT of FUNCTION_BLOCK 'FB_PROP'; from outside it can be written, not read",
         ]);
       });
 

@@ -32,6 +32,9 @@ describe.skipIf(!hasGpp)("names in initial values — g++ e2e", () => {
       VAR_INPUT i : INT := GC; END_VAR
       VAR CONSTANT K : INT := 2; END_VAR
       VAR_OUTPUT j : INT := K + GC; END_VAR
+      METHOD GetI : INT
+        GetI := i;
+      END_METHOD
       END_FUNCTION_BLOCK
       PROGRAM Main
       VAR CONSTANT C : INT := 3; END_VAR
@@ -40,7 +43,7 @@ describe.skipIf(!hasGpp)("names in initial values — g++ e2e", () => {
         r1 : INT; r2 : INT; r3 : INT; r4 : INT; END_VAR
         r1 := x * 100 + y;
         IF e = BETA THEN r2 := s.b; END_IF;
-        r3 := f.i * 10 + f.j;
+        r3 := f.GetI() * 10 + f.j;
         r4 := arr[0] * 100 + arr[1] * 10 + r;
       END_PROGRAM
     `,

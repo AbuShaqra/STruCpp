@@ -28,6 +28,7 @@ import type {
   SubrangeDefinition,
   ConfigurationDeclaration,
   ResourceDeclaration,
+  VarAccess,
   TaskDeclaration,
   ProgramInstance,
   VarBlock,
@@ -1575,6 +1576,15 @@ export class ASTBuilder {
     // PERSISTENT is RETAIN here — see the note on `VarBlock.isRetain`.
     const isRetain = !!children.RETAIN || !!children.PERSISTENT;
     const isNonRetain = !!children.NON_RETAIN;
+    // Access specifiers in source order (INTERNAL lexes as an identifier).
+    const access = [
+      ...getAllTokens(children.PUBLIC),
+      ...getAllTokens(children.PRIVATE),
+      ...getAllTokens(children.PROTECTED),
+      ...getAllTokens(children.Identifier),
+    ]
+      .sort((a, b) => a.startOffset - b.startOffset)
+      .map((t) => t.image.toUpperCase() as VarAccess);
 
     const declarations: VarDeclaration[] = [];
     for (const declNode of getAllNodes(children.varDeclaration)) {
@@ -1589,6 +1599,7 @@ export class ASTBuilder {
       isRetain,
       isNonRetain,
       declarations,
+      ...(access.length > 0 ? { access } : {}),
     };
   }
 

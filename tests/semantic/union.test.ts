@@ -112,7 +112,7 @@ F_Get := x.f;
 END_FUNCTION
 FUNCTION_BLOCK FB_H
 VAR_INPUT inp : U_A; END_VAR
-VAR m : U_A; END_VAR
+VAR PUBLIC m : U_A; END_VAR
 VAR_OUTPUT o : DWORD; END_VAR
 m := inp;
 o := m.d;

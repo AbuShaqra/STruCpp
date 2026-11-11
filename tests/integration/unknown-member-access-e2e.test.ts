@@ -32,7 +32,7 @@ describe.skipIf(!hasGpp)("member access and array assignment — g++ e2e", () =>
       TYPE T_A : ARRAY[0..2] OF INT; END_TYPE
       TYPE T_S : ST_I; END_TYPE
       FUNCTION_BLOCK FB_A
-      VAR_OUTPUT o : INT; END_VAR
+      VAR PUBLIC o : INT; END_VAR
       PROPERTY P : INT
       GET
         P := o + 100;

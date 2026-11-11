@@ -27,7 +27,8 @@ END_VAR
 `;
 
 const MAIN = `FUNCTION_BLOCK FB_Cylinder
-VAR r : REFERENCE TO BOOL; start : INT; END_VAR
+VAR r : REFERENCE TO BOOL; END_VAR
+VAR_OUTPUT start : INT; END_VAR
 METHOD FB_init : BOOL
 VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; refOut : REFERENCE TO BOOL; n : INT; END_VAR
   r REF= refOut;

@@ -61,7 +61,8 @@ describe("inline enumeration values", () => {
   const twoBlocks = `
 FUNCTION_BLOCK FB1
 VAR_INPUT cmd : (Idle, Running); END_VAR
-VAR st : (Idle, Running); n : INT; END_VAR
+VAR_OUTPUT st : (Idle, Running); END_VAR
+VAR n : INT; END_VAR
 st := Running;
 IF cmd = Running THEN n := 1; END_IF;
 END_FUNCTION_BLOCK
@@ -92,8 +93,8 @@ PROGRAM main
 VAR a : FB1; b : FB2; k : INT; END_VAR
 a(cmd := Running);
 a.cmd := Idle;
-IF a.cmd = Running THEN k := 1; END_IF;
-CASE a.cmd OF
+IF a.st = Running THEN k := 1; END_IF;
+CASE a.st OF
   Idle: k := 2;
 END_CASE;
 END_PROGRAM

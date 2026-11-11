@@ -59,7 +59,8 @@ GVL_B.x := GVL_B.x + 20;
 x := x + 1;
 y := y + GVL_A.y;
 GVL_A.fb.a := GVL_A.arr[2] + GVL_A.y;
-fb := GVL_A.fb.a;
+GVL_A.fb();
+fb := GVL_A.fb.out - GVL_A.y;
 m := o.M();
 GVL_A.arr[3] := GVL_A.x + GVL_B.x;
 END_PROGRAM

@@ -10,6 +10,7 @@ const DECLS = `
   TYPE ST : STRUCT a : INT; b : INT; END_STRUCT END_TYPE
   FUNCTION_BLOCK FBM
   VAR_INPUT v : INT; END_VAR
+  VAR_OUTPUT o : INT; END_VAR
   METHOD M : INT
     M := v;
   END_METHOD
@@ -33,12 +34,12 @@ function run(body: string): string {
 describe("references to a STRUCT or function block", () => {
   it("reaches members through a REFERENCE TO", () => {
     const code = run(`rf REF= s; rf.b := 2; x := rf.a; rr REF= f; x := rr.M();
-      x := rr.v;`);
+      x := rr.o; rr.v := 3;`);
     expect(code).toContain("RF.bind(S);");
     expect(code).toContain("RF.target().B = 2;");
     expect(code).toContain("X = RF.target().A;");
     expect(code).toContain("X = RR.target().M();");
-    expect(code).toContain("X = RR.target().V;");
+    expect(code).toContain("X = RR.target().O;");
   });
 
   it("takes REF of a STRUCT for a REF_TO", () => {

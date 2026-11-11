@@ -59,7 +59,7 @@ describe.skipIf(!hasGpp)("inherited PROPERTY — g++ e2e", () => {
       END_FUNCTION_BLOCK
       FUNCTION_BLOCK FBC EXTENDS FBB END_FUNCTION_BLOCK
       FUNCTION_BLOCK FBH
-      VAR c : FBC; d : FBB; END_VAR
+      VAR PUBLIC c : FBC; d : FBB; END_VAR
       END_FUNCTION_BLOCK
       PROGRAM Main
       VAR b : FBB; h : FBH; r1 : INT; r2 : INT; r3 : INT; r4 : INT; r5 : INT;

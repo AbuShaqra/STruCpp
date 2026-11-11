@@ -38,10 +38,10 @@ VAR_INPUT b : INT; END_VAR
 q := a * 100 + b;
 END_FUNCTION_BLOCK
 FUNCTION_BLOCK FB_Mid
-VAR sub : FB_Sub; subx : FB_SubX; END_VAR
+VAR PUBLIC sub : FB_Sub; subx : FB_SubX; END_VAR
 END_FUNCTION_BLOCK
 FUNCTION_BLOCK FB_Outer
-VAR sub : FB_Sub; m : FB_Mid; END_VAR
+VAR PUBLIC sub : FB_Sub; m : FB_Mid; END_VAR
 END_FUNCTION_BLOCK
 PROGRAM Main
 VAR s : FB_Sub; o : FB_Outer; v : INT; r1 : INT; r2 : INT; r3 : INT; END_VAR

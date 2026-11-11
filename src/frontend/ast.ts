@@ -297,7 +297,15 @@ export interface VarBlock extends ASTNode {
    * reached as the configuration's are.
    */
   resourceName?: string;
+  /**
+   * Variable access specifiers written after the keyword (Ed. 3 Table 53,
+   * 11a-11d), in source order; absent when none. PROTECTED is the default.
+   */
+  access?: VarAccess[];
 }
+
+/** A variable access specifier of a VAR section. */
+export type VarAccess = "PUBLIC" | "PRIVATE" | "PROTECTED" | "INTERNAL";
 
 /**
  * Single variable declaration
