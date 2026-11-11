@@ -709,6 +709,10 @@ export function compileLibrary(
                   decl.initialValue !== undefined
                     ? serializeInitialValue(decl.initialValue)
                     : undefined;
+                const byReference =
+                  decl.type.referenceKind === "reference_to" &&
+                  (decl.type.referenceChain?.length ?? 1) === 1 &&
+                  decl.type.arrayDimensions === undefined;
                 return decl.names.map((name) => ({
                   name,
                   type: decl.type.name,
@@ -716,6 +720,9 @@ export function compileLibrary(
                   // Present ⇒ optional input (default supplied); absent ⇒
                   // mandatory. Preserved from user ST and CODESYS-imported ST.
                   ...(initialValue !== undefined ? { initialValue } : {}),
+                  ...(byReference
+                    ? { referenceKind: "reference_to" as const }
+                    : {}),
                 }));
               });
             }),

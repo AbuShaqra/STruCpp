@@ -3830,6 +3830,8 @@ export class TypeChecker {
       ? undefined
       : this.findUserFunction(expr.functionName);
     if (fn) return fromBlocks(fn.varBlocks);
+    const libraryInputs = this.libraryReferenceFunctionInputs(expr, scope);
+    if (libraryInputs) return libraryInputs;
     const sym = scope.lookup(expr.functionName);
     if (sym?.kind !== "variable" || expr.instance) return undefined;
     const declared = sym.declaration as VarDeclaration | undefined;
@@ -3858,6 +3860,38 @@ export class TypeChecker {
       type: m.declaration.type,
       inOut,
     }));
+  }
+
+  /**
+   * The inputs and in/outs of a library FUNCTION that has a REFERENCE TO
+   * input (an archive that records it), so its arguments are checked as a
+   * user function's are. Undefined for any other callee.
+   */
+  private libraryReferenceFunctionInputs(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): CallInput[] | undefined {
+    const name = expr.functionName;
+    if (expr.instance || name.includes(".")) return undefined;
+    if (this.calledInstance(name, scope) || this.ownMethod(name)) {
+      return undefined;
+    }
+    const fn = this.symbolTables.lookupFunction(name);
+    if (fn === undefined || this.findUserFunction(name)) return undefined;
+    const params = fn.parameters.filter((p) => p.isInput || p.isInOut);
+    if (
+      !params.some(
+        (p) =>
+          (p.declaration as VarDeclaration | undefined)?.type.referenceKind ===
+          "reference_to",
+      )
+    ) {
+      return undefined;
+    }
+    return params.flatMap((p) => {
+      const type = (p.declaration as VarDeclaration | undefined)?.type;
+      return type ? [{ name: p.name, type, inOut: p.isInOut }] : [];
+    });
   }
 
   /** The REF_TO check for each argument passed to a REF_TO input. */

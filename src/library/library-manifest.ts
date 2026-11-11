@@ -41,6 +41,9 @@ export interface LibraryFunctionEntry {
      *  initial values in the source ST — including ST produced by the CODESYS
      *  v2/v3 importers, which preserve declarations verbatim. */
     initialValue?: string;
+    /** "reference_to" for a REFERENCE TO input, bound to its argument. Absent
+     *  for any other parameter, and in archives written before it was kept. */
+    referenceKind?: "reference_to";
   }>;
   /** Variadic call shape. When set, `parameters` describes the leading
    *  required parameters and the function accepts any number of
