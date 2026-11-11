@@ -144,6 +144,7 @@ interface TypeShape {
   arrayDimensions?: Array<{ start: number; end: number }>;
   elementTypeName?: string;
   elementReferenceChain?: ReferenceKind[];
+  elementMaxLength?: number | string;
 }
 
 /** What codegen keeps about a library FB member's type. */
@@ -851,6 +852,9 @@ export class CodeGenerator {
       ...(typeRef.elementReferenceChain !== undefined
         ? { elementReferenceChain: typeRef.elementReferenceChain }
         : {}),
+      ...(typeRef.elementMaxLength !== undefined
+        ? { elementMaxLength: typeRef.elementMaxLength }
+        : {}),
       ...(typeRef.referenceKind !== undefined
         ? { referenceKind: typeRef.referenceKind }
         : {}),
@@ -883,6 +887,9 @@ export class CodeGenerator {
       ...(spec.elementReferenceChain !== undefined
         ? { elementReferenceChain: spec.elementReferenceChain }
         : {}),
+      ...(spec.elementMaxLength !== undefined
+        ? { elementMaxLength: spec.elementMaxLength }
+        : {}),
       ...(spec.referenceKind !== undefined
         ? { referenceKind: spec.referenceKind }
         : {}),
@@ -913,15 +920,26 @@ export class CodeGenerator {
     // Array1D stores T directly — use IECVar-wrapped types for elementary elements
     // and bare names for composites (whose fields already contain IECVar leaves)
     if (typeRef.arrayDimensions && typeRef.elementTypeName) {
+      const elementLength = typeRef.elementMaxLength;
       const elemCpp = typeRef.elementReferenceChain
         ? // ARRAY OF POINTER TO / REF_TO: each element is the wrapper a variable gets.
           wrapReferenceChain(
             typeRef.elementReferenceChain,
-            this.rawReferencedType(typeRef.elementTypeName),
+            elementLength !== undefined
+              ? this.typeCodeGen.mapTypeRefToCpp({
+                  name: typeRef.elementTypeName,
+                  maxLength: elementLength,
+                })
+              : this.rawReferencedType(typeRef.elementTypeName),
           )
-        : // An enumeration element is the variable a scalar gets (IEC_E), as in a
-          // STRUCT field or named ARRAY type, so REF/ADR of it see one type.
-          this.mapVarTypeToCpp(typeRef.elementTypeName);
+        : elementLength !== undefined
+          ? this.typeCodeGen.mapStructFieldTypeToCpp(
+              typeRef.elementTypeName,
+              elementLength,
+            )
+          : // An enumeration element is the variable a scalar gets (IEC_E), as in a
+            // STRUCT field or named ARRAY type, so REF/ADR of it see one type.
+            this.mapVarTypeToCpp(typeRef.elementTypeName);
       baseType = formatArrayType(elemCpp, typeRef.arrayDimensions);
     } else if (
       typeRef.elementReferenceChain &&
@@ -932,6 +950,17 @@ export class CodeGenerator {
       const elemCpp = wrapReferenceChain(
         typeRef.elementReferenceChain,
         this.rawReferencedType(elem!),
+      );
+      baseType = `ArrayView${ndims}D<${elemCpp}>`;
+    } else if (
+      typeRef.elementMaxLength !== undefined &&
+      VLA_TYPE_NAME.test(typeRef.name)
+    ) {
+      // ARRAY[*] OF STRING(n): a view over elements of that length.
+      const [, ndims, elem] = VLA_TYPE_NAME.exec(typeRef.name)!;
+      const elemCpp = this.typeCodeGen.mapStructFieldTypeToCpp(
+        elem!,
+        typeRef.elementMaxLength,
       );
       baseType = `ArrayView${ndims}D<${elemCpp}>`;
     } else {
@@ -3148,6 +3177,9 @@ export class CodeGenerator {
           ...(decl.elementReferenceChain !== undefined
             ? { elementReferenceChain: decl.elementReferenceChain }
             : {}),
+          ...(decl.elementMaxLength !== undefined
+            ? { elementMaxLength: decl.elementMaxLength }
+            : {}),
           ...(decl.referenceKind !== undefined
             ? { referenceKind: decl.referenceKind }
             : {}),
@@ -4476,7 +4508,10 @@ export class CodeGenerator {
         (b) =>
           (b.blockType === "VAR_OUTPUT" || b.blockType === "VAR_IN_OUT") &&
           b.declarations.some(
-            (d) => this.sizedStringLength(d.type) !== undefined,
+            (d) =>
+              this.sizedStringLength(d.type) !== undefined ||
+              this.arrayStringElementLength(d.type) !== undefined ||
+              this.vlaStringElementCpp(d.type) !== undefined,
           ),
       ) === true;
     if (
@@ -4547,6 +4582,20 @@ export class CodeGenerator {
             value,
             cppType: this.inOutParamType(param.type),
           });
+        } else if (
+          !isCompositeGlobal(value) &&
+          !isUnionMember(value) &&
+          !rendersBound(value) &&
+          this.vlaStringElementDiffers(param.type, value)
+        ) {
+          // ARRAY[*] OF STRING(n) over elements of another length: a copy
+          // with the argument's bounds and the parameter's element type.
+          const elem = this.vlaStringElementCpp(param.type)!;
+          const read = this.generateVariableExpression(value);
+          result.push({
+            value,
+            cppType: `array_rebind_t<typename std::decay<decltype(${read})>::type, ${elem}>`,
+          });
         } else if (value.unionMember === true) {
           result.push({ value });
         } else if (rendersBound(value)) {
@@ -4559,8 +4608,9 @@ export class CodeGenerator {
         param.blockType === "VAR_OUTPUT" &&
         !isCompositeGlobal(value) &&
         !isUnionMember(value) &&
-        this.sizedStringLength(param.type) !== undefined &&
-        !this.hasStringLength(value, this.sizedStringLength(param.type)!)
+        ((this.sizedStringLength(param.type) !== undefined &&
+          !this.hasStringLength(value, this.sizedStringLength(param.type)!)) ||
+          this.stringElementLengthDiffers(param.type, value))
       ) {
         // A STRING(n) output binds only a variable of that length.
         result.push({ value, cppType: this.inOutParamType(param.type) });
@@ -4630,6 +4680,103 @@ export class CodeGenerator {
   }
 
   /**
+   * The element length (upper case text, "254" by default) of an ARRAY of
+   * STRING or WSTRING, inline or declared here; undefined for anything else.
+   */
+  private arrayStringElementLength(type: TypeShape): string | undefined {
+    if (type.referenceKind !== undefined && type.referenceKind !== "none") {
+      return undefined;
+    }
+    let name: string | undefined;
+    let length: number | string | undefined;
+    if (type.arrayDimensions !== undefined) {
+      if (type.elementReferenceChain !== undefined) return undefined;
+      name = type.elementTypeName;
+      length = type.elementMaxLength;
+    } else {
+      const upper = type.name.toUpperCase();
+      const def = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "ArrayDefinition") return undefined;
+      const kind = def.elementType.referenceKind;
+      if (kind !== undefined && kind !== "none") return undefined;
+      name = def.elementType.name;
+      length = def.elementType.maxLength;
+    }
+    const upperName = name?.toUpperCase();
+    if (upperName !== "STRING" && upperName !== "WSTRING") return undefined;
+    return `${upperName}(${String(length ?? 254).toUpperCase()})`;
+  }
+
+  /** The C++ element of an ARRAY[*] OF STRING / WSTRING parameter. */
+  private vlaStringElementCpp(type: TypeShape): string | undefined {
+    const vla = VLA_TYPE_NAME.exec(type.name);
+    if (!vla || type.elementReferenceChain !== undefined) return undefined;
+    const upper = vla[2]!.toUpperCase();
+    if (upper !== "STRING" && upper !== "WSTRING") return undefined;
+    return this.typeCodeGen.mapStructFieldTypeToCpp(
+      upper,
+      type.elementMaxLength,
+    );
+  }
+
+  /**
+   * True when `param` is an ARRAY[*] OF STRING and `value` a fixed ARRAY of
+   * STRING whose element length differs (or is not known).
+   */
+  private vlaStringElementDiffers(
+    param: TypeShape,
+    value: VariableExpression,
+  ): boolean {
+    const vla = VLA_TYPE_NAME.exec(param.name);
+    if (!vla || this.vlaStringElementCpp(param) === undefined) return false;
+    const want = `${vla[2]!.toUpperCase()}(${String(param.elementMaxLength ?? 254).toUpperCase()})`;
+    const hasAccess =
+      value.subscripts.length > 0 ||
+      value.fieldAccess.length > 0 ||
+      value.isDereference ||
+      (value.accessChain !== undefined && value.accessChain.length > 0);
+    const root =
+      this.currentScopeVarTypeRefs.get(value.name.toUpperCase()) ??
+      this.namespaceGlobalTypeRef(value.name.toUpperCase());
+    const type =
+      root !== undefined && hasAccess
+        ? resolveAccessType(root, value, this.accessLookup)
+        : root;
+    if (type === undefined) return false;
+    // Another view passes through unchanged.
+    if (VLA_TYPE_NAME.test(type.name)) return false;
+    const have = this.arrayStringElementLength(type);
+    return have !== undefined && have !== want;
+  }
+
+  /**
+   * True when `param` is an ARRAY of STRING and `value` is not a plain
+   * variable of an ARRAY with the same element length (another C++ type).
+   */
+  private stringElementLengthDiffers(
+    param: TypeShape,
+    value: VariableExpression,
+  ): boolean {
+    const want = this.arrayStringElementLength(param);
+    if (want === undefined) return false;
+    const hasAccess =
+      value.subscripts.length > 0 ||
+      value.fieldAccess.length > 0 ||
+      value.isDereference ||
+      (value.accessChain !== undefined && value.accessChain.length > 0);
+    const root =
+      this.currentScopeVarTypeRefs.get(value.name.toUpperCase()) ??
+      this.namespaceGlobalTypeRef(value.name.toUpperCase());
+    const type =
+      root !== undefined && hasAccess
+        ? resolveAccessType(root, value, this.accessLookup)
+        : root;
+    return type === undefined || this.arrayStringElementLength(type) !== want;
+  }
+
+  /**
    * True when `value` is a plain variable declared as a STRING or WSTRING of
    * `length` (the length text as written); false when unknown.
    */
@@ -4639,10 +4786,13 @@ export class CodeGenerator {
       value.fieldAccess.length > 0 ||
       value.isDereference ||
       (value.accessChain !== undefined && value.accessChain.length > 0);
-    if (hasAccess) return false;
-    const type =
+    const root =
       this.currentScopeVarTypeRefs.get(value.name.toUpperCase()) ??
       this.namespaceGlobalTypeRef(value.name.toUpperCase());
+    const type =
+      root !== undefined && hasAccess
+        ? resolveAccessType(root, value, this.accessLookup)
+        : root;
     return type !== undefined && this.sizedStringLength(type) === length;
   }
 

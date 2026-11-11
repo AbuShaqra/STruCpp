@@ -91,6 +91,8 @@ export interface ProjectVarDeclaration {
   elementTypeName?: string;
   /** Element reference levels for an inline array of pointers or references. */
   elementReferenceChain?: ReferenceKind[];
+  /** STRING / WSTRING length of an inline array's element. */
+  elementMaxLength?: number | string;
   /** Pointer/reference qualifier carried through from the AST TypeReference. */
   referenceKind?: string;
   /** Every reference level, outermost first, when there is more than one. */
@@ -113,6 +115,8 @@ export interface VarExternalDeclaration {
   arrayDimensions?: Array<{ start: number; end: number }>;
   elementTypeName?: string;
   elementReferenceChain?: ReferenceKind[];
+  /** STRING / WSTRING length of an inline array's element. */
+  elementMaxLength?: number | string;
   referenceKind?: string;
   referenceChain?: ReferenceKind[];
   /** Location of the declaration, so a "no matching VAR_GLOBAL" diagnostic can
@@ -277,6 +281,9 @@ export function toProjectVarDeclaration(
       : {}),
     ...(decl.type.elementReferenceChain !== undefined
       ? { elementReferenceChain: decl.type.elementReferenceChain }
+      : {}),
+    ...(decl.type.elementMaxLength !== undefined
+      ? { elementMaxLength: decl.type.elementMaxLength }
       : {}),
     ...(decl.type.referenceKind !== undefined &&
     decl.type.referenceKind !== "none"
@@ -949,6 +956,9 @@ export class ProjectModelBuilder {
         : {}),
       ...(decl.type.elementReferenceChain !== undefined
         ? { elementReferenceChain: decl.type.elementReferenceChain }
+        : {}),
+      ...(decl.type.elementMaxLength !== undefined
+        ? { elementMaxLength: decl.type.elementMaxLength }
         : {}),
       ...(decl.type.referenceKind !== undefined &&
       decl.type.referenceKind !== "none"
