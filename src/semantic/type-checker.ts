@@ -1434,6 +1434,8 @@ export class TypeChecker {
       return undefined;
     }
 
+    this.checkBoundDimension(expr, scope);
+
     // SEL / MUX of values of one enumeration yield that enumeration.
     const selected = this.selectionEnumResult(expr);
     if (selected !== undefined) {
@@ -4292,6 +4294,58 @@ export class TypeChecker {
         condExpr.sourceSpan.file,
       );
     }
+  }
+
+  /** Calls already checked by checkBoundDimension. */
+  private checkedBoundDimensions = new WeakSet<FunctionCallExpression>();
+
+  /**
+   * LOWER_BOUND / UPPER_BOUND (arr, dim) of a fixed array of two or three
+   * dimensions with a literal `dim` it does not have. (A one-dimensional
+   * array answers any dim, so it is left alone.)
+   */
+  private checkBoundDimension(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    const upper = expr.functionName.toUpperCase();
+    if (upper !== "LOWER_BOUND" && upper !== "UPPER_BOUND") return;
+    if (expr.instance || this.findUserFunction(upper)) return;
+    if (this.checkedBoundDimensions.has(expr)) return;
+    this.checkedBoundDimensions.add(expr);
+    const [arr, dim] = stripEnEno([...expr.arguments]);
+    if (arr?.value.kind !== "VariableExpression" || dim === undefined) return;
+    if (
+      dim.value.kind !== "LiteralExpression" ||
+      typeof dim.value.value !== "number"
+    ) {
+      return;
+    }
+    const sym = scope.lookup(arr.value.name);
+    if (sym?.kind !== "variable") return;
+    const declared = (sym.declaration as VarDeclaration | undefined)?.type;
+    if (declared === undefined) return;
+    const type = this.hasMemberAccess(arr.value)
+      ? resolveAccessType(declared, arr.value, this.accessLookup)
+      : declared;
+    if (type === undefined) return;
+    let rank = type.arrayDimensions?.length;
+    if (rank === undefined && (type.referenceKind ?? "none") === "none") {
+      const named = type.name.toUpperCase();
+      const def = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === named,
+      )?.definition;
+      if (def?.kind === "ArrayDefinition") rank = def.dimensions.length;
+    }
+    if (rank === undefined || rank < 2 || rank > 3) return;
+    const value = dim.value.value;
+    if (Number.isInteger(value) && value >= 1 && value <= rank) return;
+    this.addError(
+      `${upper} has no dimension ${String(value)}: the array has ${rank}`,
+      dim.value.sourceSpan.startLine,
+      dim.value.sourceSpan.startCol,
+      dim.value.sourceSpan.file,
+    );
   }
 
   /**

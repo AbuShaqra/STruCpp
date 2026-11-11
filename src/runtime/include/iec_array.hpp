@@ -276,6 +276,13 @@ public:
     static constexpr int64_t dim1_upper() noexcept { return Bounds1::upper; }
     static constexpr int64_t dim2_lower() noexcept { return Bounds2::lower; }
     static constexpr int64_t dim2_upper() noexcept { return Bounds2::upper; }
+    // LOWER_BOUND / UPPER_BOUND (arr, dim), as the ARRAY[*] views answer them.
+    static constexpr int64_t lower_bound(int dim) noexcept {
+        return dim == 1 ? Bounds1::lower : Bounds2::lower;
+    }
+    static constexpr int64_t upper_bound(int dim) noexcept {
+        return dim == 1 ? Bounds1::upper : Bounds2::upper;
+    }
     
     // Raw data access
     var_type* data() noexcept { return data_.data(); }
@@ -419,6 +426,15 @@ public:
     static constexpr int64_t dim2_upper() noexcept { return Bounds2::upper; }
     static constexpr int64_t dim3_lower() noexcept { return Bounds3::lower; }
     static constexpr int64_t dim3_upper() noexcept { return Bounds3::upper; }
+    // LOWER_BOUND / UPPER_BOUND (arr, dim), as the ARRAY[*] views answer them.
+    static constexpr int64_t lower_bound(int dim) noexcept {
+        return dim == 1 ? Bounds1::lower
+             : dim == 2 ? Bounds2::lower : Bounds3::lower;
+    }
+    static constexpr int64_t upper_bound(int dim) noexcept {
+        return dim == 1 ? Bounds1::upper
+             : dim == 2 ? Bounds2::upper : Bounds3::upper;
+    }
 
     // Raw data access
     var_type* data() noexcept { return data_.data(); }
