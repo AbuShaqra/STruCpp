@@ -247,7 +247,9 @@ END_TYPE
   for an argument bound to a `VAR_INPUT` or `VAR_IN_OUT`, positional or named: `Cannot assign ST_B to
   parameter 'X' of type ST_A: ...`; an argument of any other STRUCT type is refused there when either
   type is a derived STRUCT. Some implementations accept derived-to-base assignment; that is not
-  supported here (a possible later feature). Copy fields one by one instead.
+  supported here (a possible later feature). Copy fields one by one instead. An alias relates as its target
+  does: with `TYPE AB : ST_A; END_TYPE` and `TYPE AD : ST_B; END_TYPE`, `ab := ad` and passing `ad` for an
+  `AB` input are refused the same way, while an alias and its own target stay compatible.
 - Errors at the base name: `Undefined type 'ST_X' in EXTENDS clause of STRUCT 'ST_B'`; `STRUCT 'ST_B'
   cannot extend 'FB_X', a FUNCTION_BLOCK: the base must be a STRUCT` (also an INTERFACE, FUNCTION,
   PROGRAM, enumeration, alias, ARRAY, subrange or elementary type); `Circular EXTENDS in STRUCT 'ST_A':

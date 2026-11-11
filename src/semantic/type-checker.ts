@@ -3438,7 +3438,13 @@ export class TypeChecker {
    * Why a value of STRUCT `source` cannot be stored in STRUCT `target` when one
    * extends the other (IEC 61131-3 6.4.4.6: only the same type); else undefined.
    */
-  private structRelation(target: string, source: string): string | undefined {
+  private structRelation(
+    targetName: string,
+    sourceName: string,
+  ): string | undefined {
+    // Through aliases: `TYPE AB : ST_B;` relates as ST_B does.
+    const target = this.aliasTarget(targetName);
+    const source = this.aliasTarget(sourceName);
     if (!this.ast || target.toUpperCase() === source.toUpperCase()) {
       return undefined;
     }
