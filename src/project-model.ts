@@ -787,12 +787,19 @@ export class ProjectModelBuilder {
       for (const decl of block.declarations) {
         for (const name of decl.names) {
           const key = name.toUpperCase();
-          if (
-            declaredBy.has(key) &&
-            (block.resourceName !== undefined ||
-              declaredBy.get(key) !== undefined)
-          ) {
+          if (declaredBy.has(key)) {
             const other = declaredBy.get(key);
+            if (other?.toUpperCase() === block.resourceName?.toUpperCase()) {
+              const scope =
+                other === undefined ? config.name : `${config.name}.${other}`;
+              this.addError(
+                `Symbol '${name}' already defined in scope '${scope}'`,
+                decl.sourceSpan.startLine,
+                decl.sourceSpan.startCol,
+                decl.sourceSpan.file,
+              );
+              continue;
+            }
             this.addError(
               `Global '${name}' of ${block.resourceName !== undefined ? `RESOURCE '${block.resourceName}'` : `CONFIGURATION '${config.name}'`} is also declared by ${other !== undefined ? `RESOURCE '${other}'` : `CONFIGURATION '${config.name}'`}; the globals of a configuration and its resources need distinct names`,
               decl.sourceSpan.startLine,
