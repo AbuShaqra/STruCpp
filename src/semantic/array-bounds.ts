@@ -35,6 +35,8 @@ class BoundResolver {
   private readonly enumNames = new Set<string>();
   private locals: Constants = new Map();
   private readonly evaluating = new Set<string>();
+  /** Names of the caller-supplied constants, emitted as C++ constants. */
+  private readonly suppliedNames = new Set<string>();
 
   constructor(
     ast: CompilationUnit,
@@ -42,6 +44,7 @@ class BoundResolver {
   ) {
     for (const [name, value] of Object.entries(supplied)) {
       this.globals.set(name.toUpperCase(), value);
+      this.suppliedNames.add(name.toUpperCase());
     }
     this.addConstants(ast.globalVarBlocks, this.globals);
     for (const type of ast.types) {
@@ -94,6 +97,21 @@ class BoundResolver {
     }
     const member = this.bareMembers.get(upper);
     return typeof member === "number" ? { value: member } : { unknown: upper };
+  }
+
+  /**
+   * The value of a STRING length written as a constant's name, when it names
+   * an ST constant in scope; undefined for a caller-supplied constant (the
+   * C++ names it) or anything else.
+   */
+  stringLength(name: string): number | undefined {
+    const upper = name.toUpperCase();
+    if (!this.locals.has(upper) && this.suppliedNames.has(upper)) {
+      return undefined;
+    }
+    if (!this.locals.has(upper) && !this.globals.has(upper)) return undefined;
+    const result = this.constant(upper);
+    return "value" in result ? result.value : undefined;
   }
 
   evaluate(expr: Expression): Evaluated {
@@ -203,9 +221,24 @@ export function resolveArrayBounds(
     type.arrayDimensions = dims;
     type.elementTypeName = pending.elementTypeName;
   };
+  // STRING(N) / WSTRING(N) with N an ST constant: its value, which the C++
+  // type needs as a constant expression.
+  const stringLength = (type: TypeReference): void => {
+    if (typeof type.maxLength === "string") {
+      const value = resolver.stringLength(type.maxLength);
+      if (value !== undefined) type.maxLength = value;
+    }
+    if (typeof type.elementMaxLength === "string") {
+      const value = resolver.stringLength(type.elementMaxLength);
+      if (value !== undefined) type.elementMaxLength = value;
+    }
+  };
   const visit = (root: Parameters<typeof walkAST>[0]): void => {
     walkAST(root, (node) => {
-      if (node.kind === "TypeReference") inline(node as TypeReference);
+      if (node.kind === "TypeReference") {
+        inline(node as TypeReference);
+        stringLength(node as TypeReference);
+      }
     });
   };
 
