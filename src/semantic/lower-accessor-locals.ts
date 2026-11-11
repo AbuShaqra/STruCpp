@@ -20,7 +20,11 @@
  */
 
 import type {
+  AssignmentStatement,
   CompilationUnit,
+  FunctionCallExpression,
+  MethodCallExpression,
+  RefAssignStatement,
   FunctionBlockDeclaration,
   MethodDeclaration,
   PropertyDeclaration,
@@ -29,6 +33,7 @@ import type {
   VarBlockType,
 } from "../frontend/ast.js";
 import type { CompileError } from "../types.js";
+import { walkAST } from "../ast-utils.js";
 
 const ACCESSOR_BLOCKS: ReadonlySet<VarBlockType> = new Set<VarBlockType>([
   "VAR",
@@ -114,6 +119,16 @@ export function lowerAccessorLocals(unit: CompilationUnit): CompileError[] {
   const errors: CompileError[] = [];
   for (const fb of unit.functionBlocks) {
     for (const prop of fb.properties) {
+      // A GET is a const C++ member: one that changes or calls the instance
+      // runs as a method too, as one with locals does.
+      if (
+        prop.getterVarBlocks === undefined &&
+        prop.getter !== undefined &&
+        prop.getter.length > 0 &&
+        getterChangesInstance(unit, fb, prop)
+      ) {
+        prop.getterVarBlocks = [];
+      }
       if (prop.getterVarBlocks !== undefined && prop.getter !== undefined) {
         const name = lowerOne(
           fb,
@@ -147,4 +162,77 @@ export function lowerAccessorLocals(unit: CompilationUnit): CompileError[] {
     }
   }
   return errors;
+}
+
+/**
+ * Whether a GET body writes a member of its FB (a base's included), calls a
+ * method of it, or invokes a member: what a const C++ getter cannot do.
+ */
+function getterChangesInstance(
+  unit: CompilationUnit,
+  fb: FunctionBlockDeclaration,
+  prop: PropertyDeclaration,
+): boolean {
+  const members = new Set<string>();
+  const methods = new Set<string>();
+  const seen = new Set<string>();
+  let current: FunctionBlockDeclaration | undefined = fb;
+  while (current !== undefined && !seen.has(current.name.toUpperCase())) {
+    seen.add(current.name.toUpperCase());
+    for (const block of current.varBlocks) {
+      for (const decl of block.declarations) {
+        for (const n of decl.names) members.add(n.toUpperCase());
+      }
+    }
+    for (const m of current.methods) methods.add(m.name.toUpperCase());
+    // Writing another property calls its (non-const) setter.
+    for (const p of current.properties) members.add(p.name.toUpperCase());
+    const base: string | undefined = current.extends?.toUpperCase();
+    current =
+      base === undefined
+        ? undefined
+        : unit.functionBlocks.find((f) => f.name.toUpperCase() === base);
+  }
+  const self = prop.name.toUpperCase();
+  const rootOf = (name: string): string => name.split(".")[0]!.toUpperCase();
+  const isInstance = (root: string): boolean =>
+    root === "THIS" || root === "SUPER" || members.has(root);
+  let changes = false;
+  for (const stmt of prop.getter ?? []) {
+    walkAST(stmt, (node) => {
+      if (changes) return false;
+      if (
+        node.kind === "AssignmentStatement" ||
+        node.kind === "RefAssignStatement"
+      ) {
+        const target = (node as AssignmentStatement | RefAssignStatement)
+          .target;
+        if (target.kind === "VariableExpression") {
+          const root = target.name.toUpperCase();
+          if (root !== self && isInstance(root)) changes = true;
+        }
+      } else if (node.kind === "FunctionCallExpression") {
+        const call = node as FunctionCallExpression;
+        const root = rootOf(call.functionName);
+        if (
+          call.instance !== undefined ||
+          isInstance(root) ||
+          (!call.functionName.includes(".") && methods.has(root))
+        ) {
+          changes = true;
+        }
+      } else if (node.kind === "MethodCallExpression") {
+        const object = (node as MethodCallExpression).object;
+        if (
+          object.kind === "VariableExpression" &&
+          isInstance(object.name.toUpperCase())
+        ) {
+          changes = true;
+        }
+      }
+      return undefined;
+    });
+    if (changes) return true;
+  }
+  return changes;
 }
