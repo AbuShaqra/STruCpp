@@ -788,6 +788,11 @@ export class TypeCodeGenerator {
         const inner = expr.rawValue.replace(/^["']|["']$/g, "");
         return `u"${translateIECString(inner, true)}"`;
       }
+      case "REAL": {
+        // A decimal point keeps `3.0 / 2.0` a REAL division, as in a body.
+        const str = String(expr.value);
+        return str.includes(".") || /[eE]/.test(str) ? str : `${str}.0`;
+      }
       case "TIME": {
         const timeVal = parseTimeLiteral(String(expr.value));
         return `${timeVal.nanoseconds}LL`;
