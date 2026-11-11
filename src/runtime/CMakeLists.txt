@@ -39,16 +39,23 @@ option(BUILD_TESTING "Build tests" ON)
 if(BUILD_TESTING)
     enable_testing()
 
-    # Fetch Google Test
-    include(FetchContent)
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG v1.14.0
-    )
-    # For Windows: Prevent overriding the parent project's compiler/linker settings
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
+    # Google Test: an installed package first (works offline), else fetch v1.14.0.
+    # FETCHCONTENT_SOURCE_DIR_GOOGLETEST points the fetch at a local checkout.
+    find_package(GTest QUIET)
+    if(TARGET GTest::gtest_main)
+        message(STATUS "googletest: using installed package ${GTest_VERSION}")
+    else()
+        message(STATUS "googletest: not installed, fetching v1.14.0")
+        include(FetchContent)
+        FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG v1.14.0
+        )
+        # For Windows: Prevent overriding the parent project's compiler/linker settings
+        set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(googletest)
+    endif()
 
     # Test executable
     add_executable(runtime_tests

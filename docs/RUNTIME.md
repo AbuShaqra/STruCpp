@@ -310,3 +310,20 @@ The interactive REPL binary uses [isocline](https://github.com/daanx/isocline) (
 | `iec_retain.hpp` | RETAIN variable tracking |
 | `iec_memory.hpp` | Dynamic allocation (__NEW/__DELETE) |
 | `iec_std_lib.hpp` | Standard function implementations |
+
+## Runtime Unit Tests (`runtime/tests/`)
+
+The headers have their own GoogleTest suite, built by `src/runtime/CMakeLists.txt`
+(`runtime_tests`, compiled with `-Wall -Wextra -Wpedantic -Werror`). Every
+`tests/*.cpp` must be listed in `add_executable(runtime_tests ...)`;
+`tests/integration/runtime-cpp-tests.test.ts` fails if one is not.
+
+```bash
+cmake -S src/runtime -B build/runtime && cmake --build build/runtime -j && ctest --test-dir build/runtime --output-on-failure
+```
+
+`npm test` runs the same steps in a temporary build directory. googletest comes
+from an installed package when CMake finds one, otherwise it is fetched (v1.14.0);
+set `STRUCPP_GTEST_SOURCE_DIR` (passed as `FETCHCONTENT_SOURCE_DIR_GOOGLETEST`) to
+use a local checkout offline. The test is skipped, with the reason printed, when
+cmake or a C++ compiler is missing or googletest cannot be obtained.
