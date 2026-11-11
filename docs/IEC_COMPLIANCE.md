@@ -16,7 +16,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | TIME_OF_DAY | Supported | |
 | DATE_AND_TIME | Supported | |
 | LTIME, LDATE, LTOD, LDT | Supported | 64-bit time types with nanosecond precision |
-| STRING | Supported | Parameterized length: STRING(N), default 254 |
+| STRING | Supported | Parameterized length: STRING(N), default 254. An element of an ARRAY OF STRING(N) or ARRAY OF REF_TO STRING(N), inline, named, a STRUCT field or an ARRAY[*] parameter, has that length: a longer value is truncated to N. Arrays whose elements differ only in that length assign and pass element by element (an in/out by copy-in / copy-out) |
 | WSTRING | Supported | Parameterized length: WSTRING(N) |
 | CHAR, WCHAR | Supported | |
 

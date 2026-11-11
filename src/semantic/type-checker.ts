@@ -3424,6 +3424,11 @@ export class TypeChecker {
       ? resolveAccessType(declared.type, value, this.accessLookup)
       : declared.type;
     if (!argType) return;
+    if (this.stringElementLengthsDiffer(input.type, argType)) {
+      // Another C++ element type: passed by copy, as before lengths were kept.
+      arg.inOutCopy = true;
+      return;
+    }
     const mismatch = this.inOutTypeMismatch(input.type, argType);
     if (mismatch === undefined) return;
     this.inOutDiagnostic(
@@ -3478,6 +3483,52 @@ export class TypeChecker {
       param: describe(param).toUpperCase(),
       arg: describe(arg).toUpperCase(),
     };
+  }
+
+  /**
+   * Two ARRAYs of STRING (or of WSTRING) whose elements differ only in length:
+   * distinct C++ types, so an in-out between them is passed by copy.
+   */
+  private stringElementLengthsDiffer(a: AccessType, b: AccessType): boolean {
+    const element = (
+      t: AccessType,
+    ): { name: string; length: string } | undefined => {
+      if (t.referenceKind !== undefined && t.referenceKind !== "none") {
+        return undefined;
+      }
+      let name: string | undefined;
+      let length: number | string | undefined;
+      if (t.arrayDimensions !== undefined) {
+        if (t.elementReferenceChain !== undefined) return undefined;
+        name = t.elementTypeName;
+        length = t.elementMaxLength;
+      } else {
+        const upper = t.name.toUpperCase();
+        const def = this.ast?.types.find(
+          (td) => td.name.toUpperCase() === upper,
+        )?.definition;
+        if (def?.kind !== "ArrayDefinition") return undefined;
+        if (
+          def.elementType.referenceKind !== undefined &&
+          def.elementType.referenceKind !== "none"
+        ) {
+          return undefined;
+        }
+        name = def.elementType.name;
+        length = def.elementType.maxLength;
+      }
+      const upper = name?.toUpperCase();
+      if (upper !== "STRING" && upper !== "WSTRING") return undefined;
+      return { name: upper, length: String(length ?? 254).toUpperCase() };
+    };
+    const x = element(a);
+    const y = element(b);
+    return (
+      x !== undefined &&
+      y !== undefined &&
+      x.name === y.name &&
+      x.length !== y.length
+    );
   }
 
   /**
@@ -3784,9 +3835,45 @@ export class TypeChecker {
       ? resolveAccessType(declared.type, expr, this.accessLookup)
       : declared.type;
     const shape = type ? referenceShapeOf(type) : undefined;
-    // An array element's declaration does not carry its string length.
-    if (shape && this.hasSubscript(expr)) shape.lengthUnknown = true;
+    // An element of an array declared here (`a[i]`) has its string length;
+    // one reached through any other path may not carry it.
+    if (
+      shape &&
+      this.hasSubscript(expr) &&
+      !this.isDirectElementOfDeclaredArray(expr, declared.type)
+    ) {
+      shape.lengthUnknown = true;
+    }
     return shape;
+  }
+
+  /**
+   * `a[i]`: one subscript straight on a variable of an inline ARRAY or an
+   * ARRAY type declared in this compile, whose element carries its length.
+   */
+  private isDirectElementOfDeclaredArray(
+    expr: VariableExpression,
+    type: TypeReference,
+  ): boolean {
+    const steps = expr.accessChain ?? [
+      ...(expr.subscripts.length > 0
+        ? [{ kind: "subscript" as const, indices: expr.subscripts }]
+        : []),
+      ...expr.fieldAccess.map((name) => ({ kind: "field" as const, name })),
+    ];
+    if (steps.length !== 1 || steps[0]!.kind !== "subscript") return false;
+    if (type.referenceKind !== undefined && type.referenceKind !== "none") {
+      return false;
+    }
+    if (type.arrayDimensions !== undefined) return true;
+    const upper = type.name.toUpperCase();
+    return (
+      this.ast?.types.some(
+        (t) =>
+          t.name.toUpperCase() === upper &&
+          t.definition.kind === "ArrayDefinition",
+      ) === true
+    );
   }
 
   /** Whether an access path indexes an array anywhere. */

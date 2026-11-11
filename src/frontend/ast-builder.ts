@@ -1298,6 +1298,8 @@ export class ASTBuilder {
       result.elementTypeName = elementTypeName;
       const elementChain = this.elementReferenceChain(elementTypeNode);
       if (elementChain) result.elementReferenceChain = elementChain;
+      const elementLength = this.elementMaxLength(elementTypeNode);
+      if (elementLength !== undefined) result.elementMaxLength = elementLength;
     }
     return result;
   }
@@ -1980,7 +1982,17 @@ export class ASTBuilder {
     // Also on an ARRAY[*], whose element type is otherwise only in its name.
     const elementChain = this.elementReferenceChain(elementTypeNode);
     if (elementChain) result.elementReferenceChain = elementChain;
+    const elementLength = this.elementMaxLength(elementTypeNode);
+    if (elementLength !== undefined) result.elementMaxLength = elementLength;
     return result;
+  }
+
+  /** The STRING / WSTRING length of an array's element type, when written. */
+  private elementMaxLength(
+    elementTypeNode: CstNode | undefined,
+  ): number | string | undefined {
+    if (!elementTypeNode) return undefined;
+    return this.buildTypeReference(elementTypeNode).maxLength;
   }
 
   /**

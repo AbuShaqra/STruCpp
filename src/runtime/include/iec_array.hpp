@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdint>
 #include <initializer_list>
+#include <type_traits>
 #include "iec_fault.hpp"
 #if STRUCPP_HAS_EXCEPTIONS
 #include <stdexcept>
@@ -58,6 +59,23 @@ private:
 public:
     // Default constructor - initializes all elements to default
     IEC_ARRAY_1D() noexcept : data_{} {}
+
+    // The same bounds with another element type (ARRAY OF STRING(3) from
+    // ARRAY OF STRING): converted element by element.
+    template<typename U, typename = typename std::enable_if<
+        !std::is_same<U, T>::value &&
+        std::is_assignable<T&, const U&>::value>::type>
+    IEC_ARRAY_1D(const IEC_ARRAY_1D<U, Bounds>& other) noexcept : data_{} {
+        for (size_t i = 0; i < size; ++i) data_[i] = other.data()[i];
+    }
+
+    template<typename U, typename = typename std::enable_if<
+        !std::is_same<U, T>::value &&
+        std::is_assignable<T&, const U&>::value>::type>
+    IEC_ARRAY_1D& operator=(const IEC_ARRAY_1D<U, Bounds>& other) noexcept {
+        for (size_t i = 0; i < size; ++i) data_[i] = other.data()[i];
+        return *this;
+    }
     
     // Initializer list constructor
     template<typename U>
@@ -164,6 +182,23 @@ private:
     
 public:
     IEC_ARRAY_2D() noexcept : data_{} {}
+
+    // The same bounds with another element type (ARRAY OF STRING(3) from
+    // ARRAY OF STRING): converted element by element.
+    template<typename U, typename = typename std::enable_if<
+        !std::is_same<U, T>::value &&
+        std::is_assignable<T&, const U&>::value>::type>
+    IEC_ARRAY_2D(const IEC_ARRAY_2D<U, Bounds1, Bounds2>& other) noexcept : data_{} {
+        for (size_t i = 0; i < total_size; ++i) data_[i] = other.data()[i];
+    }
+
+    template<typename U, typename = typename std::enable_if<
+        !std::is_same<U, T>::value &&
+        std::is_assignable<T&, const U&>::value>::type>
+    IEC_ARRAY_2D& operator=(const IEC_ARRAY_2D<U, Bounds1, Bounds2>& other) noexcept {
+        for (size_t i = 0; i < total_size; ++i) data_[i] = other.data()[i];
+        return *this;
+    }
 
     // Flat (row-major) initializer-list constructor — mirrors IEC_ARRAY_1D.
     // ST aggregate inits for a 2D array (e.g. `ARRAY[1..20,0..1] OF REAL := [..]`)
@@ -278,6 +313,23 @@ private:
 public:
     IEC_ARRAY_3D() noexcept : data_{} {}
 
+    // The same bounds with another element type (ARRAY OF STRING(3) from
+    // ARRAY OF STRING): converted element by element.
+    template<typename U, typename = typename std::enable_if<
+        !std::is_same<U, T>::value &&
+        std::is_assignable<T&, const U&>::value>::type>
+    IEC_ARRAY_3D(const IEC_ARRAY_3D<U, Bounds1, Bounds2, Bounds3>& other) noexcept : data_{} {
+        for (size_t i = 0; i < total_size; ++i) data_[i] = other.data()[i];
+    }
+
+    template<typename U, typename = typename std::enable_if<
+        !std::is_same<U, T>::value &&
+        std::is_assignable<T&, const U&>::value>::type>
+    IEC_ARRAY_3D& operator=(const IEC_ARRAY_3D<U, Bounds1, Bounds2, Bounds3>& other) noexcept {
+        for (size_t i = 0; i < total_size; ++i) data_[i] = other.data()[i];
+        return *this;
+    }
+
     // Flat (row-major) initializer-list constructor — mirrors IEC_ARRAY_1D/2D.
     // ST aggregate inits for a 3D array codegen to a flat brace list; fill
     // row-major, ignoring any overflow.
@@ -383,6 +435,20 @@ public:
 // Array1D<T, Lower, Upper> - e.g., Array1D<INT_t, 1, 10> for ARRAY[1..10] OF INT
 template<typename T, int64_t Lower, int64_t Upper>
 using Array1D = IEC_ARRAY_1D<T, ArrayBounds<Lower, Upper>>;
+
+// The array type A with element type E and the same bounds: the copy an
+// ARRAY[*] OF STRING(n) parameter takes of an array of another string length.
+template<typename A, typename E> struct array_rebind;
+template<typename T, typename B, typename E>
+struct array_rebind<IEC_ARRAY_1D<T, B>, E> { using type = IEC_ARRAY_1D<E, B>; };
+template<typename T, typename B1, typename B2, typename E>
+struct array_rebind<IEC_ARRAY_2D<T, B1, B2>, E> { using type = IEC_ARRAY_2D<E, B1, B2>; };
+template<typename T, typename B1, typename B2, typename B3, typename E>
+struct array_rebind<IEC_ARRAY_3D<T, B1, B2, B3>, E> {
+    using type = IEC_ARRAY_3D<E, B1, B2, B3>;
+};
+template<typename A, typename E>
+using array_rebind_t = typename array_rebind<A, E>::type;
 
 // Array2D<T, L1, U1, L2, U2> - e.g., Array2D<REAL_t, 1, 3, 1, 4> for ARRAY[1..3, 1..4] OF REAL
 template<typename T, int64_t L1, int64_t U1, int64_t L2, int64_t U2>

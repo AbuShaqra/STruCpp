@@ -548,6 +548,8 @@ export type AccessType = Pick<TypeReference, "name" | "referenceKind"> &
       | "arrayDimensions"
       | "elementTypeName"
       | "elementReferenceChain"
+      | "maxLength"
+      | "elementMaxLength"
     >
   >;
 
@@ -593,6 +595,9 @@ function elementOf(
       name: type.elementTypeName,
       referenceKind: chain[0] ?? "none",
       ...(chain.length > 1 ? { referenceChain: chain } : {}),
+      ...(type.elementMaxLength !== undefined
+        ? { maxLength: type.elementMaxLength }
+        : {}),
     };
   }
   const element = lookup.arrayElement(type.name);
