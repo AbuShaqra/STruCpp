@@ -782,19 +782,26 @@ export class TypeChecker {
     ) {
       return;
     }
-    const first = expr.accessChain?.[0];
-    const member =
-      first !== undefined
-        ? first.kind === "field"
-          ? first.name
-          : undefined
-        : expr.fieldAccess[0];
-    if (member === undefined) return;
     const fb = this.ast?.functionBlocks.find(
       (f) => f.name.toUpperCase() === this.currentFBName?.toUpperCase(),
     );
-    const type = self === "THIS" ? this.currentFBName : fb?.extends;
-    if (type !== undefined) this.refuseInternalMember(type, member, expr);
+    // Each step of `THIS.a.b[i].c`, from the own block or its base down.
+    let type: string | undefined =
+      self === "THIS" ? this.currentFBName : fb?.extends;
+    const steps =
+      expr.accessChain ??
+      expr.fieldAccess.map((name) => ({ kind: "field" as const, name }));
+    for (const step of steps) {
+      if (type === undefined || step.kind === "dereference") return;
+      if (step.kind === "subscript") {
+        if (this.ast) {
+          type = resolveArrayElementType(type, this.ast) ?? type;
+        }
+        continue;
+      }
+      this.refuseInternalMember(type, step.name, expr);
+      type = this.resolveFieldTypeAnywhere(this.aliasBase(type), step.name);
+    }
   }
 
   /** Assignment and REF= targets and `=>` output targets of the unit: the access paths that write. */
