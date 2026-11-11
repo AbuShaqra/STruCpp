@@ -44,6 +44,9 @@ export interface LibraryFunctionEntry {
     /** "reference_to" for a REFERENCE TO input, bound to its argument. Absent
      *  for any other parameter, and in archives written before it was kept. */
     referenceKind?: "reference_to";
+    /** Length of a STRING / WSTRING output or in/out declared with one, which
+     *  its C++ reference carries. Absent otherwise and in older archives. */
+    maxLength?: number | string;
   }>;
   /** Variadic call shape. When set, `parameters` describes the leading
    *  required parameters and the function accepts any number of
@@ -120,6 +123,8 @@ export interface LibraryMethodEntry {
       direction: "input" | "output" | "inout";
       /** Initial value of an input as an ST expression, as in `LibraryFunctionEntry`. */
       initialValue?: string;
+      /** Length of a STRING / WSTRING output or in/out, as in `LibraryFunctionEntry`. */
+      maxLength?: number | string;
     }
   >;
   /** Declared visibility when not PUBLIC. */

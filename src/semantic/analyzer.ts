@@ -3082,11 +3082,9 @@ export class SemanticAnalyzer {
           );
         const own = signatureParams(method);
         const want = signatureParams(required);
-        const ownRet = method.returnType
-          ? cppTypeKey(method.returnType, false)
-          : "";
+        const ownRet = method.returnType ? cppTypeKey(method.returnType) : "";
         const wantRet = required.returnType
-          ? cppTypeKey(required.returnType, false)
+          ? cppTypeKey(required.returnType)
           : "";
         if (!sameCppType(ownRet, wantRet)) {
           fail(
@@ -3110,9 +3108,7 @@ export class SemanticAnalyzer {
             );
             break;
           }
-          if (
-            !sameCppType(cppTypeKey(a.type, byRef), cppTypeKey(b.type, byRef))
-          ) {
+          if (!sameCppType(cppTypeKey(a.type), cppTypeKey(b.type))) {
             fail(
               `parameter ${i + 1} '${a.name}' is ${typeText(a.type)}, the interface's '${b.name}' is ${typeText(b.type)}`,
             );
@@ -6035,9 +6031,9 @@ function signatureParams(
 
 /**
  * A key equal for two types the C++ signature spells alike (an alias is its
- * own C++ type): the STRING length kept for a value but not for a reference.
+ * own C++ type, a STRING carries its length by value and by reference).
  */
-function cppTypeKey(type: TypeReference, byRef: boolean): string {
+function cppTypeKey(type: TypeReference): string {
   const name = type.name.toUpperCase();
   const maxLength = type.maxLength;
   const dims = type.arrayDimensions;
@@ -6045,12 +6041,11 @@ function cppTypeKey(type: TypeReference, byRef: boolean): string {
   const ref = type.referenceKind ?? "none";
   const isString = name === "STRING" || name === "WSTRING";
   // A length named by a constant is not resolved here: "*" matches any.
-  const len =
-    byRef || !isString
-      ? ""
-      : typeof maxLength === "string"
-        ? "(*)"
-        : `(${maxLength ?? 254})`;
+  const len = !isString
+    ? ""
+    : typeof maxLength === "string"
+      ? "(*)"
+      : `(${maxLength ?? 254})`;
   const arr =
     dims === undefined
       ? ""

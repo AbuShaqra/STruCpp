@@ -1,7 +1,7 @@
 /**
  * Interface implementations the signature check accepts build and run: a
  * parameter named otherwise (a warning), a default value, STRING and
- * STRING(254), an output for an in/out and the STRING length of a reference.
+ * STRING(254), and an output for an in/out.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";

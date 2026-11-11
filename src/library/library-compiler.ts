@@ -110,6 +110,21 @@ function serializeVarType(
   return entry;
 }
 
+/** The declared length of a STRING / WSTRING output or in/out (passed by reference). */
+function byReferenceStringLength(
+  direction: "input" | "output" | "inout",
+  type: TypeReference,
+): number | string | undefined {
+  if (direction === "input") return undefined;
+  const upper = type.name.toUpperCase();
+  if (upper !== "STRING" && upper !== "WSTRING") return undefined;
+  if (type.arrayDimensions !== undefined) return undefined;
+  if (type.referenceKind !== undefined && type.referenceKind !== "none") {
+    return undefined;
+  }
+  return type.maxLength;
+}
+
 /** The parameter direction of a POU var block; undefined for a block of locals. */
 function parameterDirection(
   blockType: VarBlockType,
@@ -136,10 +151,12 @@ function serializeMethod(method: MethodDeclaration): LibraryMethodEntry {
         direction === "input" && decl.initialValue !== undefined
           ? serializeInitialValue(decl.initialValue)
           : undefined;
+      const maxLength = byReferenceStringLength(direction, decl.type);
       return decl.names.map((name) => ({
         ...serializeVarType(name, decl.type),
         direction,
         ...(initialValue !== undefined ? { initialValue } : {}),
+        ...(maxLength !== undefined ? { maxLength } : {}),
       }));
     });
   });
@@ -713,10 +730,12 @@ export function compileLibrary(
                   decl.type.referenceKind === "reference_to" &&
                   (decl.type.referenceChain?.length ?? 1) === 1 &&
                   decl.type.arrayDimensions === undefined;
+                const maxLength = byReferenceStringLength(direction, decl.type);
                 return decl.names.map((name) => ({
                   name,
                   type: decl.type.name,
                   direction,
+                  ...(maxLength !== undefined ? { maxLength } : {}),
                   // Present ⇒ optional input (default supplied); absent ⇒
                   // mandatory. Preserved from user ST and CODESYS-imported ST.
                   ...(initialValue !== undefined ? { initialValue } : {}),
