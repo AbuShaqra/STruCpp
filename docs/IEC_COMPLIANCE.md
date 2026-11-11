@@ -212,8 +212,8 @@ edges on `CU` and `CD` leave `CV` unchanged. CODESYS does not document that case
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| CONFIGURATION | Supported | |
-| RESOURCE ... ON | Supported | A RESOURCE may declare VAR_GLOBAL blocks (no other block): its globals are reached by the program instances of that resource only (also through the VAR_EXTERNAL of a function block such an instance holds, nested, in an ARRAY or STRUCT, or through a base block), and by the initial values of its own globals; a name a RESOURCE shares with the CONFIGURATION or another RESOURCE is an error |
+| CONFIGURATION | Supported | A name declared twice among the VAR_GLOBAL blocks of a CONFIGURATION (in one block or two, of any type or value, CONSTANT included) is an error at the second declaration (`Symbol '<name>' already defined in scope '<configuration>'`) |
+| RESOURCE ... ON | Supported | A RESOURCE may declare VAR_GLOBAL blocks (no other block): its globals are reached by the program instances of that resource only (also through the VAR_EXTERNAL of a function block such an instance holds, nested, in an ARRAY or STRUCT, or through a base block), and by the initial values of its own globals; a name a RESOURCE shares with the CONFIGURATION or another RESOURCE is an error, and so is a name declared twice in one RESOURCE (`Symbol '<name>' already defined in scope '<configuration>.<resource>'`) |
 | TASK ... WITH INTERVAL | Supported | |
 | Program instances | Supported | `name : programType` with task assignment |
 | VAR_GLOBAL in configuration | Supported | Not of a function block type, nor of a STRUCT or ARRAY holding one (refused at the declaration; declare it in a global variable list or a PROGRAM) |
