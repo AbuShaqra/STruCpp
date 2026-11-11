@@ -4851,7 +4851,14 @@ export class CodeGenerator {
     stmt: RefAssignStatement,
     indent: string,
   ): void {
-    const target = this.generateExpression(stmt.target);
+    // The target is the reference itself, not the variable it is bound to.
+    this.keepReferenceWrapper = true;
+    let target: string;
+    try {
+      target = this.generateExpression(stmt.target);
+    } finally {
+      this.keepReferenceWrapper = false;
+    }
     const source = this.addressedOperand(stmt.source, "REF=", stmt);
     const targetKind =
       stmt.target.kind === "VariableExpression"
@@ -5362,6 +5369,12 @@ export class CodeGenerator {
 
     const nameUpper = expr.name.toUpperCase();
 
+    // A REFERENCE TO STRING / WSTRING read as a value: the bound variable, so
+    // the string functions' templates see a string (no conversion deduced).
+    if (!this.keepReferenceWrapper && this.isPlainStringReference(expr)) {
+      return `${this.resolveVariableBaseName(expr.name)}.target()`;
+    }
+
     // `PRG_A.x`: a member of a reached program's one shared instance.
     const reachedProgram = this.reachedProgramNamed(expr.name);
     if (reachedProgram !== undefined) {
@@ -5579,6 +5592,30 @@ export class CodeGenerator {
     return what === "ADR"
       ? this.generateLvalue(operand)
       : this.generateExpression(operand);
+  }
+
+  /** Set while a REF= target is generated: it names the reference itself. */
+  private keepReferenceWrapper = false;
+
+  /** `rr`, a REFERENCE TO STRING / WSTRING variable of the scope, with no access. */
+  private isPlainStringReference(expr: VariableExpression): boolean {
+    const upper = expr.name.toUpperCase();
+    if (
+      this.currentScopeVarRefKinds.get(upper) !== "reference_to" ||
+      this.isCurrentFunctionResult(upper) ||
+      expr.isDereference ||
+      expr.fieldAccess.length > 0 ||
+      expr.subscripts.length > 0 ||
+      (expr.accessChain?.length ?? 0) > 0
+    ) {
+      return false;
+    }
+    const type = this.currentScopeVarTypeRefs.get(upper);
+    if (type === undefined || (type.referenceChain?.length ?? 1) !== 1) {
+      return false;
+    }
+    const base = type.name.toUpperCase();
+    return base === "STRING" || base === "WSTRING";
   }
 
   /**

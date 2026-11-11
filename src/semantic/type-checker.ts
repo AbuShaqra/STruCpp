@@ -1063,6 +1063,8 @@ export class TypeChecker {
       currentTypeName = symbol.declaration?.type?.name;
     }
 
+    this.refuseReferenceToCaret(expr, symbol);
+
     // Whether the storage reached so far lies in a UNION (reset by a dereference).
     let inUnion = false;
 
@@ -1183,6 +1185,44 @@ export class TypeChecker {
       expr.resolvedType = currentType;
     }
     return currentType;
+  }
+
+  /** Variables already checked by refuseReferenceToCaret. */
+  private checkedReferenceCarets = new WeakSet<VariableExpression>();
+
+  /**
+   * `rr^` with `rr` a REFERENCE TO: the reference is dereferenced
+   * implicitly, so `^` names nothing (the C++ has no such operator).
+   */
+  private refuseReferenceToCaret(
+    expr: VariableExpression,
+    symbol: AnySymbol,
+  ): void {
+    if (this.checkedReferenceCarets.has(expr)) return;
+    this.checkedReferenceCarets.add(expr);
+    if (symbol.kind !== "variable") return;
+    const type = (symbol.declaration as VarDeclaration | undefined)?.type;
+    if (
+      type?.referenceKind !== "reference_to" ||
+      (type.referenceChain?.length ?? 1) !== 1 ||
+      type.arrayDimensions !== undefined
+    ) {
+      return;
+    }
+    const first = expr.accessChain?.[0];
+    const caret =
+      first !== undefined
+        ? first.kind === "dereference"
+        : expr.isDereference &&
+          expr.fieldAccess.length === 0 &&
+          expr.subscripts.length === 0;
+    if (!caret) return;
+    this.addError(
+      `'${expr.name}' is a REFERENCE TO, dereferenced implicitly: '^' does not apply to it`,
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
   }
 
   /**

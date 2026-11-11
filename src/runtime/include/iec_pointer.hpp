@@ -844,5 +844,13 @@ template<typename T>
 inline IEC_REFERENCE_TO<T> ref_bind(const IEC_REFERENCE_TO<T>& ref) noexcept {
     return ref;
 }
+template<size_t N>
+inline IEC_REFERENCE_TO<IECString<N>> ref_bind(IECStringVar<N>& var) noexcept {
+    return IEC_REFERENCE_TO<IECString<N>>(var);
+}
+template<size_t N>
+inline IEC_REFERENCE_TO<IECWString<N>> ref_bind(IECWStringVar<N>& var) noexcept {
+    return IEC_REFERENCE_TO<IECWString<N>>(var);
+}
 
 }  // namespace strucpp
