@@ -5952,16 +5952,13 @@ export class CodeGenerator {
       (expr.operator === "=" || expr.operator === "<>") &&
       expr.comparesReferences !== true
     ) {
-      const rt = expr.left.resolvedType;
       const structName =
-        rt !== undefined && "name" in rt && typeof rt.name === "string"
-          ? rt.name
-          : undefined;
-      if (
-        structName !== undefined &&
-        this.structFieldsOf(structName) !== undefined
-      ) {
-        const eq = `[&](const auto& __l, const auto& __r) { return ${this.memberwiseEqual(structName, "__l", "__r", 0)}; }(${left}, ${right})`;
+        this.comparedStructName(expr.left) ??
+        this.comparedStructName(expr.right);
+      if (structName !== undefined) {
+        const l = this.structOperand(expr.left, left);
+        const r = this.structOperand(expr.right, right);
+        const eq = `[&](const auto& __l, const auto& __r) { return ${this.memberwiseEqual(structName, "__l", "__r", 0)}; }(${l}, ${r})`;
         return expr.operator === "=" ? eq : `!${eq}`;
       }
     }
@@ -6050,6 +6047,55 @@ export class CodeGenerator {
    * C++ for `l = r` on two values of type `typeName`: field by field for a
    * STRUCT, element by element for an ARRAY, else `==`.
    */
+  /**
+   * The STRUCT an operand of `=` / `<>` is a value of: by its checked type,
+   * or for a variable reached through `^` or a REFERENCE TO, by its
+   * declaration. Undefined for anything else.
+   */
+  private comparedStructName(expr: Expression): string | undefined {
+    const rt = expr.resolvedType;
+    if (rt !== undefined && "name" in rt && typeof rt.name === "string") {
+      if (this.structFieldsOf(rt.name) !== undefined) return rt.name;
+    }
+    if (expr.kind !== "VariableExpression") return undefined;
+    const upper = expr.name.toUpperCase();
+    const root = this.currentScopeVarTypeRefs.get(upper);
+    if (root === undefined) return undefined;
+    const hasAccess =
+      expr.subscripts.length > 0 ||
+      expr.fieldAccess.length > 0 ||
+      expr.isDereference ||
+      (expr.accessChain !== undefined && expr.accessChain.length > 0);
+    const type = hasAccess
+      ? resolveAccessType(root, expr, this.accessLookup)
+      : root;
+    if (type === undefined || type.arrayDimensions !== undefined) {
+      return undefined;
+    }
+    const kind = type.referenceKind ?? "none";
+    // A REF_TO / POINTER TO itself is compared as a reference.
+    if (kind !== "none" && !(kind === "reference_to" && !hasAccess)) {
+      return undefined;
+    }
+    return this.structFieldsOf(type.name) !== undefined ? type.name : undefined;
+  }
+
+  /** A STRUCT operand as its value: a plain REFERENCE TO is its target. */
+  private structOperand(expr: Expression, generated: string): string {
+    if (
+      expr.kind === "VariableExpression" &&
+      this.currentScopeVarRefKinds.get(expr.name.toUpperCase()) ===
+        "reference_to" &&
+      !expr.isDereference &&
+      expr.fieldAccess.length === 0 &&
+      expr.subscripts.length === 0 &&
+      (expr.accessChain?.length ?? 0) === 0
+    ) {
+      return `${this.resolveVariableBaseName(expr.name)}.target()`;
+    }
+    return generated;
+  }
+
   private memberwiseEqual(
     typeName: string,
     l: string,
