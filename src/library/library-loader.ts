@@ -353,7 +353,11 @@ export function registerLibrarySymbols(
         returnType,
         parameters: fn.parameters.map((p) => {
           const sym = makeVarSymbol(
-            { name: p.name, type: p.type },
+            {
+              name: p.name,
+              type: p.type,
+              ...(p.referenceKind ? { referenceKind: p.referenceKind } : {}),
+            },
             p.direction,
           );
           // Carry the optional-input marker: a parameter with an initial value

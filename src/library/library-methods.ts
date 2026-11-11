@@ -91,7 +91,7 @@ export function libraryFunctionDeclaration(
   };
   const params = fn.parameters.map(
     (p) =>
-      `${blockOf[p.direction]} ${p.name} : ${p.type}` +
+      `${blockOf[p.direction]} ${p.name} : ${p.referenceKind === "reference_to" ? "REFERENCE TO " : ""}${p.type}` +
       `${p.initialValue !== undefined ? ` := ${p.initialValue}` : ""}; END_VAR`,
   );
   const source = [
