@@ -724,6 +724,54 @@ export class TypeChecker {
   }
 
   /**
+   * Refuse `inst.P` where P is a PRIVATE property of another block, or a
+   * PROTECTED one outside its block and the blocks derived from it, as for
+   * methods (`context`: the current block).
+   */
+  private refuseHiddenProperty(
+    typeName: string,
+    member: string,
+    expr: { sourceSpan: SourceSpan },
+    context: string | undefined,
+  ): void {
+    const upper = member.toUpperCase();
+    const seen = new Set<string>();
+    let current: string | undefined = typeName.toUpperCase();
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      const name: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name,
+      );
+      if (fb === undefined) return;
+      const prop = fb.properties.find((p) => p.name.toUpperCase() === upper);
+      if (prop !== undefined) {
+        const owner = fb.name.toUpperCase();
+        const inside =
+          context !== undefined &&
+          (prop.visibility === "PRIVATE"
+            ? context.toUpperCase() === owner
+            : this.fbLineage(context).has(owner));
+        if (prop.visibility === "PUBLIC" || inside) return;
+        const span = expr.sourceSpan;
+        const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}:property:${upper}`;
+        if (this.unknownMemberReported.has(key)) return;
+        this.unknownMemberReported.add(key);
+        this.addError(
+          prop.visibility === "PRIVATE"
+            ? `Cannot access PRIVATE property '${member}' of '${fb.name}' from outside '${fb.name}'.`
+            : `Cannot access PROTECTED property '${member}' of '${fb.name}' from '${context ?? "PROGRAM"}'.`,
+          span.startLine,
+          span.startCol,
+          span.file,
+        );
+        return;
+      }
+      current = fb.extends?.toUpperCase();
+    }
+  }
+
+  /**
    * Refuse `inst.x` (or `x := ...` in an instance initializer) where x is an
    * internal variable or VAR_EXTERNAL of the instance's block, outside that
    * block and the blocks derived from it (`context`, the current block).
@@ -738,7 +786,15 @@ export class TypeChecker {
     const upper = member.toUpperCase();
     if (upper === "EN" || upper === "ENO") return;
     const owner = this.internalMemberOwner(this.aliasBase(typeName), member);
-    if (owner === undefined) return;
+    if (owner === undefined) {
+      this.refuseHiddenProperty(
+        this.aliasBase(typeName),
+        member,
+        expr,
+        context,
+      );
+      return;
+    }
     // An instance initializer writes; an access path writes when it is the target.
     const write = initializer || this.writeTargets.has(expr as Expression);
     if (
@@ -771,6 +827,39 @@ export class TypeChecker {
       inout: `'${member}' is a VAR_IN_OUT of ${fb}; from outside it is bound in the call, not accessed through the instance`,
     }[owner.kind];
     this.addError(message, span.startLine, span.startCol, span.file);
+  }
+
+  /**
+   * A bare name in a derived block naming a base's PRIVATE property (a name
+   * the block itself or the body's scope declares is no such property).
+   */
+  private refuseInheritedPrivateProperty(
+    expr: VariableExpression,
+    scope: Scope,
+  ): void {
+    if (
+      this.currentFBName === undefined ||
+      expr.fieldAccess.length > 0 ||
+      (expr.accessChain?.length ?? 0) > 0
+    ) {
+      return;
+    }
+    const upper = expr.name.toUpperCase();
+    const own = this.ast?.functionBlocks.find(
+      (f) => f.name.toUpperCase() === this.currentFBName?.toUpperCase(),
+    );
+    if (own?.extends === undefined) return;
+    if (own.properties.some((p) => p.name.toUpperCase() === upper)) return;
+    const local = scope.lookup(expr.name);
+    if (local !== undefined && local.kind !== "functionBlock") {
+      const declaredHere = own.varBlocks.some((b) =>
+        b.declarations.some((d) =>
+          d.names.some((n) => n.toUpperCase() === upper),
+        ),
+      );
+      if (declaredHere || scope.lookupLocal(expr.name) !== undefined) return;
+    }
+    this.refuseHiddenProperty(own.extends, expr.name, expr, this.currentFBName);
   }
 
   /** `THIS.x` / `SUPER.x` in a block: x may be a base's PRIVATE variable. */
@@ -1258,6 +1347,7 @@ export class TypeChecker {
     expr: VariableExpression,
     scope: Scope,
   ): IECType | undefined {
+    this.refuseInheritedPrivateProperty(expr, scope);
     const symbol = scope.lookup(expr.name);
     if (symbol === undefined) {
       this.refuseSelfMember(expr);
@@ -1311,8 +1401,8 @@ export class TypeChecker {
             currentTypeName,
             step.name,
           );
+          this.refuseInternalMember(currentTypeName, step.name, expr);
           if (fieldType) {
-            this.refuseInternalMember(currentTypeName, step.name, expr);
             currentTypeName = fieldType;
             currentType = this.resolveNamedType(fieldType);
           } else {
@@ -1391,8 +1481,8 @@ export class TypeChecker {
               currentTypeName,
               field,
             );
+            this.refuseInternalMember(currentTypeName, field, expr);
             if (fieldType) {
-              this.refuseInternalMember(currentTypeName, field, expr);
               currentTypeName = fieldType;
               currentType = this.resolveNamedType(fieldType);
             } else {
