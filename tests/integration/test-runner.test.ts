@@ -532,7 +532,7 @@ END_TEST
   it("should test FB methods", () => {
     const source = `
 FUNCTION_BLOCK Motor
-  VAR
+  VAR_OUTPUT
     _speed : INT;
     _running : BOOL;
   END_VAR
