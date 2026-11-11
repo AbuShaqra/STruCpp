@@ -329,6 +329,22 @@ export class SymbolTables {
   /** Map of "FBNAME.METHODNAME" to their local scopes (parent = FB scope) */
   private methodScopes: Map<string, Scope> = new Map();
 
+  /** Every library FUNCTION by upper-case name, also those another library's of the name shadows. */
+  private libraryFunctions: Map<string, FunctionSymbol[]> = new Map();
+
+  /** Record a FUNCTION a library declares, whether or not its name was free. */
+  addLibraryFunction(symbol: FunctionSymbol): void {
+    const key = symbol.name.toUpperCase();
+    const list = this.libraryFunctions.get(key) ?? [];
+    list.push(symbol);
+    this.libraryFunctions.set(key, list);
+  }
+
+  /** The library FUNCTIONs of a name, in registration order. */
+  libraryFunctionsNamed(name: string): readonly FunctionSymbol[] {
+    return this.libraryFunctions.get(name.toUpperCase()) ?? [];
+  }
+
   constructor() {
     this.globalScope = new Scope("global");
     this.initializeBuiltinTypes();

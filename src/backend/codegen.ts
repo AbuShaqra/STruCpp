@@ -622,6 +622,9 @@ export class CodeGenerator {
 
   /** Library functions by upper-cased name, and their parsed declarations. */
   private libraryFunctions: Map<string, LibraryFunctionEntry> = new Map();
+  /** Every library FUNCTION, keyed `LIBRARY:NAME` (upper case), shadowed ones included. */
+  private libraryFunctionsByLibrary: Map<string, LibraryFunctionEntry> =
+    new Map();
   private libraryFunctionDecls: Map<string, FunctionDeclaration | undefined> =
     new Map();
 
@@ -1112,6 +1115,10 @@ export class CodeGenerator {
         if (!this.libraryFunctions.has(upper)) {
           this.libraryFunctions.set(upper, fn);
         }
+        this.libraryFunctionsByLibrary.set(
+          `${archive.manifest.name.toUpperCase()}:${upper}`,
+          fn,
+        );
       }
       for (const fb of archive.manifest.functionBlocks) {
         const methods = libraryMethodDeclarations(fb);
@@ -6895,11 +6902,12 @@ export class CodeGenerator {
       return `${expr.functionName}(${bound.join(", ")})`;
     }
 
-    // A user FUNCTION wins over an operator or standard function of its name.
+    // A user FUNCTION wins over an operator or standard function of its name,
+    // and so does the library FUNCTION the type checker resolved the call to.
     const userFunction =
       this.ast?.functions.some((f) => f.name.toUpperCase() === nameUpper) ===
       true;
-    if (!userFunction) {
+    if (!userFunction && expr.libraryFunction === undefined) {
       // 0. ADR(x) → &(x) (CODESYS address-of operator)
       if (nameUpper === "ADR") {
         const args = expr.arguments.map((arg) =>
@@ -7060,7 +7068,8 @@ export class CodeGenerator {
     );
     const calleeBlocks =
       funcDecl?.varBlocks ??
-      this.libraryFunctionDeclaration(nameUpper)?.varBlocks ??
+      this.libraryFunctionDeclaration(nameUpper, expr.libraryFunction)
+        ?.varBlocks ??
       this.findMethodDeclaration(
         this.currentFBName ?? this.currentProgramName,
         nameUpper,
@@ -7134,7 +7143,8 @@ export class CodeGenerator {
     const funcDecl =
       this.ast.functions.find(
         (f) => f.name.toUpperCase() === expr.functionName.toUpperCase(),
-      ) ?? this.libraryFunctionDeclaration(expr.functionName);
+      ) ??
+      this.libraryFunctionDeclaration(expr.functionName, expr.libraryFunction);
     if (!funcDecl) return null;
     return this.bindArgumentsByName(
       funcDecl.varBlocks,
@@ -7144,17 +7154,23 @@ export class CodeGenerator {
     );
   }
 
-  /** The declaration of a library function, from its manifest entry. */
+  /** The declaration of a library function, from its manifest entry; `library` picks a shadowed one. */
   private libraryFunctionDeclaration(
     name: string,
+    library?: string,
   ): FunctionDeclaration | undefined {
     const upper = name.toUpperCase();
-    const entry = this.libraryFunctions.get(upper);
+    const key =
+      library !== undefined ? `${library.toUpperCase()}:${upper}` : upper;
+    const entry =
+      library !== undefined
+        ? this.libraryFunctionsByLibrary.get(key)
+        : this.libraryFunctions.get(upper);
     if (!entry) return undefined;
-    if (!this.libraryFunctionDecls.has(upper)) {
-      this.libraryFunctionDecls.set(upper, libraryFunctionDeclaration(entry));
+    if (!this.libraryFunctionDecls.has(key)) {
+      this.libraryFunctionDecls.set(key, libraryFunctionDeclaration(entry));
     }
-    return this.libraryFunctionDecls.get(upper);
+    return this.libraryFunctionDecls.get(key);
   }
 
   /**

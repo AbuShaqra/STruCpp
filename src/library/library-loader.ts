@@ -13,7 +13,11 @@ import type {
   LibraryVarType,
   StlibArchive,
 } from "./library-manifest.js";
-import type { SymbolTables, VariableSymbol } from "../semantic/symbol-table.js";
+import type {
+  FunctionSymbol,
+  SymbolTables,
+  VariableSymbol,
+} from "../semantic/symbol-table.js";
 import { DuplicateSymbolError } from "../semantic/symbol-table.js";
 import type {
   ElementaryType,
@@ -334,41 +338,43 @@ export function registerLibrarySymbols(
       sizeBits: 0,
     };
 
-    try {
-      symbolTables.globalScope.defineFromLibrary({
+    const symbol: FunctionSymbol = {
+      name: fn.name,
+      kind: "function",
+      libraryName: manifest.name,
+      declaration: {
+        kind: "FunctionDeclaration",
+        sourceSpan: createDefaultSourceSpan(),
         name: fn.name,
-        kind: "function",
-        libraryName: manifest.name,
-        declaration: {
-          kind: "FunctionDeclaration",
+        returnType: {
+          kind: "TypeReference",
           sourceSpan: createDefaultSourceSpan(),
-          name: fn.name,
-          returnType: {
-            kind: "TypeReference",
-            sourceSpan: createDefaultSourceSpan(),
-            name: fn.returnType,
-            isReference: false,
-            referenceKind: "none",
-          },
-          varBlocks: [],
-          body: [],
+          name: fn.returnType,
+          isReference: false,
+          referenceKind: "none",
         },
-        returnType,
-        parameters: fn.parameters.map((p) => {
-          const sym = makeVarSymbol(
-            {
-              name: p.name,
-              type: p.type,
-              ...(p.referenceKind ? { referenceKind: p.referenceKind } : {}),
-            },
-            p.direction,
-          );
-          // Carry the optional-input marker: a parameter with an initial value
-          // is optional at the call site (see Option A in the analyzer).
-          if (p.initialValue !== undefined) sym.initialValue = p.initialValue;
-          return sym;
-        }),
-      });
+        varBlocks: [],
+        body: [],
+      },
+      returnType,
+      parameters: fn.parameters.map((p) => {
+        const sym = makeVarSymbol(
+          {
+            name: p.name,
+            type: p.type,
+            ...(p.referenceKind ? { referenceKind: p.referenceKind } : {}),
+          },
+          p.direction,
+        );
+        // Carry the optional-input marker: a parameter with an initial value
+        // is optional at the call site (see Option A in the analyzer).
+        if (p.initialValue !== undefined) sym.initialValue = p.initialValue;
+        return sym;
+      }),
+    };
+    symbolTables.addLibraryFunction(symbol);
+    try {
+      symbolTables.globalScope.defineFromLibrary(symbol);
     } catch (e) {
       // Skip duplicate symbol errors (first definition wins), re-throw others
       if (!(e instanceof DuplicateSymbolError)) throw e;
