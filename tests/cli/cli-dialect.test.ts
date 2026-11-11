@@ -178,6 +178,16 @@ describe("bad dialect input", () => {
     );
   });
 
+  it("an empty --feature id exits 1 naming the form", () => {
+    for (const spec of ["+", "-"]) {
+      const r = run(["--feature", spec, "--print-dialect"]);
+      expect(r.status).toBe(1);
+      expect(r.err.trim()).toBe(
+        `error: --feature '${spec}' names no feature: write +id, -id or id (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas)`,
+      );
+    }
+  });
+
   it("--dialect iec exits 1 with a hint naming iec-3", () => {
     const r = run(["--dialect", "iec", "--print-dialect"]);
     expect(r.status).toBe(1);

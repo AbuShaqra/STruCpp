@@ -254,6 +254,11 @@ function applyFeatureOverrides(
   for (const spec of overrides) {
     const remove = spec.startsWith("-");
     const id = spec.startsWith("+") || remove ? spec.slice(1) : spec;
+    if (id === "") {
+      throw new DialectError(
+        `--feature '${spec}' names no feature: write +id, -id or id (known: ${KNOWN_FEATURES.join(", ")})`,
+      );
+    }
     if (!KNOWN_FEATURE_SET.has(id)) throw unknownFeature(id, "--feature");
     if (remove) features.delete(id as FeatureId);
     else features.add(id as FeatureId);

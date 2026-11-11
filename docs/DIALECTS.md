@@ -635,19 +635,31 @@ generated C++ is the same as with the `;` written.
 
 Profiles are input, not trusted code. Every profile read (each `--dialect-file`, and every `*.json` in each
 `--dialect-path` folder) is checked when the compiler starts, whether or not it is selected. Each problem
-is one line on stderr, `error: <message>`, and exit code 1:
+is one line on stderr, `error: <message>`, and exit code 1 (2 under `--check`). The messages, exactly as
+printed (`<where>` is `dialect file <path>` for a file, `dialect '<id>'` for a profile object passed
+through the API):
 
+- `dialect file <path>: <read error>` (the file cannot be read, e.g. `ENOENT: no such file or directory, open '<path>'`)
+- `dialect path <dir>: <read error>` (the folder cannot be listed)
 - `dialect file <path>: <JSON parse message>`
+- `<where>: a profile must be a JSON object`
+- `<where>: key '<k>' is not known` (a top-level key other than `id`, `name`, `extends`, `features`, `semantics`)
+- `<where>: 'id' must be a non-empty string`
+- `<where>: 'name' must be a string`
+- `<where>: 'extends' must be a non-empty string`
+- `<where>: 'features' must be an array of strings`
+- `<where>: 'semantics' must be an object`
+- `<where>: semantics key '<k>' is not known`
 - `dialect file <path>: id '<x>' does not match the file name` (`--dialect-path` only)
-- `dialect file <path>: semantics key '<k>' is not known`
 - `unknown feature '<id>' in <where> (known: <every feature in the table above>)`
+- `unknown feature '<id>' in --feature (known: ...)`, and for an empty id (`--feature +`, `--feature -`,
+  `--feature ''`): `--feature '<spec>' names no feature: write +id, -id or id (known: ...)`
+- `--feature needs a value` (and the same for `--dialect`, `--dialect-file`, `--dialect-path`)
 - `unknown dialect '<id>' (known: iec-3, ...)`
 - `dialect '<id>': extends '<p>', which is not loaded`
 - either of the two above for the id `iec` ends with `; the IEC 61131-3 Ed. 3 profile is 'iec-3'`
 - `<where>: the id 'iec' is reserved; the IEC 61131-3 Ed. 3 profile is 'iec-3'`
 - `dialect '<id>': extends cycle <a> -> <b> -> <a>`
-
-Unknown top-level keys and wrongly typed values are refused the same way.
 
 ## Library API
 
