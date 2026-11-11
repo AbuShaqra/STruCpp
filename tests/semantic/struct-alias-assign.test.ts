@@ -48,7 +48,9 @@ function errorsIn(body: string, dialect?: "iec-3"): string[] {
 describe("STRUCT / UNION alias assignment", () => {
   for (const dialect of [undefined, "iec-3"] as const) {
     it(`assigns a STRUCT and its alias both ways (${dialect ?? "default"})`, () => {
-      expect(errorsIn("s := t; t := s; tt := s; s := tt; t := tt;", dialect)).toEqual([]);
+      expect(
+        errorsIn("s := t; t := s; tt := s; s := tt; t := tt;", dialect),
+      ).toEqual([]);
     });
 
     it(`assigns a UNION and its alias both ways (${dialect ?? "default"})`, () => {
@@ -57,7 +59,10 @@ describe("STRUCT / UNION alias assignment", () => {
 
     it(`passes an alias to VAR_INPUT and VAR_IN_OUT of the aliased type and back (${dialect ?? "default"})`, () => {
       expect(
-        errorsIn("r := F_In(t); r := F_In(tt); r := F_InOut(s); d := F_U(tu);", dialect),
+        errorsIn(
+          "r := F_In(t); r := F_In(tt); r := F_InOut(s); d := F_U(tu);",
+          dialect,
+        ),
       ).toEqual([]);
     });
 
@@ -71,7 +76,10 @@ describe("STRUCT / UNION alias assignment", () => {
         PROGRAM Main VAR tt : T_AA; r : INT; END_VAR
           r := F_InOut(tt);
         END_PROGRAM`,
-        { ...(dialect ? { dialect } : {}), features: ["union", "struct_extends"] },
+        {
+          ...(dialect ? { dialect } : {}),
+          features: ["union", "struct_extends"],
+        },
       );
       expect(r.errors.map((e) => e.message)).toEqual([]);
       expect(r.warnings.map((e) => e.message)).toEqual([]);
@@ -80,10 +88,13 @@ describe("STRUCT / UNION alias assignment", () => {
   }
 
   it("initialises an alias variable from the aliased type's variable and vice versa", () => {
-    const r = compile(`${TYPES}
+    const r = compile(
+      `${TYPES}
       PROGRAM Main
       VAR s : ST_A; t : T_A := s; s2 : ST_A := t; END_VAR
-      END_PROGRAM`, { features: ["union", "struct_extends"] });
+      END_PROGRAM`,
+      { features: ["union", "struct_extends"] },
+    );
     expect(r.errors.map((e) => e.message)).toEqual([]);
   });
 
@@ -102,19 +113,24 @@ describe("STRUCT / UNION alias assignment", () => {
   it("keeps a derived STRUCT refused, directly and behind an alias", () => {
     expect(errorsIn("s := b; s := tb; t := b; tb := s; b := t;")).toEqual([
       "Cannot assign ST_B to ST_A: a structured variable is assignment-compatible only with the same type (ST_B EXTENDS ST_A)",
-      "Cannot assign T_B to ST_A",
-      "Cannot assign ST_B to T_A",
-      "Cannot assign ST_A to T_B",
-      "Cannot assign T_A to ST_B",
+      "Cannot assign T_B to ST_A: a structured variable is assignment-compatible only with the same type (ST_B EXTENDS ST_A)",
+      "Cannot assign ST_B to T_A: a structured variable is assignment-compatible only with the same type (ST_B EXTENDS ST_A)",
+      "Cannot assign ST_A to T_B: a structured variable is assignment-compatible only with the same type (ST_B EXTENDS ST_A)",
+      "Cannot assign T_A to ST_B: a structured variable is assignment-compatible only with the same type (ST_B EXTENDS ST_A)",
     ]);
   });
 
   it("keeps a different STRUCT refused", () => {
-    const r = compile(`${TYPES}
+    const r = compile(
+      `${TYPES}
       TYPE ST_C : STRUCT x : INT; y : REAL; END_STRUCT END_TYPE
       PROGRAM Main VAR c : ST_C; t : T_A; END_VAR
         c := t;
-      END_PROGRAM`, { features: ["union", "struct_extends"] });
-    expect(r.errors.map((e) => e.message)).toEqual(["Cannot assign T_A to ST_C"]);
+      END_PROGRAM`,
+      { features: ["union", "struct_extends"] },
+    );
+    expect(r.errors.map((e) => e.message)).toEqual([
+      "Cannot assign T_A to ST_C",
+    ]);
   });
 });
