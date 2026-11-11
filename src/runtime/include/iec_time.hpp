@@ -48,8 +48,9 @@ constexpr int64_t NS_PER_D = 24LL * NS_PER_H;
 // Conversion: TIME → integer count of the requested unit (truncated)
 // ---------------------------------------------------------------------------
 // The millisecond / second variants live in `iec_std_lib.hpp` next to the
-// generic numeric conversions.  Other units stay here so the per-type
-// surface is self-contained.
+// generic numeric conversions: TIME_TO_MS truncates to LINT, TIME_TO_S
+// returns LREAL seconds with the fraction kept.  Other units stay here so
+// the per-type surface is self-contained.
 //
 // Functions are inline but not constexpr: `IECVar<T>`'s constructors are
 // not constexpr, so passing one by value to a constexpr context isn't
