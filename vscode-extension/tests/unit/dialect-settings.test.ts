@@ -339,3 +339,103 @@ describe("DocumentManager dialect selection", () => {
     });
   });
 });
+
+const COND_PROGRAM = `PROGRAM Main
+VAR x : INT; END_VAR
+{IF defined(SIM)}
+x := not valid st;
+{END_IF}
+  x := nope;
+END_PROGRAM`;
+
+const WITH_COND = profile("test-cond", ["conditional_pragmas"]);
+
+describe("pragmaDefines setting", () => {
+  it("accepts a name → string map and absent values", () => {
+    expect(parseDialectSettings(undefined, undefined, { SIM: "", MODE: "fast" })).toEqual({
+      ok: true,
+      settings: { pragmaDefines: { SIM: "", MODE: "fast" } },
+    });
+    expect(parseDialectSettings(null, null, null)).toEqual({ ok: true, settings: {} });
+    expect(parseDialectSettings(null, null, {})).toEqual({ ok: true, settings: {} });
+  });
+
+  it("rejects a non-object, a non-string value and a key that is not an identifier", () => {
+    expect(parseDialectSettings(null, null, ["SIM"])).toEqual({
+      ok: false,
+      message: "'pragmaDefines' must be an object",
+    });
+    expect(parseDialectSettings(null, null, { SIM: 1 })).toEqual({
+      ok: false,
+      message: `'pragmaDefines' value of "SIM" must be a string`,
+    });
+    expect(parseDialectSettings(null, null, { "1X": "" })).toEqual({
+      ok: false,
+      message: `'pragmaDefines' key "1X" is not an identifier`,
+    });
+  });
+
+  it("dialectOptions carries pragmaDefines only when non-empty", () => {
+    expect(dialectOptions({})).not.toHaveProperty("pragmaDefines");
+    expect(dialectOptions({ pragmaDefines: {} })).not.toHaveProperty("pragmaDefines");
+    expect(dialectOptions({ pragmaDefines: { SIM: "" } })).toEqual({
+      pragmaDefines: { SIM: "" },
+    });
+  });
+});
+
+describe("DocumentManager conditional pragmas", () => {
+  it("analysis options carry the defines", () => {
+    const { dm, calls } = recordingManager();
+    dm.setDialect({ dialect: WITH_COND, pragmaDefines: { SIM: "" } });
+    dm.onDocumentOpen("file:///main.st", PLAIN_PROGRAM);
+    expect(calls[0]).toMatchObject({ pragmaDefines: { SIM: "" } });
+  });
+
+  it("without the feature each directive is an error at its position", () => {
+    const dm = new DocumentManager(analyze, NullWorkspaceFs);
+    dm.setDialect({ dialect: IEC_ONLY });
+    const state = dm.onDocumentOpen("file:///main.st", COND_PROGRAM);
+    const refusals = (state.analysisResult?.errors ?? []).filter((e) =>
+      e.message.startsWith("Conditional compilation pragmas are not supported"),
+    );
+    expect(refusals.map((e) => [e.line, e.column])).toEqual([
+      [3, 1],
+      [5, 1],
+    ]);
+  });
+
+  it("with the feature the dead branch is not checked and positions are kept", () => {
+    const dm = new DocumentManager(analyze, NullWorkspaceFs);
+    dm.setDialect({ dialect: WITH_COND });
+    const state = dm.onDocumentOpen("file:///main.st", COND_PROGRAM);
+    const errors = (state.analysisResult?.errors ?? []).filter((e) => e.severity === "error");
+    expect(errors.length).toBeGreaterThan(0);
+    for (const e of errors) expect([e.line, e.column]).toEqual([6, 8]);
+  });
+
+  it("test files take the pass, and their errors keep their line and column", () => {
+    const test = `TEST 't'
+{IF defined(SIM)}
+  ASSERT_TRUE(TRUE);
+{END_IF}
+{ELSE}
+END_TEST`;
+    const dm = new DocumentManager(analyze, NullWorkspaceFs);
+    dm.setDialect({ dialect: WITH_COND });
+    const state = dm.onDocumentOpen("file:///test_main.st", test);
+    expect(messages(state.analysisResult)).toContain(
+      "5: {ELSE} without a matching {IF}",
+    );
+    const err = state.analysisResult?.errors.find((e) => e.message.startsWith("{ELSE}"));
+    expect(err).toMatchObject({ line: 5, column: 1 });
+
+    const off = new DocumentManager(analyze, NullWorkspaceFs);
+    off.setDialect({ dialect: IEC_ONLY });
+    const refused = off.onDocumentOpen("file:///test_main.st", test);
+    const first = refused.analysisResult?.errors.find((e) =>
+      e.message.startsWith("Conditional compilation pragmas"),
+    );
+    expect(first).toMatchObject({ line: 2, column: 1 });
+  });
+});

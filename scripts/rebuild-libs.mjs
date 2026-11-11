@@ -144,6 +144,7 @@ function compileAndWrite({ sources, config, stlibPath, dependencies, sourcesDir 
     builtin: config.isBuiltin === true,
     dependencies,
     globalConstants: config.globalConstants,
+    ...(config.pragmaDefines ? { pragmaDefines: config.pragmaDefines } : {}),
   });
 
   if (!result.success) {

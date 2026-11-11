@@ -79,6 +79,7 @@ the root. A profile without `extends` has only its own features.
 | `trunc_dint`         | `TRUNC(x)` returns DINT for an LREAL too (not only a REAL)   |
 | `interface_zero`     | `itf := 0` stores NULL in an interface variable              |
 | `end_semicolon_optional` | under `--strict`, `END_IF` and the like need no `;`      |
+| `conditional_pragmas` | `{IF}`/`{ELSIF}`/`{ELSE}`/`{END_IF}` with `defined()`, `project_defined()`, `hasvalue()`, `AND`/`OR`/`NOT`; defines from `-D` ([below](#conditional-pragmas)) |
 
 ## Refusals
 
@@ -100,12 +101,14 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `TYPE U_A : UNION ... END_UNION`            | `union`              | `UNION type 'U_A' needs the feature union`                                           |
 | `fb : FB_A(p := 1);` (init arguments)       | `fb_init`            | `The init argument list of 'FB' needs the feature fb_init` (at `(`)                  |
 | `itf := 0` (interface variable)             | `interface_zero`     | `Assigning 0 to interface I_A needs the feature interface_zero` (at the `0`)         |
+| `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive) |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
 included, and `ADR` both in statements and in a declaration's initial value. IEC
 `REF_TO`, `REF()` and `^` need no feature. `--test` files are analysed with the default set, so they are
-not refused under `iec-3`.
+not refused under `iec-3`. The one exception is `conditional_pragmas`: `--test` resolves the dialect flags
+and `-D` for the test files too, so their conditional pragmas follow the same profile as the sources.
 
 A `REFERENCE TO` VAR_INPUT is bound to its argument at the call. Where `reference_to` is on, these
 arguments are errors: an expression (`REFERENCE TO input 'R' needs a variable to refer to, not an
@@ -490,10 +493,83 @@ are not synchronised with the task that runs the program.
 Pragmas `{...}` (IEC 61131-3 Ed. 3, 6.2) are not a feature: every profile, `iec-3` included, accepts them
 wherever whitespace may appear and skips them with a `Pragma ignored: {...}` warning at the pragma's line
 and column (listed by `--check --json`, exit 0). Their contents are not interpreted, apart from
-`{external ...}`. Conditional-compilation pragmas (`{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`,
-`{define ...}`, `{undefine ...}`, any case) are an error, `Conditional compilation pragmas are not
-supported: {...}`, because skipping them would compile every branch. A pragma ends at the first `}`; an
-unclosed `{` is the error `Unterminated pragma: '{' has no closing '}'`.
+`{external ...}` and, under `conditional_pragmas`, the conditional ones. Without that feature
+conditional-compilation pragmas (`{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`,
+`{undefine ...}`, any case) are an error, `Conditional compilation pragmas are not supported: {...}; they
+need the feature conditional_pragmas`, because skipping them would compile every branch. A pragma ends at
+the first `}`; an unclosed `{` is the error `Unterminated pragma: '{' has no closing '}'`.
+
+## Conditional pragmas
+
+Conditional compilation is a CODESYS / vendor-toolchain extension; IEC 61131-3 has no conditional
+compilation. `conditional_pragmas` is in neither the default set nor `iec-3`: a vendor profile lists it,
+or `--feature +conditional_pragmas` turns it on. `--strict` changes no feature, so `--strict` alone refuses
+these pragmas and `--strict` with a profile that lists the feature accepts them.
+
+```
+PROGRAM Main
+VAR
+{IF defined(SIM)}
+  x : INT := 1;
+{ELSIF hasvalue(MODE, 'fast')}
+  x : INT := 2;
+{ELSE}
+  x : INT := 3;
+{END_IF}
+END_VAR
+...
+END_PROGRAM
+```
+
+```bash
+strucpp main.st -o main.cpp --dialect-file vendor.json -D SIM
+strucpp main.st -o main.cpp --feature +conditional_pragmas -D MODE=fast
+```
+
+- **Directives.** `{IF <cond>}`, `{ELSIF <cond>}`, `{ELSE}` and `{END_IF}`, any case, nestable, anywhere
+  whitespace may appear: in declaration sections, in bodies, between POUs. The first branch whose condition
+  holds is compiled; the others are not. A directive inside a comment, a string or `{external ...}` is not
+  a directive.
+- **Conditions.** `or := and (OR and)*`, `and := not (AND not)*`, `not := NOT not | primary`,
+  `primary := '(' or ')' | call`. Keywords and operator names are case-insensitive.
+
+  | Operator | True when |
+  | --- | --- |
+  | `defined(NAME)` | `NAME` is defined |
+  | `project_defined(NAME)` | the same as `defined(NAME)` here (an inference, see below) |
+  | `hasvalue(NAME, 'text')` | `NAME` is defined and its value is exactly `text`; a bare `-D NAME` has the value `''` |
+
+- **Defines.** `-D NAME` (or `-DNAME`, `--define NAME`) defines `NAME` with the value `''`; `-D NAME=VALUE`
+  defines it with the value `VALUE`, and an integer `VALUE` is also a global constant, as before. A name must
+  be an identifier. Through the library API the defines are `pragmaDefines`, a name → string map, kept
+  separate from `globalConstants`: a library's or the caller's global constants never make a name
+  `defined()`.
+- **Refused operators.** `defined(variable:x)`, `defined(type:T)`, `defined(pou:P)`, `hasattribute`,
+  `hastype`, `hasconstantvalue` and `hasconstanttype` are errors, `Conditional pragma operator '<op>' is not
+  supported`, at the operator. Their answer depends on the symbols a compile sees, which differ between the
+  CLI, the language server and the library compiler. Any other name is `unknown operator '<x>' in a
+  conditional pragma`; a syntax error is `Malformed conditional pragma expression: expected ...` at the
+  offending character.
+- **Not supported.** `{define ...}` and `{undefine ...}` are errors, `{define} is not supported; pass
+  defines with -D`.
+- **Structure errors**, each at its directive: `{END_IF} without a matching {IF}`, `{ELSIF} without a
+  matching {IF}`, `{ELSE} without a matching {IF}`, `{ELSIF} after {ELSE}`, `second {ELSE} in one {IF}`,
+  and `{IF} has no matching {END_IF}` at the `{IF}` (the block is then closed at the end of the file).
+- **Every condition is checked**, inactive branches included, so the errors do not depend on the defines.
+  Conditions are only evaluated to choose a branch.
+- **Line-preserving.** Every directive and every inactive branch is replaced by spaces, line breaks kept
+  (`\r\n`, `\n` and `\r`), before anything else reads the file (IL included). Every diagnostic, `#line`
+  directive and debug position therefore keeps its original line and column.
+- **Inactive code is not checked.** It is not lexed, parsed or analysed, so it may hold code that does not
+  compile; its `{attribute ...}` pragmas give no warning and its `{external ...}` blocks are dropped.
+- **Limits.** A pragma ends at the first `}`, so a `hasvalue` text cannot contain `}`; strings take no
+  escapes.
+- **Test files.** `parseTestFile(source, fileName, options)` takes the dialect fields and `pragmaDefines`;
+  without `options` it refuses conditional pragmas as before. `--test` passes the dialect flags and `-D`.
+- **Libraries.** `compileStlib` takes `pragmaDefines` and records them in the archive as `pragmaDefines`
+  when there are any, so a rebuild from the archive's sources can use the same ones.
+- **Not verified against the vendor toolchains** (inferences): define names compare case-insensitively;
+  `project_defined` is treated as `defined`; `hasvalue` compares the text exactly, with single quotes.
 
 ## Strict checks a feature relaxes
 
@@ -531,18 +607,20 @@ Unknown top-level keys and wrongly typed values are refused the same way.
 ## Library API
 
 `compile()` and `compileStlib()` take `dialect` (an id or a profile object), `dialectFiles`, `dialectPath`,
-`features` and `dialectIO`. `compile()` and `analyze()` also take `globalListName` (and the same key on each
+`features`, `dialectIO` and `pragmaDefines` (a name → string map for conditional pragmas; a key that is not
+an identifier or a value that is not a string throws a `TypeError`). `compile()` and `analyze()` also take `globalListName` (and the same key on each
 `additionalSources` entry) for `named_global_lists`; a name that is not an identifier throws a `TypeError`. The core never reads files: pass `nodeDialectIO` from `strucpp/node` (or your
 own `{readFile, listDir}`) with `dialectFiles` or `dialectPath`. A bad profile is a compile error
 (line 0). `resolveDialect()` and `profilesWithFeature()` are exported for callers that resolve themselves.
 
 ## Language server
 
-The Node language server (`vscode-extension/server`) reads two keys of the `strucpp` workspace
+The Node language server (`vscode-extension/server`) reads three keys of the `strucpp` workspace
 configuration, at start-up and on `workspace/didChangeConfiguration`:
 
 - `dialect`: a profile object, or `null`/absent for the compiler's default;
-- `features`: an array of `+id`, `-id` or `id` overrides, or `null`/absent.
+- `features`: an array of `+id`, `-id` or `id` overrides, or `null`/absent;
+- `pragmaDefines`: a name → string map for conditional pragmas (like `-D`), or `null`/absent.
 
 The server reads no profile files. Diagnostics of open, workspace and library documents and the
 compile, build, debug-build, library and test requests all use the selection. A change re-analyses the

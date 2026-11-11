@@ -81,6 +81,8 @@ export interface ExtensionSettings {
   dialect: DialectProfile | null;
   /** Single-feature overrides (`+id`, `-id` or `id`) applied after the profile; null = none. */
   features: string[] | null;
+  /** Conditional-pragma defines (name → value, `''` for a bare name); null = none. */
+  pragmaDefines: Record<string, string> | null;
 }
 
 export const GetSettingsRequest = new RequestType<

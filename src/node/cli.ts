@@ -120,6 +120,8 @@ interface CLIOptions {
   importLib?: string;
   test: string[];
   defines: Record<string, number>;
+  /** `-D` names for conditional pragmas: name → value (`''` for a bare name). */
+  pragmaDefines: Record<string, string>;
 }
 
 /**
@@ -189,6 +191,7 @@ function parseArgs(args: string[]): CLIOptions {
     builtin: false,
     test: [],
     defines: {},
+    pragmaDefines: {},
   };
 
   // Usage errors exit 2 in check mode, 1 otherwise.
@@ -322,23 +325,25 @@ function parseArgs(args: string[]): CLIOptions {
       if (nextArg !== undefined) {
         options.importLib = nextArg;
       }
-    } else if (arg === "--define") {
-      i++;
-      const nextArg = args[i];
-      if (nextArg !== undefined) {
-        parseDefine(nextArg, options.defines);
-      }
-    } else if (arg !== undefined && arg.startsWith("-D")) {
-      // -DNAME=VALUE (no space) or -D NAME=VALUE (with space)
-      const inline = arg.substring(2);
-      if (inline.length > 0) {
-        parseDefine(inline, options.defines);
-      } else {
+    } else if (
+      arg === "--define" ||
+      (arg !== undefined && arg.startsWith("-D"))
+    ) {
+      // --define NAME[=VALUE], -D NAME[=VALUE] or -DNAME[=VALUE]
+      const inline = arg === "--define" ? "" : arg.substring(2);
+      let spec: string | undefined = inline;
+      if (inline.length === 0) {
         i++;
-        const nextArg = args[i];
-        if (nextArg !== undefined) {
-          parseDefine(nextArg, options.defines);
-        }
+        spec = args[i];
+      }
+      if (spec === undefined) {
+        console.error(`error: ${arg} needs a value`);
+        process.exit(usageExit);
+      }
+      const problem = parseDefine(spec, options.defines, options.pragmaDefines);
+      if (problem !== undefined) {
+        console.error(`error: ${problem}`);
+        process.exit(usageExit);
       }
     } else if (arg === "--test") {
       // Collect all following arguments that don't start with '-' as test files
@@ -461,7 +466,9 @@ Options:
   --cxx-flags <flags>       Extra C++ compiler flags
   -L, --lib-path <path>     Library search path (repeatable)
   --no-default-libs         Do not auto-add bundled library paths
-  -D, --define NAME=VALUE   Define a global constant (repeatable)
+  -D, --define NAME[=VALUE] Define a name for conditional pragmas (feature
+                            conditional_pragmas); an integer VALUE also
+                            defines a global constant (repeatable)
   -v, --version             Show version
   -h, --help                Show this help
 
@@ -500,22 +507,35 @@ For more information, visit: https://github.com/Autonomy-Logic/STruCpp
 `);
 }
 
-/** The dialect flags as compile options (empty when none is given). */
+/** The dialect flags and `-D` pragma defines as compile options (empty when none is given). */
 function dialectCompileOptions(
   options: CLIOptions,
 ): Pick<
   CompileOptions,
-  "dialect" | "dialectFiles" | "dialectPath" | "features" | "dialectIO"
+  | "dialect"
+  | "dialectFiles"
+  | "dialectPath"
+  | "features"
+  | "dialectIO"
+  | "pragmaDefines"
 > {
   const out: Pick<
     CompileOptions,
-    "dialect" | "dialectFiles" | "dialectPath" | "features" | "dialectIO"
+    | "dialect"
+    | "dialectFiles"
+    | "dialectPath"
+    | "features"
+    | "dialectIO"
+    | "pragmaDefines"
   > = {};
   if (options.dialect !== undefined) out.dialect = options.dialect;
   if (options.dialectFiles.length > 0) out.dialectFiles = options.dialectFiles;
   if (options.dialectPath.length > 0) out.dialectPath = options.dialectPath;
   if (options.features.length > 0) out.features = options.features;
   if (out.dialectFiles || out.dialectPath) out.dialectIO = nodeDialectIO;
+  if (Object.keys(options.pragmaDefines).length > 0) {
+    out.pragmaDefines = options.pragmaDefines;
+  }
   return out;
 }
 
@@ -545,19 +565,35 @@ function checkDialect(options: CLIOptions): void {
   }
 }
 
+/** A `-D` name: an IEC identifier. */
+const DEFINE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /**
- * Parse a `NAME=VALUE` define string and add it to the defines record.
- * Ignores malformed input (no `=`, non-numeric value).
+ * Parse a `-D` value, `NAME` or `NAME=VALUE`. Every name is a conditional
+ * pragma define (`''` for a bare name); a VALUE that parses as an integer
+ * also defines a global constant. Returns a usage message for a bad name.
  */
-function parseDefine(input: string, defines: Record<string, number>): void {
+function parseDefine(
+  input: string,
+  defines: Record<string, number>,
+  pragmaDefines: Record<string, string>,
+): string | undefined {
   const eqIdx = input.indexOf("=");
-  if (eqIdx > 0) {
-    const name = input.substring(0, eqIdx);
-    const value = parseInt(input.substring(eqIdx + 1), 10);
-    if (!isNaN(value)) {
-      defines[name] = value;
-    }
+  const name = eqIdx >= 0 ? input.substring(0, eqIdx) : input;
+  if (!DEFINE_NAME_RE.test(name)) {
+    return `-D needs NAME or NAME=VALUE with an identifier name, got '${input}'`;
   }
+  if (eqIdx < 0) {
+    pragmaDefines[name] = "";
+    return undefined;
+  }
+  const text = input.substring(eqIdx + 1);
+  pragmaDefines[name] = text;
+  const value = parseInt(text, 10);
+  if (!isNaN(value)) {
+    defines[name] = value;
+  }
+  return undefined;
 }
 
 /**
@@ -877,7 +913,11 @@ function runTestMode(options: CLIOptions): void {
     }
     testSources.push({ fileName: basename(testPath), source: testSource });
 
-    const parseResult = parseTestFile(testSource, basename(testPath));
+    const parseResult = parseTestFile(
+      testSource,
+      basename(testPath),
+      dialectCompileOptions(options),
+    );
     if (parseResult.errors.length > 0) {
       console.error(`Error parsing ${basename(testPath)}:\n`);
       printDiagnostics(parseResult.errors, testSources);

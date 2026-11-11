@@ -83,6 +83,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   formatOnSave: false,
   dialect: null,
   features: null,
+  pragmaDefines: null,
 };
 
 let currentSettings: ExtensionSettings = { ...DEFAULT_SETTINGS };
@@ -113,10 +114,15 @@ async function fetchSettings(): Promise<void> {
         formatOnSave: config.formatOnSave ?? DEFAULT_SETTINGS.formatOnSave,
         dialect: currentSettings.dialect,
         features: currentSettings.features,
+        pragmaDefines: currentSettings.pragmaDefines,
       };
       analysisDebounceMs = currentSettings.analyzeDelay;
       const section = config as Record<string, unknown>;
-      applyDialectSettings(section["dialect"], section["features"]);
+      applyDialectSettings(
+        section["dialect"],
+        section["features"],
+        section["pragmaDefines"],
+      );
     }
   } catch {
     // Use defaults if config fetch fails
@@ -124,11 +130,16 @@ async function fetchSettings(): Promise<void> {
 }
 
 /**
- * Adopt the `dialect` / `features` settings if the compiler accepts them.
- * A rejected value keeps the previous selection and is reported to the user.
+ * Adopt the `dialect` / `features` / `pragmaDefines` settings if the
+ * compiler accepts them. A rejected value keeps the previous selection and
+ * is reported to the user.
  */
-function applyDialectSettings(dialect: unknown, features: unknown): void {
-  const parsed = parseDialectSettings(dialect, features);
+function applyDialectSettings(
+  dialect: unknown,
+  features: unknown,
+  pragmaDefines: unknown,
+): void {
+  const parsed = parseDialectSettings(dialect, features, pragmaDefines);
   if (!parsed.ok) {
     const message = `STruC++: dialect profile rejected: ${parsed.message}`;
     connection.console.error(message);
@@ -137,6 +148,7 @@ function applyDialectSettings(dialect: unknown, features: unknown): void {
   }
   currentSettings.dialect = parsed.settings.dialect ?? null;
   currentSettings.features = parsed.settings.features ?? null;
+  currentSettings.pragmaDefines = parsed.settings.pragmaDefines ?? null;
   docManager.setDialect(parsed.settings);
 }
 
@@ -803,7 +815,11 @@ connection.onRequest(RunTestsRequest, async (params: RunTestsParams): Promise<Ru
   }
 
   // 4. Parse test file
-  const parseResult = parseTestFile(testSource, testFileName);
+  const parseResult = parseTestFile(
+    testSource,
+    testFileName,
+    docManager.getDialectOptions(),
+  );
   if (parseResult.errors.length > 0) {
     return {
       success: false,

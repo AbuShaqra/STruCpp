@@ -498,7 +498,12 @@ function compileNativeEntries(
 /** Dialect options a library compile forwards to the ST compiler. */
 export type LibraryDialectOptions = Pick<
   import("../types.js").CompileOptions,
-  "dialect" | "dialectFiles" | "dialectPath" | "features" | "dialectIO"
+  | "dialect"
+  | "dialectFiles"
+  | "dialectPath"
+  | "features"
+  | "dialectIO"
+  | "pragmaDefines"
 >;
 
 /**
@@ -651,6 +656,7 @@ export function compileLibrary(
   if (options.dialectPath) compileOpts.dialectPath = options.dialectPath;
   if (options.features) compileOpts.features = options.features;
   if (options.dialectIO) compileOpts.dialectIO = options.dialectIO;
+  if (options.pragmaDefines) compileOpts.pragmaDefines = options.pragmaDefines;
   if (options.dependencies) {
     compileOpts.libraries = options.dependencies;
   }
@@ -981,6 +987,9 @@ export function compileStlib(
     Object.keys(options.globalConstants).length > 0
   ) {
     archive.globalConstants = options.globalConstants;
+  }
+  if (options.pragmaDefines && Object.keys(options.pragmaDefines).length > 0) {
+    archive.pragmaDefines = { ...options.pragmaDefines };
   }
 
   return {

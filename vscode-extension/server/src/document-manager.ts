@@ -78,7 +78,10 @@ export class DocumentManager {
   }
 
   /** Dialect compile options for the current selection; `{}` when none is set. */
-  getDialectOptions(): Pick<Partial<CompileOptions>, "dialect" | "features"> {
+  getDialectOptions(): Pick<
+    Partial<CompileOptions>,
+    "dialect" | "features" | "pragmaDefines"
+  > {
     return dialectOptions(this.dialect);
   }
 
@@ -556,14 +559,18 @@ export class DocumentManager {
       // Parse the test file and run semantic validation (assert arg counts,
       // mock targets, type refs, undeclared vars) to surface diagnostics
       if (state.analysisResult?.symbolTables) {
-        const parseResult = parseTestFile(state.source, currentFileName);
+        const parseResult = parseTestFile(
+          state.source,
+          currentFileName,
+          this.getDialectOptions(),
+        );
         if (parseResult.errors.length > 0) {
           state.analysisResult.errors = [
             ...state.analysisResult.errors,
             ...parseResult.errors.map((e) => ({
-              message: (e as { message?: string }).message ?? String(e),
-              line: (e as { token?: { startLine?: number } }).token?.startLine ?? 1,
-              column: (e as { token?: { startColumn?: number } }).token?.startColumn ?? 1,
+              message: e.message,
+              line: e.line > 0 ? e.line : 1,
+              column: e.column > 0 ? e.column : 1,
               severity: "error" as const,
             })),
           ];

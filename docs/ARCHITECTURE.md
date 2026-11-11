@@ -8,6 +8,9 @@ STruC++ is an IEC 61131-3 Structured Text to C++14 compiler written in TypeScrip
 ST Source
   |
   v
+Conditional pragmas          src/frontend/conditional-pragmas.ts (feature conditional_pragmas;
+  | active text, same lines  inactive branches blanked; then IL->ST, src/il/)
+  v
 Lexer (Chevrotain)          src/frontend/lexer.ts
   | tokens
   v
@@ -46,6 +49,7 @@ src/
 
   frontend/
     lexer.ts                 Chevrotain tokenizer (~50 keywords, literals, operators)
+    conditional-pragmas.ts   {IF}/{ELSIF}/{ELSE}/{END_IF} resolution, line-preserving blanking
     parser.ts                LL(3) grammar with error recovery
     ast.ts                   AST node interfaces (CompilationUnit, POU types, expressions)
     ast-builder.ts           CST-to-AST visitor

@@ -38,6 +38,14 @@ export interface CompileOptions {
   /** File access for `dialectFiles`/`dialectPath` (`nodeDialectIO` from `strucpp/node`). */
   dialectIO?: import("./dialect.js").DialectIO;
 
+  /**
+   * Names for `defined()` / `hasvalue()` in conditional pragmas (feature
+   * `conditional_pragmas`): name → value, `''` for a bare name. Names compare
+   * case-insensitively. Separate from `globalConstants`. Ignored when the
+   * feature is off; a key that is not an identifier throws a TypeError.
+   */
+  pragmaDefines?: Record<string, string>;
+
   /** Generate line mapping between ST and C++ */
   lineMapping: boolean;
 

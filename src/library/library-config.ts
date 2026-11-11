@@ -61,6 +61,9 @@ export interface LibraryConfig {
    *  (e.g. OSCAT's STRING_LENGTH and LIST_LENGTH). Forwarded to
    *  compileStlib's `globalConstants` option. */
   globalConstants?: Record<string, number>;
+  /** Conditional-pragma defines (name → value, `''` for a bare name).
+   *  Forwarded to compileStlib's `pragmaDefines` option. */
+  pragmaDefines?: Record<string, string>;
   /** Path (relative to the library's source directory) to a CODESYS
    *  binary library file (.lib for V2.3, .library for V3) that the build
    *  script should run through the codesys-importer instead of compiling
@@ -121,6 +124,9 @@ function validateLibraryConfig(raw: unknown, path: string): LibraryConfig {
   if (obj.globalConstants !== undefined) {
     config.globalConstants = validateGlobalConstants(obj.globalConstants, path);
   }
+  if (obj.pragmaDefines !== undefined) {
+    config.pragmaDefines = validatePragmaDefines(obj.pragmaDefines, path);
+  }
   if (obj.blocks !== undefined) {
     config.blocks = validateDocMap(obj.blocks, "blocks", path);
   }
@@ -143,6 +149,28 @@ function validateGlobalConstants(
       throw new Error(
         `${path}: globalConstants["${key}"] must be a finite number`,
       );
+    }
+    out[key] = v;
+  }
+  return out;
+}
+
+function validatePragmaDefines(
+  value: unknown,
+  path: string,
+): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${path}: "pragmaDefines" must be an object map`);
+  }
+  const out: Record<string, string> = {};
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      throw new Error(
+        `${path}: pragmaDefines key "${key}" is not an identifier`,
+      );
+    }
+    if (typeof v !== "string") {
+      throw new Error(`${path}: pragmaDefines["${key}"] must be a string`);
     }
     out[key] = v;
   }

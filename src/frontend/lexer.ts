@@ -202,6 +202,23 @@ export function isConditionalPragma(image: string): boolean {
   return CONDITIONAL_PRAGMA.test(image);
 }
 
+/** {@link CONDITIONAL_PRAGMA} without its start anchor, to search a whole text. */
+const CONDITIONAL_PRAGMA_ANYWHERE = new RegExp(
+  CONDITIONAL_PRAGMA.source.replace(/^\^/, ""),
+  CONDITIONAL_PRAGMA.flags,
+);
+
+/**
+ * True if `text` holds something that looks like a conditional-compilation
+ * directive anywhere (comments and strings included). A cheap pre-check:
+ * a hit still has to be confirmed by lexing.
+ *
+ * @param text - Source text to search
+ */
+export function hasConditionalPragma(text: string): boolean {
+  return CONDITIONAL_PRAGMA_ANYWHERE.test(text);
+}
+
 // =============================================================================
 // Nested Comment Support
 // =============================================================================

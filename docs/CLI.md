@@ -212,7 +212,7 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 | `--gpp <path>`        | Custom g++ path (default: `g++`)                              |
 | `--cc <path>`         | Custom C compiler path (default: `cc`)                        |
 | `--cxx-flags <flags>` | Extra flags passed to g++ (supports quoted paths)             |
-| `-D NAME=VALUE`       | Define global constant (repeatable, emits `constexpr size_t`) |
+| `-D NAME[=VALUE]`     | Define a conditional-pragma name (`--define`, `-DNAME`; repeatable); an integer VALUE also defines a global constant (emits `constexpr size_t`). A name that is not an identifier is a usage error. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
 | `-d, --debug`         | Enable debug output                                           |
 | `--strict`            | Reject code that strict IEC compilers (matiec) reject; below  |
 
