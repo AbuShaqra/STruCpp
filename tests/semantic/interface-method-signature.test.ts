@@ -71,6 +71,26 @@ END_METHOD`),
         ]);
       });
 
+      it("refuses another STRING length of an in/out or output", () => {
+        expect(
+          errors(
+            `METHOD M : INT
+VAR_IN_OUT t : STRING(20); END_VAR
+M := 1;
+END_METHOD`,
+            "",
+            `INTERFACE I
+METHOD M : INT
+VAR_IN_OUT t : STRING(10); END_VAR
+END_METHOD
+END_INTERFACE
+`,
+          ),
+        ).toEqual([
+          `${WHERE}: parameter 1 'T' is STRING(20), the interface's 'T' is STRING(10)`,
+        ]);
+      });
+
       it("refuses an input turned into an output", () => {
         expect(
           errors(`METHOD M : INT
@@ -155,13 +175,13 @@ END_METHOD`);
       });
 
       it("accepts what C++ overrides alike", () => {
-        // A default value, STRING and STRING(254), an output for an in/out,
-        // and the STRING length of a reference.
+        // A default value, STRING and STRING(254) (also by reference), and
+        // an output for an in/out.
         MODE_OPTIONS = options;
         const r = build(
           `METHOD M : INT
 VAR_INPUT a : INT := 5; s : STRING(254); END_VAR
-VAR_IN_OUT o : INT; t : STRING(20); END_VAR
+VAR_IN_OUT o : INT; t : STRING(254); END_VAR
 M := a;
 END_METHOD`,
           "",
@@ -169,7 +189,7 @@ END_METHOD`,
 METHOD M : INT
 VAR_INPUT a : INT; s : STRING; END_VAR
 VAR_OUTPUT o : INT; END_VAR
-VAR_IN_OUT t : STRING(10); END_VAR
+VAR_IN_OUT t : STRING; END_VAR
 END_METHOD
 END_INTERFACE
 `,

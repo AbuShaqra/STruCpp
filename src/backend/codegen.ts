@@ -820,6 +820,20 @@ export class CodeGenerator {
    * &-reference — matching the previous behavior of the call sites that
    * went through `mapVarTypeToCpp(decl.type.name)` without maxLength.
    */
+  /**
+   * The shape of a parameter passed by reference (VAR_IN_OUT, VAR_OUTPUT of
+   * a FUNCTION or METHOD): as toParamTypeRef, keeping a STRING length so the
+   * C++ reference has the declared type.
+   */
+  protected byRefParamTypeRef<T extends TypeShape>(typeRef: T): TypeShape {
+    const upper = typeRef.name.toUpperCase();
+    const isString = upper === "STRING" || upper === "WSTRING";
+    const shape = this.toParamTypeRef(typeRef);
+    return isString && typeRef.maxLength !== undefined
+      ? { ...shape, maxLength: typeRef.maxLength }
+      : shape;
+  }
+
   protected toParamTypeRef<T extends TypeShape>(typeRef: T): TypeShape {
     const upper = typeRef.name.toUpperCase();
     const isString = upper === "STRING" || upper === "WSTRING";
@@ -2303,10 +2317,7 @@ export class CodeGenerator {
             if (decl.type.name.startsWith("__VLA_")) {
               params.push(`${this.mapTypeRefToCpp(decl.type)} ${name}`);
             } else {
-              // mapTypeRefToCpp preserves arrayDimensions / elementTypeName
-              // (so inline ARRAY params emit Array1D<...>) but we still want
-              // STRING/WSTRING maxLength dropped so any string size binds to
-              // the &-reference — strip it on a shallow copy of the typeRef.
+              // A STRING(n) keeps its length: the argument binds when it has it.
               params.push(`${this.inOutParamType(decl.type)}& ${name}`);
             }
           }
@@ -2316,7 +2327,7 @@ export class CodeGenerator {
           for (const name of decl.names) {
             // Same metadata-aware lookup as VAR_IN_OUT — see the comment above.
             params.push(
-              `${this.mapTypeRefToCpp(this.toParamTypeRef(decl.type))}& ${name}`,
+              `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${name}`,
             );
           }
         }
@@ -2552,10 +2563,7 @@ export class CodeGenerator {
       } else if (block.blockType === "VAR_IN_OUT") {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
-            // mapTypeRefToCpp preserves arrayDimensions / elementTypeName
-            // (so inline ARRAY params emit Array1D<...>) while
-            // toParamTypeRef strips STRING/WSTRING maxLength so any
-            // string size binds to the &-reference.
+            // A STRING(n) keeps its length: the argument binds when it has it.
             params.push(`${this.inOutParamType(decl.type)}& ${name}`);
           }
         }
@@ -2563,7 +2571,7 @@ export class CodeGenerator {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
             params.push(
-              `${this.mapTypeRefToCpp(this.toParamTypeRef(decl.type))}& ${name}`,
+              `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${name}`,
             );
           }
         }
@@ -4461,7 +4469,18 @@ export class CodeGenerator {
       (this.programExternals.has(e.name.toUpperCase()) ||
         this.currentScopeVarRefKinds.get(e.name.toUpperCase()) ===
           "reference_to");
+    const varBlocks =
+      this.calleeVarBlocks(call) ?? this.librarySizedStringBlocks(call);
+    const hasSizedStringParam =
+      varBlocks?.some(
+        (b) =>
+          (b.blockType === "VAR_OUTPUT" || b.blockType === "VAR_IN_OUT") &&
+          b.declarations.some(
+            (d) => this.sizedStringLength(d.type) !== undefined,
+          ),
+      ) === true;
     if (
+      !hasSizedStringParam &&
       !call.arguments.some(
         (a) =>
           isCompositeGlobal(a.value) ||
@@ -4472,7 +4491,6 @@ export class CodeGenerator {
     ) {
       return [];
     }
-    const varBlocks = this.calleeVarBlocks(call);
     if (!varBlocks) return [];
 
     const params: Array<{
@@ -4516,10 +4534,18 @@ export class CodeGenerator {
       const value = arg.value;
       if (value.kind !== "VariableExpression") continue;
       if (param.blockType === "VAR_IN_OUT" && !arg.isOutput) {
-        if (arg.inOutCopy === true) {
+        const sized = this.sizedStringLength(param.type);
+        if (
+          arg.inOutCopy === true ||
+          (sized !== undefined &&
+            !isCompositeGlobal(value) &&
+            !isUnionMember(value) &&
+            !rendersBound(value) &&
+            !this.hasStringLength(value, sized))
+        ) {
           result.push({
             value,
-            cppType: this.inOutParamType(this.toParamTypeRef(param.type)),
+            cppType: this.inOutParamType(param.type),
           });
         } else if (value.unionMember === true) {
           result.push({ value });
@@ -4530,6 +4556,15 @@ export class CodeGenerator {
           }
         }
       } else if (
+        param.blockType === "VAR_OUTPUT" &&
+        !isCompositeGlobal(value) &&
+        !isUnionMember(value) &&
+        this.sizedStringLength(param.type) !== undefined &&
+        !this.hasStringLength(value, this.sizedStringLength(param.type)!)
+      ) {
+        // A STRING(n) output binds only a variable of that length.
+        result.push({ value, cppType: this.inOutParamType(param.type) });
+      } else if (
         (arg.isOutput || param.blockType === "VAR_OUTPUT") &&
         (isCompositeGlobal(value) || isUnionMember(value))
       ) {
@@ -4537,6 +4572,78 @@ export class CodeGenerator {
       }
     }
     return result;
+  }
+
+  /**
+   * The length of a STRING or WSTRING declared with one other than the
+   * default (a constant resolved when known, else its name in upper case);
+   * undefined for any other type.
+   */
+  private sizedStringLength(type: {
+    name: string;
+    maxLength?: number | string;
+    arrayDimensions?: unknown;
+    referenceKind?: string;
+  }): string | undefined {
+    const upper = type.name.toUpperCase();
+    if (upper !== "STRING" && upper !== "WSTRING") return undefined;
+    if (type.arrayDimensions !== undefined) return undefined;
+    if (type.referenceKind !== undefined && type.referenceKind !== "none") {
+      return undefined;
+    }
+    let length = type.maxLength;
+    if (typeof length === "string") {
+      const constants = this.options.globalConstants;
+      const key = Object.keys(constants).find(
+        (k) => k.toUpperCase() === (length as string).toUpperCase(),
+      );
+      if (key !== undefined) length = constants[key];
+    }
+    if (length === undefined || length === 254) return undefined;
+    return String(length).toUpperCase();
+  }
+
+  /**
+   * The declaration blocks of a library FUNCTION `call` invokes, when it has
+   * a STRING(n) output or in/out (its archive records the length).
+   */
+  private librarySizedStringBlocks(
+    call: FunctionCallExpression | MethodCallExpression,
+  ): VarBlock[] | undefined {
+    if (call.kind !== "FunctionCallExpression" || call.instance)
+      return undefined;
+    if (call.functionName.includes(".")) return undefined;
+    if (this.getFBInvocationType(call.functionName, undefined) !== undefined) {
+      return undefined;
+    }
+    const blocks = this.libraryFunctionDeclaration(
+      call.functionName,
+    )?.varBlocks;
+    const sized = blocks?.some(
+      (b) =>
+        (b.blockType === "VAR_OUTPUT" || b.blockType === "VAR_IN_OUT") &&
+        b.declarations.some(
+          (d) => this.sizedStringLength(d.type) !== undefined,
+        ),
+    );
+    return sized === true ? blocks : undefined;
+  }
+
+  /**
+   * True when `value` is a plain variable declared as a STRING or WSTRING of
+   * `length` (the length text as written); false when unknown.
+   */
+  private hasStringLength(value: VariableExpression, length: string): boolean {
+    const hasAccess =
+      value.subscripts.length > 0 ||
+      value.fieldAccess.length > 0 ||
+      value.isDereference ||
+      (value.accessChain !== undefined && value.accessChain.length > 0);
+    if (hasAccess) return false;
+    const type =
+      this.currentScopeVarTypeRefs.get(value.name.toUpperCase()) ??
+      this.namespaceGlobalTypeRef(value.name.toUpperCase());
+    return type !== undefined && this.sizedStringLength(type) === length;
   }
 
   /** The declaration blocks of the method or user FUNCTION `call` invokes;
@@ -7227,7 +7334,7 @@ export class CodeGenerator {
       (type.referenceKind === undefined || type.referenceKind === "none") &&
       this.isInterfaceType(type.name)
       ? type.name
-      : this.mapTypeRefToCpp(this.toParamTypeRef(type));
+      : this.mapTypeRefToCpp(this.byRefParamTypeRef(type));
   }
 
   /**

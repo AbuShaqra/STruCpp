@@ -25,7 +25,8 @@ const REFERENCE_SPELLING = {
 } as const;
 
 /** The ST spelling of a manifest variable type. */
-function typeText(v: LibraryVarType): string {
+function typeText(v: LibraryVarType & { maxLength?: number | string }): string {
+  if (v.maxLength !== undefined) return `${v.type}(${String(v.maxLength)})`;
   const levels = v.referenceChain ?? (v.referenceKind ? [v.referenceKind] : []);
   const prefix = levels
     .map((k) => (k === "none" ? "" : REFERENCE_SPELLING[k]))
@@ -91,7 +92,7 @@ export function libraryFunctionDeclaration(
   };
   const params = fn.parameters.map(
     (p) =>
-      `${blockOf[p.direction]} ${p.name} : ${p.referenceKind === "reference_to" ? "REFERENCE TO " : ""}${p.type}` +
+      `${blockOf[p.direction]} ${p.name} : ${p.referenceKind === "reference_to" ? "REFERENCE TO " : ""}${p.type}${p.maxLength !== undefined ? `(${String(p.maxLength)})` : ""}` +
       `${p.initialValue !== undefined ? ` := ${p.initialValue}` : ""}; END_VAR`,
   );
   const source = [
