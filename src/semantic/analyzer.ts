@@ -401,6 +401,14 @@ interface UndeclaredVarContext {
   loopDepth?: number;
 }
 
+/** Bit width of each IEC bit-string type, for its typed literals. */
+const BIT_STRING_BITS: Readonly<Record<string, number>> = {
+  BYTE: 8,
+  WORD: 16,
+  DWORD: 32,
+  LWORD: 64,
+};
+
 export class SemanticAnalyzer {
   private symbolTables: SymbolTables;
   private typeChecker: TypeChecker;
@@ -2306,7 +2314,7 @@ export class SemanticAnalyzer {
       const literal = node as LiteralExpression;
       if (literal.literalType !== "INT") return;
       if ((literal.typePrefix ?? "") !== "") {
-        this.validateSignedTypedLiteralRange(literal);
+        this.validateTypedLiteralRange(literal);
         return;
       }
       const exact = exactIntegerLiteralValue(literal.rawValue);
@@ -2327,22 +2335,34 @@ export class SemanticAnalyzer {
   }
 
   /**
-   * Reject a signed typed integer literal (`SINT#-129`, `USINT#-1`) whose value
-   * its prefix type cannot hold. Only the signed form is checked: an unsigned
-   * payload (`SINT#200`) keeps its existing, unchecked lowering.
+   * Reject a typed integer literal whose value its prefix type cannot hold
+   * (`SINT#200`, `USINT#-1`, `BYTE#256`). A based payload (`2#`, `8#`, `16#`)
+   * on a signed type is a bit pattern: it is accepted when it fits the type's
+   * width (`INT#16#FFFF`).
    */
-  private validateSignedTypedLiteralRange(literal: LiteralExpression): void {
+  private validateTypedLiteralRange(literal: LiteralExpression): void {
     const raw = literal.rawValue;
     const payload = raw.substring(raw.indexOf("#") + 1);
-    if (!/^[+-]/.test(payload)) return;
-    const range = integerTypeRange(literal.typePrefix ?? "");
+    const prefix = (literal.typePrefix ?? "").toUpperCase();
+    const range =
+      integerTypeRange(prefix) ??
+      (BIT_STRING_BITS[prefix] !== undefined
+        ? { min: 0n, max: (1n << BigInt(BIT_STRING_BITS[prefix])) - 1n }
+        : undefined);
     const exact = exactIntegerLiteralValue(payload);
     if (range === undefined || exact === undefined) return;
     if (exact >= range.min && exact <= range.max) return;
+    const bitPattern =
+      range.min < 0n && /^(2|8|16)#/.test(payload.replace(/_/g, ""));
+    if (bitPattern && exact >= 0n && exact <= range.max - range.min) return;
     const span = literal.sourceSpan;
     this.addError(
       `Typed literal '${raw}' is outside the range of ` +
-        `${literal.typePrefix} (${range.min} to ${range.max}).`,
+        `${literal.typePrefix} (${range.min} to ${range.max}` +
+        (bitPattern
+          ? `, or 0 to ${range.max - range.min} as a 2#, 8# or 16# bit pattern)`
+          : ")") +
+        ".",
       span.startLine,
       span.startCol,
       span.file,
