@@ -1668,22 +1668,22 @@ export class STParser extends CstParser {
     this.OR([
       {
         // SUPER(); — parent body call (Ed. 3 form)
-        GATE: () => this.LA(1).tokenType === tokens.LParen,
-        ALT: () => {
+        GATE: (): boolean => this.LA(1).tokenType === tokens.LParen,
+        ALT: (): void => {
           this.CONSUME2(tokens.LParen);
           this.OPTION2(() => this.SUBRULE2(this.argumentList));
           this.CONSUME2(tokens.RParen);
         },
       },
       {
-        GATE: () => this.LA(1).tokenType === tokens.Caret,
-        ALT: () => {
+        GATE: (): boolean => this.LA(1).tokenType === tokens.Caret,
+        ALT: (): void => {
           this.CONSUME(tokens.Caret);
           this.OR2([
             {
               // SUPER^(); — parent body call
-              GATE: () => this.LA(1).tokenType === tokens.LParen,
-              ALT: () => {
+              GATE: (): boolean => this.LA(1).tokenType === tokens.LParen,
+              ALT: (): void => {
                 this.CONSUME(tokens.LParen);
                 this.OPTION(() => this.SUBRULE(this.argumentList));
                 this.CONSUME(tokens.RParen);
@@ -1691,27 +1691,27 @@ export class STParser extends CstParser {
             },
             {
               // SUPER^.method(args);
-              ALT: () => this.SUBRULE(this.superMemberTail),
+              ALT: (): CstNode => this.SUBRULE(this.superMemberTail),
             },
           ]);
         },
       },
       {
         // SUPER.method(args);
-        ALT: () => this.SUBRULE2(this.superMemberTail),
+        ALT: (): CstNode => this.SUBRULE2(this.superMemberTail),
       },
     ]);
     // SUPER.member := expr; SUPER.member REF= variable;
     this.OPTION3(() => {
       this.OR3([
         {
-          ALT: () => {
+          ALT: (): void => {
             this.CONSUME(tokens.Assign);
             this.SUBRULE(this.expression);
           },
         },
         {
-          ALT: () => {
+          ALT: (): void => {
             this.CONSUME(tokens.RefAssign);
             this.SUBRULE(this.variable);
           },

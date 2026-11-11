@@ -5473,7 +5473,7 @@ export class CodeGenerator {
     // goes through the general access-chain renderer on the instance.
     if (
       (nameUpper === "THIS" ||
-        (nameUpper === "SUPER" && this.currentFBExtends)) &&
+        (nameUpper === "SUPER" && this.currentFBExtends !== undefined)) &&
       expr.accessChain?.some((step) => step.kind !== "field") === true
     ) {
       return nameUpper === "THIS"
