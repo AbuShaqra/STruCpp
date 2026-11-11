@@ -314,7 +314,7 @@ public:
         return ptr_;
     }
 
-    const pointer_type operator->() const {
+    const target_type* operator->() const {
         if (ptr_ == nullptr) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw NullReferenceException();
