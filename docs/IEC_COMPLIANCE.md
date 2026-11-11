@@ -92,7 +92,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | Bitwise | `AND`, `OR`, `XOR`, `NOT` (on bit types) | Supported |
 | Bit shift | `SHL`, `SHR`, `ROL`, `ROR` | Supported |
 | Assignment | `:=` | Supported |
-| Reference assign | `REF=` | Supported; a vendor spelling: the feature `ref_assign`, refused under `--dialect iec-3` |
+| Reference assign | `REF=` | Supported; a vendor spelling: the feature `ref_assign`, refused under `--dialect iec-3`. The variable bound must be of the target's referenced type, and a STRING of its length, as for `r := REF(x)`: another type or length is an error. An alias of STRING(n) counts as STRING(n) here, for REF_TO assignment and for a REFERENCE TO input |
 | Dereference | `^`, `DREF()` | Supported |
 | Reference | `REF()` | Supported |
 | Parentheses | `( )` | Supported |

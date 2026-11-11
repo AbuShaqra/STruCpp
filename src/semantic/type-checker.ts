@@ -186,6 +186,19 @@ function stringLengthsDiffer(a: ReferenceShape, b: ReferenceShape): boolean {
   return false;
 }
 
+/** Whether a type name is STRING or WSTRING. */
+function isStringBase(name: string): boolean {
+  const upper = name.toUpperCase();
+  return upper === "STRING" || upper === "WSTRING";
+}
+
+/** A string shape's type as written: `STRING(3)`, or `STRING` by default. */
+function stringText(shape: ReferenceShape): string {
+  return shape.length === undefined
+    ? shape.base
+    : `${shape.base}(${String(shape.length)})`;
+}
+
 /**
  * Type checker for IEC 61131-3 programs.
  */
@@ -2594,6 +2607,27 @@ export class TypeChecker {
               stmt.source,
             );
           }
+          if (
+            targetShape?.chain.length === 1 &&
+            (targetShape.chain[0] === "ref_to" ||
+              targetShape.chain[0] === "reference_to") &&
+            sourceShape !== undefined &&
+            stmt.source.kind === "VariableExpression"
+          ) {
+            const mismatch = this.referenceBindingMismatch(
+              targetShape,
+              sourceShape,
+              stmt.source,
+            );
+            if (mismatch !== undefined) {
+              this.addError(
+                mismatch,
+                stmt.source.sourceSpan.startLine,
+                stmt.source.sourceSpan.startCol,
+                stmt.source.sourceSpan.file,
+              );
+            }
+          }
           if (declared) {
             const refKind = declared.referenceKind;
             if (refKind !== "ref_to" && refKind !== "reference_to") {
@@ -3264,28 +3298,78 @@ export class TypeChecker {
       }
       const source = this.declaredReferenceShape(value, scope);
       if (!source) return;
-      const levelsOk =
-        source.chain.length === 0 ||
-        (source.chain.length === 1 && source.chain[0] === "reference_to");
-      if (levelsOk) {
-        if (
-          !this.isReferableType(target.base) ||
-          !this.isReferableType(source.base)
-        ) {
-          return;
-        }
-        if (
-          canonicalElementaryName(this.aliasBase(target.base)) ===
-          canonicalElementaryName(this.aliasBase(source.base))
-        ) {
-          this.markAliasReferenceBinding(target, source, value);
-          return;
-        }
-      }
-      fail(
-        `${describeReferenceShape(target)} cannot refer to a ${describeReferenceShape(source)} variable${levelsOk ? this.referenceMismatchReason(this.aliasBase(source.base)) : ""}`,
-      );
+      const mismatch = this.referenceBindingMismatch(target, source, value);
+      if (mismatch !== undefined) fail(mismatch);
     });
+  }
+
+  /**
+   * Why a REF_TO or REFERENCE TO (one level, `target`) cannot refer to the
+   * variable `value` of shape `source` (a plain variable or a REFERENCE TO,
+   * which refers on): another type, or another STRING length. Undefined
+   * when it can or the types are not known here; an alias source is marked.
+   */
+  private referenceBindingMismatch(
+    target: ReferenceShape,
+    source: ReferenceShape,
+    value: VariableExpression,
+  ): string | undefined {
+    const levelsOk =
+      source.chain.length === 0 ||
+      (source.chain.length === 1 && source.chain[0] === "reference_to");
+    if (levelsOk) {
+      if (
+        !this.isReferableType(target.base) ||
+        !this.isReferableType(source.base)
+      ) {
+        return undefined;
+      }
+      if (
+        canonicalElementaryName(this.aliasBase(target.base)) ===
+        canonicalElementaryName(this.aliasBase(source.base))
+      ) {
+        const t = this.stringAliasResolved(target);
+        const v = this.stringAliasResolved(source);
+        if (isStringBase(t.base) && stringLengthsDiffer(t, v)) {
+          return `${describeReferenceShape(t)} cannot refer to a ${stringText(v)} variable`;
+        }
+        if (target.chain[0] === "reference_to") {
+          this.markAliasReferenceBinding(target, source, value);
+        }
+        return undefined;
+      }
+    }
+    return `${describeReferenceShape(target)} cannot refer to a ${describeReferenceShape(source)} variable${levelsOk ? this.referenceMismatchReason(this.aliasBase(source.base)) : ""}`;
+  }
+
+  /**
+   * `shape` with an alias of STRING(n) / WSTRING(n) (chained) as its base
+   * replaced by the string type and its length; any other shape unchanged.
+   */
+  private stringAliasResolved(shape: ReferenceShape): ReferenceShape {
+    let base = shape.base.toUpperCase();
+    let length = shape.length;
+    for (let i = 0; i < 32; i++) {
+      const upper = base;
+      const def = this.ast?.types.find(
+        (td) => td.name.toUpperCase() === upper,
+      )?.definition;
+      if (
+        def?.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        (def.referenceKind !== undefined && def.referenceKind !== "none")
+      ) {
+        break;
+      }
+      base = def.name.toUpperCase();
+      length ??= def.maxLength;
+    }
+    if (!isStringBase(base) || base === shape.base.toUpperCase()) return shape;
+    return {
+      ...shape,
+      base,
+      ...(length !== undefined ? { length } : {}),
+    };
   }
 
   /** A call of a function-block instance (`fb(...)`, `arr[i](...)`). */
@@ -3779,13 +3863,17 @@ export class TypeChecker {
 
   /** Report `value` when it cannot be held by a target of shape `t`. */
   private validateReferenceValue(
-    t: ReferenceShape,
+    declaredTarget: ReferenceShape,
     value: Expression,
     scope: Scope,
   ): void {
+    let t = declaredTarget;
     if (t.chain[0] !== "ref_to") return;
-    const v = this.declaredReferenceShape(value, scope);
-    if (!v || v.chain.length === 0) return;
+    const declaredValue = this.declaredReferenceShape(value, scope);
+    if (!declaredValue || declaredValue.chain.length === 0) return;
+    // An alias of a STRING(n) is that STRING(n).
+    t = this.stringAliasResolved(t);
+    const v = this.stringAliasResolved(declaredValue);
     if (!this.isExactlyKnownType(t.base) || !this.isExactlyKnownType(v.base)) {
       return;
     }
