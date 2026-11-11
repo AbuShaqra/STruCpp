@@ -3029,6 +3029,14 @@ export class SemanticAnalyzer {
             }
           };
           collect(ifaceName);
+          this.validateInterfaceMethodSignatures(
+            fb,
+            parentMethods,
+            [...seenIfaces].flatMap((n) => {
+              const decl = ifaceDecls.get(n);
+              return decl ? [decl] : [];
+            }),
+          );
           for (const reqMethod of requiredMethods) {
             if (!fbMethodNames.has(reqMethod)) {
               this.addError(
@@ -3038,6 +3046,85 @@ export class SemanticAnalyzer {
                 fb.sourceSpan.file,
               );
             }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Each method an FB provides for an interface method must have its C++
+   * signature: the same inputs (by value) and outputs or in/outs (by
+   * reference) in order, of the same types, and the same return type. A
+   * parameter named otherwise only warns: the C++ still overrides.
+   */
+  private validateInterfaceMethodSignatures(
+    fb: FunctionBlockDeclaration,
+    parentMethods: ReadonlyMap<string, MethodDeclaration>,
+    interfaces: readonly InterfaceDeclaration[],
+  ): void {
+    for (const iface of interfaces) {
+      for (const required of iface.methods) {
+        const upper = required.name.toUpperCase();
+        const method =
+          fb.methods.find(
+            (m) => m.fromAction !== true && m.name.toUpperCase() === upper,
+          ) ?? parentMethods.get(upper);
+        if (!method || method.fromAction === true) continue;
+        const where = `Method '${method.name}' of FUNCTION_BLOCK '${fb.name}' does not match interface '${iface.name}'`;
+        const span = method.sourceSpan;
+        const fail = (detail: string): void =>
+          this.addError(
+            `${where}: ${detail}`,
+            span.startLine,
+            span.startCol,
+            span.file,
+          );
+        const own = signatureParams(method);
+        const want = signatureParams(required);
+        const ownRet = method.returnType
+          ? cppTypeKey(method.returnType, false)
+          : "";
+        const wantRet = required.returnType
+          ? cppTypeKey(required.returnType, false)
+          : "";
+        if (!sameCppType(ownRet, wantRet)) {
+          fail(
+            `it returns ${method.returnType ? typeText(method.returnType) : "nothing"}, the interface ${required.returnType ? typeText(required.returnType) : "nothing"}`,
+          );
+          continue;
+        }
+        if (own.length !== want.length) {
+          fail(
+            `it has ${own.length} parameter(s), the interface ${want.length}`,
+          );
+          continue;
+        }
+        for (let i = 0; i < own.length; i++) {
+          const a = own[i]!;
+          const b = want[i]!;
+          const byRef = a.blockType !== "VAR_INPUT";
+          if (byRef !== (b.blockType !== "VAR_INPUT")) {
+            fail(
+              `parameter ${i + 1} '${a.name}' is ${a.blockType}, the interface's '${b.name}' is ${b.blockType}`,
+            );
+            break;
+          }
+          if (
+            !sameCppType(cppTypeKey(a.type, byRef), cppTypeKey(b.type, byRef))
+          ) {
+            fail(
+              `parameter ${i + 1} '${a.name}' is ${typeText(a.type)}, the interface's '${b.name}' is ${typeText(b.type)}`,
+            );
+            break;
+          }
+          if (a.name.toUpperCase() !== b.name.toUpperCase()) {
+            this.addWarning(
+              `Parameter ${i + 1} '${a.name}' of method '${method.name}' of FUNCTION_BLOCK '${fb.name}' is named '${b.name}' in interface '${iface.name}': a call with named arguments through the FB differs from one through the interface`,
+              span.startLine,
+              span.startCol,
+              span.file,
+            );
           }
         }
       }
@@ -5921,4 +6008,67 @@ export function analyzeTestFile(
 ): { errors: CompileError[]; warnings: CompileError[] } {
   const analyzer = new SemanticAnalyzer();
   return analyzer.analyzeTestFile(testFile, sourceSymbolTables);
+}
+
+/** The parameters of a method the C++ signature carries, in order. */
+function signatureParams(
+  method: MethodDeclaration,
+): Array<{ name: string; type: TypeReference; blockType: string }> {
+  const out: Array<{ name: string; type: TypeReference; blockType: string }> =
+    [];
+  for (const block of method.varBlocks) {
+    if (
+      block.blockType !== "VAR_INPUT" &&
+      block.blockType !== "VAR_OUTPUT" &&
+      block.blockType !== "VAR_IN_OUT"
+    ) {
+      continue;
+    }
+    for (const decl of block.declarations) {
+      for (const name of decl.names) {
+        out.push({ name, type: decl.type, blockType: block.blockType });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * A key equal for two types the C++ signature spells alike (an alias is its
+ * own C++ type): the STRING length kept for a value but not for a reference.
+ */
+function cppTypeKey(type: TypeReference, byRef: boolean): string {
+  const name = type.name.toUpperCase();
+  const maxLength = type.maxLength;
+  const dims = type.arrayDimensions;
+  const element = type.elementTypeName;
+  const ref = type.referenceKind ?? "none";
+  const isString = name === "STRING" || name === "WSTRING";
+  // A length named by a constant is not resolved here: "*" matches any.
+  const len =
+    byRef || !isString
+      ? ""
+      : typeof maxLength === "string"
+        ? "(*)"
+        : `(${maxLength ?? 254})`;
+  const arr =
+    dims === undefined
+      ? ""
+      : `[${dims.map((d) => `${d.start}..${d.end}`).join(",")}] OF ${(element ?? "").toUpperCase()}`;
+  return `${ref} ${name}${len}${arr}`;
+}
+
+/** Two cppTypeKey results name the same C++ type ("(*)" is any length). */
+function sameCppType(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (!a.includes("(*)") && !b.includes("(*)")) return false;
+  const strip = (k: string): string => k.replace(/\([^)]*\)/, "");
+  return strip(a) === strip(b);
+}
+
+/** A type as written, with its STRING length. */
+function typeText(type: TypeReference): string {
+  return type.maxLength === undefined
+    ? type.name
+    : `${type.name}(${String(type.maxLength)})`;
 }
