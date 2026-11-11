@@ -177,13 +177,18 @@ TEST(TimeTest, UnitConversion) {
     EXPECT_EQ(TIME_TO_D(t), 1);
     EXPECT_EQ(TIME_TO_H(t), 26);
     EXPECT_EQ(TIME_TO_M(t), 26 * 60 + 30);
-    EXPECT_EQ(TIME_TO_S(t), 26LL * 3600LL + 30 * 60 + 45);
+    // TIME_TO_S returns LREAL seconds and keeps the fraction; TIME_TO_MS truncates.
+    EXPECT_DOUBLE_EQ(TIME_TO_S(t), 26.0 * 3600.0 + 30.0 * 60.0 + 45.5);
+    EXPECT_EQ(TIME_TO_MS(t), (26LL * 3600LL + 30 * 60 + 45) * 1000 + 500);
 }
 
 TEST(DateTest, Construction) {
     IEC_DATE d = DATE_FROM_YMD(2024, 6, 15);
-    // 2024-06-15 is 19888 days since 1970-01-01.
-    EXPECT_EQ(DATE_TO_DAYS(d), 19888);
+    // 2024-06-15 is 19889 days since 1970-01-01.
+    EXPECT_EQ(DATE_TO_DAYS(d), 19889);
+    EXPECT_EQ(DATE_TO_DAYS(DATE_FROM_YMD(1970, 1, 1)), 0);
+    // 2000-03-01: the day after a 400-year leap day.
+    EXPECT_EQ(DATE_TO_DAYS(DATE_FROM_YMD(2000, 3, 1)), 11017);
 }
 
 TEST(DateTest, Arithmetic) {
@@ -234,7 +239,7 @@ TEST(TodTest, Comparison) {
 TEST(DtTest, Construction) {
     IEC_DT dt = DT_FROM_COMPONENTS(2024, 6, 15, 14, 30, 45);
     // 2024-06-15 14:30:45 UTC = days_to_epoch * 86400 + 14*3600 + 30*60 + 45 seconds.
-    const int64_t expected_seconds = 19888LL * 86400LL + 14LL * 3600LL + 30LL * 60LL + 45LL;
+    const int64_t expected_seconds = 19889LL * 86400LL + 14LL * 3600LL + 30LL * 60LL + 45LL;
     EXPECT_EQ(DT_TO_SECONDS(dt), expected_seconds);
     EXPECT_EQ(DT_TO_NS(dt), expected_seconds * 1000000000LL);
 }
@@ -306,8 +311,10 @@ TEST(StringTest, Substring) {
     auto right = RIGHT(s, 5);
     EXPECT_STREQ(right.c_str(), "World");
     
-    auto mid = MID(s, 7, 5);
+    // MID(IN, L, P): L characters from position P (1-based).
+    auto mid = MID(s, 5, 7);
     EXPECT_STREQ(mid.c_str(), "World");
+    EXPECT_STREQ(MID(s, 7, 5).c_str(), "o World");
 }
 
 TEST(StringTest, Find) {

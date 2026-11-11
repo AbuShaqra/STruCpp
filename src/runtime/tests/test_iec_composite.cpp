@@ -9,18 +9,41 @@
  * - Enumerations
  * - Subranges
  * - Pointers (REF_TO)
+ *
+ * Forcing goes through the force table (iec_force.hpp): a forced value is
+ * written at once and again at each cycle boundary (force::apply_all here);
+ * a write inside the cycle stays visible until then.
  */
 
 #include <gtest/gtest.h>
-#include "../include/iec_array.hpp"
-#include "../include/iec_struct.hpp"
-#include "../include/iec_enum.hpp"
-#include "../include/iec_subrange.hpp"
-#include "../include/iec_pointer.hpp"
-#include "../include/iec_traits.hpp"
-#include "../include/iec_std_lib.hpp"
+#include <type_traits>
+#include <utility>
+#include "iec_array.hpp"
+#include "iec_struct.hpp"
+#include "iec_enum.hpp"
+#include "iec_subrange.hpp"
+#include "iec_pointer.hpp"
+#include "iec_force.hpp"
+#include "iec_traits.hpp"
+#include "iec_std_lib.hpp"
 
 using namespace strucpp;
+
+/**
+ * Empties the global force table before and after each forcing test, so a
+ * slot left by an aborted test never points at a dead stack object.
+ */
+class ForceTableTest : public ::testing::Test {
+protected:
+    void SetUp() override { force::clear_all(); }
+    void TearDown() override { force::clear_all(); }
+};
+
+using IECArrayForcingTest = ForceTableTest;
+using IECEnumForcingTest = ForceTableTest;
+using IECSubrangeForcingTest = ForceTableTest;
+using IECStructForcingTest = ForceTableTest;
+using IECPointerForcingTest = ForceTableTest;
 
 // =============================================================================
 // Array Tests
@@ -43,11 +66,11 @@ TEST(IECArrayTest, Array1D_BasicOperations) {
     arr[4] = 40;
     arr[5] = 50;
     
-    EXPECT_EQ(arr[1].get(), 10);
-    EXPECT_EQ(arr[2].get(), 20);
-    EXPECT_EQ(arr[3].get(), 30);
-    EXPECT_EQ(arr[4].get(), 40);
-    EXPECT_EQ(arr[5].get(), 50);
+    EXPECT_EQ(arr[1], 10);
+    EXPECT_EQ(arr[2], 20);
+    EXPECT_EQ(arr[3], 30);
+    EXPECT_EQ(arr[4], 40);
+    EXPECT_EQ(arr[5], 50);
 }
 
 TEST(IECArrayTest, Array1D_BoundsCheckedAccess) {
@@ -59,35 +82,45 @@ TEST(IECArrayTest, Array1D_BoundsCheckedAccess) {
     arr[3] = 300;
     
     // at() provides bounds-checked access
-    EXPECT_EQ(arr.at(1).get(), 100);
-    EXPECT_EQ(arr.at(2).get(), 200);
-    EXPECT_EQ(arr.at(3).get(), 300);
+    EXPECT_EQ(arr.at(1), 100);
+    EXPECT_EQ(arr.at(2), 200);
+    EXPECT_EQ(arr.at(3), 300);
     
     // Out of bounds access should throw
     EXPECT_THROW(arr.at(0), std::out_of_range);
     EXPECT_THROW(arr.at(4), std::out_of_range);
 }
 
-TEST(IECArrayTest, Array1D_ElementForcing) {
+TEST_F(IECArrayForcingTest, Array1D_ElementForcing) {
     using IntArray = IEC_ARRAY_1D<INT_t, ArrayBounds<1, 3>>;
+    // The force table writes raw bytes: an element must be just its value.
+    static_assert(sizeof(std::declval<IntArray&>()[1]) == sizeof(INT_t),
+                  "array element must be exactly one INT_t");
     IntArray arr;
-    
+
     arr[1] = 10;
     arr[2] = 20;
-    
-    // Force element 1
-    arr[1].force(999);
-    EXPECT_TRUE(arr[1].is_forced());
-    EXPECT_EQ(arr[1].get(), 999);
-    
-    // Setting value should be ignored while forced
+
+    // Force element 1 only.
+    const INT_t forced = 999;
+    ASSERT_EQ(force::set(&arr[1], &forced, sizeof forced), force::Status::Ok);
+    EXPECT_TRUE(force::is_forced(&arr[1]));
+    EXPECT_FALSE(force::is_forced(&arr[2]));
+    EXPECT_EQ(arr[1], 999);
+
+    // A write inside the cycle lands; the cycle boundary restores the force.
     arr[1] = 0;
-    EXPECT_EQ(arr[1].get(), 999);
-    
-    // Unforce
-    arr[1].unforce();
-    EXPECT_FALSE(arr[1].is_forced());
-    EXPECT_EQ(arr[1].get(), 0);  // Now shows the set value
+    EXPECT_EQ(arr[1], 0);
+    force::apply_all();
+    EXPECT_EQ(arr[1], 999);
+    EXPECT_EQ(arr[2], 20);
+
+    // Unforce: the next write sticks across the boundary.
+    EXPECT_TRUE(force::clear(&arr[1]));
+    EXPECT_FALSE(force::is_forced(&arr[1]));
+    arr[1] = 0;
+    force::apply_all();
+    EXPECT_EQ(arr[1], 0);
 }
 
 TEST(IECArrayTest, Array1D_Iteration) {
@@ -101,20 +134,20 @@ TEST(IECArrayTest, Array1D_Iteration) {
     }
     
     // Verify values
-    EXPECT_EQ(arr[1].get(), 1);
-    EXPECT_EQ(arr[2].get(), 2);
-    EXPECT_EQ(arr[3].get(), 3);
-    EXPECT_EQ(arr[4].get(), 4);
-    EXPECT_EQ(arr[5].get(), 5);
+    EXPECT_EQ(arr[1], 1);
+    EXPECT_EQ(arr[2], 2);
+    EXPECT_EQ(arr[3], 3);
+    EXPECT_EQ(arr[4], 4);
+    EXPECT_EQ(arr[5], 5);
 }
 
 TEST(IECArrayTest, Array1D_InitializerList) {
     using IntArray = IEC_ARRAY_1D<INT_t, ArrayBounds<1, 3>>;
     IntArray arr = {10, 20, 30};
     
-    EXPECT_EQ(arr[1].get(), 10);
-    EXPECT_EQ(arr[2].get(), 20);
-    EXPECT_EQ(arr[3].get(), 30);
+    EXPECT_EQ(arr[1], 10);
+    EXPECT_EQ(arr[2], 20);
+    EXPECT_EQ(arr[3], 30);
 }
 
 TEST(IECArrayTest, Array1D_NegativeBounds) {
@@ -132,9 +165,9 @@ TEST(IECArrayTest, Array1D_NegativeBounds) {
     arr[1] = 10;
     arr[2] = 20;
     
-    EXPECT_EQ(arr[-2].get(), -20);
-    EXPECT_EQ(arr[0].get(), 0);
-    EXPECT_EQ(arr[2].get(), 20);
+    EXPECT_EQ(arr[-2], -20);
+    EXPECT_EQ(arr[0], 0);
+    EXPECT_EQ(arr[2], 20);
 }
 
 TEST(IECArrayTest, Array2D_BasicOperations) {
@@ -155,10 +188,10 @@ TEST(IECArrayTest, Array2D_BasicOperations) {
     arr(2, 3) = 23;
     arr(3, 4) = 34;
     
-    EXPECT_EQ(arr(1, 1).get(), 11);
-    EXPECT_EQ(arr(1, 2).get(), 12);
-    EXPECT_EQ(arr(2, 3).get(), 23);
-    EXPECT_EQ(arr(3, 4).get(), 34);
+    EXPECT_EQ(arr(1, 1), 11);
+    EXPECT_EQ(arr(1, 2), 12);
+    EXPECT_EQ(arr(2, 3), 23);
+    EXPECT_EQ(arr(3, 4), 34);
 }
 
 TEST(IECArrayTest, Array2D_BoundsCheckedAccess) {
@@ -170,8 +203,8 @@ TEST(IECArrayTest, Array2D_BoundsCheckedAccess) {
     arr(2, 1) = 21;
     arr(2, 2) = 22;
     
-    EXPECT_EQ(arr.at(1, 1).get(), 11);
-    EXPECT_EQ(arr.at(2, 2).get(), 22);
+    EXPECT_EQ(arr.at(1, 1), 11);
+    EXPECT_EQ(arr.at(2, 2), 22);
     
     // Out of bounds
     EXPECT_THROW(arr.at(0, 1), std::out_of_range);
@@ -193,9 +226,9 @@ TEST(IECArrayTest, Array3D_BasicOperations) {
     arr(1, 1, 2) = 112;
     arr(2, 2, 2) = 222;
     
-    EXPECT_EQ(arr(1, 1, 1).get(), 111);
-    EXPECT_EQ(arr(1, 1, 2).get(), 112);
-    EXPECT_EQ(arr(2, 2, 2).get(), 222);
+    EXPECT_EQ(arr(1, 1, 1), 111);
+    EXPECT_EQ(arr(1, 1, 2), 112);
+    EXPECT_EQ(arr(2, 2, 2), 222);
 }
 
 TEST(IECArrayTest, ConvenienceAliases) {
@@ -239,24 +272,32 @@ TEST(IECEnumTest, EnumValue_BasicOperations) {
     EXPECT_FALSE(light == TrafficLight::RED);
 }
 
-TEST(IECEnumTest, EnumVar_Forcing) {
+TEST_F(IECEnumForcingTest, EnumVar_Forcing) {
+    // The force table writes raw bytes: the var must be just its value.
+    static_assert(sizeof(IEC_ENUM_Var<TrafficLight>) == sizeof(TrafficLight),
+                  "IEC_ENUM_Var must be exactly its enum value");
     IEC_ENUM_Var<TrafficLight> light;
-    
+
     light = TrafficLight::RED;
     EXPECT_EQ(light.get().get(), TrafficLight::RED);
-    
+
     // Force to GREEN
-    light.force(TrafficLight::GREEN);
-    EXPECT_TRUE(light.is_forced());
+    const TrafficLight forced = TrafficLight::GREEN;
+    ASSERT_EQ(force::set(&light, &forced, sizeof forced), force::Status::Ok);
+    EXPECT_TRUE(force::is_forced(&light));
     EXPECT_EQ(light.get().get(), TrafficLight::GREEN);
-    
-    // Setting should be ignored
+
+    // A write inside the cycle lands; the cycle boundary restores the force.
     light = TrafficLight::YELLOW;
+    EXPECT_EQ(light.get().get(), TrafficLight::YELLOW);
+    force::apply_all();
     EXPECT_EQ(light.get().get(), TrafficLight::GREEN);
-    
+
     // Unforce
-    light.unforce();
-    EXPECT_FALSE(light.is_forced());
+    EXPECT_TRUE(force::clear(&light));
+    EXPECT_FALSE(force::is_forced(&light));
+    light = TrafficLight::YELLOW;
+    force::apply_all();
     EXPECT_EQ(light.get().get(), TrafficLight::YELLOW);
 }
 
@@ -315,24 +356,32 @@ TEST(IECSubrangeTest, SubrangeValue_Arithmetic) {
     EXPECT_EQ(a / b, 1);
 }
 
-TEST(IECSubrangeTest, SubrangeVar_Forcing) {
+TEST_F(IECSubrangeForcingTest, SubrangeVar_Forcing) {
     using Percentage = IEC_SUBRANGE_Var<int16_t, 0, 100>;
-    
+    // The force table writes raw bytes: the var must be just its value.
+    static_assert(sizeof(Percentage) == sizeof(int16_t),
+                  "IEC_SUBRANGE_Var must be exactly its base value");
+
     Percentage pct;
     pct = 50;
     EXPECT_EQ(static_cast<int16_t>(pct.get()), 50);
-    
+
     // Force
-    pct.force(75);
-    EXPECT_TRUE(pct.is_forced());
+    const int16_t forced = 75;
+    ASSERT_EQ(force::set(&pct, &forced, sizeof forced), force::Status::Ok);
+    EXPECT_TRUE(force::is_forced(&pct));
     EXPECT_EQ(static_cast<int16_t>(pct.get()), 75);
-    
-    // Setting ignored while forced
+
+    // A write inside the cycle lands; the cycle boundary restores the force.
     pct = 25;
+    EXPECT_EQ(static_cast<int16_t>(pct.get()), 25);
+    force::apply_all();
     EXPECT_EQ(static_cast<int16_t>(pct.get()), 75);
-    
+
     // Unforce
-    pct.unforce();
+    EXPECT_TRUE(force::clear(&pct));
+    pct = 25;
+    force::apply_all();
     EXPECT_EQ(static_cast<int16_t>(pct.get()), 25);
 }
 
@@ -383,27 +432,36 @@ TEST(IECStructTest, Struct_TypeName) {
     EXPECT_STREQ(p.type_name(), "Point");
 }
 
-TEST(IECStructTest, Struct_FieldForcing) {
+TEST_F(IECStructForcingTest, Struct_FieldForcing) {
+    // The force table writes raw bytes: a field must be just its value.
+    static_assert(sizeof(Point::x) == sizeof(REAL_t),
+                  "Point::x must be exactly one REAL_t");
     Point p;
-    
+
     p.x = 10.0f;
     p.y = 20.0f;
-    
+
     // Force x field
-    p.x.force(100.0f);
-    EXPECT_TRUE(p.x.is_forced());
+    const REAL_t forced = 100.0f;
+    ASSERT_EQ(force::set(&p.x, &forced, sizeof forced), force::Status::Ok);
+    EXPECT_TRUE(force::is_forced(&p.x));
     EXPECT_FLOAT_EQ(p.x.get(), 100.0f);
-    
+
     // y is not affected
-    EXPECT_FALSE(p.y.is_forced());
+    EXPECT_FALSE(force::is_forced(&p.y));
     EXPECT_FLOAT_EQ(p.y.get(), 20.0f);
-    
-    // Setting x is ignored
+
+    // A write inside the cycle lands; the cycle boundary restores the force.
     p.x = 0.0f;
+    EXPECT_FLOAT_EQ(p.x.get(), 0.0f);
+    force::apply_all();
     EXPECT_FLOAT_EQ(p.x.get(), 100.0f);
-    
+    EXPECT_FLOAT_EQ(p.y.get(), 20.0f);
+
     // Unforce
-    p.x.unforce();
+    EXPECT_TRUE(force::clear(&p.x));
+    p.x = 0.0f;
+    force::apply_all();
     EXPECT_FLOAT_EQ(p.x.get(), 0.0f);
 }
 
@@ -812,42 +870,62 @@ TEST(IECPointerTest, Pointer_Reassignment) {
     EXPECT_EQ(ptr.deref().get(), 200);
 }
 
-TEST(IECPointerTest, Pointer_Forcing) {
+TEST_F(IECPointerForcingTest, Pointer_Forcing) {
+    // The force table writes raw bytes: REF_TO must be just the address.
+    static_assert(sizeof(REF_TO<INT_t>) == sizeof(IEC_INT*),
+                  "REF_TO must be exactly one pointer");
     IEC_INT target1(100);
     IEC_INT target2(200);
     REF_TO<INT_t> ptr = REF(target1);
-    
+    IEC_INT* const forced = &target2;
+
     EXPECT_EQ(ptr.deref().get(), 100);
-    EXPECT_FALSE(ptr.is_forced());
-    
+    EXPECT_FALSE(force::is_forced(&ptr));
+
     // Force pointer to point to target2
-    ptr.force(&target2);
-    EXPECT_TRUE(ptr.is_forced());
+    ASSERT_EQ(force::set(&ptr, &forced, sizeof forced), force::Status::Ok);
+    EXPECT_TRUE(force::is_forced(&ptr));
     EXPECT_EQ(ptr.deref().get(), 200);
-    
-    // Setting pointer is ignored while forced
+
+    // A write inside the cycle lands; the cycle boundary restores the force.
     ptr = REF(target1);
-    EXPECT_EQ(ptr.deref().get(), 200);  // Still points to target2
-    
-    // Unforce
-    ptr.unforce();
-    EXPECT_FALSE(ptr.is_forced());
-    EXPECT_EQ(ptr.deref().get(), 100);  // Now points to target1
+    EXPECT_EQ(ptr.deref().get(), 100);
+    force::apply_all();
+    EXPECT_EQ(ptr.deref().get(), 200);
+
+    // Unforce: clear() restores nothing, the forced target stays until a write.
+    EXPECT_TRUE(force::clear(&ptr));
+    EXPECT_FALSE(force::is_forced(&ptr));
+    EXPECT_EQ(ptr.deref().get(), 200);
+    force::apply_all();
+    EXPECT_EQ(ptr.deref().get(), 200);
+    ptr = REF(target1);
+    force::apply_all();
+    EXPECT_EQ(ptr.deref().get(), 100);
 }
 
-TEST(IECPointerTest, Pointer_ForceToNull) {
+TEST_F(IECPointerForcingTest, Pointer_ForceToNull) {
     IEC_INT target(42);
     REF_TO<INT_t> ptr = REF(target);
-    
+
     EXPECT_FALSE(ptr.is_null());
-    
+
     // Force to NULL
-    ptr.force(nullptr);
-    EXPECT_TRUE(ptr.is_forced());
+    IEC_INT* const forced = nullptr;
+    ASSERT_EQ(force::set(&ptr, &forced, sizeof forced), force::Status::Ok);
+    EXPECT_TRUE(force::is_forced(&ptr));
     EXPECT_TRUE(ptr.is_null());
-    
-    // Unforce
-    ptr.unforce();
+
+    // Unforce: clear() restores nothing and apply_all no longer touches the slot.
+    EXPECT_TRUE(force::clear(&ptr));
+    EXPECT_FALSE(force::is_forced(&ptr));
+    EXPECT_TRUE(ptr.is_null());
+    force::apply_all();
+    EXPECT_TRUE(ptr.is_null());
+
+    // Rebind as the program would
+    ptr = REF(target);
+    force::apply_all();
     EXPECT_FALSE(ptr.is_null());
     EXPECT_EQ(ptr.deref().get(), 42);
 }
@@ -868,18 +946,17 @@ TEST(IECPointerTest, Pointer_Comparison) {
 TEST(IECPointerTest, Pointer_ArrowOperator) {
     IEC_INT target(42);
     REF_TO<INT_t> ptr = REF(target);
-    
+
     // Use arrow operator to access IECVar methods
     EXPECT_EQ(ptr->get(), 42);
-    EXPECT_FALSE(ptr->is_forced());
-    
-    // Force via arrow operator
-    ptr->force(999);
-    EXPECT_EQ(ptr->get(), 999);
-    EXPECT_TRUE(ptr->is_forced());
-    
-    ptr->unforce();
-    EXPECT_EQ(ptr->get(), 42);
+    ptr->set(7);
+    EXPECT_EQ(target.get(), 7);
+
+    // The const overload hands out a pointer to a const target.
+    const REF_TO<INT_t>& cptr = ptr;
+    static_assert(std::is_same<decltype(cptr.operator->()), const IEC_INT*>::value,
+                  "const REF_TO::operator-> must return a pointer to const");
+    EXPECT_EQ(cptr->get(), 7);
 }
 
 TEST(IECPointerTest, Pointer_StarOperator) {
@@ -893,19 +970,24 @@ TEST(IECPointerTest, Pointer_StarOperator) {
     EXPECT_EQ(target.get(), 100);
 }
 
-TEST(IECPointerTest, Pointer_GetUnderlying) {
+TEST(IECPointerTest, Pointer_ForcedValueReadBack) {
+    force::clear_all();
     IEC_INT target1(100);
     IEC_INT target2(200);
     REF_TO<INT_t> ptr = REF(target1);
-    
+
     // Force to target2
-    ptr.force(&target2);
-    
-    // get() returns forced pointer
+    IEC_INT* const forced = &target2;
+    ASSERT_EQ(force::set(&ptr, &forced, sizeof forced), force::Status::Ok);
+
+    // get() returns the forced pointer
     EXPECT_EQ(ptr.get(), &target2);
-    
-    // get_underlying() returns original pointer
-    EXPECT_EQ(ptr.get_underlying(), &target1);
+
+    // The table holds the forced value; there is no per-variable copy.
+    IEC_INT* stored = nullptr;
+    EXPECT_EQ(force::read(&ptr, &stored, sizeof stored), sizeof stored);
+    EXPECT_EQ(stored, &target2);
+    EXPECT_TRUE(force::clear(&ptr));
 }
 
 // =============================================================================
@@ -920,9 +1002,4 @@ TEST(IECTraitsTest, PointerTraits) {
     EXPECT_FALSE(is_iec_struct_v<IntPtr>);
     EXPECT_FALSE(is_iec_enum_v<IntPtr>);
     EXPECT_TRUE(is_any_derived_v<IntPtr>);
-}
-
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
 }

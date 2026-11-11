@@ -39,16 +39,29 @@ option(BUILD_TESTING "Build tests" ON)
 if(BUILD_TESTING)
     enable_testing()
 
-    # Fetch Google Test
-    include(FetchContent)
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG v1.14.0
-    )
-    # For Windows: Prevent overriding the parent project's compiler/linker settings
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
+    # Google Test: FETCHCONTENT_SOURCE_DIR_GOOGLETEST (a local checkout) wins; else an
+    # installed package (works offline, any version); else fetch v1.14.0.
+    if(NOT FETCHCONTENT_SOURCE_DIR_GOOGLETEST)
+        find_package(GTest QUIET)
+    endif()
+    if(TARGET GTest::gtest_main)
+        message(STATUS "googletest: using installed package ${GTest_VERSION}")
+    else()
+        if(FETCHCONTENT_SOURCE_DIR_GOOGLETEST)
+            message(STATUS "googletest: using local checkout ${FETCHCONTENT_SOURCE_DIR_GOOGLETEST}")
+        else()
+            message(STATUS "googletest: not installed, fetching v1.14.0")
+        endif()
+        include(FetchContent)
+        FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG v1.14.0
+        )
+        # For Windows: Prevent overriding the parent project's compiler/linker settings
+        set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(googletest)
+    endif()
 
     # Test executable
     add_executable(runtime_tests
@@ -57,6 +70,7 @@ if(BUILD_TESTING)
         tests/test_std_lib.cpp
         tests/test_debug_dispatch.cpp
         tests/test_iec_force.cpp
+        tests/test_iec_composite.cpp
     )
 
     target_link_libraries(runtime_tests PRIVATE
