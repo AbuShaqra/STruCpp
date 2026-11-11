@@ -291,6 +291,12 @@ export interface VarBlock extends ASTNode {
   declarations: VarDeclaration[];
   /** Global variable list of a top-level VAR_GLOBAL block (feature named_global_lists). */
   globalListName?: string;
+  /**
+   * The RESOURCE that declares this block of a CONFIGURATION. A resource's
+   * blocks are kept with the configuration's, so its globals are created and
+   * reached as the configuration's are.
+   */
+  resourceName?: string;
 }
 
 /**

@@ -21,8 +21,10 @@ import type {
   VarBlock,
   VarDeclaration,
   Expression,
+  VariableExpression,
 } from "./frontend/ast.js";
 import type { CompileError, SourceSpan } from "./types.js";
+import { walkAST } from "./ast-utils.js";
 
 // =============================================================================
 // Project Model Interfaces
@@ -690,12 +692,103 @@ export class ProjectModelBuilder {
     for (const resource of config.resources) {
       resources.push(this.processResource(resource, config.name));
     }
+    this.checkResourceGlobals(config);
 
     this.configurations.push({
       name: config.name,
       globalVars,
       resources,
     });
+  }
+
+  /**
+   * A RESOURCE declares only VAR_GLOBAL blocks, under names no other block of
+   * the configuration declares, and its globals are reached only by the
+   * program instances of that resource.
+   */
+  private checkResourceGlobals(config: ConfigurationDeclaration): void {
+    // Upper-case global name → the RESOURCE declaring it (undefined: the CONFIGURATION)
+    const declaredBy = new Map<string, string | undefined>();
+    for (const block of config.varBlocks) {
+      const at = block.sourceSpan;
+      if (
+        block.resourceName !== undefined &&
+        block.blockType !== "VAR_GLOBAL"
+      ) {
+        this.addError(
+          `RESOURCE '${block.resourceName}' declares a ${block.blockType} block; a RESOURCE declares only VAR_GLOBAL`,
+          at.startLine,
+          at.startCol,
+          at.file,
+        );
+        continue;
+      }
+      if (block.blockType !== "VAR_GLOBAL") continue;
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          const key = name.toUpperCase();
+          if (
+            declaredBy.has(key) &&
+            (block.resourceName !== undefined ||
+              declaredBy.get(key) !== undefined)
+          ) {
+            const other = declaredBy.get(key);
+            this.addError(
+              `Global '${name}' of ${block.resourceName !== undefined ? `RESOURCE '${block.resourceName}'` : `CONFIGURATION '${config.name}'`} is also declared by ${other !== undefined ? `RESOURCE '${other}'` : `CONFIGURATION '${config.name}'`}; the globals of a configuration and its resources need distinct names`,
+              decl.sourceSpan.startLine,
+              decl.sourceSpan.startCol,
+              decl.sourceSpan.file,
+            );
+            continue;
+          }
+          if (!declaredBy.has(key)) declaredBy.set(key, block.resourceName);
+        }
+      }
+    }
+    // An initial value names only globals its own block can reach.
+    for (const block of config.varBlocks) {
+      if (block.blockType !== "VAR_GLOBAL") continue;
+      for (const decl of block.declarations) {
+        if (decl.initialValue === undefined) continue;
+        walkAST(decl.initialValue, (node) => {
+          if (node.kind !== "VariableExpression") return;
+          const name = (node as VariableExpression).name;
+          const owner = declaredBy.get(name.toUpperCase());
+          if (
+            owner === undefined ||
+            owner.toUpperCase() === block.resourceName?.toUpperCase()
+          ) {
+            return;
+          }
+          this.addError(
+            `The initial value of '${decl.names.join(", ")}' names '${name}', a global of RESOURCE '${owner}'`,
+            node.sourceSpan.startLine,
+            node.sourceSpan.startCol,
+            node.sourceSpan.file,
+          );
+        });
+      }
+    }
+    for (const resource of config.resources) {
+      for (const instance of resource.programInstances) {
+        const prog = this.programs.get(instance.programType.toUpperCase());
+        for (const ext of prog?.varExternal ?? []) {
+          const owner = declaredBy.get(ext.name.toUpperCase());
+          if (
+            owner === undefined ||
+            owner.toUpperCase() === resource.name.toUpperCase()
+          ) {
+            continue;
+          }
+          this.addError(
+            `Program instance '${instance.instanceName}' of RESOURCE '${resource.name}' reaches '${ext.name}', a global of RESOURCE '${owner}'`,
+            instance.sourceSpan.startLine,
+            instance.sourceSpan.startCol,
+            instance.sourceSpan.file,
+          );
+        }
+      }
+    }
   }
 
   /**
