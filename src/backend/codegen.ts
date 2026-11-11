@@ -5460,6 +5460,12 @@ export class CodeGenerator {
       return `${expr.name}->read()`;
     }
 
+    // `p^` / `p^.x` on a VAR_EXTERNAL POINTER TO / REF_TO: dereference the
+    // pointer the shared global holds, read under its lock.
+    if (this.programExternals.has(nameUpper) && expr.isDereference) {
+      return this.renderAccessTail(`${expr.name}->read()`, expr, nameUpper);
+    }
+
     // Composite / array shared-global READ (VAR_EXTERNAL to a composite
     // VAR_GLOBAL). Take the global's own mutex and read the canonical value
     // directly through with_lock — a field/element read copies only that
@@ -9004,11 +9010,15 @@ export class CodeGenerator {
       decl.referenceKind === "reference_to" ||
       decl.referenceKind === "pointer_to"
     ) {
-      // `p : POINTER TO T := ADR(x);` binds the pointer as it is created.
+      // `p : POINTER TO T := ADR(x);` and `r : REF_TO T := REF(x);` bind
+      // the pointer or reference as it is created.
       const value = decl.initialValue;
-      return decl.referenceKind === "pointer_to" &&
-        value?.kind === "FunctionCallExpression" &&
-        value.functionName.toUpperCase() === "ADR"
+      const binds =
+        (decl.referenceKind === "pointer_to" &&
+          value?.kind === "FunctionCallExpression" &&
+          value.functionName.toUpperCase() === "ADR") ||
+        (decl.referenceKind === "ref_to" && value?.kind === "RefExpression");
+      return binds && value !== undefined
         ? this.generateExpression(value)
         : undefined;
     }
