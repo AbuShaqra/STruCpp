@@ -113,6 +113,10 @@ function validateCompileOptions(options: CompileOptions): void {
     }
   }
   validatePragmaDefines(options.pragmaDefines);
+  validatePragmaDefines(options.filePragmaDefines);
+  for (const addl of options.additionalSources ?? []) {
+    validatePragmaDefines(addl.pragmaDefines);
+  }
 }
 
 /** The dialect fields of the compile options, as a resolveDialect request. */
@@ -493,6 +497,7 @@ function prepareFile(
   fileName: string | undefined,
   prep: SourcePrep,
   lex: (s: string) => ILexingResult,
+  fileDefines?: Record<string, string>,
 ): {
   text: string;
   errors: CompileError[];
@@ -504,7 +509,12 @@ function prepareFile(
   let stopsOnError = false;
   let blankedLines: number[] = [];
   if (prep.enabled) {
-    const pragmaResult = applyConditionalPragmas(text, prep.defines, lex);
+    const pragmaResult = applyConditionalPragmas(
+      text,
+      prep.defines,
+      lex,
+      new Map(Object.entries(fileDefines ?? {})),
+    );
     out = pragmaResult.text;
     blankedLines = pragmaResult.blankedLines;
     if (pragmaResult.errors.length > 0) {
@@ -606,6 +616,7 @@ function runPipeline(
       mergedOptions.fileName,
       prep,
       tokenize,
+      mergedOptions.filePragmaDefines,
     );
     effectiveSource = prepared.text;
     if (prepared.blankedLines.length > 0) {
@@ -709,6 +720,7 @@ function runPipeline(
           addlSource.fileName,
           prep,
           tokenize,
+          addlSource.pragmaDefines,
         );
         const effectiveAddlSource = prepared.text;
         if (prepared.blankedLines.length > 0) {

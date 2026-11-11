@@ -18,6 +18,8 @@
  *   --dialect-path <dir>      Load every *.json profile in a folder (repeatable)
  *   --feature <+id|-id>       Enable or disable a feature (repeatable)
  *   --global-list <f>=<name>  Name the global variable list of input <f> (repeatable)
+ *   --pragma-define N[=V]     A conditional-pragma define only, never a constant (repeatable)
+ *   --file-define <f>=N[=V]   A conditional-pragma define of input <f> only (repeatable)
  *   --print-dialect           Print the resolved dialect as JSON and exit
  *   --check                   Parse and analyse only; write nothing (exit 0/1/2)
  *   --json                    With --check: print one JSON report on stdout
@@ -123,6 +125,8 @@ interface CLIOptions {
   defines: Record<string, number>;
   /** `-D` names for conditional pragmas: name → value (`''` for a bare name). */
   pragmaDefines: Record<string, string>;
+  /** `--file-define <file>=NAME[=VALUE]` entries: defines of one input file. */
+  fileDefines: Array<{ file: string; name: string; value: string }>;
 }
 
 /**
@@ -193,6 +197,7 @@ function parseArgs(args: string[]): CLIOptions {
     test: [],
     defines: {},
     pragmaDefines: {},
+    fileDefines: [],
   };
 
   // Usage errors exit 2 in check mode, 1 otherwise.
@@ -346,6 +351,36 @@ function parseArgs(args: string[]): CLIOptions {
         console.error(`error: ${problem}`);
         process.exit(usageExit);
       }
+    } else if (arg === "--pragma-define") {
+      // A conditional-pragma define only: never a global constant
+      i++;
+      const spec = args[i];
+      const problem =
+        spec === undefined
+          ? `${arg} needs a value`
+          : parsePragmaDefine(spec, arg, options.pragmaDefines);
+      if (problem !== undefined) {
+        console.error(`error: ${problem}`);
+        process.exit(usageExit);
+      }
+    } else if (arg === "--file-define") {
+      // --file-define <file>=NAME[=VALUE]: a define of one input file only
+      i++;
+      const spec = args[i] ?? "";
+      const eq = spec.indexOf("=");
+      const file = spec.slice(0, Math.max(eq, 0));
+      const one: Record<string, string> = {};
+      const problem =
+        eq <= 0
+          ? `--file-define needs <file>=NAME[=VALUE], got '${spec}'`
+          : parsePragmaDefine(spec.slice(eq + 1), arg, one);
+      if (problem !== undefined) {
+        console.error(`error: ${problem}`);
+        process.exit(usageExit);
+      }
+      for (const [name, value] of Object.entries(one)) {
+        options.fileDefines.push({ file, name, value });
+      }
     } else if (arg === "--test") {
       // Collect all following arguments that don't start with '-' as test files
       i++;
@@ -364,6 +399,19 @@ function parseArgs(args: string[]): CLIOptions {
     }
 
     i++;
+  }
+
+  for (const { file } of options.fileDefines) {
+    const path = resolve(file);
+    const problem = options.compileLib
+      ? "cannot be used with --compile-lib"
+      : !options.inputs.some((input) => resolve(input) === path)
+        ? "is not an input file"
+        : undefined;
+    if (problem !== undefined) {
+      console.error(`error: --file-define file '${file}' ${problem}`);
+      process.exit(usageExit);
+    }
   }
 
   const listFiles = new Set<string>();
@@ -393,14 +441,43 @@ function globalListNameFor(
   return options.globalLists.find((g) => resolve(g.file) === path)?.name;
 }
 
-/** `entry` with the `--global-list` name of `input` added when one is given. */
+/** The `--file-define` defines given for input file `input`, in order. */
+function fileDefinesFor(
+  options: CLIOptions,
+  input: string,
+): Record<string, string> | undefined {
+  const path = resolve(input);
+  const hits = options.fileDefines.filter((d) => resolve(d.file) === path);
+  if (hits.length === 0) return undefined;
+  return Object.fromEntries(hits.map((d) => [d.name, d.value]));
+}
+
+/**
+ * `entry` with the `--global-list` name and the `--file-define` defines of
+ * `input` added when given: as `pragmaDefines` of an additional source, or
+ * `filePragmaDefines` for the primary one (`primary`).
+ */
 function withGlobalListName<T extends object>(
   options: CLIOptions,
   input: string,
   entry: T,
-): T & { globalListName?: string } {
+  primary = false,
+): T & {
+  globalListName?: string;
+  pragmaDefines?: Record<string, string>;
+  filePragmaDefines?: Record<string, string>;
+} {
   const name = globalListNameFor(options, input);
-  return name === undefined ? entry : { ...entry, globalListName: name };
+  const defines = fileDefinesFor(options, input);
+  return {
+    ...entry,
+    ...(name !== undefined ? { globalListName: name } : {}),
+    ...(defines === undefined
+      ? {}
+      : primary
+        ? { filePragmaDefines: defines }
+        : { pragmaDefines: defines }),
+  };
 }
 
 /** Help column of option descriptions, and the width they wrap at. */
@@ -470,6 +547,15 @@ Options:
   -D, --define NAME[=VALUE] Define a name for conditional pragmas (feature
                             conditional_pragmas); an integer VALUE also
                             defines a global constant (repeatable)
+  --pragma-define NAME[=VALUE]
+                            Define a name for conditional pragmas only, never
+                            a global constant, whatever VALUE is (repeatable)
+  --file-define <file>=NAME[=VALUE]
+                            Define a name for the conditional pragmas of input
+                            <file> only, on top of the project's defines: seen
+                            by defined() and hasvalue() (over a project define
+                            of the same name), not by project_defined()
+                            (repeatable; not with --compile-lib)
   -v, --version             Show version
   -h, --help                Show this help
 
@@ -591,6 +677,25 @@ function parseDefine(
   if (!isNaN(value)) {
     defines[name] = value;
   }
+  return undefined;
+}
+
+/**
+ * Parse a `--pragma-define` / `--file-define` value, `NAME` or `NAME=VALUE`,
+ * into `pragmaDefines` only: whatever the value, it is no global constant.
+ * Returns a usage message for a bad name.
+ */
+function parsePragmaDefine(
+  input: string,
+  option: string,
+  pragmaDefines: Record<string, string>,
+): string | undefined {
+  const eqIdx = input.indexOf("=");
+  const name = eqIdx >= 0 ? input.substring(0, eqIdx) : input;
+  if (!isPragmaDefineName(name)) {
+    return `${option} needs NAME or NAME=VALUE with an identifier name, got '${input}'`;
+  }
+  pragmaDefines[name] = eqIdx >= 0 ? input.substring(eqIdx + 1) : "";
   return undefined;
 }
 
@@ -868,7 +973,7 @@ function runTestMode(options: CLIOptions): void {
     isTestBuild: true,
     strict: options.strict,
     ...dialectCompileOptions(options),
-    ...withGlobalListName(options, primaryInput, {}),
+    ...withGlobalListName(options, primaryInput, {}, true),
   };
   if (additionalSources.length > 0) {
     compileOptions.additionalSources = additionalSources;
@@ -1331,7 +1436,7 @@ function checkMode(options: CLIOptions): never {
       strict: options.strict,
       ...dialectOptions,
       fileName: sources[0]!.fileName,
-      ...withGlobalListName(options, files[0]!, {}),
+      ...withGlobalListName(options, files[0]!, {}, true),
     };
     if (sources.length > 1) {
       analyzeOptions.additionalSources = sources
@@ -1469,7 +1574,7 @@ async function main(): Promise<void> {
     headerFileName,
     cppFileName: basename(outputPath),
     fileName: basename(inputPath),
-    ...withGlobalListName(options, primaryInput, {}),
+    ...withGlobalListName(options, primaryInput, {}, true),
   };
   if (additionalSources.length > 0) {
     compileOptions.additionalSources = additionalSources;

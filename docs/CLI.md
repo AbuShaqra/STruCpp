@@ -213,6 +213,8 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 | `--cc <path>`         | Custom C compiler path (default: `cc`)                        |
 | `--cxx-flags <flags>` | Extra flags passed to g++ (supports quoted paths)             |
 | `-D NAME[=VALUE]`     | Define a conditional-pragma name (`--define`, `-DNAME`; repeatable; the name is case-sensitive in `defined()`, and `{undefine}` in a source cannot remove it); an integer VALUE also defines a global constant (emits `constexpr size_t`). A name that is not an identifier is a usage error. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
+| `--pragma-define NAME[=VALUE]` | Define a conditional-pragma name only (repeatable): whatever VALUE is, no global constant. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
+| `--file-define <file>=NAME[=VALUE]` | Define a conditional-pragma name for input `<file>` only, on top of the project defines (repeatable; not with `--compile-lib`): seen by `defined()` and `hasvalue()` in that file (over a project define of the same name), not by `project_defined()`. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
 | `-d, --debug`         | Enable debug output                                           |
 | `--strict`            | Reject code that strict IEC compilers (matiec) reject; below  |
 

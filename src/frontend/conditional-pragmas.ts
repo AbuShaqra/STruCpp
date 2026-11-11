@@ -407,13 +407,20 @@ class ConditionParser {
 interface DefineScope {
   /** Project defines (`-D`, `pragmaDefines`); never changed by the source. */
   project: ReadonlyMap<string, string>;
+  /** Defines given for this file only (`--file-define`, a source's `pragmaDefines`). */
+  file: ReadonlyMap<string, string>;
   /** `{define}`s of this file seen so far and not undefined. */
   source: ReadonlyMap<string, string>;
 }
 
-/** Value of `name`: a source define shadows a project define of the same name. */
+/**
+ * Value of `name`: a source define shadows a file define, which shadows a
+ * project define of the same name.
+ */
 function defineValue(scope: DefineScope, name: string): string | undefined {
-  return scope.source.get(name) ?? scope.project.get(name);
+  return (
+    scope.source.get(name) ?? scope.file.get(name) ?? scope.project.get(name)
+  );
 }
 
 function evaluate(node: CondNode, scope: DefineScope): boolean {
@@ -427,7 +434,8 @@ function evaluate(node: CondNode, scope: DefineScope): boolean {
     case "defined":
       return (
         scope.project.has(node.name) ||
-        (!node.projectOnly && scope.source.has(node.name))
+        (!node.projectOnly &&
+          (scope.file.has(node.name) || scope.source.has(node.name)))
       );
     case "hasvalue":
       return defineValue(scope, node.name) === node.value;
@@ -544,12 +552,15 @@ const DIRECTIVE_LINE =
  * @param source - The source text
  * @param defines - Project define names (case-sensitive) → value
  * @param lex - The lexer for this kind of file; its pragma group and string tokens are read
+ * @param fileDefines - Defines given for this file only: seen by `defined()` and
+ *   `hasvalue()` (over a project define of the same name), not by `project_defined()`
  * @returns The text with directives and inactive branches blanked, and the errors
  */
 export function applyConditionalPragmas(
   source: string,
   defines: ReadonlyMap<string, string>,
   lex: (s: string) => ILexingResult,
+  fileDefines: ReadonlyMap<string, string> = new Map(),
 ): ConditionalPragmaResult {
   if (!hasConditionalPragma(source)) {
     return { text: source, errors: [], blankedLines: [] };
@@ -665,7 +676,11 @@ export function applyConditionalPragmas(
   const isActive = (): boolean =>
     stack.length === 0 || stack[stack.length - 1]!.active;
   const sourceDefines = new Map<string, string>();
-  const scope: DefineScope = { project: defines, source: sourceDefines };
+  const scope: DefineScope = {
+    project: defines,
+    file: fileDefines,
+    source: sourceDefines,
+  };
   const choose = (d: Directive): boolean =>
     d.condition !== undefined && evaluate(d.condition, scope);
 
