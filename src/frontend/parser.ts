@@ -1243,6 +1243,11 @@ export class STParser extends CstParser {
     this.OPTION4(() => this.CONSUME(tokens.Caret));
     this.CONSUME(tokens.Dot);
     this.SUBRULE(this.identifierOrKeyword);
+    // `THIS.a.b`, `THIS.arr[i]`: further steps of the access path
+    this.OPTION5({
+      GATE: (): boolean => this.isMemberStepAhead(),
+      DEF: () => this.SUBRULE(this.memberSteps),
+    });
     // Determine if this is an assignment or method call
     this.OR([
       {
@@ -1662,6 +1667,15 @@ export class STParser extends CstParser {
     this.CONSUME(tokens.SUPER);
     this.OR([
       {
+        // SUPER(); — parent body call (Ed. 3 form)
+        GATE: () => this.LA(1).tokenType === tokens.LParen,
+        ALT: () => {
+          this.CONSUME2(tokens.LParen);
+          this.OPTION2(() => this.SUBRULE2(this.argumentList));
+          this.CONSUME2(tokens.RParen);
+        },
+      },
+      {
         GATE: () => this.LA(1).tokenType === tokens.Caret,
         ALT: () => {
           this.CONSUME(tokens.Caret);
@@ -1687,25 +1701,91 @@ export class STParser extends CstParser {
         ALT: () => this.SUBRULE2(this.superMemberTail),
       },
     ]);
+    // SUPER.member := expr; SUPER.member REF= variable;
+    this.OPTION3(() => {
+      this.OR3([
+        {
+          ALT: () => {
+            this.CONSUME(tokens.Assign);
+            this.SUBRULE(this.expression);
+          },
+        },
+        {
+          ALT: () => {
+            this.CONSUME(tokens.RefAssign);
+            this.SUBRULE(this.variable);
+          },
+        },
+      ]);
+    });
     this.CONSUME(tokens.Semicolon);
+  });
+
+  /** Further steps of a THIS or SUPER access path: `.b`, `.0`, `[i, j]`, `^`. */
+  public memberSteps = this.RULE("memberSteps", () => {
+    this.AT_LEAST_ONE(() => {
+      this.OR([
+        {
+          ALT: (): void => {
+            this.CONSUME(tokens.LBracket);
+            this.AT_LEAST_ONE_SEP({
+              SEP: tokens.Comma,
+              DEF: () => this.SUBRULE(this.expression),
+            });
+            this.CONSUME(tokens.RBracket);
+          },
+        },
+        {
+          ALT: (): void => {
+            this.CONSUME(tokens.Dot);
+            this.OR2({
+              DEF: [
+                { ALT: (): CstNode => this.SUBRULE(this.identifierOrKeyword) },
+                { ALT: (): IToken => this.CONSUME(tokens.IntegerLiteral) },
+              ],
+              IGNORE_AMBIGUITIES: true,
+            });
+          },
+        },
+        { ALT: (): IToken => this.CONSUME(tokens.Caret) },
+      ]);
+    });
   });
 
   /** `.member` or `.method(args)` after SUPER or SUPER^. */
   public superMemberTail = this.RULE("superMemberTail", () => {
     this.CONSUME(tokens.Dot);
     this.SUBRULE(this.identifierOrKeyword);
-    this.OPTION(() => {
-      this.CONSUME(tokens.LParen);
-      this.OPTION2(() => this.SUBRULE(this.argumentList));
-      this.CONSUME(tokens.RParen);
-    });
+    this.OR([
+      {
+        GATE: (): boolean => this.LA(1).tokenType === tokens.LParen,
+        ALT: (): void => {
+          this.CONSUME(tokens.LParen);
+          this.OPTION2(() => this.SUBRULE(this.argumentList));
+          this.CONSUME(tokens.RParen);
+        },
+      },
+      {
+        GATE: (): boolean => this.isMemberStepAhead(),
+        ALT: (): CstNode => this.SUBRULE(this.memberSteps),
+      },
+      { ALT: (): void => undefined },
+    ]);
   });
 
   /** SUPER followed by `^` (caret form) or `.` (IEC form). */
   private isSuperAhead(): boolean {
     if (this.LA(1).tokenType !== tokens.SUPER) return false;
     const next = this.LA(2).tokenType;
-    return next === tokens.Caret || next === tokens.Dot;
+    return (
+      next === tokens.Caret || next === tokens.Dot || next === tokens.LParen
+    );
+  }
+
+  /** A further step of an access path next: `.name`, `.0`, `[i]` or `^`. */
+  private isMemberStepAhead(): boolean {
+    const t = this.LA(1).tokenType;
+    return t === tokens.Dot || t === tokens.LBracket || t === tokens.Caret;
   }
 
   /**
@@ -2213,11 +2293,21 @@ export class STParser extends CstParser {
   public selfMemberTail = this.RULE("selfMemberTail", () => {
     this.CONSUME(tokens.Dot);
     this.SUBRULE(this.identifierOrKeyword);
-    this.OPTION(() => {
-      this.CONSUME(tokens.LParen);
-      this.OPTION2(() => this.SUBRULE(this.argumentList));
-      this.CONSUME(tokens.RParen);
-    });
+    this.OR([
+      {
+        GATE: (): boolean => this.LA(1).tokenType === tokens.LParen,
+        ALT: (): void => {
+          this.CONSUME(tokens.LParen);
+          this.OPTION2(() => this.SUBRULE(this.argumentList));
+          this.CONSUME(tokens.RParen);
+        },
+      },
+      {
+        GATE: (): boolean => this.isMemberStepAhead(),
+        ALT: (): CstNode => this.SUBRULE(this.memberSteps),
+      },
+      { ALT: (): void => undefined },
+    ]);
   });
 
   /**
