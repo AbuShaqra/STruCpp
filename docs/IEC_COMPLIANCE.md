@@ -154,7 +154,10 @@ All IEC 61131-3 standard functions are implemented in the C++ runtime:
 
 **Names of standard functions are not reserved.** A user FUNCTION named like a standard function or operator
 (`MAX`, `LEN`, `ADR`, `SIZEOF`, `INT_TO_REAL`) is the function a call of that name reaches, with its own
-parameters. A FUNCTION, FUNCTION_BLOCK, INTERFACE or TYPE named like a function the C++ runtime declares
+parameters. A library FUNCTION named like a standard function (OSCAT's `ROUND(IN, N)`, `ATAN2`) is reached
+by a call whose arguments, positional or named, fit only its own signature (`ROUND(x, 2)`,
+`ROUND(N := 3, IN := x)`); a call the standard function takes keeps the standard function (`ROUND(x)`),
+whatever order the libraries are loaded in. A FUNCTION, FUNCTION_BLOCK, INTERFACE or TYPE named like a function the C++ runtime declares
 (`SUB`, `MID`, `LIMIT`, `TRUNC_INT`) is emitted as `NAME_` in the generated C++; diagnostics, the debug table
 and the REPL keep the ST name. So is a variable, STRUCT field or local named like a user type, whatever its
 case, that another declaration of the same PROGRAM, FUNCTION_BLOCK (with its methods), FUNCTION or STRUCT

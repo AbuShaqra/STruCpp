@@ -41,7 +41,12 @@ import type {
   VarDeclaration,
   AccessStep,
 } from "../frontend/ast.js";
-import type { AnySymbol, SymbolTables, Scope } from "./symbol-table.js";
+import type {
+  AnySymbol,
+  FunctionSymbol,
+  SymbolTables,
+  Scope,
+} from "./symbol-table.js";
 import type { StdFunctionRegistry } from "./std-function-registry.js";
 import type { CompileError, SourceSpan } from "../types.js";
 import {
@@ -73,6 +78,7 @@ import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
 import { structExtends } from "./struct-extends.js";
 import { bindStdFunctionArguments } from "./std-function-args.js";
 import { STD_FUNCTIONS_LIBRARY } from "../library/library-manifest.js";
+import { libraryOverloadFor } from "./library-overload.js";
 import {
   fbIndex,
   fbInitArgumentScope,
@@ -1768,6 +1774,14 @@ export class TypeChecker {
       return selected === "refused" ? undefined : selected;
     }
 
+    // A library FUNCTION named like a standard function, called with arguments
+    // only its own signature takes (OSCAT's ROUND(IN, N)).
+    const overload = this.libraryOverload(expr);
+    if (overload) {
+      expr.resolvedType = overload.returnType;
+      return overload.returnType;
+    }
+
     // Check user-defined functions in symbol tables
     const funcSymbol = this.symbolTables.lookupFunction(expr.functionName);
     if (funcSymbol !== undefined) {
@@ -2297,6 +2311,31 @@ export class TypeChecker {
     }
   }
 
+  /** Calls of a standard function's name resolved to a library FUNCTION of it. */
+  private libraryOverloads = new WeakMap<
+    FunctionCallExpression,
+    FunctionSymbol | null
+  >();
+
+  /** The library FUNCTION this call resolves to instead of the standard one. */
+  private libraryOverload(
+    expr: FunctionCallExpression,
+  ): FunctionSymbol | undefined {
+    let found = this.libraryOverloads.get(expr);
+    if (found === undefined) {
+      found =
+        (this.findUserFunction(expr.functionName)
+          ? undefined
+          : libraryOverloadFor(expr, this.symbolTables, this.stdRegistry)) ??
+        null;
+      this.libraryOverloads.set(expr, found);
+      if (found?.libraryName !== undefined) {
+        expr.libraryFunction = found.libraryName;
+      }
+    }
+    return found ?? undefined;
+  }
+
   /** Standard function calls whose arguments were already bound. */
   private boundStdFunctionCalls = new WeakSet<FunctionCallExpression>();
   /** Standard function calls whose named arguments could not be bound. */
@@ -2322,6 +2361,7 @@ export class TypeChecker {
     if (scope.lookup(name)?.kind === "variable") return;
     if (this.calledInstance(name, scope)) return;
     if (this.ownMethod(name)) return;
+    if (this.libraryOverload(expr)) return;
     const upper = name.toUpperCase();
     const desc = this.stdRegistry.lookup(upper);
     let params = desc?.params;
@@ -2393,13 +2433,15 @@ export class TypeChecker {
         .flatMap((b) => b.declarations.flatMap((d) => d.names));
     } else {
       const upper = name.toUpperCase();
+      const overload = this.libraryOverload(expr);
       if (
-        this.stdRegistry?.lookup(upper) !== undefined ||
-        this.stdRegistry?.resolveConversion(upper) !== undefined
+        overload === undefined &&
+        (this.stdRegistry?.lookup(upper) !== undefined ||
+          this.stdRegistry?.resolveConversion(upper) !== undefined)
       ) {
         return;
       }
-      const libFn = this.symbolTables.lookupFunction(name);
+      const libFn = overload ?? this.symbolTables.lookupFunction(name);
       if (libFn === undefined) return;
       declaredName = libFn.name;
       params = libFn.parameters.map((p) => p.name);

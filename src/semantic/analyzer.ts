@@ -115,6 +115,7 @@ import {
   integerTypeRange,
 } from "../literal-utils.js";
 import { cp1252Byte } from "../byte-utils.js";
+import { libraryOverloadFor } from "./library-overload.js";
 
 // =============================================================================
 // Located Variable Address Parsing
@@ -3915,6 +3916,14 @@ export class SemanticAnalyzer {
         (sym?.kind === "function"
           ? undefined
           : this.stdRegistry.resolveTypedTrunc(nameUpper)));
+    // A library FUNCTION of the name that only these arguments fit is called.
+    if (
+      desc &&
+      libraryOverloadFor(expr, this.symbolTables, this.stdRegistry) !==
+        undefined
+    ) {
+      return;
+    }
     if (desc) {
       if (desc.isVariadic) {
         const minArgs = desc.minArgs ?? desc.params.length;
