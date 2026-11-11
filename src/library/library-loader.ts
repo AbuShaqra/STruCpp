@@ -449,9 +449,18 @@ export function registerLibrarySymbols(
           name: fb.name,
           isAbstract: false,
           isFinal: false,
+          ...(fb.extends !== undefined ? { extends: fb.extends } : {}),
           varBlocks: [],
           methods: [],
-          properties: [],
+          properties: (fb.properties ?? []).map((p) => ({
+            kind: "PropertyDeclaration" as const,
+            sourceSpan: createDefaultSourceSpan(),
+            name: p.name,
+            type: makeTypeRef(p.type),
+            visibility: "PUBLIC" as const,
+            ...(p.get === true ? { getter: [] } : {}),
+            ...(p.set === true ? { setter: [] } : {}),
+          })),
           actions: [],
           body: [],
         },
@@ -462,6 +471,12 @@ export function registerLibrarySymbols(
         // this empty and a RETAINed instance of its blocks covers the visible
         // surface only, with a warning naming the block.
         locals: (fb.locals ?? []).map((l) => makeVarSymbol(l, "local")),
+        ...(fb.temps !== undefined
+          ? { temps: fb.temps.map((t) => makeVarSymbol(t, "local")) }
+          : {}),
+        ...(fb.properties !== undefined && fb.methods !== undefined
+          ? { libraryMethodNames: fb.methods.map((m) => m.name) }
+          : {}),
         libraryName: manifest.name,
       });
     } catch (e) {

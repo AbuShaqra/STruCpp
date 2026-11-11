@@ -31,12 +31,14 @@ import type {
   LibraryFBEntry,
   LibraryManifest,
   LibraryMethodEntry,
+  LibraryPropertyEntry,
   LibraryVarType,
 } from "./library-manifest.js";
 import type {
   Expression,
   FunctionBlockDeclaration,
   MethodDeclaration,
+  PropertyDeclaration,
   TypeReference,
   VarBlock,
   VarBlockType,
@@ -140,6 +142,30 @@ function parameterDirection(
     default:
       return undefined;
   }
+}
+
+/** A property of a library FB for the manifest: its type and accessors. */
+function serializeProperty(prop: PropertyDeclaration): LibraryPropertyEntry {
+  return {
+    name: prop.name,
+    type: serializeVarType(prop.name, prop.type),
+    ...(prop.getter !== undefined ? { get: true as const } : {}),
+    ...(prop.setter !== undefined ? { set: true as const } : {}),
+  };
+}
+
+/** The block's VAR_TEMP members for the manifest, when it has any. */
+function serializeTemps(fb: FunctionBlockDeclaration): {
+  temps?: LibraryVarType[];
+} {
+  const temps = fb.varBlocks
+    .filter((b) => b.blockType === "VAR_TEMP")
+    .flatMap((b) =>
+      b.declarations.flatMap((d) =>
+        d.names.map((n) => serializeVarType(n, d.type)),
+      ),
+    );
+  return temps.length > 0 ? { temps } : {};
 }
 
 /** A method of a library FB for the manifest: its signature, no body. */
@@ -771,6 +797,9 @@ export function compileLibrary(
               // interface arrays above are. A RETAINed instance retains these
               // too; without them a retained TON keeps Q and ET and loses the
               // state that makes them mean anything.
+              properties: fb.properties.map(serializeProperty),
+              ...serializeTemps(fb),
+              ...(fb.extends !== undefined ? { extends: fb.extends } : {}),
               locals: fb.varBlocks
                 .filter((b) => b.blockType === "VAR")
                 .flatMap((b) =>

@@ -121,6 +121,14 @@ export interface FunctionBlockSymbol extends BaseSymbol {
    * not exist.
    */
   libraryName?: string;
+  /** A library FB's `VAR_TEMP` members, from archives that list them. */
+  temps?: VariableSymbol[];
+  /**
+   * A library FB's method and action names, set only when its archive lists
+   * every member of the block (properties, temps, base): a name that is none of
+   * them, nor a variable or property, is then not a member.
+   */
+  libraryMethodNames?: string[];
 }
 
 /**

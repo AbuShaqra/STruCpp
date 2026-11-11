@@ -3290,6 +3290,32 @@ export class SemanticAnalyzer {
         propertyInfo.set(key, { hasSetter: prop.setter !== undefined });
       }
     }
+    // Library blocks' properties, from archives that list them
+    const fbProps = new Map<string, FunctionBlockDeclaration>();
+    for (const sym of this.symbolTables.globalScope.getAllSymbols()) {
+      if (sym.kind === "functionBlock" && sym.libraryName !== undefined) {
+        fbProps.set(sym.name.toUpperCase(), sym.declaration);
+      }
+    }
+    for (const fb of ast.functionBlocks) fbProps.set(fb.name.toUpperCase(), fb);
+    // A property a base declares, written through an instance of a derived block
+    for (const [name, fb] of fbProps) {
+      const seen = new Set<string>();
+      let current: FunctionBlockDeclaration | undefined = fb;
+      while (current !== undefined && !seen.has(current.name.toUpperCase())) {
+        seen.add(current.name.toUpperCase());
+        for (const prop of current.properties) {
+          const key = `${name}.${prop.name.toUpperCase()}`;
+          if (!propertyInfo.has(key)) {
+            propertyInfo.set(key, { hasSetter: prop.setter !== undefined });
+          }
+        }
+        current =
+          current.extends !== undefined
+            ? fbProps.get(current.extends.toUpperCase())
+            : undefined;
+      }
+    }
     // Interface properties (own and inherited) as seen through a variable
     if (this.features.has("property")) {
       const ifaceDecls = new Map<string, InterfaceDeclaration>();

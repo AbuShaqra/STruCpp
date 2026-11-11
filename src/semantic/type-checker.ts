@@ -512,17 +512,33 @@ export class TypeChecker {
       const local = resolveFieldType(typeName, fieldName, this.ast);
       if (local) return local;
     }
-    const fb = this.symbolTables.lookupFunctionBlock(typeName);
-    if (fb) {
-      const fu = fieldName.toUpperCase();
+    // A library block's members and properties, then those of its bases.
+    const fu = fieldName.toUpperCase();
+    const seen = new Set<string>();
+    let fb = this.symbolTables.lookupFunctionBlock(typeName);
+    while (fb !== undefined && !seen.has(fb.name.toUpperCase())) {
+      seen.add(fb.name.toUpperCase());
       for (const m of [
         ...fb.inputs,
         ...fb.outputs,
         ...fb.inouts,
         ...fb.locals,
+        ...(fb.temps ?? []),
       ]) {
         if (m.name.toUpperCase() === fu) return m.declaration?.type?.name;
       }
+      const prop = fb.declaration.properties.find(
+        (p) => p.name.toUpperCase() === fu,
+      );
+      if (prop !== undefined && fb.libraryName !== undefined) {
+        return prop.type.name;
+      }
+      const base =
+        fb.libraryName !== undefined ? fb.declaration.extends : undefined;
+      fb =
+        base !== undefined
+          ? this.symbolTables.lookupFunctionBlock(base)
+          : undefined;
     }
     // Dependency struct types: their member types are carried on the registered
     // StructType (e.g. CONSTANTS_MATH.PI), so `MATH.PI` resolves to REAL.
@@ -833,9 +849,21 @@ export class TypeChecker {
       const fb = this.ast?.functionBlocks.find(
         (f) => f.name.toUpperCase() === name,
       );
-      if (!fb) return false;
       const named = (n: { name: string }): boolean =>
         n.name.toUpperCase() === memberUpper;
+      if (!fb) {
+        // A library block whose archive lists all its members.
+        const lib = this.symbolTables.lookupFunctionBlock(name);
+        if (lib?.libraryMethodNames === undefined) return false;
+        if (
+          lib.libraryMethodNames.some((m) => m.toUpperCase() === memberUpper) ||
+          lib.declaration.properties.some(named)
+        ) {
+          return false;
+        }
+        current = lib.declaration.extends?.toUpperCase();
+        continue;
+      }
       if (
         fb.methods.some(named) ||
         fb.actions.some(named) ||
@@ -1724,7 +1752,10 @@ export class TypeChecker {
         span.file,
       );
     const kind = this.callTargetKind(type);
-    if (kind === undefined) return;
+    if (kind === undefined) {
+      this.checkLibraryMethodCall(type, methodName, span);
+      return;
+    }
     const upper = this.aliasBase(type.name);
     if (
       kind !== "value" &&
@@ -1761,6 +1792,48 @@ export class TypeChecker {
       upper;
     this.addError(
       `${isFb ? "Function block" : "Interface"} '${owner}' has no method '${methodName}'`,
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
+  }
+
+  /**
+   * `v.M()` on a library block whose archive lists all its members: M must be
+   * a method or action of the block or of a base, or a member (an FB instance).
+   */
+  private checkLibraryMethodCall(
+    type: VarDeclaration["type"],
+    methodName: string,
+    span: FunctionCallExpression["sourceSpan"],
+  ): void {
+    if (
+      type.arrayDimensions !== undefined ||
+      type.referenceChain !== undefined ||
+      (type.referenceKind !== "none" && type.referenceKind !== "reference_to")
+    ) {
+      return;
+    }
+    const upper = this.aliasBase(type.name);
+    if (this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper)) {
+      return;
+    }
+    if (this.resolveFieldTypeAnywhere(upper, methodName) !== undefined) return;
+    const methodUpper = methodName.toUpperCase();
+    const seen = new Set<string>();
+    let current: string | undefined = upper;
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      const lib = this.symbolTables.lookupFunctionBlock(current);
+      if (lib?.libraryMethodNames === undefined) return;
+      if (lib.libraryMethodNames.some((m) => m.toUpperCase() === methodUpper)) {
+        return;
+      }
+      current = lib.declaration.extends?.toUpperCase();
+    }
+    const owner = this.symbolTables.lookupFunctionBlock(upper)?.name ?? upper;
+    this.addError(
+      `Function block '${owner}' has no method '${methodName}'`,
       span.startLine,
       span.startCol,
       span.file,

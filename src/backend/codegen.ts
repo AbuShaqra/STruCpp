@@ -611,6 +611,8 @@ export class CodeGenerator {
 
   /** UPPER library FB name → its methods, from archives that list them. */
   private libraryMethods: Map<string, MethodDeclaration[]> = new Map();
+  /** Library FB name → the library FB it EXTENDS (both upper case). */
+  private libraryFBExtends: Map<string, string> = new Map();
 
   /** Library functions by upper-cased name, and their parsed declarations. */
   private libraryFunctions: Map<string, LibraryFunctionEntry> = new Map();
@@ -1106,6 +1108,19 @@ export class CodeGenerator {
         const methods = libraryMethodDeclarations(fb);
         if (methods !== undefined && methods.length > 0) {
           this.libraryMethods.set(fb.name.toUpperCase(), methods);
+        }
+        // Properties read and written through `get_X()` / `set_X(v)`.
+        for (const prop of fb.properties ?? []) {
+          this.propertyNameMap.set(
+            `${fb.name.toUpperCase()}.${prop.name.toUpperCase()}`,
+            prop.name,
+          );
+        }
+        if (fb.extends !== undefined) {
+          this.libraryFBExtends.set(
+            fb.name.toUpperCase(),
+            fb.extends.toUpperCase(),
+          );
         }
       }
       this.registerLibraryFBTypes(
@@ -7700,6 +7715,10 @@ export class CodeGenerator {
       const owner: string = current;
       const fb: CompilationUnit["functionBlocks"][number] | undefined =
         this.ast?.functionBlocks.find((f) => f.name.toUpperCase() === owner);
+      if (!fb && this.libraryFBExtends.has(owner)) {
+        current = this.libraryFBExtends.get(owner);
+        continue;
+      }
       if (
         !fb ||
         fb.varBlocks.some((b) =>
