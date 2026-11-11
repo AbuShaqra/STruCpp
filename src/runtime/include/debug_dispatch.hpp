@@ -108,9 +108,10 @@ inline bool decode_scalar<bool>(const uint8_t* bytes) noexcept {
 }
 
 template <typename T>
-inline uint8_t force_impl(void* p, const uint8_t* bytes, uint8_t flags) noexcept {
+inline uint8_t force_impl(void* p, const uint8_t* bytes, uint8_t flags,
+                          void* lock = nullptr) noexcept {
     const T v = decode_scalar<T>(bytes);
-    return force_status(force::set(p, &v, sizeof(T), flags));
+    return force_status(force::set(p, &v, sizeof(T), flags, nullptr, lock));
 }
 
 inline void unforce_impl(void* p) noexcept {
@@ -235,13 +236,14 @@ inline void write_string(void* p, const uint8_t* bytes) noexcept {
     var->set(IECString<254>(reinterpret_cast<const char*>(bytes + 1), wire_len));
 }
 
-inline uint8_t force_string(void* p, const uint8_t* bytes, uint8_t flags) noexcept {
+inline uint8_t force_string(void* p, const uint8_t* bytes, uint8_t flags,
+                            void* lock = nullptr) noexcept {
     const uint8_t wire_len = bytes[0] < DEBUG_STRING_CAP ? bytes[0] : DEBUG_STRING_CAP;
     char value[DEBUG_STRING_CAP + 1];
     std::memcpy(value, bytes + 1, wire_len);
     value[wire_len] = '\0';
     return force_status(force::set(p, value, static_cast<uint16_t>(wire_len + 1u),
-                                   flags, &apply_string));
+                                   flags, &apply_string, lock));
 }
 
 // The payload only — NOT the [len][payload] wire form read_string() builds.
@@ -324,14 +326,15 @@ inline void write_wstring(void* p, const uint8_t* bytes) noexcept {
     var->set(IECWString<254>(buf, wire_len));
 }
 
-inline uint8_t force_wstring(void* p, const uint8_t* bytes, uint8_t flags) noexcept {
+inline uint8_t force_wstring(void* p, const uint8_t* bytes, uint8_t flags,
+                             void* lock = nullptr) noexcept {
     const uint8_t wire_len = bytes[0] < DEBUG_STRING_CAP ? bytes[0] : DEBUG_STRING_CAP;
     char16_t value[DEBUG_STRING_CAP + 1];
     decode_wstring(bytes, wire_len, value);
     value[wire_len] = u'\0';
     return force_status(force::set(p, value,
                                    static_cast<uint16_t>((wire_len + 1u) * sizeof(char16_t)),
-                                   flags, &apply_wstring));
+                                   flags, &apply_wstring, lock));
 }
 
 // The code-unit buffer as it sits in memory, so `len` is BYTES (2 per code
@@ -370,7 +373,8 @@ inline const void* ptr_wstring(const void* p, uint16_t* len) noexcept {
 // by force/read (for strings: reserved, handled specially).
 // ---------------------------------------------------------------------------
 struct TypeOps {
-    uint8_t (*force)(void*, const uint8_t*, uint8_t);
+    /** Force: variable, value, force::FLAG_*, the lock of its shared global or null. */
+    uint8_t (*force)(void*, const uint8_t*, uint8_t, void*);
     void (*unforce)(void*);
     void (*read)   (const void*, uint8_t*);
     void (*write)  (void*, const uint8_t*);
@@ -572,6 +576,41 @@ inline uint8_t read_array_kind(uint8_t arr) noexcept {
 // ---------------------------------------------------------------------------
 
 /**
+ * The lock of the shared global leaf (arr, elem) lives in, or null: only a
+ * STRUCPP_THREADED build has one (the generated debug_leaf_lock()).
+ */
+inline void* leaf_lock(uint8_t arr, uint16_t elem) noexcept {
+#ifdef STRUCPP_THREADED
+    return read_array_kind(arr) == DEBUG_ARRAY_GLOBAL ? debug_leaf_lock(arr, elem)
+                                                      : nullptr;
+#else
+    (void)arr;
+    (void)elem;
+    return nullptr;
+#endif
+}
+
+/** Holds a shared global's lock for one debugger access; a no-op for null. */
+class LeafGuard {
+public:
+    explicit LeafGuard(void* lock) noexcept : lock_(lock) {
+#ifdef STRUCPP_THREADED
+        if (lock_ != nullptr) static_cast<std::mutex*>(lock_)->lock();
+#endif
+    }
+    ~LeafGuard() {
+#ifdef STRUCPP_THREADED
+        if (lock_ != nullptr) static_cast<std::mutex*>(lock_)->unlock();
+#endif
+    }
+    LeafGuard(const LeafGuard&) = delete;
+    LeafGuard& operator=(const LeafGuard&) = delete;
+
+private:
+    void* lock_;
+};
+
+/**
  * Validate a value payload against a leaf's type. Returns STATUS_OK, or the
  * STATUS_* refusal to hand straight back to the caller. Shared by handle_set()
  * and handle_write() so the rule cannot drift between them.
@@ -624,7 +663,7 @@ inline uint8_t handle_set(uint8_t arr, uint16_t elem, bool forcing,
         if (bad != STATUS_OK) return bad;
         const uint8_t flags =
             read_array_kind(arr) == DEBUG_ARRAY_GLOBAL ? force::FLAG_GLOBAL : 0;
-        return type_ops[e.tag].force(e.ptr, bytes, flags);
+        return type_ops[e.tag].force(e.ptr, bytes, flags, leaf_lock(arr, elem));
     }
     type_ops[e.tag].unforce(e.ptr);
     return STATUS_OK;
@@ -637,6 +676,7 @@ inline uint16_t handle_read(uint8_t arr, uint16_t elem, uint8_t* dest) noexcept 
     if (!e.ptr || e.tag >= TAG__COUNT) return 0;
     uint8_t n = type_ops[e.tag].size;
     if (n == 0) return 0;  // string stub
+    LeafGuard guard(leaf_lock(arr, elem));
     type_ops[e.tag].read(e.ptr, dest);
     return n;
 }
@@ -658,6 +698,7 @@ inline uint8_t handle_write(uint8_t arr, uint16_t elem,
     if (e.flags & LEAF_FLAG_READONLY) return STATUS_READ_ONLY;
     const uint8_t bad = validate_payload(e.tag, bytes, len);
     if (bad != STATUS_OK) return bad;
+    LeafGuard guard(leaf_lock(arr, elem));
     type_ops[e.tag].write(e.ptr, bytes);
     return STATUS_OK;
 }

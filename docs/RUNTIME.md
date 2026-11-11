@@ -123,7 +123,7 @@ variable:
 
 | Call | Purpose |
 |------|---------|
-| `set(ptr, bytes, size, flags, apply)` | Force a variable; writes it now. Returns `Ok`, `Full`, `TooLarge` or `BadArgument` |
+| `set(ptr, bytes, size, flags, apply, lock)` | Force a variable; writes it now. `lock` (optional, used under `STRUCPP_THREADED`) is the `std::mutex` of the shared global the variable lives in. Returns `Ok`, `Full`, `TooLarge` or `BadArgument` |
 | `clear(ptr)` / `clear_all()` | Stop forcing; the variable keeps its current value |
 | `is_forced(ptr)`, `read(ptr, dest, cap)`, `value_ptr(ptr, &size)` | Query a force |
 | `apply_all()`, `apply_owned(base, len)` | Write forced values in |
@@ -142,6 +142,15 @@ through the table; `handle_set` marks a force on a configuration global
 `FLAG_GLOBAL` from the generated `debug_array_kind[]` (`DEBUG_ARRAY_GLOBAL` /
 `DEBUG_ARRAY_PROGRAM` per array). The pointer `handle_ptr` returns for a forced
 leaf is its slot, valid until the force changes.
+
+Under `STRUCPP_THREADED` a configuration global is also written under its own
+lock (the `GlobalVar` mutex the program's accesses take): the generated table
+provides `debug_leaf_lock(arr, elem)` for every leaf of a `DEBUG_ARRAY_GLOBAL`
+array, `handle_set` hands it to the force slot, and `handle_read` /
+`handle_write` hold it around the access. The force table writes such a slot
+with its table lock released, so the table lock is never held while a global's
+lock is taken (a global's lock may be held while the table lock is taken, never
+the reverse). Without `STRUCPP_THREADED` none of this is compiled.
 
 For a source-level debugger that has stopped the program (the VS Code
 extension), the header exports `strucpp_force_capture(void* ptr, unsigned size)`

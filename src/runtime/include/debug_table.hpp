@@ -166,6 +166,13 @@ constexpr uint8_t DEBUG_ARRAY_PROGRAM = 0;
 constexpr uint8_t DEBUG_ARRAY_GLOBAL  = 1;
 extern const uint8_t      debug_array_kind[]   STRUCPP_DEBUG_FLASH;
 
+#ifdef STRUCPP_THREADED
+// The lock (a std::mutex) of the shared global leaf (arr, elem) of a
+// DEBUG_ARRAY_GLOBAL array lives in; null for any other leaf. Generated beside
+// the tables: the debugger and the force table write a global under its lock.
+void* debug_leaf_lock(uint8_t arr, uint16_t elem) noexcept;
+#endif
+
 // ---------------------------------------------------------------------------
 // Retain table.
 //

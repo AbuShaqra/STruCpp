@@ -116,6 +116,9 @@ class GlobalVar {
     }
 
 #ifdef STRUCPP_THREADED
+    /** The global's lock, for the debugger and the force table (debug_table.hpp). */
+    std::mutex& mutex() const noexcept { return mtx_; }
+
    private:
     mutable std::mutex mtx_;
 #endif
