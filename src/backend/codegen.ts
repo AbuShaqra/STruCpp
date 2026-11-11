@@ -8194,8 +8194,17 @@ export class CodeGenerator {
         ? target.name
         : undefined;
     }
+    // `units[0](…)` on a file-level global array (not shadowed here)
+    const globalArray = isElementCall
+      ? this.namespaceGlobalTypeRef(functionName.toUpperCase())
+      : undefined;
+    if (globalArray?.arrayDimensions !== undefined) {
+      const element = globalArray.elementTypeName ?? globalArray.name;
+      return this.isFBType(element) ? element : undefined;
+    }
     const declaredType = isElementCall
-      ? this.currentScopeVarTypes.get(functionName.toUpperCase())
+      ? (this.currentScopeVarTypes.get(functionName.toUpperCase()) ??
+        globalArray?.name)
       : this.invocationTargetType(functionName);
     if (!declaredType) return undefined;
     const varType = isElementCall
