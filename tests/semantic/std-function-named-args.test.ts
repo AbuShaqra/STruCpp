@@ -279,8 +279,6 @@ x := INT_TO_REAL(IN := 7);`,
         expect(errors("s := MID(L := 3, IN := s, P := 2);", options)).toEqual(
           [],
         );
-        // With libraries loaded the argument constraints are not checked yet.
-        if (options?.libraries) return;
         expect(errors("s := MID(L := s, IN := s, P := 2);", options)).toEqual([
           "Argument 'L' of 'MID' expects INT, got STRING",
         ]);

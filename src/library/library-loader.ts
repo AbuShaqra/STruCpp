@@ -338,6 +338,7 @@ export function registerLibrarySymbols(
       symbolTables.globalScope.defineFromLibrary({
         name: fn.name,
         kind: "function",
+        libraryName: manifest.name,
         declaration: {
           kind: "FunctionDeclaration",
           sourceSpan: createDefaultSourceSpan(),
