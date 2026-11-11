@@ -5453,6 +5453,11 @@ export class SemanticAnalyzer {
 
     if (expr.typedLiteral) {
       if (sym.kind === "type" && sym.resolvedType?.typeKind === "enum") return;
+      // `E#M` names the type E, also where a variable is named E.
+      const type = this.symbolTables.lookupType(expr.name);
+      if (type?.kind === "type" && type.resolvedType?.typeKind === "enum") {
+        return;
+      }
       const member = expr.fieldAccess[0] ?? "";
       const hint = /^[0-9A-F_]+$/i.test(member)
         ? `; did you mean '16#${member}' or '${expr.name}#16#${member}'?`
