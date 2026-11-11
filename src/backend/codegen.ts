@@ -5546,6 +5546,8 @@ export class CodeGenerator {
       enumEntry?.typeName &&
       !this.currentScopeVarTypes.has(nameUpper) &&
       !this.isCurrentFunctionResult(nameUpper) &&
+      // In a SET body the property's name is the value being set.
+      this.currentSetterProperty !== nameUpper &&
       expr.fieldAccess.length === 0 &&
       (!expr.accessChain || expr.accessChain.length === 0)
     ) {
