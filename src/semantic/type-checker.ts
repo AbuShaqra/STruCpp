@@ -1434,6 +1434,13 @@ export class TypeChecker {
       return undefined;
     }
 
+    // SEL / MUX of values of one enumeration yield that enumeration.
+    const selected = this.selectionEnumResult(expr);
+    if (selected !== undefined) {
+      if (selected !== "refused") expr.resolvedType = selected;
+      return selected === "refused" ? undefined : selected;
+    }
+
     // Check user-defined functions in symbol tables
     const funcSymbol = this.symbolTables.lookupFunction(expr.functionName);
     if (funcSymbol !== undefined) {
@@ -4285,6 +4292,40 @@ export class TypeChecker {
         condExpr.sourceSpan.file,
       );
     }
+  }
+
+  /**
+   * The result of the standard SEL or MUX when any selected input is an
+   * enumeration: that enumeration when every one is of it (aliases are the
+   * enumeration), else "refused" after an error. Undefined otherwise.
+   */
+  private selectionEnumResult(
+    expr: FunctionCallExpression,
+  ): IECType | "refused" | undefined {
+    const upper = expr.functionName.toUpperCase();
+    if (upper !== "SEL" && upper !== "MUX") return undefined;
+    if (expr.instance || this.findUserFunction(upper)) return undefined;
+    if (this.ownMethod(upper)) return undefined;
+    if (this.unboundStdFunctionCalls.has(expr)) return undefined;
+    const values = stripEnEno([...expr.arguments]).slice(1);
+    const types = values.map((a) => a.value.resolvedType);
+    const enumType = types.find((t) => t?.typeKind === "enum");
+    if (enumType === undefined) return undefined;
+    const name = typeNameUtil(enumType).toUpperCase();
+    const at = types.findIndex(
+      (t) =>
+        t !== undefined &&
+        (t.typeKind !== "enum" || typeNameUtil(t).toUpperCase() !== name),
+    );
+    const other = values[at];
+    if (other === undefined) return enumType;
+    this.addError(
+      `The inputs of ${upper} must be of one type: got ${typeNameUtil(enumType)} and ${typeNameUtil(other.value.resolvedType!)}`,
+      other.value.sourceSpan.startLine,
+      other.value.sourceSpan.startCol,
+      other.value.sourceSpan.file,
+    );
+    return "refused";
   }
 
   /** Indices already checked by refuseEnumIndex. */
