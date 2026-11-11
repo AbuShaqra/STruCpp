@@ -4834,7 +4834,9 @@ export class TypeChecker {
 
       if (!argType || argType.typeKind !== "elementary") continue;
 
-      const argTypeName = (argType as ElementaryType).name;
+      // An alias (`TYPE TS : STRING(20)`) is checked as its base type.
+      const argDisplay = (argType as ElementaryType).name;
+      const argTypeName = this.aliasBase(argDisplay);
 
       // Check specific type constraint
       if (param.constraint === "specific" && param.specificType) {
@@ -4853,14 +4855,14 @@ export class TypeChecker {
                 continue;
               }
               this.addWarning(
-                `Argument '${param.name}' of '${nameUpper}' expects ${param.specificType}, got ${argTypeName} (narrowing)`,
+                `Argument '${param.name}' of '${nameUpper}' expects ${param.specificType}, got ${argDisplay} (narrowing)`,
                 arg.value.sourceSpan.startLine,
                 arg.value.sourceSpan.startCol,
                 arg.value.sourceSpan.file,
               );
             } else {
               this.addError(
-                `Argument '${param.name}' of '${nameUpper}' expects ${param.specificType}, got ${argTypeName}`,
+                `Argument '${param.name}' of '${nameUpper}' expects ${param.specificType}, got ${argDisplay}`,
                 arg.value.sourceSpan.startLine,
                 arg.value.sourceSpan.startCol,
                 arg.value.sourceSpan.file,
@@ -4877,7 +4879,7 @@ export class TypeChecker {
         );
         if (!canWiden) {
           this.addError(
-            `Argument '${param.name}' of '${nameUpper}' expects ${param.constraint}, got ${argTypeName}`,
+            `Argument '${param.name}' of '${nameUpper}' expects ${param.constraint}, got ${argDisplay}`,
             arg.value.sourceSpan.startLine,
             arg.value.sourceSpan.startCol,
             arg.value.sourceSpan.file,
