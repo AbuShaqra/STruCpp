@@ -4262,6 +4262,18 @@ export class SemanticAnalyzer {
         );
       }
     } else if (expr.kind === "FunctionCallExpression") {
+      // `x := inst.M()`: the method's visibility, as for a statement call.
+      const call = expr;
+      if (call.instance === undefined && call.functionName.includes(".")) {
+        this.checkDottedFunctionCallAccess(
+          call.functionName,
+          call.sourceSpan,
+          varTypeMap,
+          methodVisibility,
+          callerFB,
+          getAncestors,
+        );
+      }
       const args = (expr as { arguments: Array<{ value: Expression }> })
         .arguments;
       for (const arg of args) {
@@ -4329,26 +4341,52 @@ export class SemanticAnalyzer {
 
     const calleeFBType = varTypeMap.get(objName.toUpperCase());
     if (!calleeFBType) return;
+    this.checkMethodVisibility(
+      calleeFBType,
+      methodName,
+      sourceSpan,
+      methodVisibility,
+      callerFB,
+      getAncestors,
+    );
+  }
 
-    const visKey = `${calleeFBType}.${methodName.toUpperCase()}`;
-    const visibility = methodVisibility.get(visKey);
-    if (!visibility) return;
-
+  /**
+   * A call of `methodName` on an instance of `calleeFBType`, from `callerFB`
+   * (null: a PROGRAM or FUNCTION): refused when the method, declared by the
+   * type or inherited from a base, is PRIVATE to another FB or PROTECTED
+   * outside its FB and the FBs derived from it.
+   */
+  private checkMethodVisibility(
+    calleeFBType: string,
+    methodName: string,
+    sourceSpan: { startLine: number; startCol: number; file?: string },
+    methodVisibility: Map<string, Visibility>,
+    callerFB: string | null,
+    getAncestors: (fbName: string) => Set<string>,
+  ): void {
+    const upper = methodName.toUpperCase();
+    // The FB that declares the method: the type, else its nearest base.
+    const owner = [calleeFBType, ...getAncestors(calleeFBType)].find((t) =>
+      methodVisibility.has(`${t}.${upper}`),
+    );
+    if (owner === undefined) return;
+    const visibility = methodVisibility.get(`${owner}.${upper}`);
     if (visibility === "PRIVATE") {
-      if (callerFB !== calleeFBType) {
+      if (callerFB !== owner) {
         this.addError(
-          `Cannot call PRIVATE method '${methodName}' of '${calleeFBType}' from outside '${calleeFBType}'.`,
+          `Cannot call PRIVATE method '${methodName}' of '${owner}' from outside '${owner}'.`,
           sourceSpan.startLine,
           sourceSpan.startCol,
           sourceSpan.file,
         );
       }
     } else if (visibility === "PROTECTED") {
-      if (callerFB !== calleeFBType) {
+      if (callerFB !== owner) {
         const ancestors = callerFB ? getAncestors(callerFB) : new Set<string>();
-        if (!ancestors.has(calleeFBType)) {
+        if (!ancestors.has(owner)) {
           this.addError(
-            `Cannot call PROTECTED method '${methodName}' of '${calleeFBType}' from '${callerFB ?? "PROGRAM"}'.`,
+            `Cannot call PROTECTED method '${methodName}' of '${owner}' from '${callerFB ?? "PROGRAM"}'.`,
             sourceSpan.startLine,
             sourceSpan.startCol,
             sourceSpan.file,
@@ -4379,34 +4417,14 @@ export class SemanticAnalyzer {
 
     const calleeFBType = varTypeMap.get(varExpr.name.toUpperCase());
     if (!calleeFBType) return;
-
-    const visKey = `${calleeFBType}.${call.methodName.toUpperCase()}`;
-    const visibility = methodVisibility.get(visKey);
-    if (!visibility) return;
-
-    if (visibility === "PRIVATE") {
-      if (callerFB !== calleeFBType) {
-        this.addError(
-          `Cannot call PRIVATE method '${call.methodName}' of '${calleeFBType}' from outside '${calleeFBType}'.`,
-          call.sourceSpan.startLine,
-          call.sourceSpan.startCol,
-          call.sourceSpan.file,
-        );
-      }
-    } else if (visibility === "PROTECTED") {
-      if (callerFB !== calleeFBType) {
-        // Check if caller is a derived FB
-        const ancestors = callerFB ? getAncestors(callerFB) : new Set<string>();
-        if (!ancestors.has(calleeFBType)) {
-          this.addError(
-            `Cannot call PROTECTED method '${call.methodName}' of '${calleeFBType}' from '${callerFB ?? "PROGRAM"}'.`,
-            call.sourceSpan.startLine,
-            call.sourceSpan.startCol,
-            call.sourceSpan.file,
-          );
-        }
-      }
-    }
+    this.checkMethodVisibility(
+      calleeFBType,
+      call.methodName,
+      call.sourceSpan,
+      methodVisibility,
+      callerFB,
+      getAncestors,
+    );
   }
 
   /**
@@ -4419,6 +4437,32 @@ export class SemanticAnalyzer {
     callerFB: string | null,
     getAncestors: (fbName: string) => Set<string>,
   ): void {
+    // The expressions of the statement itself (conditions, bounds, selector).
+    const walk = (e: Expression | undefined): void => {
+      if (e !== undefined) {
+        this.walkExpressionForAccessViolations(
+          e,
+          varTypeMap,
+          methodVisibility,
+          callerFB,
+          getAncestors,
+        );
+      }
+    };
+    if (stmt.kind === "IfStatement") {
+      walk(stmt.condition);
+      for (const clause of stmt.elsifClauses) walk(clause.condition);
+    } else if (stmt.kind === "WhileStatement") {
+      walk(stmt.condition);
+    } else if (stmt.kind === "RepeatStatement") {
+      walk(stmt.condition);
+    } else if (stmt.kind === "ForStatement") {
+      walk(stmt.start);
+      walk(stmt.end);
+      walk(stmt.step);
+    } else if (stmt.kind === "CaseStatement") {
+      walk(stmt.selector);
+    }
     if (stmt.kind === "IfStatement") {
       const s = stmt as unknown as {
         thenStatements: Statement[];
