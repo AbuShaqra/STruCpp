@@ -539,8 +539,8 @@ strucpp main.st -o main.cpp --feature +conditional_pragmas -D MODE=fast
 
   | Operator | True when |
   | --- | --- |
-  | `defined(NAME)` | `NAME` is a project define or a source define in effect |
-  | `project_defined(NAME)` | `NAME` is a project define (`-D`, `pragmaDefines`); a source `{define}` does not count |
+  | `defined(NAME)` | `NAME` is a project define, a define of this file or a source define in effect |
+  | `project_defined(NAME)` | `NAME` is a project define (`-D`, `--pragma-define`, `pragmaDefines`); a file define and a source `{define}` do not count |
   | `hasvalue(NAME, 'text')` | `NAME` is defined and its value is exactly `text` (single quotes); a bare define has the value `''` |
 
 - **Define names are case-sensitive**, unlike ST identifiers: `-D Sim` makes `defined(Sim)` true and
@@ -548,8 +548,19 @@ strucpp main.st -o main.cpp --feature +conditional_pragmas -D MODE=fast
 - **Project defines.** `-D NAME` (or `-DNAME`, `--define NAME`) defines `NAME` with the value `''`;
   `-D NAME=VALUE` defines it with the value `VALUE`, and an integer `VALUE` is also a global constant, as
   before (that constant is an ST identifier, so it is case-insensitive). A name must be an identifier.
+  `--pragma-define NAME[=VALUE]` defines a name for the pragmas only: whatever `VALUE` is, it is never a
+  global constant, so `--pragma-define LEVEL=3` and a `VAR_GLOBAL CONSTANT LEVEL` both compile.
   Through the library API the defines are `pragmaDefines`, a name → string map, kept separate from
   `globalConstants`: a library's or the caller's global constants never make a name `defined()`.
+- **File defines.** As a vendor toolchain lets one object carry its own compiler defines,
+  `--file-define <file>=NAME[=VALUE]` (repeatable; `<file>` names an input file, matched as
+  `--global-list` matches one) defines `NAME` in that file only, on top of the project defines. Through the
+  API they are `filePragmaDefines` (the primary source) and `additionalSources[].pragmaDefines`. Inside the
+  file, `defined()` and `hasvalue()` see them; `project_defined()` does not. On the same name, a source
+  `{define}` wins over a file define, and a file define over a project define (for `hasvalue`). A file
+  define is never a global constant. `--file-define` is refused with `--compile-lib`, and `.stlib` archives
+  record only the project defines (`pragmaDefines`), not file defines. The language server takes no file
+  defines.
 - **Source defines.** `{define NAME}` defines `NAME` with the value `''`; `{define NAME 'text'}` with the
   value `text` (single quotes, no escapes). A source define is in effect from its directive to the end of
   that file, or until `{undefine NAME}`; it never reaches another file. A later `{define}` of the same name

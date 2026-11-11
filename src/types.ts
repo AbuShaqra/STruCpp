@@ -96,7 +96,19 @@ export interface CompileOptions {
     source: string;
     fileName: string;
     globalListName?: string;
+    /**
+     * Conditional-pragma defines of this file only, on top of `pragmaDefines`
+     * (feature conditional_pragmas): seen by `defined()` and `hasvalue()`, not
+     * by `project_defined()`. Never a global constant.
+     */
+    pragmaDefines?: Record<string, string>;
   }>;
+
+  /**
+   * Conditional-pragma defines of the primary source file only, as
+   * `additionalSources[].pragmaDefines` are for the others.
+   */
+  filePragmaDefines?: Record<string, string>;
 
   /**
    * Pre-loaded .stlib library archives.  The compiler used to also
