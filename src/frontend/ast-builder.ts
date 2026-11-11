@@ -3420,7 +3420,10 @@ export class ASTBuilder {
    * Sorts Dot tokens, LBracket tokens, and Caret tokens by source offset
    * to reconstruct the correct interleaving order.
    */
-  private buildAccessChain(children: CstChildren): AccessStep[] {
+  private buildAccessChain(
+    children: CstChildren,
+    firstField = 1,
+  ): AccessStep[] {
     type Marker =
       | { kind: "field"; offset: number; name: string }
       | { kind: "subscript"; offset: number; indices: Expression[] }
@@ -3435,7 +3438,7 @@ export class ASTBuilder {
 
     // Build a list of field targets sorted by offset: identifier and integer literal tokens after dots
     const fieldTargets: Array<{ offset: number; name: string }> = [];
-    for (let i = 1; i < idOrKwNodes.length; i++) {
+    for (let i = firstField; i < idOrKwNodes.length; i++) {
       const n = idOrKwNodes[i]!;
       fieldTargets.push({
         offset: getNodeStartOffset(n),
@@ -3528,8 +3531,13 @@ export class ASTBuilder {
     name: string;
     isCall: boolean;
     args: Argument[];
+    steps: AccessStep[];
   } {
     const children = node.children as CstChildren;
+    const stepsNode = getFirstNode(children.memberSteps);
+    const steps = stepsNode
+      ? this.buildAccessChain(stepsNode.children as CstChildren, 0)
+      : [];
     const idOrKw = getFirstNode(children.identifierOrKeyword);
     const args: Argument[] = [];
     const argListNode = getFirstNode(children.argumentList);
@@ -3543,7 +3551,37 @@ export class ASTBuilder {
       name: idOrKw ? getIdentifierOrKeywordImage(idOrKw) : "",
       isCall: children.LParen !== undefined,
       args,
+      steps,
     };
+  }
+
+  /**
+   * `THIS.member` / `SUPER.member` followed by further `steps` as one
+   * variable access: `THIS.a.b`, `SUPER.arr[i]`.
+   */
+  private selfAccessVariable(
+    self: "THIS" | "SUPER",
+    member: string,
+    steps: AccessStep[],
+    span: SourceSpan,
+  ): VariableExpression {
+    const expr: VariableExpression = {
+      kind: "VariableExpression",
+      sourceSpan: span,
+      name: self,
+      subscripts: steps.flatMap((s) =>
+        s.kind === "subscript" ? s.indices : [],
+      ),
+      fieldAccess: [
+        member,
+        ...steps.flatMap((s) => (s.kind === "field" ? [s.name] : [])),
+      ],
+      isDereference: steps.some((s) => s.kind === "dereference"),
+    };
+    if (steps.length > 0) {
+      expr.accessChain = [{ kind: "field", name: member }, ...steps];
+    }
+    return expr;
   }
 
   /**
@@ -3582,12 +3620,12 @@ export class ASTBuilder {
     }
 
     return {
-      kind: "VariableExpression",
-      sourceSpan: nodeToSourceSpan(node),
-      name: "THIS",
-      subscripts: [],
-      fieldAccess: [tail.name],
-      isDereference: false,
+      ...this.selfAccessVariable(
+        "THIS",
+        tail.name,
+        tail.steps,
+        nodeToSourceSpan(node),
+      ),
       ...caret,
     };
   }
@@ -3633,14 +3671,12 @@ export class ASTBuilder {
     }
 
     // SUPER.member — parent member access
-    return {
-      kind: "VariableExpression",
-      sourceSpan: nodeToSourceSpan(node),
-      name: "SUPER",
-      subscripts: [],
-      fieldAccess: [tail.name],
-      isDereference: false,
-    };
+    return this.selfAccessVariable(
+      "SUPER",
+      tail.name,
+      tail.steps,
+      nodeToSourceSpan(node),
+    );
   }
 
   /**
@@ -3977,13 +4013,16 @@ export class ASTBuilder {
         : "";
     const caret = children.Caret ? { selfCaret: true as const } : {};
 
+    const stepsNode = getFirstNode(children.memberSteps);
     const target: VariableExpression = {
-      kind: "VariableExpression",
-      sourceSpan: nodeToSourceSpan(node),
-      name: "THIS",
-      subscripts: [],
-      fieldAccess: [memberName],
-      isDereference: false,
+      ...this.selfAccessVariable(
+        "THIS",
+        memberName,
+        stepsNode
+          ? this.buildAccessChain(stepsNode.children as CstChildren, 0)
+          : [],
+        nodeToSourceSpan(node),
+      ),
       ...caret,
     };
 
@@ -4042,9 +4081,40 @@ export class ASTBuilder {
    * Build a SUPER call statement: SUPER.method(args); SUPER^(); or SUPER^.method(args);
    * Body call → functionName = "SUPER"; method call → functionName = "SUPER.method"
    */
-  buildSuperCallStatement(node: CstNode): FunctionCallStatement {
+  buildSuperCallStatement(node: CstNode): Statement {
     const children = node.children as CstChildren;
     const tailNode = getFirstNode(children.superMemberTail);
+
+    // SUPER.member := expr; / SUPER.member REF= variable;
+    if (tailNode && (children.Assign || children.RefAssign)) {
+      const tail = this.buildMemberTail(tailNode);
+      const target = this.selfAccessVariable(
+        "SUPER",
+        tail.name,
+        tail.steps,
+        nodeToSourceSpan(tailNode),
+      );
+      if (children.RefAssign) {
+        const sourceNode = getFirstNode(children.variable);
+        return {
+          kind: "RefAssignStatement",
+          sourceSpan: nodeToSourceSpan(node),
+          target,
+          source: sourceNode
+            ? this.buildVariableExpression(sourceNode)
+            : this.createDummyVariable(node),
+        };
+      }
+      const exprNode = getFirstNode(children.expression);
+      return {
+        kind: "AssignmentStatement",
+        sourceSpan: nodeToSourceSpan(node),
+        target,
+        value: exprNode
+          ? (this.buildExpression(exprNode) ?? this.createDummyLiteral(node))
+          : this.createDummyLiteral(node),
+      } as AssignmentStatement;
+    }
 
     // SUPER^() — parent body call (no method name)
     if (!tailNode) {

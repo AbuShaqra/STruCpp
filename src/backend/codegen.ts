@@ -5469,6 +5469,23 @@ export class CodeGenerator {
       return `${ptr}->with_lock([&](auto* __glk){ return ${inner}; })`;
     }
 
+    // `THIS.a[i]`, `SUPER.p^.x`: a path with subscripts or dereferences
+    // goes through the general access-chain renderer on the instance.
+    if (
+      (nameUpper === "THIS" ||
+        (nameUpper === "SUPER" && this.currentFBExtends !== undefined)) &&
+      expr.accessChain?.some((step) => step.kind !== "field") === true
+    ) {
+      return nameUpper === "THIS"
+        ? this.renderAccessTail("(*this)", expr, nameUpper, this.currentFBName)
+        : this.renderAccessTail(
+            `static_cast<${this.currentFBExtends}&>(*this)`,
+            expr,
+            nameUpper,
+            this.currentFBExtends,
+          );
+    }
+
     // Handle THIS reference
     if (nameUpper === "THIS") {
       // THIS^, or bare THIS (a reference to the own instance, bound to an
