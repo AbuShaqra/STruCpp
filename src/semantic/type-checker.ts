@@ -59,7 +59,11 @@ import {
   type AccessLookup,
   type AccessType,
 } from "./type-utils.js";
-import { orderGlobals } from "./global-order.js";
+import {
+  type GlobalOrder,
+  orderConfigurationGlobals,
+  orderGlobals,
+} from "./global-order.js";
 import { stripEnEno, walkAST } from "../ast-utils.js";
 import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
 import { structExtends } from "./struct-extends.js";
@@ -2429,7 +2433,16 @@ export class TypeChecker {
    * initial values that depend on each other cannot be created.
    */
   private checkGlobalInitialCycles(ast: CompilationUnit): void {
-    const { cycles, order } = orderGlobals(ast);
+    for (const ordered of [
+      orderGlobals(ast),
+      ...ast.configurations.map(orderConfigurationGlobals),
+    ]) {
+      this.reportGlobalInitialCycles(ordered);
+    }
+  }
+
+  /** Report each cycle of `ordered`, at its first global. */
+  private reportGlobalInitialCycles({ cycles, order }: GlobalOrder): void {
     for (const cycle of cycles) {
       const quoted = cycle.map((n) => `'${n}'`);
       const list =

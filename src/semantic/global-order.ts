@@ -12,6 +12,7 @@
 
 import type {
   CompilationUnit,
+  ConfigurationDeclaration,
   VarBlock,
   VarDeclaration,
   VariableExpression,
@@ -50,10 +51,27 @@ function namedGlobals(
 }
 
 export function orderGlobals(ast: CompilationUnit): GlobalOrder {
+  return orderGlobalBlocks(ast.globalVarBlocks);
+}
+
+/**
+ * The VAR_GLOBALs of one CONFIGURATION, its RESOURCEs' included, each after
+ * the globals of the configuration its initial value names.
+ */
+export function orderConfigurationGlobals(
+  config: ConfigurationDeclaration,
+): GlobalOrder {
+  return orderGlobalBlocks(
+    config.varBlocks.filter((b) => b.blockType === "VAR_GLOBAL"),
+  );
+}
+
+/** `blocks`' globals, each after the globals of `blocks` its initial value names. */
+export function orderGlobalBlocks(blocks: readonly VarBlock[]): GlobalOrder {
   const items: GlobalItem[] = [];
   // Every name a global is reached by (its own, its list aliases) → the global.
   const owner = new Map<string, string>();
-  for (const block of ast.globalVarBlocks) {
+  for (const block of blocks) {
     for (const decl of block.declarations) {
       for (const name of decl.names) {
         items.push({ block, decl, name });

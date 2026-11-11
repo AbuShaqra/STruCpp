@@ -154,7 +154,7 @@ END_CONFIGURATION
     pin(cfg("cfg", "", "res", "step"), ["8: STEP is a reserved name"]);
     pin(cfg("cfg", "", "res", "tk", "move"), ["9: MOVE is a reserved name"]);
   });
-  it("has no resource-level VAR_GLOBAL: a syntax error in both modes", () => {
+  it("checks a resource-level VAR_GLOBAL name as a configuration's", () => {
     const src = `${P}CONFIGURATION cfg
   RESOURCE res ON PLC
     VAR_GLOBAL step : BOOL; END_VAR
@@ -163,8 +163,7 @@ END_CONFIGURATION
   END_RESOURCE
 END_CONFIGURATION
 `;
-    expect(msgs(src).length).toBeGreaterThan(0);
-    expect(laxMsgs(src)).toEqual(msgs(src));
+    pin(src, ["7: STEP is a reserved name"]);
   });
 });
 

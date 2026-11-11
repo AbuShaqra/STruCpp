@@ -77,7 +77,10 @@ import {
   fbInitInputs,
   storedInstance,
 } from "../semantic/fb-init.js";
-import { orderGlobals } from "../semantic/global-order.js";
+import {
+  orderConfigurationGlobals,
+  orderGlobals,
+} from "../semantic/global-order.js";
 import { wrapReferenceChain } from "./reference-types.js";
 import {
   libraryFunctionDeclaration,
@@ -524,6 +527,9 @@ export class CodeGenerator {
    *  while emitting a program body; access to these is rewritten to go through
    *  the GlobalVar pointer (g->read() / g->write() / g->with_lock()). */
   private programExternals: Set<string> = new Set();
+
+  /** UPPER(names) of the CONFIGURATION globals, set while their storage is emitted. */
+  private configGlobalInitNames: Set<string> = new Set();
 
   /** UPPER(names) of the current PROGRAM's VAR_EXTERNAL globals whose type is
    *  NOT elementary (struct / array / function-block). Subset of
@@ -3715,12 +3721,36 @@ export class CodeGenerator {
     }
   }
 
+  /** `config`'s globals, each after the globals its initial value names. */
+  private orderedConfigurationGlobals(
+    config: ConfigurationDecl,
+  ): ProjectVarDeclaration[] {
+    const decl = this.ast?.configurations.find(
+      (c) => c.name.toUpperCase() === config.name.toUpperCase(),
+    );
+    if (decl === undefined) return config.globalVars;
+    const rank = new Map(
+      orderConfigurationGlobals(decl).order.map((item, i) => [
+        item.name.toUpperCase(),
+        i,
+      ]),
+    );
+    return [...config.globalVars].sort(
+      (a, b) =>
+        (rank.get(a.name.toUpperCase()) ?? 0) -
+        (rank.get(b.name.toUpperCase()) ?? 0),
+    );
+  }
+
   private emitFileScopeGlobals(): void {
     if (!this.projectModel) return;
     const seen = new Set<string>();
     let emittedAny = false;
     for (const config of this.projectModel.configurations) {
-      for (const gvar of config.globalVars) {
+      this.configGlobalInitNames = new Set(
+        config.globalVars.map((g) => g.name.toUpperCase()),
+      );
+      for (const gvar of this.orderedConfigurationGlobals(config)) {
         const key = gvar.name.toUpperCase();
         // Same name across configurations = one canonical global (strucpp
         // already treats them as such); emit its storage once.
@@ -3768,6 +3798,7 @@ export class CodeGenerator {
         }
       }
     }
+    this.configGlobalInitNames = new Set();
     if (emittedAny) this.emitHeader("");
   }
 
@@ -5539,6 +5570,11 @@ export class CodeGenerator {
           result = this.resolveVariableBaseName(expr.name);
         }
       }
+    }
+
+    // A CONFIGURATION global named by another one's initial value: its storage.
+    if (this.configGlobalInitNames.has(nameUpper)) {
+      result = `${globalCppName(expr.name)}.value`;
     }
 
     // A by-reference VAR_IN_OUT of the enclosing block: the caller's variable.

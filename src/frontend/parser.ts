@@ -1071,6 +1071,7 @@ export class STParser extends CstParser {
     this.CONSUME2(tokens.Identifier);
     this.MANY(() => {
       this.OR([
+        { ALT: (): CstNode => this.SUBRULE(this.varBlock) },
         { ALT: () => this.SUBRULE(this.taskDeclaration) },
         { ALT: () => this.SUBRULE(this.programInstance) },
       ]);

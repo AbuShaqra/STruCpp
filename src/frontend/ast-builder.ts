@@ -1437,7 +1437,15 @@ export class ASTBuilder {
 
     const resources: ResourceDeclaration[] = [];
     for (const resourceNode of getAllNodes(children.resourceDeclaration)) {
-      resources.push(this.buildResourceDeclaration(resourceNode));
+      const resource = this.buildResourceDeclaration(resourceNode);
+      resources.push(resource);
+      const resourceChildren = resourceNode.children as CstChildren;
+      for (const varBlockNode of getAllNodes(resourceChildren.varBlock)) {
+        varBlocks.push({
+          ...this.buildVarBlock(varBlockNode),
+          resourceName: resource.name,
+        });
+      }
     }
 
     return {
