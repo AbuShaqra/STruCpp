@@ -239,6 +239,14 @@ export class Scope {
     this.librarySymbols.add(symbol);
   }
 
+  /** Replace one library's symbol with another library's of the same name. */
+  replaceLibrarySymbol(symbol: AnySymbol): void {
+    const old = this.symbols.get(symbol.name.toUpperCase());
+    if (old !== undefined) this.librarySymbols.delete(old);
+    this.symbols.set(symbol.name.toUpperCase(), symbol);
+    this.librarySymbols.add(symbol);
+  }
+
   /**
    * True when `name` is currently bound to a symbol a library registered.
    */

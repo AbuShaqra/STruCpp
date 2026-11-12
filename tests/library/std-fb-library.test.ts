@@ -421,18 +421,33 @@ describe("Standard FB Library", () => {
       );
     });
 
-    it("should have one chunk per declared FB", () => {
+    it("should have one chunk per declared FB and Table 36 function", () => {
       expect(stlibArchive.chunks.length).toBeGreaterThan(0);
-      // Every chunk in the stdlib is a function block (no types,
-      // no inline globals, no free functions in iec-standard-fb).
+      // Every chunk is a function block or one of the Table 36 date and time
+      // functions (no types, no inline globals).
       for (const chunk of stlibArchive.chunks) {
-        expect(chunk.kind).toBe("functionBlock");
+        expect(["functionBlock", "function"]).toContain(chunk.kind);
         expect(chunk.header.length).toBeGreaterThan(0);
       }
     });
 
-    it("should have no functions (only FBs)", () => {
-      expect(stlibArchive.manifest.functions).toHaveLength(0);
+    it("should have the Table 36 functions and no other", () => {
+      expect(stlibArchive.manifest.functions.map((f) => f.name).sort()).toEqual(
+        [
+          "CONCAT_DATE",
+          "CONCAT_DATE_LTOD",
+          "CONCAT_DT",
+          "CONCAT_LDT",
+          "CONCAT_LTOD",
+          "CONCAT_TOD",
+          "DAY_OF_WEEK",
+          "SPLIT_DATE",
+          "SPLIT_DT",
+          "SPLIT_LDT",
+          "SPLIT_LTOD",
+          "SPLIT_TOD",
+        ].sort(),
+      );
     });
 
     it("should have correct edge detection FB entries", () => {

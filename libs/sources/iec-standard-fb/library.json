@@ -84,5 +84,43 @@
     "LTP": {
       "documentation": "The pulse timer with an LTIME preset and elapsed time."
     }
+  },
+  "functions": {
+    "CONCAT_DATE": {
+      "documentation": "The DATE of a year, month and day."
+    },
+    "CONCAT_TOD": {
+      "documentation": "The TOD of an hour, minute, second and millisecond."
+    },
+    "CONCAT_LTOD": {
+      "documentation": "The LTOD of an hour, minute, second and millisecond."
+    },
+    "CONCAT_DT": {
+      "documentation": "The DT of a year, month, day, hour, minute, second and millisecond."
+    },
+    "CONCAT_LDT": {
+      "documentation": "The LDT of a year, month, day, hour, minute, second and millisecond."
+    },
+    "CONCAT_DATE_LTOD": {
+      "documentation": "The LDT of a DATE and an LTOD."
+    },
+    "SPLIT_DATE": {
+      "documentation": "The year, month and day of a DATE."
+    },
+    "SPLIT_TOD": {
+      "documentation": "The hour, minute, second and millisecond of a TOD."
+    },
+    "SPLIT_LTOD": {
+      "documentation": "The hour, minute, second and millisecond of an LTOD."
+    },
+    "SPLIT_DT": {
+      "documentation": "The year, month, day, hour, minute, second and millisecond of a DT."
+    },
+    "SPLIT_LDT": {
+      "documentation": "The year, month, day, hour, minute, second and millisecond of an LDT."
+    },
+    "DAY_OF_WEEK": {
+      "documentation": "The day of the week of a DATE, 0 for Sunday to 6 for Saturday."
+    }
   }
 }
