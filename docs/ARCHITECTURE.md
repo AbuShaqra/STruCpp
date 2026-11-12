@@ -128,6 +128,8 @@ Three-pass analysis orchestrated by `SemanticAnalyzer`:
 
 **Pass C: Validation** -- Checks assignment compatibility, condition types (must be BOOL), FOR loop bound types, CASE selector types (ANY_INT, ANY_BIT, or enum), function argument constraints, located variable address formats, and VAR_EXTERNAL references.
 
+Where a phase cannot run on the result of a broken one, it stops: conditional-pragma errors stop the parse; parse, AST-building, lowering and project-model (CONFIGURATION) errors stop the semantic analysis; an undefined type or a refused STRUCT feature stops Pass B, and a Pass B error stops Pass C. The literal checks of Pass C (an integer, typed, LTIME or REAL literal its type cannot hold, a STRING character outside Windows-1252) need no resolved type, so they run in every case and are reported in the same pass as the error that stopped the others.
+
 ### Type System
 
 21 elementary types organized into categories (ANY_NUM, ANY_INT, ANY_REAL, ANY_BIT, ANY_STRING, ANY_DATE) used for generic function dispatch. Key compatibility rules:
