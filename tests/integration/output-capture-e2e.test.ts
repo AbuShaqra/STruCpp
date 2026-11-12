@@ -28,6 +28,24 @@ ${narrowing ? "fb(o => b, d => s);" : ""}
 END_PROGRAM
 `;
 
+const METHOD_SOURCE = (narrowing: boolean): string => `FUNCTION_BLOCK FB
+METHOD M : INT
+VAR_OUTPUT mo : WORD; mq : DINT; mu : USINT; END_VAR
+mo := 16#0102; mq := 300; mu := 9; M := 1;
+END_METHOD
+METHOD N : INT VAR b : UINT; r : INT; END_VAR r := THIS.M(mu => b); N := UINT_TO_INT(b); END_METHOD
+END_FUNCTION_BLOCK
+TYPE SW : STRUCT f : FB; END_STRUCT; END_TYPE
+PROGRAM Main
+VAR b : BYTE; s : SINT; fb : FB; n, k : INT; l, l2 : LINT; arr : ARRAY[0..1] OF FB; sw : SW; u, u2 : UINT; END_VAR
+${narrowing ? "n := fb.M(mo => b);\nn := fb.M(mq => s);" : ""}
+n := fb.M(mq => l, mu => u);
+n := arr[0].M(mu => u2);
+n := sw.f.M(mq => l2);
+k := fb.N();
+END_PROGRAM
+`;
+
 describe.skipIf(!hasGpp)("output capture — g++ e2e", () => {
   let tempDir: string;
   let pchPath: string;
@@ -85,6 +103,42 @@ int main() {
       expect(r.errors.map((e) => e.message)).toEqual([
         "Cannot assign LTIME to TIME",
         "Cannot assign to CONSTANT variable 'K'",
+      ]);
+    });
+
+    it(`copies a method output out as the assignment would (${label})`, () => {
+      const result = compile(METHOD_SOURCE(!strict), {
+        ...options,
+        headerFileName: "generated.hpp",
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `outcap_m_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << int(p.B.get()) << " " << int(p.S.get()) << " " << p.L.get() << " " << p.U.get() << " "
+              << p.U2.get() << " " << p.L2.get() << " " << p.K.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe(strict ? "0 0 300 9 9 300 9" : "2 44 300 9 9 300 9");
+    });
+
+    it(`refuses a method output its variable cannot be assigned (${label})`, () => {
+      const r = compile(
+        "FUNCTION_BLOCK FB\nMETHOD M : INT VAR_OUTPUT ml : LTIME; END_VAR M := 0; END_METHOD\nEND_FUNCTION_BLOCK\nPROGRAM Main\nVAR fb : FB; t : TIME; n : INT; END_VAR\nn := fb.M(ml => t);\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.errors.map((e) => e.message)).toEqual([
+        "Cannot assign LTIME to TIME",
       ]);
     });
   }

@@ -380,6 +380,9 @@ const TEMPORAL_STORAGE: Readonly<Record<string, string>> = {
   LDT: "dt",
 };
 
+/** A call's parameters in declaration order, outputs marked. */
+type OutputParams = Array<{ name: string; type: AccessType; output: boolean }>;
+
 const COMPARISON_OPS: ReadonlySet<string> = new Set([
   "=",
   "<>",
@@ -2227,6 +2230,13 @@ export class TypeChecker {
       const owner = this.memberChainOwner(expr.object, scope);
       const method = this.checkMemberChainCall(expr, expr.object, owner);
       const chainInputs = this.methodInputsOf(owner?.name, expr.methodName);
+      if (owner?.name !== undefined) {
+        this.bindOutputs(
+          this.methodParametersOf(owner.name, expr.methodName),
+          expr.arguments,
+          scope,
+        );
+      }
       this.adaptCharArguments(chainInputs, expr.arguments);
       this.validateInterfaceArguments(chainInputs, expr.arguments);
       this.validateStructArguments(chainInputs, expr.arguments);
@@ -2252,6 +2262,7 @@ export class TypeChecker {
     }
 
     const methodInputs = this.methodInputs(objType, expr, scope);
+    this.checkMethodOutputBindings(expr, objType, scope);
     this.adaptCharArguments(
       methodInputs ??
         (objType?.typeKind === "elementary"
@@ -4920,10 +4931,90 @@ export class TypeChecker {
     scope: Scope,
   ): void {
     this.checkFbOutputBindings(expr, scope);
-    if (expr.instance || expr.functionName.includes(".")) return;
-    if (this.calledInstance(expr.functionName, scope)) return;
-    const params = this.calledFunctionParameters(expr.functionName);
+    if (expr.instance) return;
+    let params: OutputParams | undefined;
+    if (expr.functionName.includes(".")) {
+      params = this.dottedMethodParameters(expr.functionName, scope);
+    } else {
+      if (this.calledInstance(expr.functionName, scope)) return;
+      params = this.calledFunctionParameters(expr.functionName);
+    }
+    this.bindOutputs(params, expr.arguments, scope);
+  }
+
+  /** `obj.M(o => v)` (a method call on an array element or member): see checkOutputBindings. */
+  private checkMethodOutputBindings(
+    expr: MethodCallExpression,
+    objType: IECType | undefined,
+    scope: Scope,
+  ): void {
+    if (objType?.typeKind !== "elementary") return;
+    this.bindOutputs(
+      this.methodParametersOf(
+        (objType as ElementaryType).name,
+        expr.methodName,
+      ),
+      expr.arguments,
+      scope,
+    );
+  }
+
+  /** The parameters of `owner.M`: a method of a FUNCTION_BLOCK this unit declares. */
+  private dottedMethodParameters(
+    functionName: string,
+    scope: Scope,
+  ): OutputParams | undefined {
+    const parts = functionName.split(".");
+    if (parts.length !== 2) return undefined;
+    const owner = this.callOwnerType(parts[0]!, scope);
+    return owner === undefined
+      ? undefined
+      : this.methodParametersOf(owner, parts[1]!);
+  }
+
+  /** The parameters of method `methodName` of FB `fbType` or a base; undefined otherwise. */
+  private methodParametersOf(
+    fbType: string,
+    methodName: string,
+  ): OutputParams | undefined {
+    const upper = this.aliasBase(fbType).toUpperCase();
+    if (!this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper)) {
+      return undefined;
+    }
+    const method = this.lookupChainMethod(upper, methodName);
+    return typeof method === "object"
+      ? this.parametersOfBlocks(method.varBlocks)
+      : undefined;
+  }
+
+  /** VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT of a POU's blocks, in order. */
+  private parametersOfBlocks(blocks: readonly VarBlock[]): OutputParams {
+    return blocks
+      .filter(
+        (b) =>
+          b.blockType === "VAR_INPUT" ||
+          b.blockType === "VAR_IN_OUT" ||
+          b.blockType === "VAR_OUTPUT",
+      )
+      .flatMap((b) =>
+        b.declarations.flatMap((d) =>
+          d.names.map((n) => ({
+            name: n,
+            type: d.type as AccessType,
+            output: b.blockType === "VAR_OUTPUT",
+          })),
+        ),
+      );
+  }
+
+  /** Check each output argument against its parameter (see checkOutputBinding). */
+  private bindOutputs(
+    params: OutputParams | undefined,
+    args: readonly Argument[],
+    scope: Scope,
+  ): void {
     if (params === undefined || !params.some((p) => p.output)) return;
+    const expr = { arguments: args };
     const claimed = new Set(
       expr.arguments.flatMap((a) =>
         a.name === undefined ? [] : [a.name.toUpperCase()],
