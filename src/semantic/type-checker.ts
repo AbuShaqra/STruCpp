@@ -5928,6 +5928,20 @@ export class TypeChecker {
         condExpr.sourceSpan.startCol,
         condExpr.sourceSpan.file,
       );
+      return;
+    }
+    // --strict: a condition is a BOOL, not a bit string.
+    if (
+      this.strict &&
+      condType.typeKind === "elementary" &&
+      this.aliasBase((condType as ElementaryType).name) !== "BOOL"
+    ) {
+      this.addError(
+        `Condition must be BOOL under --strict, got ${typeNameUtil(condType)}; compare it, e.g. ${typeNameUtil(condType)} <> 0`,
+        condExpr.sourceSpan.startLine,
+        condExpr.sourceSpan.startCol,
+        condExpr.sourceSpan.file,
+      );
     }
   }
 

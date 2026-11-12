@@ -284,5 +284,20 @@ describe("implicit widening (Figures 11 and 12)", () => {
         );
       }
     });
+
+    it(`refuses a non-BOOL condition only under --strict (${label})`, () => {
+      const r = compile(
+        "PROGRAM Main\nVAR w : WORD; x : BOOL; i : INT; END_VAR\nIF w THEN i := 1; ELSIF w AND 1 THEN i := 2; ELSIF x THEN i := 3; END_IF;\nWHILE w DO w := 0; END_WHILE;\nREPEAT i := 0; UNTIL w END_REPEAT;\nIF (w AND 1) <> 0 THEN i := 4; END_IF;\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.errors.map((e) => `${e.line}:${e.column} ${e.message}`)).toEqual(
+        label === "strict"
+          ? ["3:4", "3:25", "4:7", "5:22"].map(
+              (at) =>
+                `${at} Condition must be BOOL under --strict, got WORD; compare it, e.g. WORD <> 0`,
+            )
+          : [],
+      );
+    });
   }
 });

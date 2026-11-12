@@ -229,6 +229,7 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
   operand have the wider bit string's type; the same rules apply to an output captured with
   `o => v`, from a FUNCTION or a function block, and to the argument of a typed conversion
   `X_TO_Y`, which must be an X (`BYTE_TO_INT(w)` with a WORD is refused);
+- a condition of IF, ELSIF, WHILE or REPEAT ... UNTIL that is not a BOOL (`IF w THEN` with a WORD);
 - arithmetic on BOOL or on BYTE/WORD/DWORD/LWORD, an integer used as TIME, and an integer operand of
   AND, OR or XOR (Table 31: ANY_BIT only; also refused under `--dialect iec-3`, see DIALECTS.md);
 - the reserved names ON, STEP and MOVE for a variable, POU, method, type, field, enum value,
