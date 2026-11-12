@@ -2965,7 +2965,7 @@ export class SemanticAnalyzer {
   /** `<construct> needs the feature <id>`, plus the loaded profiles that have it. */
   private featureMessage(feature: FeatureId, construct: string): string {
     const message = `${construct} needs the feature ${feature}`;
-    const dialect = this.options.dialect;
+    const dialect = this.options.dialect ?? this.testFileDialect;
     const profiles = dialect ? profilesWithFeature(dialect, feature) : [];
     return profiles.length > 0
       ? `${message} (profiles: ${profiles.join(", ")})`
@@ -6064,6 +6064,9 @@ export class SemanticAnalyzer {
    * Validates type references in var blocks and undeclared variable usage
    * in SETUP, TEARDOWN, and TEST bodies.
    */
+  /** The dialect a test file was parsed under, for the profiles a refusal names. */
+  private testFileDialect: ResolvedDialect | undefined;
+
   analyzeTestFile(
     testFile: TestFile,
     sourceSymbolTables: SymbolTables,
@@ -6071,6 +6074,7 @@ export class SemanticAnalyzer {
   ): { errors: CompileError[]; warnings: CompileError[] } {
     this.errors = [];
     this.warnings = [];
+    this.testFileDialect = testFile.dialect;
     this.symbolTables = sourceSymbolTables;
 
     // Build enum member map from source symbol tables for bare enum resolution

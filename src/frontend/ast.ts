@@ -8,6 +8,7 @@
  */
 
 import type { SourceSpan } from "../types.js";
+import type { ResolvedDialect } from "../dialect.js";
 
 // =============================================================================
 // Base Types
@@ -1036,6 +1037,8 @@ export interface TestFile {
   testCases: TestCase[];
   /** TYPEs hoisted from inline enumerations and subranges in its VAR blocks. */
   inlineTypes?: TypeDeclaration[];
+  /** The dialect the file was parsed under: its profiles name a refused feature's. */
+  dialect?: ResolvedDialect;
 }
 
 /**

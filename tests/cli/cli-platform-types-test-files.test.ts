@@ -10,6 +10,7 @@ import { resolve, join } from "path";
 import { tmpdir } from "os";
 import { hasGpp } from "../integration/test-helpers.js";
 import { parseTestFile } from "../../src/testing/test-parser.js";
+import { analyzeTestFile, compile } from "../../src/index.js";
 
 const CLI_PATH = resolve(__dirname, "../../dist/node/cli.js");
 const DIR = join(tmpdir(), "strucpp-cli-platform-types-tests");
@@ -48,6 +49,27 @@ describe("platform types in a test file", () => {
     expect(
       off.testFile!.testCases[0]!.varBlocks[0]!.declarations[0]!.type.name,
     ).toBe("XINT");
+  });
+
+  it("names the loaded profiles that have the feature when it is off", () => {
+    const src = compile(
+      "PROGRAM P\nVAR x : INT; END_VAR\nx := 1;\nEND_PROGRAM\n",
+      {},
+    );
+    const parsed = parseTestFile(TESTS, "t.st", {
+      dialect: {
+        id: "twincat3",
+        name: "twincat3",
+        extends: "iec-3",
+        features: ["platform_types"],
+        semantics: {},
+      },
+      features: ["-platform_types"],
+    });
+    const r = analyzeTestFile(parsed.testFile!, src.symbolTables!, src.ast);
+    expect(r.errors.map((e) => e.message)).toContain(
+      "XINT needs the feature platform_types (profiles: twincat3)",
+    );
   });
 
   describe.skipIf(!hasGpp)("--test", () => {

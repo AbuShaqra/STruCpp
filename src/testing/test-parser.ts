@@ -128,6 +128,7 @@ export function parseTestFile(
     if (dialect.features.has("platform_types")) {
       lowerTestPlatformTypes(testFile);
     }
+    testFile.dialect = dialect;
     return { testFile, errors };
   } catch (e) {
     errors.push({
