@@ -156,7 +156,8 @@ VAR_GLOBAL gg : LREAL; gn : UINT := XSIZEOF(gg); END_VAR
     expect(
       diag(src, { features: ["+vendor_operators"], strict: true })
         .errors.map((e) => e.replace(/^\d+:\d+: /, ""))
-        .filter((e) => e.startsWith("Implicit")),
+        .filter((e) => e.startsWith("Implicit"))
+        .sort(),
     ).toEqual([
       "Implicit conversion from ULINT to UDINT is not allowed; use ULINT_TO_UDINT",
       "Implicit conversion from ULINT to UINT is not allowed; use ULINT_TO_UINT",
