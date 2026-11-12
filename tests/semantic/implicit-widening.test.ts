@@ -255,5 +255,34 @@ describe("implicit widening (Figures 11 and 12)", () => {
           : [],
       );
     });
+
+    it(`types AND, OR and XOR on integers as the integer, refused under iec-3 and --strict (${label})`, () => {
+      const lax = label === "no dialect";
+      const r = compile(
+        "PROGRAM Main\nVAR i, j : INT; d : DINT; s : SINT; x, y : BOOL; w : WORD; b : BYTE; END_VAR\ni := i AND j;\nd := i OR d;\ns := i XOR j;\nx := x AND y;\nw := w AND 16#FF;\nb := b AND 1;\nEND_PROGRAM\n",
+        options,
+      );
+      const table31 = (op: string): string =>
+        `${op} takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not INT; convert it with INT_TO_WORD or the like`;
+      expect(r.errors.map((e) => e.message)).toEqual(
+        lax
+          ? []
+          : [
+              table31("AND"),
+              table31("OR"),
+              table31("XOR"),
+              ...(label === "strict"
+                ? [
+                    "Implicit conversion from INT to SINT is not allowed; use INT_TO_SINT",
+                  ]
+                : []),
+            ],
+      );
+      if (label !== "strict") {
+        expect(r.warnings.map((w) => w.message)).toContain(
+          "Implicit narrowing conversion from INT to SINT",
+        );
+      }
+    });
   }
 });

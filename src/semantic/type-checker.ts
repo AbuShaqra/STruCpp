@@ -1792,6 +1792,7 @@ export class TypeChecker {
     }
     // Logical operators return BOOL
     else if (["AND", "OR", "XOR"].includes(expr.operator)) {
+      this.refuseIntegerBitwise(expr, leftType, rightType);
       type =
         this.bitwiseResultType(leftType, rightType) ?? ELEMENTARY_TYPES["BOOL"];
     }
@@ -1908,8 +1909,55 @@ export class TypeChecker {
       const name = this.aliasBase((t as ElementaryType).name);
       return STRICT_BIT_STRINGS.has(name) ? [ELEMENTARY_TYPES[name]!] : [];
     });
-    if (bits.length === 0) return undefined;
-    return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
+    if (bits.length > 0) {
+      return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
+    }
+    // Two integers (a vendor extension): their common integer type.
+    if (this.isIntegerType(leftType) && this.isIntegerType(rightType)) {
+      return getCommonType(leftType, rightType) ?? leftType;
+    }
+    return undefined;
+  }
+
+  private isIntegerType(t: IECType): boolean {
+    return (
+      t.typeKind === "elementary" &&
+      /^U?(SINT|INT|DINT|LINT)$/.test(
+        this.aliasBase((t as ElementaryType).name),
+      )
+    );
+  }
+
+  /**
+   * IEC 61131-3 Ed. 3 Table 31 defines AND, OR and XOR on ANY_BIT only:
+   * under iec-3 and `--strict` an integer operand is refused (an untyped
+   * constant beside a bit string or BOOL adapts to it).
+   */
+  private refuseIntegerBitwise(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): void {
+    if (!this.strict && !this.inOutErrors) return;
+    for (const [operand, type, other] of [
+      [expr.left, leftType, rightType],
+      [expr.right, rightType, leftType],
+    ] as const) {
+      if (!this.isIntegerType(type)) continue;
+      if (
+        this.untypedConstantKind(operand) === "INT" &&
+        !this.isIntegerType(other)
+      ) {
+        continue;
+      }
+      this.addError(
+        `${expr.operator} takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${typeNameUtil(type)}; convert it with ${typeNameUtil(type)}_TO_WORD or the like`,
+        operand.sourceSpan.startLine,
+        operand.sourceSpan.startCol,
+        operand.sourceSpan.file,
+      );
+      return;
+    }
   }
 
   /**

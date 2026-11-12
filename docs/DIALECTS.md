@@ -81,6 +81,16 @@ the root. A profile without `extends` has only its own features.
 | `end_semicolon_optional` | under `--strict`, `END_IF` and the like need no `;`      |
 | `conditional_pragmas` | `{IF}`/`{ELSIF}`/`{ELSE}`/`{END_IF}` with `defined()`, `project_defined()`, `hasvalue()`, `AND`/`OR`/`NOT`; defines from `-D` and from `{define}`/`{undefine}` in the source ([below](#conditional-pragmas)) |
 
+## Bitwise operators on integers
+
+IEC 61131-3 Ed. 3 Table 31 defines AND, OR and XOR on ANY_BIT (BOOL and the bit strings) only. With no
+dialect flag an integer operand is accepted, as before, and the result now has the operands' common
+integer type (`i AND j` with INT operands is an INT, not a BOOL), so assigning it to a narrower type gets
+the usual narrowing warning. Under `--dialect iec-3`, and under `--strict` in any dialect, an integer
+operand is refused: `AND takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not INT; convert it
+with INT_TO_WORD or the like`. An untyped constant beside a bit string or BOOL (`w AND 16#FF`, `x OR 1`)
+takes that operand's type and is accepted.
+
 ## Refusals
 
 When a feature is off the compile fails with an error at the construct's own line and column:
