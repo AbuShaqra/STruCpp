@@ -446,8 +446,13 @@ function longTemporalConversion(
   const t = TEMPORAL_KIND[to];
   if (f === undefined || t === undefined) return undefined;
   // Table 26: the date or the time of day of a date-and-time, in every form.
-  if (f === "dt" && t === "date") return `DATE_OF_DT(${argExpr})`;
-  if (f === "dt" && t === "tod") return `TOD_OF_DT(${argExpr})`;
+  // Through the stored nanoseconds, so a REFERENCE TO DT converts too.
+  if (f === "dt" && t === "date") {
+    return `DATE_OF_DT(IEC_DT(static_cast<int64_t>(${argExpr})))`;
+  }
+  if (f === "dt" && t === "tod") {
+    return `TOD_OF_DT(IEC_DT(static_cast<int64_t>(${argExpr})))`;
+  }
   if (!LONG_TEMPORAL_NAMES.has(from) && !LONG_TEMPORAL_NAMES.has(to)) {
     return undefined;
   }
@@ -6159,16 +6164,19 @@ export class CodeGenerator {
       k === "DATE" || k === "LDATE";
     const isDuration = (k: string | undefined): boolean =>
       k === "TIME" || k === "LTIME";
-    // In days: the difference scales once, and a date moves by the duration's
-    // whole days (truncated toward zero), so no date overflows nanoseconds.
+    // In days, through the stored value (a REFERENCE TO converts): the
+    // difference scales once, and the result of date +/- duration is the day
+    // that holds the resulting instant (floor), so no date overflows.
+    const raw = (code: string): string => `static_cast<int64_t>(${code})`;
     if (expr.operator === "-" && isDate(l) && isDate(r)) {
-      return `((DATE_TO_DAYS(${left}) - DATE_TO_DAYS(${right})) * ${NS_PER_DAY})`;
+      return `((${raw(left)} - ${raw(right)}) * ${NS_PER_DAY})`;
     }
     if (isDate(l) && isDuration(r)) {
-      return `DATE_FROM_DAYS(DATE_TO_DAYS(${left}) ${expr.operator} iec_unwrap(${right}) / ${NS_PER_DAY})`;
+      const signed = expr.operator === "-" ? `-${raw(right)}` : raw(right);
+      return `DATE_FROM_DAYS(${raw(left)} + iec_floor_div(${signed}, ${NS_PER_DAY}))`;
     }
     if (expr.operator === "+" && isDuration(l) && isDate(r)) {
-      return `DATE_FROM_DAYS(iec_unwrap(${left}) / ${NS_PER_DAY} + DATE_TO_DAYS(${right}))`;
+      return `DATE_FROM_DAYS(iec_floor_div(${raw(left)}, ${NS_PER_DAY}) + ${raw(right)})`;
     }
     return undefined;
   }

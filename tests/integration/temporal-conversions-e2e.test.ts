@@ -64,8 +64,8 @@ const EXPECTED: Array<[string, string, string]> = [
   ["D#2500-01-01 + T#1d (days)", "193580", "86400000193579"],
   ["D#1600-01-01 + T#1d (days)", "-135139", "86399999864860"],
   [
-    "D#2024-01-15 - T#36h (whole days, toward zero)",
-    "19736",
+    "D#2024-01-15 - T#36h (the day holding the instant, D#2024-01-13)",
+    "19735",
     "-129599999980263",
   ],
 ];
@@ -114,5 +114,42 @@ int main() {
         );
       });
     }
+
+    it("takes REFERENCE TO DATE and DT operands, as development did", () => {
+      const result = compile(
+        `PROGRAM Main
+VAR d1 : DATE := D#2024-01-15; d2 : DATE := D#2024-01-20; dt1 : DT := DT#2024-07-15-12:30:15;
+  rd : REFERENCE TO DATE; rdt : REFERENCE TO DT; c1 : TIME; c2 : DATE; c4 : TOD; c5 : DATE; END_VAR
+rd REF= d1; rdt REF= dt1;
+c1 := d2 - rd;
+c2 := rd + T#1d;
+c4 := TO_TOD(rdt);
+c5 := DT_TO_DATE(rdt);
+END_PROGRAM
+`,
+        {
+          headerFileName: "generated.hpp",
+          features: ["+reference_to", "+ref_assign"],
+        },
+      );
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: "tconv_refs",
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.C1.get() << " " << p.C2.get() << " " << p.C4.get() << " " << p.C5.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe("432000000000000 19738 45015000000000 19919");
+    });
   },
 );

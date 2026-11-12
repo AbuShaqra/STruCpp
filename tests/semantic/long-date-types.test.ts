@@ -80,8 +80,12 @@ ldt := LDATE_AND_TIME#2024-01-16-00:00:00;`,
           options,
         );
         expect(r.errors).toEqual([]);
-        expect(r.cppCode).toContain("LD = TO_LDATE(DATE_OF_DT(LDT));");
-        expect(r.cppCode).toContain("LT = TO_LTOD(TOD_OF_DT(LDT));");
+        expect(r.cppCode).toContain(
+          "LD = TO_LDATE(DATE_OF_DT(IEC_DT(static_cast<int64_t>(LDT))));",
+        );
+        expect(r.cppCode).toContain(
+          "LT = TO_LTOD(TOD_OF_DT(IEC_DT(static_cast<int64_t>(LDT))));",
+        );
         expect(r.cppCode).toContain("LDT = TO_LDT(DATE_TO_NS(LD));");
         expect(r.cppCode).toContain("N = TO_LINT(DATE_TO_NS(LD));");
       });

@@ -33,8 +33,12 @@ describe("DT_TO_DATE, DT_TO_TOD and DATE arithmetic", () => {
           "d := DT_TO_DATE(dt1);\nt := DT_TO_TOD(dt1);\nd := DATE_AND_TIME_TO_DATE(dt1);\nt := DATE_AND_TIME_TO_TIME_OF_DAY(dt1);\nd := TO_DATE(dt1);",
           options,
         );
-        expect(code).toContain("D = TO_DATE(DATE_OF_DT(DT1));");
-        expect(code).toContain("T = TO_TOD(TOD_OF_DT(DT1));");
+        expect(code).toContain(
+          "D = TO_DATE(DATE_OF_DT(IEC_DT(static_cast<int64_t>(DT1))));",
+        );
+        expect(code).toContain(
+          "T = TO_TOD(TOD_OF_DT(IEC_DT(static_cast<int64_t>(DT1))));",
+        );
         expect(code).not.toContain("TO_DATE(DT1)");
         expect(code).not.toContain("TO_TOD(DT1)");
       });
@@ -45,13 +49,13 @@ describe("DT_TO_DATE, DT_TO_TOD and DATE arithmetic", () => {
           options,
         );
         expect(code).toContain(
-          "TM = ((DATE_TO_DAYS(D2) - DATE_TO_DAYS(D)) * 86400000000000LL);",
+          "TM = ((static_cast<int64_t>(D2) - static_cast<int64_t>(D)) * 86400000000000LL);",
         );
         expect(code).toContain(
-          "D = DATE_FROM_DAYS(DATE_TO_DAYS(D) + iec_unwrap(86400000000000LL) / 86400000000000LL);",
+          "D = DATE_FROM_DAYS(static_cast<int64_t>(D) + iec_floor_div(static_cast<int64_t>(86400000000000LL), 86400000000000LL));",
         );
         expect(code).toContain(
-          "D = DATE_FROM_DAYS(DATE_TO_DAYS(D) - iec_unwrap(172800000000000LL) / 86400000000000LL);",
+          "D = DATE_FROM_DAYS(static_cast<int64_t>(D) + iec_floor_div(-static_cast<int64_t>(172800000000000LL), 86400000000000LL));",
         );
       });
 
@@ -72,10 +76,14 @@ END_PROGRAM
         );
         expect(r.errors).toEqual([]);
         expect(r.cppCode).toContain(
-          "TM = ((DATE_TO_DAYS(M2) - DATE_TO_DAYS(M1)) * 86400000000000LL);",
+          "TM = ((static_cast<int64_t>(M2) - static_cast<int64_t>(M1)) * 86400000000000LL);",
         );
-        expect(r.cppCode).toContain("TO_DATE(DATE_OF_DT(M))");
-        expect(r.cppCode).toContain("TO_TOD(TOD_OF_DT(CONCAT_DATE_TOD(D, T)))");
+        expect(r.cppCode).toContain(
+          "TO_DATE(DATE_OF_DT(IEC_DT(static_cast<int64_t>(M))))",
+        );
+        expect(r.cppCode).toContain(
+          "TO_TOD(TOD_OF_DT(IEC_DT(static_cast<int64_t>(CONCAT_DATE_TOD(D, T)))))",
+        );
       });
     });
   }
