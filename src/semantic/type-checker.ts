@@ -81,6 +81,12 @@ import { STD_FUNCTIONS_LIBRARY } from "../library/library-manifest.js";
 import { libraryOverloadFor } from "./library-overload.js";
 import { charLiteralUnits } from "../literal-utils.js";
 import {
+  vendorOperatorArgumentError,
+  vendorOperatorFeature,
+  vendorOperatorNamed,
+  vendorOperatorResultType,
+} from "./vendor-operators.js";
+import {
   fbIndex,
   fbInitArgumentScope,
   fbInitChain,
@@ -2105,6 +2111,10 @@ export class TypeChecker {
       return returnType;
     }
 
+    // A built-in operator of a dialect feature (__ISVALIDREF, XSIZEOF).
+    const vendorType = this.vendorOperatorCallType(expr, nameUpper, scope);
+    if (vendorType !== undefined) return vendorType;
+
     // Validate standard function argument types (after resolving args)
     this.validateFunctionCallArgs(expr, scope);
 
@@ -2975,6 +2985,41 @@ export class TypeChecker {
    * its methods, inherited ones included. The method is called, as the C++
    * member shadows a FUNCTION or standard function of the same name.
    */
+  /**
+   * The result type of a call of a built-in operator whose feature is on and
+   * whose name nothing in scope declares; marks the call for codegen.
+   */
+  private vendorOperatorCallType(
+    expr: FunctionCallExpression,
+    nameUpper: string,
+    scope: Scope,
+  ): IECType | undefined {
+    const op = vendorOperatorNamed(nameUpper);
+    if (op === undefined || !this.features.has(vendorOperatorFeature(op))) {
+      return undefined;
+    }
+    if (expr.instance || scope.lookup(nameUpper) !== undefined) {
+      return undefined;
+    }
+    expr.vendorOperator = op;
+    const error = vendorOperatorArgumentError(expr, op, (arg) => {
+      if (arg.value.kind !== "VariableExpression") return false;
+      const shape = this.declaredReferenceShape(arg.value, scope);
+      return shape?.chain.length === 1 && shape.chain[0] === "reference_to";
+    });
+    if (error !== undefined) {
+      this.addError(
+        error,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+    }
+    const type = ELEMENTARY_TYPES[vendorOperatorResultType(op)]!;
+    expr.resolvedType = type;
+    return type;
+  }
+
   private ownMethod(name: string): MethodDeclaration | undefined {
     if (name.includes(".")) return undefined;
     const upper = name.toUpperCase();

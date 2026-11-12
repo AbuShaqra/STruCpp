@@ -118,6 +118,10 @@ import {
 import { cp1252Byte } from "../byte-utils.js";
 import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import { libraryOverloadFor } from "./library-overload.js";
+import {
+  vendorOperatorFeature,
+  vendorOperatorNamed,
+} from "./vendor-operators.js";
 
 // =============================================================================
 // Located Variable Address Parsing
@@ -5976,6 +5980,12 @@ export class SemanticAnalyzer {
     // Inline C++ may declare the name (a macro, a lambda)
     if (this.hasExternalCode) return;
     const span = call.sourceSpan;
+    // A built-in operator of a dialect feature: refused while it is off.
+    const op = vendorOperatorNamed(upper);
+    if (op !== undefined) {
+      this.requireFeature(vendorOperatorFeature(op), op, span);
+      return;
+    }
     this.addError(
       `Undeclared function '${upper}'`,
       span.startLine,

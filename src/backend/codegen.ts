@@ -132,6 +132,7 @@ import {
   isStructInitializerValue,
   type StructInitEmitter,
 } from "./struct-init-codegen.js";
+import { vendorOperatorCpp } from "../semantic/vendor-operators.js";
 
 // =============================================================================
 // Located Variable Support
@@ -7287,6 +7288,19 @@ export class CodeGenerator {
       this.ast?.functions.some((f) => f.name.toUpperCase() === nameUpper) ===
       true;
     if (!userFunction && expr.libraryFunction === undefined) {
+      // A built-in operator the type checker resolved (__ISVALIDREF, XSIZEOF).
+      if (expr.vendorOperator !== undefined && expr.arguments.length === 1) {
+        const kept = this.keepReferenceWrapper;
+        this.keepReferenceWrapper = expr.vendorOperator === "__ISVALIDREF";
+        let arg: string;
+        try {
+          arg = this.generateExpression(expr.arguments[0]!.value);
+        } finally {
+          this.keepReferenceWrapper = kept;
+        }
+        return vendorOperatorCpp(expr.vendorOperator, arg);
+      }
+
       // 0. ADR(x) → &(x) (CODESYS address-of operator)
       if (nameUpper === "ADR") {
         const args = expr.arguments.map((arg) =>
