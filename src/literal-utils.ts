@@ -82,8 +82,18 @@ export function charLiteralUnits(raw: string): {
   units: number[];
 } {
   const wide = /^W/i.test(raw);
-  const quote = wide ? '"' : "'";
-  const inner = raw.slice(raw.indexOf(quote) + 1, raw.lastIndexOf(quote));
+  const payload = raw.slice(raw.indexOf("#") + 1);
+  // A code: CHAR#16#41, WCHAR#8364 (-1 when it is past the type's range)
+  if (!payload.startsWith("'") && !payload.startsWith('"')) {
+    const code = exactIntegerLiteralValue(payload);
+    const max = wide ? 0xffffn : 0xffn;
+    return {
+      wide,
+      units: [code !== undefined && code <= max ? Number(code) : -1],
+    };
+  }
+  const quote = payload[0]!;
+  const inner = payload.slice(1, payload.lastIndexOf(quote));
   const units: number[] = [];
   const escapes: Record<string, number> = {
     N: 10,

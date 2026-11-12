@@ -403,6 +403,17 @@ const TEMPORAL_CONVERSION_UNITS = new Map<string, TemporalUnitInfo>([
   ["LDATE", { toUnit: "DATE_TO_NS", fromUnit: "DATE_FROM_NS" }],
 ]);
 
+/** Standard functions that order their arguments. */
+const CHAR_ORDERED_FUNCTIONS = new Set([
+  "MAX",
+  "MIN",
+  "LIMIT",
+  "GT",
+  "GE",
+  "LT",
+  "LE",
+]);
+
 /** The stored kind of each temporal type: days for a date, nanoseconds otherwise. */
 const TEMPORAL_KIND: Record<string, "date" | "tod" | "dt" | "duration"> = {
   DATE: "date",
@@ -6122,13 +6133,8 @@ export class CodeGenerator {
 
     // CHAR ordering compares Windows-1252 codes, not signed C++ chars.
     if (["<", ">", "<=", ">="].includes(expr.operator)) {
-      const isChar = (e: Expression): boolean =>
-        e.resolvedType?.typeKind === "elementary" &&
-        (e.resolvedType as ElementaryType).name.toUpperCase() === "CHAR";
-      if (isChar(expr.left) || isChar(expr.right)) {
-        const code = (e: Expression, s: string): string =>
-          isChar(e) ? `static_cast<uint8_t>(iec_unwrap(${s}))` : s;
-        return `${code(expr.left, left)} ${cppOp} ${code(expr.right, right)}`;
+      if (this.isCharExpr(expr.left) || this.isCharExpr(expr.right)) {
+        return `${this.charCode(expr.left, left)} ${cppOp} ${this.charCode(expr.right, right)}`;
       }
     }
 
@@ -6189,6 +6195,29 @@ export class CodeGenerator {
       return `DATE_FROM_NS(${left} + DATE_TO_NS(${right}))`;
     }
     return undefined;
+  }
+
+  /** True when the expression is a CHAR, through aliases of it. */
+  private isCharExpr(e: Expression): boolean {
+    const t = e.resolvedType;
+    if (t?.typeKind !== "elementary") return false;
+    let name = (t as ElementaryType).name.toUpperCase();
+    for (let i = 0; i < 32 && name !== "CHAR"; i++) {
+      const upper = name;
+      const def = this.ast?.types.find(
+        (d) => d.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference") return false;
+      name = def.name.toUpperCase();
+    }
+    return name === "CHAR";
+  }
+
+  /** A CHAR operand as its unsigned Windows-1252 code; anything else unchanged. */
+  private charCode(e: Expression, code: string): string {
+    return this.isCharExpr(e)
+      ? `static_cast<uint8_t>(iec_unwrap(${code}))`
+      : code;
   }
 
   /** The fields of STRUCT `typeName` (through aliases), or undefined for any other type. */
@@ -7112,6 +7141,21 @@ export class CodeGenerator {
           }
           return generated;
         });
+        // CHAR arguments are compared by their unsigned Windows-1252 code.
+        if (CHAR_ORDERED_FUNCTIONS.has(stdFunc.name.toUpperCase())) {
+          const userArgs = expr.arguments;
+          if (userArgs.some((a) => this.isCharExpr(a.value))) {
+            const coded = args.map((a, i) =>
+              userArgs[i] !== undefined
+                ? this.charCode(userArgs[i].value, a)
+                : a,
+            );
+            const call = `${stdFunc.cppName}(${coded.join(", ")})`;
+            return ["MAX", "MIN", "LIMIT"].includes(stdFunc.name.toUpperCase())
+              ? `static_cast<CHAR_t>(${call})`
+              : call;
+          }
+        }
         this.harmonizeStdFuncArgs(args, expr.arguments, stdFunc);
         // TRUNC's C++ result type follows the C++ argument type, but codegen
         // emits REAL literals/expressions containing one as double.  Pass the

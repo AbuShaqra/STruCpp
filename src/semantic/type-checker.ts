@@ -79,6 +79,7 @@ import { structExtends } from "./struct-extends.js";
 import { bindStdFunctionArguments } from "./std-function-args.js";
 import { STD_FUNCTIONS_LIBRARY } from "../library/library-manifest.js";
 import { libraryOverloadFor } from "./library-overload.js";
+import { charLiteralUnits } from "../literal-utils.js";
 import {
   fbIndex,
   fbInitArgumentScope,
@@ -322,6 +323,21 @@ function referenceShapeOf(type: AccessType): ReferenceShape | undefined {
     ...(length !== undefined ? { length } : {}),
   };
 }
+
+/** Standard functions comparing or selecting their arguments, by leading arguments to skip. */
+const CHAR_COMPARE_FUNCTIONS: ReadonlyMap<string, number> = new Map([
+  ["MAX", 0],
+  ["MIN", 0],
+  ["LIMIT", 0],
+  ["GT", 0],
+  ["GE", 0],
+  ["LT", 0],
+  ["LE", 0],
+  ["EQ", 0],
+  ["NE", 0],
+  ["SEL", 1],
+  ["MUX", 1],
+]);
 
 const COMPARISON_OPS: ReadonlySet<string> = new Set([
   "=",
@@ -1271,6 +1287,9 @@ export class TypeChecker {
       }
       case "RefExpression": {
         const operandType = this.resolveExprType(expr.operand, scope);
+        if (this.refuseStringElement(expr.operand, "REF() cannot take")) {
+          return undefined;
+        }
         if (operandType) {
           const refType: ReferenceType = {
             typeKind: "reference",
@@ -1511,9 +1530,13 @@ export class TypeChecker {
             expr,
           );
           // Resolve array element type
-          const elemType =
-            resolveArrayElementType(currentTypeName, this.ast) ??
-            this.stringElementType(currentTypeName, step.indices.length);
+          const arrayElem = resolveArrayElementType(currentTypeName, this.ast);
+          const stringElem =
+            arrayElem === undefined
+              ? this.stringElementType(currentTypeName, step.indices.length)
+              : undefined;
+          if (stringElem !== undefined) expr.stringElement = true;
+          const elemType = arrayElem ?? stringElem;
           if (elemType) {
             currentTypeName = elemType;
             currentType = this.resolveNamedType(elemType);
@@ -1547,9 +1570,13 @@ export class TypeChecker {
           this.resolveExprType(sub, scope);
           this.refuseEnumIndex(sub);
         }
-        const elemType =
-          resolveArrayElementType(currentTypeName, this.ast) ??
-          this.stringElementType(currentTypeName, expr.subscripts.length);
+        const arrayElem = resolveArrayElementType(currentTypeName, this.ast);
+        const stringElem =
+          arrayElem === undefined
+            ? this.stringElementType(currentTypeName, expr.subscripts.length)
+            : undefined;
+        if (stringElem !== undefined) expr.stringElement = true;
+        const elemType = arrayElem ?? stringElem;
         if (elemType) {
           currentTypeName = elemType;
           currentType = this.resolveNamedType(elemType);
@@ -1647,8 +1674,8 @@ export class TypeChecker {
     expr: BinaryExpression,
     scope: Scope,
   ): IECType | undefined {
-    const leftType = this.resolveExprType(expr.left, scope);
-    const rightType = this.resolveExprType(expr.right, scope);
+    let leftType = this.resolveExprType(expr.left, scope);
+    let rightType = this.resolveExprType(expr.right, scope);
     delete expr.comparesReferences;
     if (
       (expr.operator === "=" || expr.operator === "<>") &&
@@ -1660,6 +1687,18 @@ export class TypeChecker {
 
     if (leftType === undefined || rightType === undefined) {
       return undefined;
+    }
+
+    // CHAR and WCHAR: compared only with their own type, no arithmetic.
+    const leftChar = this.charTypeOf(leftType);
+    const rightChar = this.charTypeOf(rightType);
+    if (leftChar !== undefined || rightChar !== undefined) {
+      if (this.adaptCharLiteral(expr.right, leftChar)) {
+        rightType = expr.right.resolvedType!;
+      } else if (this.adaptCharLiteral(expr.left, rightChar)) {
+        leftType = expr.left.resolvedType!;
+      }
+      return this.inferCharBinaryType(expr, leftType, rightType);
     }
 
     if (this.strict && STRICT_ARITHMETIC_OPS.has(expr.operator)) {
@@ -1703,6 +1742,73 @@ export class TypeChecker {
     }
 
     if (type) expr.resolvedType = type;
+    return type;
+  }
+
+  /**
+   * MAX, MIN, LIMIT, the comparison functions, SEL and MUX on CHAR or WCHAR:
+   * a one-character literal is that character, and every compared argument
+   * is the same character type (no implicit conversion to a number).
+   */
+  private checkCharStdArguments(expr: FunctionCallExpression): void {
+    const name = expr.functionName.toUpperCase();
+    const skip = CHAR_COMPARE_FUNCTIONS.get(name);
+    if (skip === undefined || this.findUserFunction(name)) return;
+    if (
+      this.symbolTables.lookupFunction(name) !== undefined &&
+      this.symbolTables.lookupFunction(name)?.libraryName !==
+        STD_FUNCTIONS_LIBRARY
+    ) {
+      return;
+    }
+    const args = stripEnEno(expr.arguments).slice(skip);
+    const charType = args
+      .map((a) => this.charTypeOf(a.value.resolvedType))
+      .find((t) => t !== undefined);
+    if (charType === undefined) return;
+    for (const arg of args) {
+      this.adaptCharLiteral(arg.value, charType);
+      const t = arg.value.resolvedType;
+      if (t !== undefined && this.charTypeOf(t) !== charType) {
+        this.addError(
+          `Argument of '${name}' is ${typeNameUtil(t)} where the others are ${charType}; ${charType} does not convert implicitly`,
+          arg.value.sourceSpan.startLine,
+          arg.value.sourceSpan.startCol,
+          arg.value.sourceSpan.file,
+        );
+      }
+    }
+  }
+
+  /**
+   * A CHAR or WCHAR operand: comparison with the same character type only, and
+   * no arithmetic or logic, as neither converts implicitly to a number.
+   */
+  private inferCharBinaryType(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): IECType | undefined {
+    const fail = (message: string): undefined => {
+      this.addError(
+        message,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+      return undefined;
+    };
+    const charType = this.charTypeOf(leftType) ?? this.charTypeOf(rightType)!;
+    if (!COMPARISON_OPS.has(expr.operator)) {
+      return fail(`Operator '${expr.operator}' does not apply to ${charType}`);
+    }
+    if (this.charTypeOf(leftType) !== this.charTypeOf(rightType)) {
+      fail(
+        `Cannot compare ${typeNameUtil(leftType)} with ${typeNameUtil(rightType)}`,
+      );
+    }
+    const type = ELEMENTARY_TYPES["BOOL"]!;
+    expr.resolvedType = type;
     return type;
   }
 
@@ -1795,6 +1901,7 @@ export class TypeChecker {
     for (const arg of expr.arguments) {
       this.resolveExprType(arg.value, scope);
     }
+    this.checkCharStdArguments(expr);
     this.validateReferenceArguments(expr, scope);
     this.checkDottedMethodCall(expr, scope);
     this.checkMethodCallArgumentNames(expr, scope);
@@ -3127,6 +3234,21 @@ export class TypeChecker {
           targetType =
             ELEMENTARY_TYPES[this.currentReturn.type.name.toUpperCase()];
         }
+        // `F := 'A'` in a FUNCTION returning CHAR: the literal is a CHAR.
+        if (
+          targetType === undefined &&
+          this.currentReturn !== undefined &&
+          stmt.target.kind === "VariableExpression" &&
+          stmt.target.name.toUpperCase() ===
+            this.currentReturn.name.toUpperCase()
+        ) {
+          this.adaptCharLiteral(
+            stmt.value,
+            this.charTypeOf(
+              this.resolveNamedType(this.currentReturn.type.name),
+            ),
+          );
+        }
         this.validateInOutMemberWrite(stmt.target, scope);
         if (this.isAddressIntoPointer(stmt.target, valueType, scope)) break;
         if (this.isZeroIntoPointer(stmt.target, stmt.value, scope)) break;
@@ -3241,9 +3363,27 @@ export class TypeChecker {
           this.validateCaseSelector(selectorType, stmt.selector);
         }
         for (const c of stmt.cases) {
+          const selectorChar = this.charTypeOf(selectorType);
           for (const label of c.labels) {
             this.resolveExprType(label.start, scope);
             if (label.end) this.resolveExprType(label.end, scope);
+            // A CHAR selector takes 'a' and CHAR#'a' labels, of its own type only.
+            if (selectorChar !== undefined) {
+              for (const bound of label.end
+                ? [label.start, label.end]
+                : [label.start]) {
+                this.adaptCharLiteral(bound, selectorChar);
+                if (this.charTypeOf(bound.resolvedType) !== selectorChar) {
+                  this.addError(
+                    `CASE label of type ${bound.resolvedType ? typeNameUtil(bound.resolvedType) : "?"} does not match the selector of type ${selectorChar}`,
+                    bound.sourceSpan.startLine,
+                    bound.sourceSpan.startCol,
+                    bound.sourceSpan.file,
+                  );
+                }
+              }
+              continue;
+            }
             this.validateCaseLabelType(selectorType, label.start);
             if (label.end) this.validateCaseLabelType(selectorType, label.end);
           }
@@ -3415,6 +3555,9 @@ export class TypeChecker {
     target: Expression,
     value: Expression,
   ): void {
+    if (this.adaptCharLiteral(value, this.charTypeOf(targetType))) {
+      valueType = value.resolvedType;
+    }
     const targetInterface = this.interfaceTypeOf(targetType);
     if (targetInterface !== undefined) {
       this.checkInterfaceValue(targetInterface, valueType, value);
@@ -4074,6 +4217,14 @@ export class TypeChecker {
       if (!input) return;
       bound.add(input.name.toUpperCase());
       if (!input.inOut || arg.isOutput) return;
+      if (
+        this.refuseStringElement(
+          arg.value,
+          `VAR_IN_OUT '${input.name}' cannot be bound to`,
+        )
+      ) {
+        return;
+      }
       this.validateInOutArgument(input, arg, scope);
     });
     for (const input of inputs) {
@@ -4343,6 +4494,55 @@ export class TypeChecker {
       ED3_ELEMENTARY_NAMES.has(upper) &&
       this.ast?.types.some((t) => t.name.toUpperCase() === upper) === true
     );
+  }
+
+  /**
+   * `s[i]` is a character of a string, not a variable: it cannot be bound to
+   * an in/out or referenced. True when it was refused.
+   */
+  private refuseStringElement(expr: Expression, what: string): boolean {
+    let e = expr;
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    if (e.kind !== "VariableExpression" || e.stringElement !== true) {
+      return false;
+    }
+    this.addError(
+      `${what} a character of a string (${e.name}[...]); assign it to a CHAR or WCHAR variable first`,
+      e.sourceSpan.startLine,
+      e.sourceSpan.startCol,
+      e.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /** CHAR or WCHAR when the type is one of them, through aliases. */
+  private charTypeOf(type: IECType | undefined): "CHAR" | "WCHAR" | undefined {
+    if (type?.typeKind !== "elementary") return undefined;
+    const base = this.aliasBase((type as ElementaryType).name);
+    return base === "CHAR" || base === "WCHAR" ? base : undefined;
+  }
+
+  /**
+   * A one-character string literal where a CHAR (`'A'`) or WCHAR (`"A"`) is
+   * expected is that character (Ed. 3 Table 6). True when it was adapted.
+   */
+  private adaptCharLiteral(
+    expr: Expression,
+    charType: "CHAR" | "WCHAR" | undefined,
+  ): boolean {
+    if (charType === undefined || expr.kind !== "LiteralExpression") {
+      return false;
+    }
+    const lit = expr;
+    const want = charType === "CHAR" ? "STRING" : "WSTRING";
+    if (lit.literalType !== want || (lit.typePrefix ?? "") !== "") return false;
+    const raw = `${charType}#${lit.rawValue}`;
+    if (charLiteralUnits(raw).units.length !== 1) return false;
+    lit.literalType = charType;
+    lit.rawValue = raw;
+    lit.value = raw;
+    lit.resolvedType = ELEMENTARY_TYPES[charType]!;
+    return true;
   }
 
   /** A STRING or WSTRING (not an ARRAY of them) takes exactly one index. */
@@ -5051,7 +5251,8 @@ export class TypeChecker {
     if (
       !_isTypeInCategory(selectorType, "ANY_INT") &&
       !_isTypeInCategory(selectorType, "ANY_BIT") &&
-      selectorType.typeKind !== "enum"
+      selectorType.typeKind !== "enum" &&
+      this.charTypeOf(selectorType) === undefined
     ) {
       this.addError(
         `CASE selector must be an integer, bit, or enum type, got ${typeNameUtil(selectorType)}`,

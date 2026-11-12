@@ -1465,6 +1465,9 @@ export class STParser extends CstParser {
       la1Type !== tokens.TypedLiteral &&
       la1Type !== tokens.Minus &&
       la1Type !== tokens.EnumLiteral &&
+      la1Type !== tokens.CharLiteral &&
+      la1Type !== tokens.StringLiteral &&
+      la1Type !== tokens.WideStringLiteral &&
       !this.isIdentifierOrKeywordToken(la1Type)
     ) {
       return false;
