@@ -362,7 +362,7 @@ export interface ProjectModelResult {
  * throwing, mirroring `parseTimeLiteral`.
  */
 export function parseDateLiteralToDays(literal: string): bigint {
-  const stripped = literal.replace(/^(D|DATE)#/i, "");
+  const stripped = literal.replace(/^(LDATE|LD|DATE|D)#/i, "");
   const m = stripped.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (!m) return 0n;
   const MS_PER_DAY = 86_400_000n;
@@ -379,7 +379,10 @@ export function parseDateLiteralToDays(literal: string): bigint {
  * rounding mode). Returns 0 for unparsable input.
  */
 export function parseTodLiteralToNs(literal: string): bigint {
-  const stripped = literal.replace(/^(TOD|TIME_OF_DAY)#/i, "");
+  const stripped = literal.replace(
+    /^(LTIME_OF_DAY|LTOD|TIME_OF_DAY|TOD)#/i,
+    "",
+  );
   const m = stripped.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:\.(\d+))?)?$/);
   if (!m) return 0n;
   const hh = m[1] ?? "0";
@@ -404,7 +407,10 @@ export function parseTodLiteralToNs(literal: string): bigint {
  * Returns 0 for unparsable input.
  */
 export function parseDtLiteralToNs(literal: string): bigint {
-  const stripped = literal.replace(/^(DT|DATE_AND_TIME)#/i, "");
+  const stripped = literal.replace(
+    /^(LDATE_AND_TIME|LDT|DATE_AND_TIME|DT)#/i,
+    "",
+  );
   const m = stripped.match(
     /^(\d{4})-(\d{1,2})-(\d{1,2})-(\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:\.(\d+))?)?$/,
   );

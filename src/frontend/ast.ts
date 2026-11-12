@@ -940,6 +940,9 @@ export type LiteralType =
   | "DATE"
   | "TIME_OF_DAY"
   | "DATE_AND_TIME"
+  | "LDATE"
+  | "LTIME_OF_DAY"
+  | "LDATE_AND_TIME"
   | "NULL";
 
 /**

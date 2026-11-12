@@ -116,7 +116,9 @@ const IEC_TO_CPP_TYPE: Record<string, string> = {
   LTIME: "LTIME_t",
   LDATE: "LDATE_t",
   LTOD: "LTOD_t",
+  LTIME_OF_DAY: "LTOD_t",
   LDT: "LDT_t",
+  LDATE_AND_TIME: "LDT_t",
   CHAR: "CHAR_t",
   WCHAR: "WCHAR_t",
   STRING: "IECString<254>",
@@ -153,7 +155,9 @@ export const IEC_TO_CPP_VAR_TYPE: Record<string, string> = {
   LTIME: "IEC_LTIME",
   LDATE: "IEC_LDATE",
   LTOD: "IEC_LTOD",
+  LTIME_OF_DAY: "IEC_LTOD",
   LDT: "IEC_LDT",
+  LDATE_AND_TIME: "IEC_LDT",
   CHAR: "IEC_CHAR",
   WCHAR: "IEC_WCHAR",
 };
@@ -806,10 +810,13 @@ export class TypeCodeGenerator {
         return `${timeVal.exact}LL`;
       }
       case "DATE":
+      case "LDATE":
         return `${parseDateLiteralToDays(String(expr.value))}LL`;
       case "TIME_OF_DAY":
+      case "LTIME_OF_DAY":
         return `${parseTodLiteralToNs(String(expr.value))}LL`;
       case "DATE_AND_TIME":
+      case "LDATE_AND_TIME":
         return `${parseDtLiteralToNs(String(expr.value))}LL`;
       default:
         return String(expr.value);

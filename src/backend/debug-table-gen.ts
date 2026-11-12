@@ -203,9 +203,11 @@ const IEC_NAME_TO_TAG: Record<string, TagName> = {
   TOD: "TOD",
   TIME_OF_DAY: "TOD",
   LTOD: "TOD",
+  LTIME_OF_DAY: "TOD",
   DT: "DT",
   DATE_AND_TIME: "DT",
   LDT: "DT",
+  LDATE_AND_TIME: "DT",
   STRING: "STRING",
   WSTRING: "WSTRING",
 };
@@ -245,9 +247,11 @@ const IEC_NAME_TO_SIZE: Record<string, number> = {
   TOD: 8,
   TIME_OF_DAY: 8,
   LTOD: 8,
+  LTIME_OF_DAY: 8,
   DT: 8,
   DATE_AND_TIME: 8,
   LDT: 8,
+  LDATE_AND_TIME: 8,
   // STRING / WSTRING wire widths match `DEBUG_STRING_WIDTH` /
   // `DEBUG_WSTRING_WIDTH` in `runtime/include/debug_dispatch.hpp`.
   // The runtime always writes a full fixed-width window

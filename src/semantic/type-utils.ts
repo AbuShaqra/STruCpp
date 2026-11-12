@@ -122,6 +122,11 @@ export const TYPE_CATEGORIES: Record<string, TypeCategory[]> = {
   DATE: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
   TIME_OF_DAY: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
   DATE_AND_TIME: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
+  LDATE: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
+  LTOD: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
+  LTIME_OF_DAY: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
+  LDT: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
+  LDATE_AND_TIME: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
   STRING: ["ANY", "ANY_ELEMENTARY", "ANY_STRING"],
   WSTRING: ["ANY", "ANY_ELEMENTARY", "ANY_STRING"],
 };
@@ -129,6 +134,9 @@ export const TYPE_CATEGORIES: Record<string, TypeCategory[]> = {
 /** A temporal type and the long form it converts to implicitly (Ed. 3). */
 const LONG_TEMPORAL: Record<string, string> = {
   TIME: "LTIME",
+  DATE: "LDATE",
+  TOD: "LTOD",
+  DT: "LDT",
 };
 
 /**
