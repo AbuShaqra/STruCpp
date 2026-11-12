@@ -62,8 +62,7 @@ describe.skipIf(!hasGpp)(
           fileName: "main.st",
           additionalSources: [
             {
-              source:
-                "VAR_GLOBAL fbUnit : FB_Unit; h : FB_Holder; END_VAR\n",
+              source: "VAR_GLOBAL fbUnit : FB_Unit; h : FB_Holder; END_VAR\n",
               fileName: "gvl.st",
               globalListName: "GVL_Plant",
             },
@@ -89,6 +88,95 @@ int main() {
 `,
         });
         expect(stdout).toBe("3 7 9 10 470");
+      });
+    }
+
+    const SHADOWED = `FUNCTION_BLOCK FB_Unit
+VAR st : INT := 3; END_VAR
+PROPERTY Mode : INT
+GET Mode := st; END_GET
+SET st := Mode + 1000; END_SET
+END_PROPERTY
+END_FUNCTION_BLOCK
+TYPE S_Mode : STRUCT Mode : INT := 42; END_STRUCT END_TYPE
+FUNCTION_BLOCK FB_Other VAR_OUTPUT Mode : INT := 7; END_VAR END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Base
+VAR fbUnit : S_Mode; END_VAR
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_D EXTENDS FB_Base
+VAR_OUTPUT o1, o2 : INT; END_VAR
+METHOD M : INT
+fbUnit.Mode := fbUnit.Mode + 1; M := fbUnit.Mode;
+END_METHOD
+fbUnit.Mode := fbUnit.Mode + 1; o1 := fbUnit.Mode; o2 := M();
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Own
+VAR fbUnit : FB_Other; END_VAR VAR_OUTPUT o : INT; END_VAR
+METHOD Lm : INT VAR fbUnit : S_Mode; END_VAR fbUnit.Mode := fbUnit.Mode + 2; Lm := fbUnit.Mode; END_METHOD
+ACTION Act: o := o + fbUnit.Mode * 100; END_ACTION
+o := fbUnit.Mode + Lm(); Act();
+END_FUNCTION_BLOCK
+FUNCTION FLocal : INT VAR fbUnit : S_Mode; END_VAR fbUnit.Mode := 5; FLocal := fbUnit.Mode; END_FUNCTION
+VAR_GLOBAL fbUnit : FB_Unit; END_VAR
+PROGRAM MAIN
+VAR d : FB_D; w : FB_Own; a, b, c, e, g, h : INT; pm : S_Mode; END_VAR
+d(); a := d.o1; b := d.o2;
+w(); c := w.o;
+e := FLocal();
+fbUnit.Mode := 1; g := fbUnit.Mode;
+pm.Mode := 9; h := pm.Mode;
+END_PROGRAM
+`;
+    const SHADOWED_PROGRAM = `FUNCTION_BLOCK FB_Unit
+VAR st : INT := 3; END_VAR
+PROPERTY Mode : INT
+GET Mode := st; END_GET
+SET st := Mode + 1000; END_SET
+END_PROPERTY
+END_FUNCTION_BLOCK
+TYPE S_Mode : STRUCT Mode : INT := 42; END_STRUCT END_TYPE
+FUNCTION_BLOCK FE VAR_EXTERNAL fbUnit : FB_Unit; END_VAR VAR_OUTPUT o : INT; END_VAR fbUnit.Mode := 4; o := fbUnit.Mode; END_FUNCTION_BLOCK
+VAR_GLOBAL fbUnit : FB_Unit; END_VAR
+PROGRAM MAIN
+VAR fbUnit : S_Mode; fe : FE; a, b : INT; END_VAR
+fbUnit.Mode := fbUnit.Mode + 1; a := fbUnit.Mode;
+fe(); b := fe.o;
+END_PROGRAM
+`;
+    for (const [label, options] of [
+      ["no dialect", {}],
+      ["iec-3", { dialect: "iec-3" }],
+      ["strict", { strict: true }],
+    ] as const) {
+      it(`resolves a name a local, member, inherited member, method local, action, VAR_EXTERNAL or PROGRAM member shadows before the global (${label})`, () => {
+        for (const [source, expected, vars] of [
+          [SHADOWED, "43 44 751 5 1001 9", ["A", "B", "C", "E", "G", "H"]],
+          [SHADOWED_PROGRAM, "43 1004", ["A", "B"]],
+        ] as const) {
+          const result = compile(source, {
+            ...options,
+            headerFileName: "generated.hpp",
+            features: ["+property"],
+          });
+          expect(result.errors).toEqual([]);
+          const stdout = compileAndRunStandalone({
+            tempDir,
+            pchPath,
+            headerCode: result.headerCode,
+            cppCode: result.cppCode,
+            testName: `propshadow_${vars.length}_${label.replace(/\W/g, "_")}`,
+            mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << ${vars.map((v) => `p.${v}.get()`).join(' << " " << ')} << std::endl;
+    return 0;
+}
+`,
+          });
+          expect(stdout).toBe(expected);
+        }
       });
     }
   },

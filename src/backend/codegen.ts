@@ -8732,9 +8732,32 @@ export class CodeGenerator {
 
   /** The type of the variable an access path starts at: a local or member, else a file-level or library global. */
   private rootVariableType(upper: string): string | undefined {
-    return (
-      this.currentScopeVarTypes.get(upper) ?? this.namespaceGlobalType(upper)
-    );
+    const own = this.currentScopeVarTypes.get(upper);
+    if (own !== undefined) return own;
+    // A member a base FB declares shadows a global; a base this unit does not
+    // declare (a library FB) has members unknown here, so no global is assumed.
+    if (this.currentFBExtends !== undefined) {
+      const inherited = this.inheritedMemberTypeName(upper);
+      if (inherited !== undefined) return inherited;
+      if (!this.baseChainDeclared()) return undefined;
+    }
+    return this.namespaceGlobalType(upper);
+  }
+
+  /** Every base of the current FB is declared in this unit. */
+  private baseChainDeclared(): boolean {
+    const seen = new Set<string>();
+    let current = this.currentFBExtends;
+    while (current !== undefined && !seen.has(current.toUpperCase())) {
+      const base = current.toUpperCase();
+      seen.add(base);
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === base,
+      );
+      if (!fb) return false;
+      current = fb.extends;
+    }
+    return true;
   }
 
   /** Declared type name of a file-level or library VAR_GLOBAL not shadowed here. */
