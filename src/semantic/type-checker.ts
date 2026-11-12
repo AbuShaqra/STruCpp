@@ -339,6 +339,15 @@ const CHAR_COMPARE_FUNCTIONS: ReadonlyMap<string, number> = new Map([
   ["MUX", 1],
 ]);
 
+/** Standard functions whose result is one of their CHAR arguments. */
+const CHAR_SELECTION_FUNCTIONS: ReadonlySet<string> = new Set([
+  "MAX",
+  "MIN",
+  "LIMIT",
+  "SEL",
+  "MUX",
+]);
+
 const COMPARISON_OPS: ReadonlySet<string> = new Set([
   "=",
   "<>",
@@ -1052,6 +1061,11 @@ export class TypeChecker {
       });
     for (const fb of ast.functionBlocks) visit(fb, fb.name);
     visit(ast, undefined);
+    for (const t of ast.types) {
+      if (t.defaultValue && t.definition.kind === "TypeReference") {
+        this.checkCharInitialValue(t.name, t.defaultValue);
+      }
+    }
   }
 
   /**
@@ -1089,6 +1103,7 @@ export class TypeChecker {
       value.kind !== "StructInitializerExpression" &&
       type.arrayDimensions === undefined
     ) {
+      this.checkCharInitialValue(type.name, value);
       this.checkEnumInitialValue(type.name, value);
     }
     if (
@@ -1769,7 +1784,12 @@ export class TypeChecker {
     for (const arg of args) {
       this.adaptCharLiteral(arg.value, charType);
       const t = arg.value.resolvedType;
-      if (t !== undefined && this.charTypeOf(t) !== charType) {
+      if (
+        t !== undefined &&
+        this.charTypeOf(t) !== charType &&
+        !this.reportedCharValues.has(arg.value)
+      ) {
+        this.reportedCharValues.add(arg.value);
         this.addError(
           `Argument of '${name}' is ${typeNameUtil(t)} where the others are ${charType}; ${charType} does not convert implicitly`,
           arg.value.sourceSpan.startLine,
@@ -1890,9 +1910,21 @@ export class TypeChecker {
   }
 
   /**
-   * Infer type of a function call expression.
+   * Infer type of a function call expression. SEL, MUX, LIMIT, MAX and MIN
+   * of CHAR (or WCHAR) arguments yield that type, not their generic result.
    */
   private inferFunctionCallType(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): IECType | undefined {
+    const type = this.inferCallType(expr, scope);
+    const charType = this.charSelectionType(expr);
+    if (charType === undefined) return type;
+    expr.resolvedType = ELEMENTARY_TYPES[charType]!;
+    return expr.resolvedType;
+  }
+
+  private inferCallType(
     expr: FunctionCallExpression,
     scope: Scope,
   ): IECType | undefined {
@@ -1902,6 +1934,7 @@ export class TypeChecker {
       this.resolveExprType(arg.value, scope);
     }
     this.checkCharStdArguments(expr);
+    this.adaptCharConversionArgument(expr);
     this.validateReferenceArguments(expr, scope);
     this.checkDottedMethodCall(expr, scope);
     this.checkMethodCallArgumentNames(expr, scope);
@@ -1909,6 +1942,7 @@ export class TypeChecker {
     const inputs =
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope);
+    this.adaptCharArguments(inputs, expr.arguments);
     this.validateInterfaceArguments(inputs, expr.arguments);
     this.markPointerZeroArguments(inputs, expr.arguments);
     this.validateStructArguments(inputs, expr.arguments);
@@ -2111,6 +2145,7 @@ export class TypeChecker {
       const owner = this.memberChainOwner(expr.object, scope);
       const method = this.checkMemberChainCall(expr, expr.object, owner);
       const chainInputs = this.methodInputsOf(owner?.name, expr.methodName);
+      this.adaptCharArguments(chainInputs, expr.arguments);
       this.validateInterfaceArguments(chainInputs, expr.arguments);
       this.validateStructArguments(chainInputs, expr.arguments);
       this.validateEnumArguments(chainInputs, expr.arguments);
@@ -2135,6 +2170,7 @@ export class TypeChecker {
     }
 
     const methodInputs = this.methodInputs(objType, expr, scope);
+    this.adaptCharArguments(methodInputs, expr.arguments);
     this.validateInterfaceArguments(methodInputs, expr.arguments);
     this.validateStructArguments(methodInputs, expr.arguments);
     this.validateEnumArguments(methodInputs, expr.arguments);
@@ -3137,6 +3173,8 @@ export class TypeChecker {
         }
         const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
         if (!targetType) continue; // Non-elementary types — handled elsewhere
+        // A CHAR initial value refused already (checkCharInitialValue).
+        if (this.reportedCharValues.has(decl.initialValue)) continue;
         const valueType = this.resolveExprType(decl.initialValue, scope);
         if (!valueType) continue;
         this.validateAssignment(
@@ -4573,6 +4611,119 @@ export class TypeChecker {
     return true;
   }
 
+  /** `CHAR_TO_INT('A')`: the literal source of a CHAR or WCHAR conversion is that character. */
+  private adaptCharConversionArgument(expr: FunctionCallExpression): void {
+    const name = expr.functionName.toUpperCase();
+    const from = /^(W?CHAR)_TO_/.exec(name)?.[1] as
+      | "CHAR"
+      | "WCHAR"
+      | undefined;
+    if (from === undefined || this.findUserFunction(name)) return;
+    const arg = stripEnEno(expr.arguments)[0];
+    if (arg !== undefined) this.adaptCharLiteral(arg.value, from);
+  }
+
+  /** CHAR or WCHAR when the named type is one of them, through aliases. */
+  private charTypeOfName(name: string): "CHAR" | "WCHAR" | undefined {
+    const base = this.aliasBase(name);
+    return base === "CHAR" || base === "WCHAR" ? base : undefined;
+  }
+
+  /**
+   * The initial value of a CHAR or WCHAR (through aliases, as an array element
+   * or STRUCT field too): a one-character literal is that character, and a
+   * literal of any other type is refused, as its assignment is.
+   */
+  private checkCharInitialValue(typeName: string, value: Expression): void {
+    const charType = this.charTypeOfName(typeName);
+    if (charType === undefined || this.adaptCharLiteral(value, charType)) {
+      return;
+    }
+    if (value.kind !== "LiteralExpression") return;
+    const literalType = this.charLiteralSourceType(value);
+    if (literalType === charType || this.reportedCharValues.has(value)) return;
+    this.reportedCharValues.add(value);
+    this.addError(
+      `Cannot assign ${literalType} to ${typeName.toUpperCase()}`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
+  }
+
+  /** The type a literal names: its prefix when typed, else its literal type. */
+  private charLiteralSourceType(lit: LiteralExpression): string {
+    return lit.typePrefix !== undefined && lit.typePrefix !== ""
+      ? lit.typePrefix.toUpperCase()
+      : lit.literalType;
+  }
+
+  /** A one-character literal passed to a CHAR or WCHAR input is that character. */
+  private adaptCharArguments(
+    inputs: CallInput[] | undefined,
+    args: readonly Argument[],
+  ): void {
+    if (!inputs) return;
+    stripEnEno([...args]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (!input || input.inOut || input.type.arrayDimensions !== undefined) {
+        return;
+      }
+      const refKind = input.type.referenceKind;
+      if (refKind !== undefined && refKind !== "none") return;
+      const charType = this.charTypeOfName(input.type.name);
+      if (charType === undefined) return;
+      this.adaptCharLiteral(arg.value, charType);
+      const valueType = arg.value.resolvedType;
+      if (
+        valueType === undefined ||
+        isGenericGroupType(valueType) ||
+        this.charTypeOf(valueType) === charType
+      ) {
+        return;
+      }
+      this.addError(
+        `Cannot assign ${typeNameUtil(valueType)} to parameter '${input.name}' of type ${input.type.name.toUpperCase()}`,
+        arg.value.sourceSpan.startLine,
+        arg.value.sourceSpan.startCol,
+        arg.value.sourceSpan.file,
+      );
+    });
+  }
+
+  /**
+   * The CHAR or WCHAR a standard SEL, MUX, LIMIT, MAX or MIN call yields when
+   * its compared or selected arguments are all of that type.
+   */
+  private charSelectionType(
+    expr: FunctionCallExpression,
+  ): "CHAR" | "WCHAR" | undefined {
+    const name = expr.functionName.toUpperCase();
+    if (!CHAR_SELECTION_FUNCTIONS.has(name) || !this.isStdCharFunction(name)) {
+      return undefined;
+    }
+    const args = stripEnEno(expr.arguments).slice(
+      CHAR_COMPARE_FUNCTIONS.get(name) ?? 0,
+    );
+    const first = this.charTypeOf(args[0]?.value.resolvedType);
+    if (first === undefined) return undefined;
+    return args.every((a) => this.charTypeOf(a.value.resolvedType) === first)
+      ? first
+      : undefined;
+  }
+
+  /** True when `name` is the standard function, not a user or library one. */
+  private isStdCharFunction(name: string): boolean {
+    if (this.findUserFunction(name)) return false;
+    const fn = this.symbolTables.lookupFunction(name);
+    return fn === undefined || fn.libraryName === STD_FUNCTIONS_LIBRARY;
+  }
+
   /** CHAR or WCHAR when the type is one of them, through aliases. */
   private charTypeOf(type: IECType | undefined): "CHAR" | "WCHAR" | undefined {
     if (type?.typeKind !== "elementary") return undefined;
@@ -4588,9 +4739,28 @@ export class TypeChecker {
     expr: Expression,
     charType: "CHAR" | "WCHAR" | undefined,
   ): boolean {
-    if (charType === undefined || expr.kind !== "LiteralExpression") {
-      return false;
+    if (charType === undefined) return false;
+    if (expr.kind === "ParenthesizedExpression") {
+      if (!this.adaptCharLiteral(expr.expression, charType)) return false;
+      expr.resolvedType = ELEMENTARY_TYPES[charType]!;
+      return true;
     }
+    if (expr.kind === "FunctionCallExpression") {
+      const name = expr.functionName.toUpperCase();
+      if (!CHAR_SELECTION_FUNCTIONS.has(name)) return false;
+      if (!this.isStdCharFunction(name)) return false;
+      const args = stripEnEno(expr.arguments).slice(
+        CHAR_COMPARE_FUNCTIONS.get(name) ?? 0,
+      );
+      for (const a of args) this.adaptCharLiteral(a.value, charType);
+      if (this.charSelectionType(expr) !== charType) {
+        this.checkCharStdArguments(expr);
+        return false;
+      }
+      expr.resolvedType = ELEMENTARY_TYPES[charType]!;
+      return true;
+    }
+    if (expr.kind !== "LiteralExpression") return false;
     const lit = expr;
     const want = charType === "CHAR" ? "STRING" : "WSTRING";
     if (lit.literalType !== want || (lit.typePrefix ?? "") !== "") return false;
@@ -5490,6 +5660,8 @@ export class TypeChecker {
 
   /** The FUNCTION_BLOCK whose body, method or property is being checked (`THIS.member`). */
   private currentFBName: string | undefined;
+  /** CHAR initial values already refused (a declaration is visited more than once). */
+  private reportedCharValues = new Set<Expression>();
   /** The default values declared on types (`TYPE T : ... := value`). */
   private typeDefaults: ReadonlySet<Expression> = new Set();
   /** The property whose GET or SET body is being checked, upper-cased. */

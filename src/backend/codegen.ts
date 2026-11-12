@@ -41,7 +41,7 @@ import type {
   ASTNode,
 } from "../frontend/ast.js";
 import { charLiteralUnits } from "../literal-utils.js";
-import { walkAST } from "../ast-utils.js";
+import { isEnEnoArgument, walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry, SourceSpan } from "../types.js";
 import {
@@ -5135,7 +5135,12 @@ export class CodeGenerator {
           // Range: expand to individual case labels
           const startVal = this.evaluateLiteralInt(label.start);
           const endVal = this.evaluateLiteralInt(label.end);
-          if (startVal !== undefined && endVal !== undefined) {
+          const chars = this.charLabelRange(label.start, label.end);
+          if (chars !== undefined) {
+            for (let i = chars.from; i <= chars.to; i++) {
+              this.emit(`${innerIndent}case static_cast<${chars.type}>(${i}):`);
+            }
+          } else if (startVal !== undefined && endVal !== undefined) {
             for (let i = startVal; i <= endVal; i++) {
               this.emit(`${innerIndent}case ${i}:`);
             }
@@ -5164,6 +5169,38 @@ export class CodeGenerator {
     const closingLine = this.currentLine;
     this.emit(`${indent}}`);
     this.recordLineMapping(stmt.sourceSpan.endLine, closingLine);
+  }
+
+  /** The codes of a CHAR or WCHAR literal range label, `'a'..'c'`. */
+  private charLabelRange(
+    start: Expression,
+    end: Expression,
+  ): { type: string; from: number; to: number } | undefined {
+    const code = (
+      e: Expression,
+    ): { wide: boolean; unit: number } | undefined => {
+      if (
+        e.kind !== "LiteralExpression" ||
+        (e.literalType !== "CHAR" && e.literalType !== "WCHAR")
+      ) {
+        return undefined;
+      }
+      const { wide, units } = charLiteralUnits(e.rawValue);
+      const unit = units[0];
+      return units.length === 1 && unit !== undefined && unit >= 0
+        ? { wide, unit }
+        : undefined;
+    };
+    const from = code(start);
+    const to = code(end);
+    if (from === undefined || to === undefined || from.wide !== to.wide) {
+      return undefined;
+    }
+    return {
+      type: from.wide ? "WCHAR_t" : "CHAR_t",
+      from: from.unit,
+      to: to.unit,
+    };
   }
 
   /**
@@ -6197,6 +6234,73 @@ export class CodeGenerator {
     return undefined;
   }
 
+  /**
+   * A standard MAX/MIN/LIMIT/comparison/SEL/MUX call with CHAR or WCHAR
+   * operands; undefined for any other call. A nested EN/ENO runs the call
+   * only when EN is TRUE and writes ENO, as the statement form does.
+   */
+  private charStdCall(
+    stdFunc: { name: string; cppName: string },
+    expr: FunctionCallExpression,
+    args: readonly string[],
+  ): string | undefined {
+    const name = stdFunc.name.toUpperCase();
+    const ordered = CHAR_ORDERED_FUNCTIONS.has(name);
+    if (
+      !ordered &&
+      name !== "SEL" &&
+      name !== "MUX" &&
+      name !== "EQ" &&
+      name !== "NE"
+    ) {
+      return undefined;
+    }
+    const all = expr.arguments;
+    const operands = all.filter((a) => !isEnEnoArgument(a));
+    const isChar = operands.some((a) => this.isCharExpr(a.value));
+    if (!isChar && !operands.some((a) => this.isWcharExpr(a.value))) {
+      return undefined;
+    }
+    let en: string | null = null;
+    let eno: string | null = null;
+    const coded: string[] = [];
+    for (const [i, a] of all.entries()) {
+      const code = args[i] ?? "";
+      if (!isEnEnoArgument(a)) {
+        coded.push(ordered ? this.charCode(a.value, code) : code);
+      } else if (a.isOutput) {
+        eno = code;
+      } else {
+        en = code;
+      }
+    }
+    let call = `${stdFunc.cppName}(${coded.join(", ")})`;
+    if (isChar && ["MAX", "MIN", "LIMIT"].includes(name)) {
+      call = `static_cast<CHAR_t>(${call})`;
+    }
+    if (en === null && eno === null) return call;
+    const setEno = (v: string): string =>
+      eno === null ? "" : `${eno} = ${v}; `;
+    if (en === null) return `[&]() { ${setEno("true")}return ${call}; }()`;
+    return `[&]() { const bool en_ = ${en}; ${setEno("en_")}return en_ ? ${call} : decltype(${call}){}; }()`;
+  }
+
+  /** True when the expression is a WCHAR, through aliases of it. */
+  private isWcharExpr(e: Expression): boolean {
+    const t = e.resolvedType;
+    if (t?.typeKind !== "elementary") return false;
+    let name = (t as ElementaryType).name.toUpperCase();
+    for (let i = 0; i < 32 && name !== "WCHAR"; i++) {
+      const upper = name;
+      const def = this.ast?.types.find(
+        (d) => d.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference") return false;
+      name = def.name.toUpperCase();
+    }
+    return name === "WCHAR";
+  }
+
   /** True when the expression is a CHAR, through aliases of it. */
   private isCharExpr(e: Expression): boolean {
     const t = e.resolvedType;
@@ -7141,21 +7245,10 @@ export class CodeGenerator {
           }
           return generated;
         });
-        // CHAR arguments are compared by their unsigned Windows-1252 code.
-        if (CHAR_ORDERED_FUNCTIONS.has(stdFunc.name.toUpperCase())) {
-          const userArgs = expr.arguments;
-          if (userArgs.some((a) => this.isCharExpr(a.value))) {
-            const coded = args.map((a, i) =>
-              userArgs[i] !== undefined
-                ? this.charCode(userArgs[i].value, a)
-                : a,
-            );
-            const call = `${stdFunc.cppName}(${coded.join(", ")})`;
-            return ["MAX", "MIN", "LIMIT"].includes(stdFunc.name.toUpperCase())
-              ? `static_cast<CHAR_t>(${call})`
-              : call;
-          }
-        }
+        // CHAR and WCHAR operands: CHAR ordered by its unsigned Windows-1252
+        // code, and EN/ENO of a nested call not taken as operands.
+        const charCall = this.charStdCall(stdFunc, expr, args);
+        if (charCall !== undefined) return charCall;
         this.harmonizeStdFuncArgs(args, expr.arguments, stdFunc);
         // TRUNC's C++ result type follows the C++ argument type, but codegen
         // emits REAL literals/expressions containing one as double.  Pass the

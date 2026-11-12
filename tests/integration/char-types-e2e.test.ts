@@ -154,4 +154,89 @@ int main() {
       expect(stdout).toBe("228 97 122 1 0 1 1 97 120 228 63 2 65 88 89");
     });
   }
+
+  const CONTEXTS = `TYPE MyC : CHAR; END_TYPE
+TYPE MyD : CHAR := 'Q'; END_TYPE
+TYPE St : STRUCT k : CHAR := 'q'; END_STRUCT END_TYPE
+FUNCTION_BLOCK FBx VAR_INPUT c : CHAR; END_VAR VAR_OUTPUT o : INT; END_VAR o := CHAR_TO_INT(c); END_FUNCTION_BLOCK
+FUNCTION FIn : INT VAR_INPUT c : CHAR; END_VAR FIn := CHAR_TO_INT(c); END_FUNCTION
+FUNCTION FSel : CHAR VAR_INPUT g : BOOL; END_VAR FSel := SEL(g, 'a', 'b'); END_FUNCTION
+FUNCTION FC : INT VAR_INPUT c : MyC; END_VAR CASE c OF 'a'..'c': FC := 1; CHAR#16#80..CHAR#16#82: FC := 2; ELSE FC := 0; END_CASE; END_FUNCTION
+FUNCTION FW : INT VAR_INPUT c : WCHAR; END_VAR CASE c OF "a".."c", "x": FW := 1; ELSE FW := 0; END_CASE; END_FUNCTION
+FUNCTION F4 : INT VAR_INPUT a, b : CHAR; END_VAR VAR e : BOOL; END_VAR F4 := CHAR_TO_INT(MAX(EN := TRUE, IN1 := a, IN2 := b, ENO => e)); END_FUNCTION
+FUNCTION F7 : INT VAR_INPUT a, b : WCHAR; END_VAR VAR e : BOOL; END_VAR F7 := WCHAR_TO_INT(MIN(EN := TRUE, IN1 := a, IN2 := b, ENO => e)); END_FUNCTION
+PROGRAM MAIN
+VAR
+  m : MyC := 'B'; dd : MyD; s : St; arr : ARRAY[0..2] OF CHAR := [2('k'), 'm']; ws : ARRAY[0..1] OF WCHAR := ["p", "q"];
+  fb : FBx; c : CHAR := 'c'; d : CHAR := 'z'; w : WCHAR; g : BOOL := TRUE; i : INT := 1;
+  x1, x2, x3, x4, x5, x6, e1, e2 : BOOL; e3 : BOOL := TRUE;
+  n1, n2, n3, n4, n5, n6, n7, n8, n9, n10, n11, n12, n13, n14, n15 : DINT;
+END_VAR
+fb(c := 'C');
+n1 := fb.o;
+n2 := CHAR_TO_INT(FSel(TRUE)) * 1000 + FIn('D');
+n3 := FIn(c := 'E') * 1000 + CHAR_TO_INT(m);
+n4 := CHAR_TO_INT(dd) * 1000 + CHAR_TO_INT(s.k);
+n5 := CHAR_TO_INT(arr[1]) * 100 + CHAR_TO_INT(arr[2]) - 10000;
+n6 := WCHAR_TO_INT(ws[1]);
+n7 := FC('b') * 100 + FC(CHAR#16#81) * 10 + FC('d');
+n8 := FW("b") * 10 + FW("x");
+n9 := F4('a', 'b') * 1000 + F7("a", "b");
+x1 := c = SEL(g, c, d);
+x2 := c < SEL(g, d, c);
+x3 := c = MUX(i, c, d);
+x4 := c = LIMIT(c, d, c);
+x5 := EQ(c, SEL(g, c, d));
+x6 := SEL(g, c, d) = 'z';
+w := STRING_TO_WCHAR('ab');
+n10 := WCHAR_TO_INT(w);
+c := WSTRING_TO_CHAR("ab");
+n11 := CHAR_TO_INT(c);
+c := STRING_TO_CHAR('kb');
+n12 := CHAR_TO_INT(c) * 1000 + CHAR_TO_INT('A');
+n13 := CHAR_TO_INT(MAX(EN := FALSE, IN1 := c, IN2 := d, ENO => e1));
+x6 := x6 AND GT(EN := TRUE, IN1 := d, IN2 := c, ENO => e2);
+n14 := WCHAR_TO_INT(SEL(EN := TRUE, G := g, IN0 := w, IN1 := "y", ENO => e3));
+c := MAX(EN := TRUE, IN1 := 'a', IN2 := d, ENO => e3);
+n15 := CHAR_TO_INT(c);
+END_PROGRAM
+`;
+
+  for (const [label, options] of [
+    ["no dialect", {}],
+    ["iec-3", { dialect: "iec-3" }],
+    ["strict", { strict: true }],
+  ] as const) {
+    it(`takes a one-character literal wherever a CHAR is expected, CHAR ranges and nested EN/ENO (${label})`, () => {
+      const result = compile(CONTEXTS, {
+        ...options,
+        headerFileName: "generated.hpp",
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `char_contexts_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.N1.get() << " " << p.N2.get() << " " << p.N3.get() << " " << p.N4.get() << " "
+              << p.N5.get() << " " << p.N6.get() << " " << p.N7.get() << " " << p.N8.get() << " "
+              << p.N9.get() << " " << p.X1.get() << p.X2.get() << p.X3.get() << p.X4.get()
+              << p.X5.get() << p.X6.get() << " " << p.N10.get() << " " << p.N11.get() << " "
+              << p.N12.get() << " " << p.N13.get() << " " << p.E1.get() << p.E2.get() << " "
+              << p.N14.get() << " " << p.N15.get() << " " << p.E3.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe(
+        "67 98068 69066 81113 809 113 120 11 98097 000101 97 97 107065 0 01 121 122 1",
+      );
+    });
+  }
 });
