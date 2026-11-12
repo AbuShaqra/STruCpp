@@ -106,7 +106,7 @@ describe("Standard FB Library", () => {
       expect(counterFBs).toHaveLength(15);
     });
 
-    it("should compile timer FBs (TP, TON, TOF and the LTIME LTP, LTON, LTOF)", () => {
+    it("should compile timer FBs (TP, TON, TOF, their LTIME and Table 46 typed names)", () => {
       const result = compileLibrary(
         [{ source: timerST, fileName: "timer.st" }],
         {
@@ -118,9 +118,22 @@ describe("Standard FB Library", () => {
 
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
-      expect(result.manifest.functionBlocks).toHaveLength(6);
+      expect(result.manifest.functionBlocks).toHaveLength(12);
       const fbNames = result.manifest.functionBlocks.map((fb) => fb.name);
-      for (const name of ["TON", "TOF", "TP", "LTON", "LTOF", "LTP"]) {
+      for (const name of [
+        "TON",
+        "TOF",
+        "TP",
+        "LTON",
+        "LTOF",
+        "LTP",
+        "TON_TIME",
+        "TOF_TIME",
+        "TP_TIME",
+        "TON_LTIME",
+        "TOF_LTIME",
+        "TP_LTIME",
+      ]) {
         expect(fbNames).toContain(name);
       }
     });
@@ -144,8 +157,8 @@ describe("Standard FB Library", () => {
 
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
-      // 2 edge + 2 bistable + 1 sema + 15 counters + 6 timers = 26
-      expect(result.manifest.functionBlocks).toHaveLength(26);
+      // 2 edge + 2 bistable + 1 sema + 15 counters + 12 timers = 32
+      expect(result.manifest.functionBlocks).toHaveLength(32);
       expect(result.manifest.name).toBe("iec-standard-fb");
 
       // Verify all expected FBs are present
@@ -384,11 +397,12 @@ describe("Standard FB Library", () => {
       expect(stlibArchive.manifest.isBuiltin).toBe(true);
     });
 
-    it("should contain all 26 standard FBs", () => {
-      // 26 = 2 bistables (SR/RS) + 1 SEMA + 2 edge detectors (R_TRIG/F_TRIG)
+    it("should contain all 32 standard FBs", () => {
+      // 32 = 2 bistables (SR/RS) + 1 SEMA + 2 edge detectors (R_TRIG/F_TRIG)
       // + 15 counter variants (CTU/CTD/CTUD × 5 width variants) + 3 timers
-      // (TP/TON/TOF) + their LTIME variants (LTP/LTON/LTOF).
-      expect(stlibArchive.manifest.functionBlocks).toHaveLength(26);
+      // (TP/TON/TOF), their LTIME variants (LTP/LTON/LTOF) and the Table 46
+      // typed names (TP_TIME/TON_TIME/TOF_TIME, TP_LTIME/TON_LTIME/TOF_LTIME).
+      expect(stlibArchive.manifest.functionBlocks).toHaveLength(32);
     });
 
     it("populates per-block documentation from library.json", () => {
@@ -421,18 +435,33 @@ describe("Standard FB Library", () => {
       );
     });
 
-    it("should have one chunk per declared FB", () => {
+    it("should have one chunk per declared FB and Table 36 function", () => {
       expect(stlibArchive.chunks.length).toBeGreaterThan(0);
-      // Every chunk in the stdlib is a function block (no types,
-      // no inline globals, no free functions in iec-standard-fb).
+      // Every chunk is a function block or one of the Table 36 date and time
+      // functions (no types, no inline globals).
       for (const chunk of stlibArchive.chunks) {
-        expect(chunk.kind).toBe("functionBlock");
+        expect(["functionBlock", "function"]).toContain(chunk.kind);
         expect(chunk.header.length).toBeGreaterThan(0);
       }
     });
 
-    it("should have no functions (only FBs)", () => {
-      expect(stlibArchive.manifest.functions).toHaveLength(0);
+    it("should have the Table 36 functions and no other", () => {
+      expect(stlibArchive.manifest.functions.map((f) => f.name).sort()).toEqual(
+        [
+          "CONCAT_DATE",
+          "CONCAT_DATE_LTOD",
+          "CONCAT_DT",
+          "CONCAT_LDT",
+          "CONCAT_LTOD",
+          "CONCAT_TOD",
+          "DAY_OF_WEEK",
+          "SPLIT_DATE",
+          "SPLIT_DT",
+          "SPLIT_LDT",
+          "SPLIT_LTOD",
+          "SPLIT_TOD",
+        ].sort(),
+      );
     });
 
     it("should have correct edge detection FB entries", () => {

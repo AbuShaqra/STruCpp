@@ -374,6 +374,30 @@ export const IEC_BASE_TYPES: readonly IECTypeMetadata[] = [
     literalDisplay: "LDT#YYYY-MM-DD-HH:MM:SS",
   },
 
+  // ── Characters ───────────────────────────────────────────────────
+  {
+    name: "CHAR",
+    aliases: [],
+    byteSize: 1,
+    bits: 8,
+    signed: false,
+    cppType: "CHAR_t",
+    wireFormat: "uint8",
+    xml: { elementName: "CHAR", plcopenStandard: false },
+    literalDisplay: "CHAR#'A'",
+  },
+  {
+    name: "WCHAR",
+    aliases: [],
+    byteSize: 2,
+    bits: 16,
+    signed: false,
+    cppType: "WCHAR_t",
+    wireFormat: "uint16",
+    xml: { elementName: "WCHAR", plcopenStandard: false },
+    literalDisplay: 'WCHAR#"A"',
+  },
+
   // ── Character strings ────────────────────────────────────────────
   // byteSize 0 ⇒ variable-width on the wire (the per-declaration cap
   // or the library's STRING_LENGTH constant decides the actual width).

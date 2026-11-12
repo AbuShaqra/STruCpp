@@ -416,6 +416,8 @@ export interface StructDefinition extends ASTNode {
    * storage. Every other pass treats it as a STRUCT with the same fields.
    */
   isUnion?: true;
+  /** Set on Ed. 3 `STRUCT OVERLAP`, a UNION in every dialect. */
+  overlap?: true;
 }
 
 /**
@@ -911,6 +913,8 @@ export interface VariableExpression extends TypedNode {
   namedBitIndex?: true;
   /** Set by the analyzer when a bare member of several enumerations is settled by the enum type it initialises or is assigned to: that enum's name. */
   enumType?: string;
+  /** Set by the type checker on `s[i]`, a character of a STRING or WSTRING. */
+  stringElement?: true;
 }
 
 /**
@@ -943,6 +947,8 @@ export type LiteralType =
   | "LDATE"
   | "LTIME_OF_DAY"
   | "LDATE_AND_TIME"
+  | "CHAR"
+  | "WCHAR"
   | "NULL";
 
 /**

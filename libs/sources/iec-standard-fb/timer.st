@@ -240,3 +240,244 @@ FUNCTION_BLOCK LTP
 
   PREV_IN := IN;
 END_FUNCTION_BLOCK
+
+(* The typed names of Table 46: TP_TIME, TON_TIME, TOF_TIME on TIME and
+   TP_LTIME, TON_LTIME, TOF_LTIME on LTIME *)
+
+FUNCTION_BLOCK TP_TIME
+  VAR_INPUT
+    IN : BOOL;
+    PT : TIME;
+  END_VAR
+  VAR_OUTPUT
+    Q : BOOL;
+    ET : TIME;
+  END_VAR
+  VAR
+    STATE : SINT;
+    PREV_IN : BOOL;
+    CURRENT_TIME, START_TIME : TIME;
+  END_VAR
+
+  CURRENT_TIME := TIME();
+
+  IF ((STATE = 0) AND NOT(PREV_IN) AND IN) THEN
+    STATE := 1;
+    Q := TRUE;
+    START_TIME := CURRENT_TIME;
+  ELSIF (STATE = 1) THEN
+    IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+      STATE := 2;
+      Q := FALSE;
+      ET := PT;
+    ELSE
+      ET := CURRENT_TIME - START_TIME;
+    END_IF;
+  END_IF;
+
+  IF (NOT(IN) AND (STATE = 2)) THEN
+    STATE := 0;
+    ET := T#0s;
+  END_IF;
+
+  PREV_IN := IN;
+END_FUNCTION_BLOCK
+
+FUNCTION_BLOCK TP_LTIME
+  VAR_INPUT
+    IN : BOOL;
+    PT : LTIME;
+  END_VAR
+  VAR_OUTPUT
+    Q : BOOL;
+    ET : LTIME;
+  END_VAR
+  VAR
+    STATE : SINT;
+    PREV_IN : BOOL;
+    CURRENT_TIME, START_TIME : LTIME;
+  END_VAR
+
+  CURRENT_TIME := TIME();
+
+  IF ((STATE = 0) AND NOT(PREV_IN) AND IN) THEN
+    STATE := 1;
+    Q := TRUE;
+    START_TIME := CURRENT_TIME;
+  ELSIF (STATE = 1) THEN
+    IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+      STATE := 2;
+      Q := FALSE;
+      ET := PT;
+    ELSE
+      ET := CURRENT_TIME - START_TIME;
+    END_IF;
+  END_IF;
+
+  IF (NOT(IN) AND (STATE = 2)) THEN
+    STATE := 0;
+    ET := LTIME#0s;
+  END_IF;
+
+  PREV_IN := IN;
+END_FUNCTION_BLOCK
+
+FUNCTION_BLOCK TON_TIME
+  VAR_INPUT
+    IN : BOOL;
+    PT : TIME;
+  END_VAR
+  VAR_OUTPUT
+    Q : BOOL;
+    ET : TIME;
+  END_VAR
+  VAR
+    STATE : SINT;
+    PREV_IN : BOOL;
+    CURRENT_TIME, START_TIME : TIME;
+  END_VAR
+
+  CURRENT_TIME := TIME();
+
+  IF ((STATE = 0) AND NOT(PREV_IN) AND IN) THEN
+    STATE := 1;
+    Q := FALSE;
+    START_TIME := CURRENT_TIME;
+  ELSE
+    IF (NOT(IN)) THEN
+      ET := T#0s;
+      Q := FALSE;
+      STATE := 0;
+    ELSIF (STATE = 1) THEN
+      IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+        STATE := 2;
+        Q := TRUE;
+        ET := PT;
+      ELSE
+        ET := CURRENT_TIME - START_TIME;
+      END_IF;
+    END_IF;
+  END_IF;
+
+  PREV_IN := IN;
+END_FUNCTION_BLOCK
+
+FUNCTION_BLOCK TON_LTIME
+  VAR_INPUT
+    IN : BOOL;
+    PT : LTIME;
+  END_VAR
+  VAR_OUTPUT
+    Q : BOOL;
+    ET : LTIME;
+  END_VAR
+  VAR
+    STATE : SINT;
+    PREV_IN : BOOL;
+    CURRENT_TIME, START_TIME : LTIME;
+  END_VAR
+
+  CURRENT_TIME := TIME();
+
+  IF ((STATE = 0) AND NOT(PREV_IN) AND IN) THEN
+    STATE := 1;
+    Q := FALSE;
+    START_TIME := CURRENT_TIME;
+  ELSE
+    IF (NOT(IN)) THEN
+      ET := LTIME#0s;
+      Q := FALSE;
+      STATE := 0;
+    ELSIF (STATE = 1) THEN
+      IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+        STATE := 2;
+        Q := TRUE;
+        ET := PT;
+      ELSE
+        ET := CURRENT_TIME - START_TIME;
+      END_IF;
+    END_IF;
+  END_IF;
+
+  PREV_IN := IN;
+END_FUNCTION_BLOCK
+
+FUNCTION_BLOCK TOF_TIME
+  VAR_INPUT
+    IN : BOOL;
+    PT : TIME;
+  END_VAR
+  VAR_OUTPUT
+    Q : BOOL;
+    ET : TIME;
+  END_VAR
+  VAR
+    STATE : SINT;
+    PREV_IN : BOOL;
+    CURRENT_TIME, START_TIME : TIME;
+  END_VAR
+
+  CURRENT_TIME := TIME();
+
+  IF ((STATE = 0) AND PREV_IN AND NOT(IN)) THEN
+    STATE := 1;
+    START_TIME := CURRENT_TIME;
+  ELSE
+    IF (IN) THEN
+      ET := T#0s;
+      Q := TRUE;
+      STATE := 0;
+    ELSIF (STATE = 1) THEN
+      IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+        STATE := 2;
+        Q := FALSE;
+        ET := PT;
+      ELSE
+        Q := TRUE;
+        ET := CURRENT_TIME - START_TIME;
+      END_IF;
+    END_IF;
+  END_IF;
+
+  PREV_IN := IN;
+END_FUNCTION_BLOCK
+
+FUNCTION_BLOCK TOF_LTIME
+  VAR_INPUT
+    IN : BOOL;
+    PT : LTIME;
+  END_VAR
+  VAR_OUTPUT
+    Q : BOOL;
+    ET : LTIME;
+  END_VAR
+  VAR
+    STATE : SINT;
+    PREV_IN : BOOL;
+    CURRENT_TIME, START_TIME : LTIME;
+  END_VAR
+
+  CURRENT_TIME := TIME();
+
+  IF ((STATE = 0) AND PREV_IN AND NOT(IN)) THEN
+    STATE := 1;
+    START_TIME := CURRENT_TIME;
+  ELSE
+    IF (IN) THEN
+      ET := LTIME#0s;
+      Q := TRUE;
+      STATE := 0;
+    ELSIF (STATE = 1) THEN
+      IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+        STATE := 2;
+        Q := FALSE;
+        ET := PT;
+      ELSE
+        Q := TRUE;
+        ET := CURRENT_TIME - START_TIME;
+      END_IF;
+    END_IF;
+  END_IF;
+
+  PREV_IN := IN;
+END_FUNCTION_BLOCK

@@ -109,6 +109,7 @@ import {
   walkAST,
 } from "../ast-utils.js";
 import {
+  charLiteralUnits,
   exactIntegerLiteralValue,
   IEC_INTEGER_MAX,
   IEC_INTEGER_MIN,
@@ -806,6 +807,8 @@ export class SemanticAnalyzer {
     };
     for (const typeDecl of ast.types) {
       if (!isUnionDefinition(typeDecl.definition)) continue;
+      // Ed. 3 STRUCT OVERLAP is a UNION in every dialect.
+      if (typeDecl.definition.overlap === true) continue;
       this.requireFeature(
         "union",
         `UNION type '${typeDecl.name}'`,
@@ -1907,6 +1910,7 @@ export class SemanticAnalyzer {
     this.validateIntegerLiteralRange(ast);
     this.validateStringLiteralCharset(ast);
     this.validateLtimeLiteralRange(ast);
+    this.validateRealLiteralRange(ast);
 
     // TODO: Implement additional semantic validation
     // - Check CASE statement coverage
@@ -2349,6 +2353,10 @@ export class SemanticAnalyzer {
     const visit = (node: ASTNode): void => {
       if (node.kind !== "LiteralExpression") return;
       const literal = node as LiteralExpression;
+      if (literal.literalType === "CHAR" || literal.literalType === "WCHAR") {
+        this.validateCharLiteral(literal);
+        return;
+      }
       if (literal.literalType !== "STRING") return;
       const raw = literal.rawValue;
       for (let i = raw.indexOf("'") + 1; i < raw.length; i++) {
@@ -2375,6 +2383,55 @@ export class SemanticAnalyzer {
     for (const root of Array.isArray(roots) ? roots : [roots]) {
       walkAST(root as ASTNode, (n) => visit(n));
     }
+  }
+
+  /**
+   * A CHAR or WCHAR literal holds exactly one character, and a CHAR one that
+   * Windows-1252 has.
+   */
+  private validateCharLiteral(literal: LiteralExpression): void {
+    const { wide, units } = charLiteralUnits(literal.rawValue);
+    const type = wide ? "WCHAR" : "CHAR";
+    const span = literal.sourceSpan;
+    const fail = (message: string): void =>
+      this.addError(message, span.startLine, span.startCol, span.file);
+    if (units.length !== 1) {
+      fail(
+        `A ${type} literal holds exactly one character; ${literal.rawValue} holds ${units.length}`,
+      );
+      return;
+    }
+    if (units[0] === -1 && !/#['"]/.test(literal.rawValue)) {
+      fail(`${literal.rawValue} is past the ${type} range`);
+      return;
+    }
+    if (units[0] === -1) {
+      fail(
+        `${literal.rawValue} holds a character Windows-1252 lacks, which a CHAR cannot store; use a WCHAR literal (WCHAR#"...") for it`,
+      );
+    }
+  }
+
+  /**
+   * Reject an untyped real literal no LREAL can hold (`1E400`): its value would
+   * be infinite, which the C++ compiler refuses.
+   */
+  private validateRealLiteralRange(ast: CompilationUnit): void {
+    walkAST(ast, (node) => {
+      if (node.kind !== "LiteralExpression") return;
+      const literal = node as LiteralExpression;
+      if (literal.literalType !== "REAL" || (literal.typePrefix ?? "") !== "") {
+        return;
+      }
+      if (Number.isFinite(Number(literal.value))) return;
+      const span = literal.sourceSpan;
+      this.addError(
+        `Real literal '${literal.rawValue}' is outside the LREAL range`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    });
   }
 
   /**
@@ -5994,6 +6051,7 @@ export class SemanticAnalyzer {
   analyzeTestFile(
     testFile: TestFile,
     sourceSymbolTables: SymbolTables,
+    sourceAst?: CompilationUnit,
   ): { errors: CompileError[]; warnings: CompileError[] } {
     this.errors = [];
     this.warnings = [];
@@ -6062,10 +6120,34 @@ export class SemanticAnalyzer {
         testScope,
         testFile.setup?.body ?? [],
       );
+      this.checkTestOutputBindings(tc.body, testScope, sourceAst);
+    }
+    if (testFile.setup) {
+      this.checkTestOutputBindings(
+        [...testFile.setup.body, ...(testFile.teardown?.body ?? [])],
+        setupScope,
+        sourceAst,
+      );
     }
 
     this.testTypeNames.clear();
     return { errors: [...this.errors], warnings: [...this.warnings] };
+  }
+
+  /** Output bindings in test bodies: checked as assignments, copied out where needed. */
+  private checkTestOutputBindings(
+    stmts: readonly TestStatement[],
+    scope: Scope,
+    sourceAst: CompilationUnit | undefined,
+  ): void {
+    const checker = new TypeChecker(this.symbolTables, this.stdRegistry);
+    const found = checker.checkTestOutputBindings(
+      stmts as readonly ASTNode[],
+      scope,
+      sourceAst,
+    );
+    this.errors.push(...found.errors);
+    this.warnings.push(...found.warnings);
   }
 
   /**
@@ -6399,9 +6481,10 @@ export function analyze(
 export function analyzeTestFile(
   testFile: TestFile,
   sourceSymbolTables: SymbolTables,
+  sourceAst?: CompilationUnit,
 ): { errors: CompileError[]; warnings: CompileError[] } {
   const analyzer = new SemanticAnalyzer();
-  return analyzer.analyzeTestFile(testFile, sourceSymbolTables);
+  return analyzer.analyzeTestFile(testFile, sourceSymbolTables, sourceAst);
 }
 
 /** The parameters of a method the C++ signature carries, in order. */

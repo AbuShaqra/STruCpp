@@ -124,6 +124,23 @@ function buildSymbolOwnership(
 ): Map<string, string> {
   const ownership = new Map<string, string>();
 
+  // Dependencies: every exported symbol from each declared dep, before the
+  // own declarations, so one of the library's own (OSCAT's DAY_OF_WEEK) wins
+  for (const dep of dependencies) {
+    const depName = dep.manifest.name;
+    populateManifestSymbols(dep.manifest, depName, ownership);
+    // Inline globals declared by a dependency live in its chunks.
+    // Phase 4+ will read these from `chunks`; for now we don't see
+    // them in the manifest, so cross-library global references stay
+    // unresolved (they show up as no dep edge — harmless: the
+    // consumer's symbol→chunk index covers the gap from chunk names).
+    if (dep.chunks) {
+      for (const chunk of dep.chunks) {
+        ownership.set(chunk.name.toUpperCase(), depName);
+      }
+    }
+  }
+
   // Own AST: every top-level decl is owned by this library
   for (const t of ast.types)
     ownership.set(t.name.toUpperCase(), ownLibraryName);
@@ -144,22 +161,6 @@ function buildSymbolOwnership(
   // Programs (rare in libraries but defensive — they're emitted as `Program_<NAME>`)
   for (const p of ast.programs) {
     ownership.set(`PROGRAM_${p.name.toUpperCase()}`, ownLibraryName);
-  }
-
-  // Dependencies: every exported symbol from each declared dep
-  for (const dep of dependencies) {
-    const depName = dep.manifest.name;
-    populateManifestSymbols(dep.manifest, depName, ownership);
-    // Inline globals declared by a dependency live in its chunks.
-    // Phase 4+ will read these from `chunks`; for now we don't see
-    // them in the manifest, so cross-library global references stay
-    // unresolved (they show up as no dep edge — harmless: the
-    // consumer's symbol→chunk index covers the gap from chunk names).
-    if (dep.chunks) {
-      for (const chunk of dep.chunks) {
-        ownership.set(chunk.name.toUpperCase(), depName);
-      }
-    }
   }
 
   return ownership;

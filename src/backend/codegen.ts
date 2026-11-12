@@ -41,6 +41,7 @@ import type {
   Visibility,
   ASTNode,
 } from "../frontend/ast.js";
+import { charLiteralUnits } from "../literal-utils.js";
 import { isEnEnoArgument, walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry, SourceSpan } from "../types.js";
@@ -144,6 +145,8 @@ const VLA_TYPE_NAME = /^__VLA_(\d+)D_(.+)$/;
 interface InOutCopyArg {
   value: VariableExpression;
   cppType?: string;
+  /** Reads and writes the variable through one reference (its index runs once). */
+  once?: true;
 }
 
 /** The parts of a type reference that decide its C++ type. */
@@ -403,6 +406,17 @@ const TEMPORAL_CONVERSION_UNITS = new Map<string, TemporalUnitInfo>([
   ["LDT", { toUnit: undefined, fromUnit: undefined }],
   ["LDATE_AND_TIME", { toUnit: undefined, fromUnit: undefined }],
   ["LDATE", { toUnit: "DATE_TO_NS", fromUnit: "DATE_FROM_NS" }],
+]);
+
+/** Standard functions that order their arguments. */
+const CHAR_ORDERED_FUNCTIONS = new Set([
+  "MAX",
+  "MIN",
+  "LIMIT",
+  "GT",
+  "GE",
+  "LT",
+  "LE",
 ]);
 
 /** The stored kind of each temporal type: days for a date, nanoseconds otherwise. */
@@ -3201,7 +3215,11 @@ export class CodeGenerator {
   ): string[] {
     const names: string[] = [];
     for (const block of func.varBlocks) {
-      if (block.blockType === "VAR_INPUT" || block.blockType === "VAR_IN_OUT") {
+      if (
+        block.blockType === "VAR_INPUT" ||
+        block.blockType === "VAR_IN_OUT" ||
+        block.blockType === "VAR_OUTPUT"
+      ) {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
             names.push(name);
@@ -4507,25 +4525,66 @@ export class CodeGenerator {
    * member's field type, so it binds the callee's `T&`).
    */
   private inOutCopy(
-    { value: arg, cppType }: InOutCopyArg,
+    { value: arg, cppType, once }: InOutCopyArg,
     tmp: string,
   ): { declaration: string; copyOut: string } {
     const read = this.generateVariableExpression(arg);
     const copyIn = arg.unionMember === true ? `union_value(${read})` : read;
     const upper = arg.name.toUpperCase();
-    const copyOut = this.compositeExternals.has(upper)
-      ? this.compositeGlobalStore(arg, tmp)
-      : this.programExternals.has(upper) &&
-          arg.fieldAccess.length === 0 &&
-          !arg.isDereference
-        ? `${arg.name}->write(${tmp});`
-        : `${read} = ${tmp};`;
+    const bitStore = this.bitStore(arg, tmp);
+    // A dereference, a REFERENCE TO or a bit is no lvalue a reference can hold.
+    const plainLvalue =
+      bitStore === undefined &&
+      !arg.isDereference &&
+      arg.accessChain?.some((s) => s.kind === "dereference") !== true &&
+      this.currentScopeVarRefKinds.get(upper) !== "reference_to";
+    const copyOut =
+      bitStore !== undefined
+        ? bitStore
+        : this.compositeExternals.has(upper)
+          ? this.compositeGlobalStore(arg, tmp)
+          : this.programExternals.has(upper) &&
+              arg.fieldAccess.length === 0 &&
+              !arg.isDereference
+            ? `${arg.name}->write(${tmp});`
+            : `${read} = ${tmp};`;
     // A temporary of the parameter's type when the argument's type differs.
     const declaration =
       cppType !== undefined
         ? `${cppType} ${tmp}; ${tmp} = ${copyIn};`
         : `auto ${tmp} = ${copyIn};`;
+    if (
+      once === true &&
+      plainLvalue &&
+      cppType !== undefined &&
+      copyOut === `${read} = ${tmp};`
+    ) {
+      return {
+        declaration: `auto& ${tmp}_ref = ${read}; ${cppType} ${tmp}; ${tmp} = ${tmp}_ref;`,
+        copyOut: `${tmp}_ref = ${tmp};`,
+      };
+    }
     return { declaration, copyOut };
+  }
+
+  /** `v.N := value` for a bit access `v.N` (see generateAssignmentStatement); undefined otherwise. */
+  private bitStore(
+    target: VariableExpression,
+    value: string,
+  ): string | undefined {
+    const bitIdx = this.lastFieldBitIndex(target);
+    if (bitIdx === undefined) return undefined;
+    const baseVar: VariableExpression = {
+      ...target,
+      fieldAccess: target.fieldAccess.slice(0, -1),
+    };
+    if (target.accessChain) {
+      const trimmed = this.trimLastFieldFromAccessChain(target.accessChain);
+      if (trimmed) baseVar.accessChain = trimmed;
+      else delete baseVar.accessChain;
+    }
+    const baseCode = this.generateLvalue(baseVar);
+    return `${baseCode} = (${baseCode} & ~(1ULL << ${bitIdx})) | ((${value} ? 1ULL : 0ULL) << ${bitIdx});`;
   }
 
   /** Write the queued copy-outs of the current statement. */
@@ -4626,7 +4685,12 @@ export class CodeGenerator {
         this.currentScopeVarRefKinds.get(e.name.toUpperCase()) ===
           "reference_to");
     const varBlocks =
-      this.calleeVarBlocks(call) ?? this.librarySizedStringBlocks(call);
+      this.calleeVarBlocks(call) ??
+      this.librarySizedStringBlocks(call) ??
+      (call.arguments.some((a) => a.inOutCopy === true) &&
+      call.kind === "FunctionCallExpression"
+        ? this.libraryFunctionDeclaration(call.functionName)?.varBlocks
+        : undefined);
     const hasSizedStringParam =
       varBlocks?.some(
         (b) =>
@@ -4732,12 +4796,21 @@ export class CodeGenerator {
         param.blockType === "VAR_OUTPUT" &&
         !isCompositeGlobal(value) &&
         !isUnionMember(value) &&
-        ((this.sizedStringLength(param.type) !== undefined &&
-          !this.hasStringLength(value, this.sizedStringLength(param.type)!)) ||
+        (arg.inOutCopy === true ||
+          (this.sizedStringLength(param.type) !== undefined &&
+            !this.hasStringLength(
+              value,
+              this.sizedStringLength(param.type)!,
+            )) ||
           this.stringElementLengthDiffers(param.type, value))
       ) {
-        // A STRING(n) output binds only a variable of that length.
-        result.push({ value, cppType: this.inOutParamType(param.type) });
+        // A STRING(n) output binds only a variable of that length, an integer
+        // output only one of its own C++ type: others go through a temporary.
+        result.push({
+          value,
+          cppType: this.inOutParamType(param.type),
+          once: true as const,
+        });
       } else if (
         (arg.isOutput || param.blockType === "VAR_OUTPUT") &&
         (isCompositeGlobal(value) || isUnionMember(value))
@@ -5132,7 +5205,12 @@ export class CodeGenerator {
           // Range: expand to individual case labels
           const startVal = this.evaluateLiteralInt(label.start);
           const endVal = this.evaluateLiteralInt(label.end);
-          if (startVal !== undefined && endVal !== undefined) {
+          const chars = this.charLabelRange(label.start, label.end);
+          if (chars !== undefined) {
+            for (let i = chars.from; i <= chars.to; i++) {
+              this.emit(`${innerIndent}case static_cast<${chars.type}>(${i}):`);
+            }
+          } else if (startVal !== undefined && endVal !== undefined) {
             for (let i = startVal; i <= endVal; i++) {
               this.emit(`${innerIndent}case ${i}:`);
             }
@@ -5161,6 +5239,38 @@ export class CodeGenerator {
     const closingLine = this.currentLine;
     this.emit(`${indent}}`);
     this.recordLineMapping(stmt.sourceSpan.endLine, closingLine);
+  }
+
+  /** The codes of a CHAR or WCHAR literal range label, `'a'..'c'`. */
+  private charLabelRange(
+    start: Expression,
+    end: Expression,
+  ): { type: string; from: number; to: number } | undefined {
+    const code = (
+      e: Expression,
+    ): { wide: boolean; unit: number } | undefined => {
+      if (
+        e.kind !== "LiteralExpression" ||
+        (e.literalType !== "CHAR" && e.literalType !== "WCHAR")
+      ) {
+        return undefined;
+      }
+      const { wide, units } = charLiteralUnits(e.rawValue);
+      const unit = units[0];
+      return units.length === 1 && unit !== undefined && unit >= 0
+        ? { wide, unit }
+        : undefined;
+    };
+    const from = code(start);
+    const to = code(end);
+    if (from === undefined || to === undefined || from.wide !== to.wide) {
+      return undefined;
+    }
+    return {
+      type: from.wide ? "WCHAR_t" : "CHAR_t",
+      from: from.unit,
+      to: to.unit,
+    };
   }
 
   /**
@@ -5449,6 +5559,11 @@ export class CodeGenerator {
       case "LTIME": {
         const timeVal = parseTimeLiteral(String(expr.value));
         return `${timeVal.exact}LL`;
+      }
+      case "CHAR":
+      case "WCHAR": {
+        const { wide, units } = charLiteralUnits(expr.rawValue);
+        return `static_cast<${wide ? "WCHAR_t" : "CHAR_t"}>(${Math.max(units[0] ?? 0, 0)})`;
       }
       case "DATE":
       case "LDATE":
@@ -6123,6 +6238,13 @@ export class CodeGenerator {
     const ldate = this.dateArithmetic(expr, left, right);
     if (ldate !== undefined) return ldate;
 
+    // CHAR ordering compares Windows-1252 codes, not signed C++ chars.
+    if (["<", ">", "<=", ">="].includes(expr.operator)) {
+      if (this.isCharExpr(expr.left) || this.isCharExpr(expr.right)) {
+        return `${this.charCode(expr.left, left)} ${cppOp} ${this.charCode(expr.right, right)}`;
+      }
+    }
+
     // IEC 61131-3 AND/OR/XOR are always bitwise. C++ bitwise & | ^ have
     // higher precedence than comparison operators (== != < >), unlike ST
     // where AND/OR have lower precedence. Parenthesize operands to preserve
@@ -6234,6 +6356,96 @@ export class CodeGenerator {
       .filter((a) => !isEnEnoArgument(a))
       .slice(skip[name])
       .map((a) => a.value);
+  }
+
+  /**
+   * A standard MAX/MIN/LIMIT/comparison/SEL/MUX call with CHAR or WCHAR
+   * operands; undefined for any other call. A nested EN/ENO runs the call
+   * only when EN is TRUE and writes ENO, as the statement form does.
+   */
+  private charStdCall(
+    stdFunc: { name: string; cppName: string },
+    expr: FunctionCallExpression,
+    args: readonly string[],
+  ): string | undefined {
+    const name = stdFunc.name.toUpperCase();
+    const ordered = CHAR_ORDERED_FUNCTIONS.has(name);
+    if (
+      !ordered &&
+      name !== "SEL" &&
+      name !== "MUX" &&
+      name !== "EQ" &&
+      name !== "NE"
+    ) {
+      return undefined;
+    }
+    const all = expr.arguments;
+    const operands = all.filter((a) => !isEnEnoArgument(a));
+    const isChar = operands.some((a) => this.isCharExpr(a.value));
+    if (!isChar && !operands.some((a) => this.isWcharExpr(a.value))) {
+      return undefined;
+    }
+    let en: string | null = null;
+    let eno: string | null = null;
+    const coded: string[] = [];
+    for (const [i, a] of all.entries()) {
+      const code = args[i] ?? "";
+      if (!isEnEnoArgument(a)) {
+        coded.push(ordered ? this.charCode(a.value, code) : code);
+      } else if (a.isOutput) {
+        eno = code;
+      } else {
+        en = code;
+      }
+    }
+    let call = `${stdFunc.cppName}(${coded.join(", ")})`;
+    if (isChar && ["MAX", "MIN", "LIMIT"].includes(name)) {
+      call = `static_cast<CHAR_t>(${call})`;
+    }
+    if (en === null && eno === null) return call;
+    const setEno = (v: string): string =>
+      eno === null ? "" : `${eno} = ${v}; `;
+    if (en === null) return `[&]() { ${setEno("true")}return ${call}; }()`;
+    return `[&]() { const bool en_ = ${en}; ${setEno("en_")}return en_ ? ${call} : decltype(${call}){}; }()`;
+  }
+
+  /** True when the expression is a WCHAR, through aliases of it. */
+  private isWcharExpr(e: Expression): boolean {
+    const t = e.resolvedType;
+    if (t?.typeKind !== "elementary") return false;
+    let name = (t as ElementaryType).name.toUpperCase();
+    for (let i = 0; i < 32 && name !== "WCHAR"; i++) {
+      const upper = name;
+      const def = this.ast?.types.find(
+        (d) => d.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference") return false;
+      name = def.name.toUpperCase();
+    }
+    return name === "WCHAR";
+  }
+
+  /** True when the expression is a CHAR, through aliases of it. */
+  private isCharExpr(e: Expression): boolean {
+    const t = e.resolvedType;
+    if (t?.typeKind !== "elementary") return false;
+    let name = (t as ElementaryType).name.toUpperCase();
+    for (let i = 0; i < 32 && name !== "CHAR"; i++) {
+      const upper = name;
+      const def = this.ast?.types.find(
+        (d) => d.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference") return false;
+      name = def.name.toUpperCase();
+    }
+    return name === "CHAR";
+  }
+
+  /** A CHAR operand as its unsigned Windows-1252 code; anything else unchanged. */
+  private charCode(e: Expression, code: string): string {
+    return this.isCharExpr(e)
+      ? `static_cast<uint8_t>(iec_unwrap(${code}))`
+      : code;
   }
 
   /** The fields of STRUCT `typeName` (through aliases), or undefined for any other type. */
@@ -6754,6 +6966,13 @@ export class CodeGenerator {
   ): string {
     const between = longTemporalConversion(argExpr, fromTypeUpper, toTypeUpper);
     if (between !== undefined) return between;
+    // A CHAR converts to a number by its Windows-1252 code (0..255).
+    if (
+      fromTypeUpper === "CHAR" &&
+      NUMERIC_OR_BIT_CONVERSION_TARGETS.has(toTypeUpper)
+    ) {
+      return `static_cast<uint8_t>(iec_unwrap(${argExpr}))`;
+    }
     if (TEMPORAL_CONVERSION_UNITS.has(fromTypeUpper)) {
       return this.wrapTemporalArgForNumericConversion(
         argExpr,
@@ -7151,6 +7370,10 @@ export class CodeGenerator {
           }
           return generated;
         });
+        // CHAR and WCHAR operands: CHAR ordered by its unsigned Windows-1252
+        // code, and EN/ENO of a nested call not taken as operands.
+        const charCall = this.charStdCall(stdFunc, expr, args);
+        if (charCall !== undefined) return charCall;
         this.harmonizeStdFuncArgs(args, expr.arguments, stdFunc);
         // TRUNC's C++ result type follows the C++ argument type, but codegen
         // emits REAL literals/expressions containing one as double.  Pass the

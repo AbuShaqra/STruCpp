@@ -21,6 +21,7 @@ import type {
   UnaryExpression,
   ElementaryType,
 } from "../frontend/ast.js";
+import { charLiteralUnits } from "../literal-utils.js";
 import { TypeRegistry, isElementaryType } from "../semantic/type-registry.js";
 import {
   dateArithmeticCpp,
@@ -811,6 +812,11 @@ export class TypeCodeGenerator {
       case "LTIME": {
         const timeVal = parseTimeLiteral(String(expr.value));
         return `${timeVal.exact}LL`;
+      }
+      case "CHAR":
+      case "WCHAR": {
+        const { wide, units } = charLiteralUnits(expr.rawValue);
+        return `static_cast<${wide ? "WCHAR_t" : "CHAR_t"}>(${Math.max(units[0] ?? 0, 0)})`;
       }
       case "DATE":
       case "LDATE":

@@ -124,14 +124,14 @@ const TIME_MSG =
   "An integer cannot be used as TIME; write a TIME literal such as T#100ms";
 
 describe("strict mode: row b, integer <-> real", () => {
-  it("accepts the exact widenings (non-strict still rejects the unsigned ones)", () => {
+  it("accepts the exact widenings, unsigned to a wider signed type in every mode", () => {
     const cases: Array<[string, string, string[]]> = [
       ["i", "r", []],
-      ["ui", "d", ["6: Cannot assign UINT to DINT"]],
+      ["ui", "d", []],
       ["d", "lr", []],
       ["r", "lr", []],
-      ["us", "i", ["6: Cannot assign USINT to INT"]],
-      ["ud", "l", ["6: Cannot assign UDINT to LINT"]],
+      ["us", "i", []],
+      ["ud", "l", []],
     ];
     for (const [v, t, laxErrors] of cases) {
       pin(prog(DECLS, `${t} := ${v};`), laxErrors, [], [], `${v} -> ${t}`);

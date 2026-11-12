@@ -195,8 +195,22 @@ LDATE, LTOD and LDT are stored as DATE (days since 1970-01-01), TOD and DT
 `TAG_DT` leaf of 8 bytes, and `libs/iec-types.json` lists them with the DATE,
 TOD and DT wire formats. An LDATE leaf's value on the debug wire is therefore a
 day count since 1970-01-01, as a DATE leaf's is, not the nanoseconds IEC
-61131-3 Ed. 3 (Table 10) specifies for LDATE. `TO_LDATE`, `TO_LTOD` and
-`TO_LDT` are the casts.
+61131-3 Ed. 3 (Table 10) specifies for LDATE. The debug map (`debugMap.leaves`)
+lists an LTIME, LDATE, LTOD or LDT leaf under its short type name (TIME, DATE,
+TOD, DT), as the wire is the same; a host that shows the long name takes it from
+the declaration. `TO_LDATE`, `TO_LTOD` and `TO_LDT` are the casts.
+
+## CHAR and WCHAR
+
+`IEC_CHAR` and `IEC_WCHAR` are `IECVar<char>` and `IECVar<char16_t>`. A CHAR
+holds a Windows-1252 byte, so code that orders or converts one to a number
+goes through its unsigned code (generated code casts it to `uint8_t`). For
+debugger hosts a CHAR leaf is a `TAG_BYTE` leaf of 1 byte and a WCHAR leaf a
+`TAG_WORD` leaf of 2 bytes; `libs/iec-types.json` lists them with the `uint8`
+and `uint16` wire formats. `IECStringVar::at(i)` and `IECWStringVar::at(i)`
+give the i-th character, 1-based, and raise the out-of-bounds error
+(`std::out_of_range`, or `iec_runtime_fault(IecFault::ArrayBounds)` without
+exceptions) outside the current length.
 
 ## String Types (`iec_string.hpp`, `iec_wstring.hpp`)
 

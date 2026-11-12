@@ -9,16 +9,16 @@
  * Runs `dist/node/cli.js` by default; set STRUCPP_CLI to run another entry
  * point, e.g. `STRUCPP_CLI=dist/strucpp-bundle.cjs`.
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
 
 const CLI_PATH = resolve(
   process.env.STRUCPP_CLI ?? resolve(__dirname, "../../dist/node/cli.js"),
 );
-const DIR = join(tmpdir(), "strucpp-cli-fb-init-tests");
+const DIR = mkdtempSync(join(tmpdir(), "strucpp-cli-fb-init-"));
 
 const SOURCE = `FUNCTION_BLOCK FB_A
 VAR v : INT; END_VAR
@@ -88,12 +88,12 @@ beforeAll(() => {
   if (!existsSync(CLI_PATH)) {
     throw new Error(`CLI not built: ${CLI_PATH} not found.`);
   }
-  if (existsSync(DIR)) rmSync(DIR, { recursive: true });
-  mkdirSync(DIR, { recursive: true });
   writeFileSync(join(DIR, "init.st"), SOURCE);
   writeFileSync(join(DIR, "warn.st"), WARN_ONLY);
   writeFileSync(join(DIR, "libfb.st"), LIBRARY_FB);
 });
+
+afterAll(() => rmSync(DIR, { recursive: true, force: true }));
 
 describe("--check with init arguments and FB_init", () => {
   for (const flags of [[], ["--dialect", "iec-3"]]) {
