@@ -14,7 +14,11 @@
  * the sources or by a library) wins and is not lowered. See docs/DIALECTS.md.
  */
 
-import type { CompilationUnit, TypeReference } from "../frontend/ast.js";
+import type {
+  CompilationUnit,
+  TestFile,
+  TypeReference,
+} from "../frontend/ast.js";
 
 const PLATFORM_TYPES: ReadonlyMap<string, string> = new Map([
   ["__XINT", "LINT"],
@@ -48,6 +52,25 @@ function isTypeReference(node: object): node is TypeReference {
   return (node as { kind?: unknown }).kind === "TypeReference";
 }
 
+/** Visit every TypeReference under `root` once. */
+function forEachTypeReference(
+  root: object,
+  fn: (ref: TypeReference) => void,
+): void {
+  const seen = new Set<object>();
+  const visit = (node: unknown): void => {
+    if (typeof node !== "object" || node === null || seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    if (isTypeReference(node)) fn(node);
+    for (const value of Object.values(node)) visit(value);
+  };
+  visit(root);
+}
+
 /**
  * Rewrite every type reference to a platform type to the type it stands for.
  * `declaredElsewhere` tells whether a library declares a type of the name.
@@ -66,21 +89,55 @@ export function lowerPlatformTypes(
     }
     return to;
   };
-  const seen = new Set<object>();
-  const visit = (node: unknown): void => {
-    if (typeof node !== "object" || node === null || seen.has(node)) return;
-    seen.add(node);
-    if (Array.isArray(node)) {
-      for (const item of node) visit(item);
-      return;
+  forEachTypeReference(ast, (node) => {
+    const name = target(node.name);
+    if (name !== undefined) node.name = name;
+    const element = target(node.elementTypeName);
+    if (element !== undefined) node.elementTypeName = element;
+  });
+}
+
+/**
+ * Lower the platform types of a test file, which declares no TYPE of its
+ * own, keeping each name written in `platformTypeName` so that
+ * {@link restoreDeclaredPlatformTypes} can undo it for a declared type.
+ */
+export function lowerTestPlatformTypes(testFile: TestFile): void {
+  forEachTypeReference(testFile, (node) => {
+    const to = PLATFORM_TYPES.get(node.name.toUpperCase());
+    if (to !== undefined) {
+      node.platformTypeName = node.name;
+      node.name = to;
     }
-    if (isTypeReference(node)) {
-      const name = target(node.name);
-      if (name !== undefined) node.name = name;
-      const element = target(node.elementTypeName);
-      if (element !== undefined) node.elementTypeName = element;
+    const written = node.elementTypeName;
+    const element =
+      written === undefined
+        ? undefined
+        : PLATFORM_TYPES.get(written.toUpperCase());
+    if (written !== undefined && element !== undefined) {
+      node.platformElementTypeName = written;
+      node.elementTypeName = element;
     }
-    for (const value of Object.values(node)) visit(value);
-  };
-  visit(ast);
+  });
+}
+
+/** Give a test file's lowered references back the name the sources declare as a type. */
+export function restoreDeclaredPlatformTypes(
+  testFile: TestFile,
+  isDeclaredType: (nameUpper: string) => boolean,
+): void {
+  forEachTypeReference(testFile, (node) => {
+    if (
+      node.platformTypeName !== undefined &&
+      isDeclaredType(node.platformTypeName.toUpperCase())
+    ) {
+      node.name = node.platformTypeName;
+    }
+    if (
+      node.platformElementTypeName !== undefined &&
+      isDeclaredType(node.platformElementTypeName.toUpperCase())
+    ) {
+      node.elementTypeName = node.platformElementTypeName;
+    }
+  });
 }

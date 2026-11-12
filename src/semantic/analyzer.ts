@@ -118,7 +118,10 @@ import {
 import { cp1252Byte } from "../byte-utils.js";
 import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import { libraryOverloadFor } from "./library-overload.js";
-import { platformTypeTarget } from "./platform-types.js";
+import {
+  platformTypeTarget,
+  restoreDeclaredPlatformTypes,
+} from "./platform-types.js";
 
 // =============================================================================
 // Located Variable Address Parsing
@@ -6085,6 +6088,11 @@ export class SemanticAnalyzer {
     }
     this.enumMemberMap = buildEnumMemberMap(enumDescriptors);
 
+    // A platform type lowered by the test parser that the sources declare.
+    restoreDeclaredPlatformTypes(testFile, (name) => {
+      const kind = sourceSymbolTables.globalScope.lookup(name)?.kind;
+      return kind === "type" || kind === "functionBlock" || kind === "program";
+    });
     const typeScope = this.buildTestTypeScope(testFile);
 
     // Validate type references in SETUP and TEST var blocks

@@ -638,6 +638,8 @@ This compiler generates C++ for a 64-bit target, so under `platform_types` each 
 - A TYPE, FUNCTION_BLOCK, PROGRAM or INTERFACE of the same name, in the sources or in a library, wins and
   the name means that declaration in every dialect. A variable named `xint` is unaffected.
 - With the feature off, each use is refused at the type, instead of `Undefined type`.
+- In a `--test` file the platform types follow the dialect flags of the run (as conditional pragmas do): they
+  are lowered with the feature, and a TYPE, FUNCTION_BLOCK or PROGRAM of the same name in the sources wins.
 - Not supported: typed literals (`XINT#5`) and conversion functions named after these types
   (`XINT_TO_INT`, `TO_UXINT`). Use the 64-bit names (`LINT#5`, `LINT_TO_INT`).
 
