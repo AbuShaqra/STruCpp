@@ -158,6 +158,90 @@ describe("CHAR and WCHAR", () => {
           "CASE label of type INT does not match the selector of type CHAR",
         ]);
       });
+
+      it("types SEL, MUX, LIMIT, MAX and MIN of CHAR as CHAR", () => {
+        const r = result(
+          "x := c = SEL(x, c, c);\nx := c < MUX(1, c, c);\nx := c = LIMIT(c, c, c);\nx := EQ(c, SEL(x, c, c));\nx := SEL(x, c, c) = 'a';\nc := SEL(x, 'a', 'b');",
+          options,
+        );
+        expect(r.errors).toEqual([]);
+        expect(r.cppCode).toContain(
+          "C = SEL(X, static_cast<CHAR_t>(97), static_cast<CHAR_t>(98));",
+        );
+        expect(errors("c := SEL(x, 'ab', 'b');", options)).toEqual([
+          "Argument of 'SEL' is STRING where the others are CHAR; CHAR does not convert implicitly",
+        ]);
+      });
+
+      it("takes a one-character literal for a CHAR input, element, field or alias", () => {
+        const source = `TYPE MyC : CHAR; END_TYPE
+TYPE St : STRUCT k : CHAR := 'q'; END_STRUCT END_TYPE
+FUNCTION FIn : INT VAR_INPUT c : CHAR; END_VAR FIn := CHAR_TO_INT(c); END_FUNCTION
+PROGRAM Main
+VAR m : MyC := 'B'; a : ARRAY[0..1] OF CHAR := ['x', 'y']; s : St := (k := 'r'); i : INT; w : WCHAR; END_VAR
+i := FIn('D') + FIn(c := 'E');
+w := STRING_TO_WCHAR('ab');
+i := CHAR_TO_INT('A');
+END_PROGRAM
+`;
+        const r = compile(source, {
+          ...options,
+          headerFileName: "generated.hpp",
+        });
+        expect(r.errors).toEqual([]);
+        expect(r.cppCode).toContain("M(static_cast<CHAR_t>(66))");
+        expect(r.cppCode).toContain(
+          "{static_cast<CHAR_t>(120), static_cast<CHAR_t>(121)}",
+        );
+        expect(r.cppCode).toContain("FIN(static_cast<CHAR_t>(68))");
+        expect(r.cppCode).toContain("static_cast<CHAR_t>(65)");
+      });
+
+      it("refuses a value of another type for a CHAR input, element or alias", () => {
+        const source = `TYPE MyC : CHAR; END_TYPE
+FUNCTION FIn : INT VAR_INPUT c : CHAR; END_VAR FIn := CHAR_TO_INT(c); END_FUNCTION
+PROGRAM Main
+VAR m : MyC := 'BC'; a : ARRAY[0..1] OF CHAR := [1, 'y']; i : INT; w : WCHAR := 'a'; END_VAR
+i := FIn('DE');
+i := FIn(w);
+END_PROGRAM
+`;
+        const r = compile(source, {
+          ...options,
+          headerFileName: "generated.hpp",
+        });
+        expect(r.errors.map((e) => e.message)).toEqual([
+          "Cannot assign STRING to MYC",
+          "Cannot assign INT to CHAR",
+          "Cannot assign STRING to WCHAR",
+          "Cannot assign STRING to parameter 'C' of type CHAR",
+          "Cannot assign WCHAR to parameter 'C' of type CHAR",
+        ]);
+      });
+
+      it("expands a CHAR or WCHAR range label to every code in it", () => {
+        const r = result(
+          "CASE c OF 'a'..'c': b := 1; ELSE b := 0; END_CASE;\nCASE w OF \"x\"..\"y\": b := 2; END_CASE;",
+          options,
+        );
+        expect(r.errors).toEqual([]);
+        for (const code of [97, 98, 99]) {
+          expect(r.cppCode).toContain(`case static_cast<CHAR_t>(${code}):`);
+        }
+        expect(r.cppCode).toContain("case static_cast<WCHAR_t>(121):");
+      });
+
+      it("takes no EN or ENO of a nested CHAR call as an operand", () => {
+        const r = result(
+          "b := CHAR_TO_BYTE(MAX(EN := x, IN1 := c, IN2 := c, ENO => x));",
+          options,
+        );
+        expect(r.errors).toEqual([]);
+        expect(r.cppCode).toContain(
+          "const bool en_ = X; X = en_; return en_ ?",
+        );
+        expect(r.cppCode).not.toContain(", X, X)");
+      });
     });
   }
 });

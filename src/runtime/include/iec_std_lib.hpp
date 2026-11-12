@@ -1195,6 +1195,11 @@ template<size_t N> inline IEC_CHAR TO_CHAR(const IECWString<N>& s) noexcept {
     return TO_CHAR(static_cast<WCHAR_t>(s.length() > 0 ? s[0] : u'\0'));
 }
 template<size_t N> inline IEC_CHAR TO_CHAR(const IECWStringVar<N>& s) noexcept { return TO_CHAR(s.get()); }
+// A STRING or WSTRING literal argument: its first character (0 when empty).
+inline IEC_CHAR TO_CHAR(const char* s) noexcept { return IEC_CHAR(s[0]); }
+inline IEC_CHAR TO_CHAR(const char16_t* s) noexcept { return TO_CHAR(static_cast<WCHAR_t>(s[0])); }
+inline IEC_WCHAR TO_WCHAR(const char* s) noexcept { return TO_WCHAR(static_cast<CHAR_t>(s[0])); }
+inline IEC_WCHAR TO_WCHAR(const char16_t* s) noexcept { return IEC_WCHAR(static_cast<WCHAR_t>(s[0])); }
 
 // =============================================================================
 // WSTRING → Numeric Conversions
