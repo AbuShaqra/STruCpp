@@ -1046,6 +1046,33 @@ export class STParser extends CstParser {
         this.CONSUME(tokens.RParen);
       },
     });
+    // Ed. 3 spelling of the same length: STRING[n] / WSTRING[n] / STRING[CONSTANT_NAME]
+    this.OPTION3({
+      GATE: () => {
+        const name = typeNameTok.image.toUpperCase();
+        // Not after a parenthesised length, and only an Unsigned_Int (no base)
+        return (
+          (name === "STRING" || name === "WSTRING") &&
+          this.LA(0).tokenType !== tokens.RParen &&
+          this.LA(1).tokenType === tokens.LBracket &&
+          ((this.LA(2).tokenType === tokens.IntegerLiteral &&
+            !this.LA(2).image.includes("#")) ||
+            this.LA(2).tokenType === tokens.Identifier) &&
+          this.LA(3).tokenType === tokens.RBracket
+        );
+      },
+      DEF: () => {
+        this.CONSUME(tokens.LBracket);
+        this.OR5({
+          DEF: [
+            { ALT: (): IToken => this.CONSUME2(tokens.IntegerLiteral) },
+            { ALT: (): IToken => this.CONSUME5(tokens.Identifier) },
+          ],
+          IGNORE_AMBIGUITIES: true,
+        });
+        this.CONSUME(tokens.RBracket);
+      },
+    });
   });
 
   // ==========================================================================
