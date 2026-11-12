@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Autonomy®
+/**
+ * Ed. 3 forms in every dialect: STRUCT OVERLAP lowers as a UNION, the Table 46
+ * typed timer names and an LTIME preset on TP/TON/TOF, and an untyped real
+ * literal no LREAL holds is refused before the C++ compiler sees it.
+ */
+import { describe, it, expect } from "vitest";
+import * as fs from "fs";
+import * as path from "path";
+import { compile } from "../../src/index.js";
+import { discoverStlibs } from "../../src/node/library-loader.js";
+
+type Options = Parameters<typeof compile>[1];
+const MODES: Array<[string, Options]> = [
+  ["no dialect", {}],
+  ["iec-3", { dialect: "iec-3" }],
+  ["strict", { strict: true }],
+];
+const LIBS_DIR = path.resolve(__dirname, "../../libs");
+const libsAvailable = fs.existsSync(
+  path.join(LIBS_DIR, "iec-standard-fb.stlib"),
+);
+const libraries = libsAvailable ? discoverStlibs(LIBS_DIR) : [];
+
+describe("Ed. 3 leftovers", () => {
+  for (const [label, options] of MODES) {
+    describe(label, () => {
+      it("lowers STRUCT OVERLAP as a UNION, without the union feature", () => {
+        const overlap = compile(
+          "TYPE T : STRUCT OVERLAP a : DINT; b : ARRAY[0..3] OF BYTE; END_STRUCT END_TYPE\nPROGRAM Main\nVAR v : T; x : BYTE; END_VAR\nv.a := 1; x := v.b[0];\nEND_PROGRAM\n",
+          options,
+        );
+        expect(overlap.errors).toEqual([]);
+        const union = compile(
+          "TYPE T : UNION a : DINT; b : ARRAY[0..3] OF BYTE; END_UNION END_TYPE\nPROGRAM Main\nVAR v : T; x : BYTE; END_VAR\nv.a := 1; x := v.b[0];\nEND_PROGRAM\n",
+          { ...options, features: ["+union"] },
+        );
+        expect(union.errors).toEqual([]);
+        expect(overlap.headerCode).toBe(union.headerCode);
+        expect(overlap.cppCode).toBe(union.cppCode);
+      });
+
+      it("keeps a field named overlap", () => {
+        expect(
+          compile(
+            "TYPE T : STRUCT overlap : INT; b : INT; END_STRUCT END_TYPE\nPROGRAM Main\nVAR v : T; END_VAR\nv.overlap := 1;\nEND_PROGRAM\n",
+            options,
+          ).errors,
+        ).toEqual([]);
+      });
+
+      it("refuses an untyped real literal past LREAL", () => {
+        expect(
+          compile(
+            "PROGRAM Main\nVAR l : LREAL; END_VAR\nl := 1E400;\nl := 1E-400;\nEND_PROGRAM\n",
+            options,
+          ).errors.map((e) => e.message),
+        ).toEqual(["Real literal '1E400' is outside the LREAL range"]);
+      });
+
+      it.skipIf(!libsAvailable)(
+        "takes the Table 46 timer names and an LTIME preset",
+        () => {
+          const r = compile(
+            `PROGRAM Main
+VAR
+  a : TON_TIME; b : TON_LTIME; c : TOF_TIME; d : TOF_LTIME; e : TP_TIME; f : TP_LTIME;
+  t : TON; p : LTIME := LT#1s; q : LTIME;
+END_VAR
+a(IN := TRUE, PT := T#1s);
+b(IN := TRUE, PT := LT#1s);
+c(IN := TRUE, PT := T#1s);
+d(IN := TRUE, PT := LT#1s);
+e(IN := TRUE, PT := T#1s);
+f(IN := TRUE, PT := LT#1s);
+t.PT := p;
+t(IN := TRUE, PT := p);
+q := t.ET;
+q := b.ET;
+END_PROGRAM
+`,
+            { ...options, libraries },
+          );
+          expect(r.errors).toEqual([]);
+        },
+      );
+    });
+  }
+});

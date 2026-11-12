@@ -3133,6 +3133,9 @@ export class TypeChecker {
         if (this.checkArrayScalarAssignment(stmt.target, stmt.value, scope)) {
           break;
         }
+        if (this.isTimerPresetTakingLtime(stmt.target, valueType, scope)) {
+          break;
+        }
         const errorsBefore = this.errors.length;
         this.validateAssignment(targetType, valueType, stmt.target, stmt.value);
         // One error per mistake: the REF_TO check only adds what the general one missed.
@@ -4342,6 +4345,47 @@ export class TypeChecker {
     return (
       ED3_ELEMENTARY_NAMES.has(upper) &&
       this.ast?.types.some((t) => t.name.toUpperCase() === upper) === true
+    );
+  }
+
+  /**
+   * `t.PT := ltimeValue` on a TP, TON or TOF of the standard library: Table 46
+   * overloads those timers on TIME and LTIME, and both have one representation.
+   */
+  private isTimerPresetTakingLtime(
+    target: Expression,
+    valueType: IECType | undefined,
+    scope: Scope,
+  ): boolean {
+    if (
+      valueType === undefined ||
+      target.kind !== "VariableExpression" ||
+      valueType.typeKind !== "elementary" ||
+      (valueType as ElementaryType).name.toUpperCase() !== "LTIME"
+    ) {
+      return false;
+    }
+    const v = target;
+    if (
+      v.subscripts.length > 0 ||
+      v.fieldAccess.length !== 1 ||
+      v.fieldAccess[0]!.toUpperCase() !== "PT"
+    ) {
+      return false;
+    }
+    const sym = scope.lookup(v.name);
+    const typeName =
+      sym?.kind === "variable"
+        ? (
+            sym.declaration as VarDeclaration | undefined
+          )?.type.name.toUpperCase()
+        : undefined;
+    if (typeName !== "TP" && typeName !== "TON" && typeName !== "TOF") {
+      return false;
+    }
+    return (
+      this.symbolTables.lookupFunctionBlock(typeName)?.libraryName ===
+      "iec-standard-fb"
     );
   }
 

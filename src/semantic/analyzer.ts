@@ -807,6 +807,8 @@ export class SemanticAnalyzer {
     };
     for (const typeDecl of ast.types) {
       if (!isUnionDefinition(typeDecl.definition)) continue;
+      // Ed. 3 STRUCT OVERLAP is a UNION in every dialect.
+      if (typeDecl.definition.overlap === true) continue;
       this.requireFeature(
         "union",
         `UNION type '${typeDecl.name}'`,
@@ -1908,6 +1910,7 @@ export class SemanticAnalyzer {
     this.validateIntegerLiteralRange(ast);
     this.validateStringLiteralCharset(ast);
     this.validateLtimeLiteralRange(ast);
+    this.validateRealLiteralRange(ast);
 
     // TODO: Implement additional semantic validation
     // - Check CASE statement coverage
@@ -2403,6 +2406,28 @@ export class SemanticAnalyzer {
         `${literal.rawValue} holds a character Windows-1252 lacks, which a CHAR cannot store; use a WCHAR literal (WCHAR#"...") for it`,
       );
     }
+  }
+
+  /**
+   * Reject an untyped real literal no LREAL can hold (`1E400`): its value would
+   * be infinite, which the C++ compiler refuses.
+   */
+  private validateRealLiteralRange(ast: CompilationUnit): void {
+    walkAST(ast, (node) => {
+      if (node.kind !== "LiteralExpression") return;
+      const literal = node as LiteralExpression;
+      if (literal.literalType !== "REAL" || (literal.typePrefix ?? "") !== "") {
+        return;
+      }
+      if (Number.isFinite(Number(literal.value))) return;
+      const span = literal.sourceSpan;
+      this.addError(
+        `Real literal '${literal.rawValue}' is outside the LREAL range`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    });
   }
 
   /**

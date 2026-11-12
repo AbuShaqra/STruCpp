@@ -416,6 +416,8 @@ export interface StructDefinition extends ASTNode {
    * storage. Every other pass treats it as a STRUCT with the same fields.
    */
   isUnion?: true;
+  /** Set on Ed. 3 `STRUCT OVERLAP`, a UNION in every dialect. */
+  overlap?: true;
 }
 
 /**

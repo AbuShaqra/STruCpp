@@ -43,7 +43,8 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 
 | Type | Notes |
 |------|-------|
-| UNION | An extension (IEC 61131-3 Ed. 3 has no UNION; its overlay form is `STRUCT OVERLAP`, 6.4.4.7, not supported): the feature `union` (refused with no dialect flag and under `--dialect iec-3`). Parsed, analysed and compiled to C++ as one shared storage (host byte order, little-endian assumed). Members must be data and take no initial value in the declaration; an initial value of a UNION names one member, `(f := 1.0)`, written into zeroed storage; a UNION is assignment-compatible only with itself. Not supported yet at compile: REF/REF= of a member, a REFERENCE TO stored in a UNION, a library STRUCT member, RETAIN; members cannot be forced and the debug table leaves a UNION out, see [DIALECTS.md](DIALECTS.md) |
+| STRUCT OVERLAP | Supported | The Ed. 3 overlay form (6.4.4.7), in every dialect: `TYPE T : STRUCT OVERLAP a : DINT; b : ARRAY[0..3] OF BYTE; END_STRUCT END_TYPE` is compiled as the UNION of the same members, with the UNION row's rules. A field named `overlap` (`STRUCT overlap : INT;`) is still a field |
+| UNION | An extension (IEC 61131-3 Ed. 3 has no UNION; its overlay form is `STRUCT OVERLAP`, see that row): the feature `union` (refused with no dialect flag and under `--dialect iec-3`). Parsed, analysed and compiled to C++ as one shared storage (host byte order, little-endian assumed). Members must be data and take no initial value in the declaration; an initial value of a UNION names one member, `(f := 1.0)`, written into zeroed storage; a UNION is assignment-compatible only with itself. Not supported yet at compile: REF/REF= of a member, a REFERENCE TO stored in a UNION, a library STRUCT member, RETAIN; members cannot be forced and the debug table leaves a UNION out, see [DIALECTS.md](DIALECTS.md) |
 
 ## Program Organization Units
 
@@ -104,6 +105,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | Field access | `struct.field` | Supported |
 | Typed literals | `INT#5`, `DINT#42`, `REAL#3.14`, `INT#-123`, `T#-14ms` | Supported. A sign after the prefix (Table 5 feature 9, Table 8) is taken by a decimal integer or real payload and by a duration, in every dialect; a signed integer outside its prefix type (`SINT#-129`, `USINT#-1`) is an error, and each type's minimum (`LINT#-9223372036854775808`) lowers without overflow. A typed literal is also a CASE label. A decimal payload outside its type (`SINT#200`, `USINT#300`, `BYTE#256`) is an error in every dialect. A 2#, 8# or 16# payload on a signed type is a bit pattern of the type's width (`INT#16#FFFF` is -1, as vendor toolchains read it); wider is an error (`INT#16#1_0000`). On an unsigned or bit-string type anything above the maximum is an error, in any base. `LT#` and `LTIME#` literals are LTIME (see the LTIME row) |
 | Integer literals | `9223372036854775807`, `16#FF`, `1_000` | Supported — the full 64-bit LINT/ULINT range is preserved exactly; a value wider than ULINT is rejected |
+| Real literals | `3.14`, `1.0E-3` | Supported. An untyped real literal no LREAL holds (`1E400`) is an error; one below the smallest LREAL (`1E-400`) is 0 |
 | NEW | `__NEW(type)`, `__NEW(type, size)` | Supported |
 | DELETE | `__DELETE(ptr)` | Supported |
 
@@ -191,6 +193,7 @@ Bundled as a compiled `.stlib` library (`libs/iec-standard-fb.stlib`):
 | TOF | Off-delay timer |
 | TP | Pulse timer |
 | LTON, LTOF, LTP | The timers with an LTIME preset and elapsed time |
+| TP_TIME, TON_TIME, TOF_TIME, TP_LTIME, TON_LTIME, TOF_LTIME | The typed timer names of Table 46, on TIME and on LTIME. TP, TON and TOF also take an LTIME preset (`PT`), in a call or assigned (`t.PT := ltimeValue`) |
 | CTU | Count-up counter |
 | CTD | Count-down counter |
 | CTUD | Up/down counter |
