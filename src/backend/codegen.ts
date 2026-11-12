@@ -6020,7 +6020,7 @@ export class CodeGenerator {
 
     // Field access (struct members) — detect property reads and bit access on last field
     if (expr.fieldAccess.length > 0) {
-      let currentType = baseType ?? this.currentScopeVarTypes.get(nameUpper);
+      let currentType = baseType ?? this.rootVariableType(nameUpper);
       for (let i = 0; i < expr.fieldAccess.length; i++) {
         const field = expr.fieldAccess[i]!;
         const isLast = i === expr.fieldAccess.length - 1;
@@ -6119,7 +6119,7 @@ export class CodeGenerator {
     namedBit = false,
   ): string {
     let result = base;
-    let currentType = baseType ?? this.currentScopeVarTypes.get(baseNameUpper);
+    let currentType = baseType ?? this.rootVariableType(baseNameUpper);
 
     for (let i = 0; i < chain.length; i++) {
       const step = chain[i]!;
@@ -8235,7 +8235,7 @@ export class CodeGenerator {
     let currentType: string | undefined;
     if (nameUpper === "THIS") currentType = this.currentFBName;
     else if (nameUpper === "SUPER") currentType = this.currentFBExtends;
-    else currentType = this.currentScopeVarTypes.get(nameUpper);
+    else currentType = this.rootVariableType(nameUpper);
 
     for (let i = 0; i < expr.fieldAccess.length - 1; i++) {
       if (!currentType) break;
@@ -8728,6 +8728,13 @@ export class CodeGenerator {
     if (this.namespaceGlobalType(upper) === undefined) return undefined;
     const sym = this._symbolTables?.globalScope.lookup(upper);
     return sym?.kind === "variable" ? sym.declaration.type : undefined;
+  }
+
+  /** The type of the variable an access path starts at: a local or member, else a file-level or library global. */
+  private rootVariableType(upper: string): string | undefined {
+    return (
+      this.currentScopeVarTypes.get(upper) ?? this.namespaceGlobalType(upper)
+    );
   }
 
   /** Declared type name of a file-level or library VAR_GLOBAL not shadowed here. */
