@@ -48,6 +48,7 @@ import { foldStructFieldDefaults } from "./semantic/struct-defaults.js";
 import { lowerActions } from "./semantic/lower-actions.js";
 import { lowerAccessorLocals } from "./semantic/lower-accessor-locals.js";
 import { lowerProgramSelfMembers } from "./semantic/program-access.js";
+import { lowerPouOperators } from "./semantic/vendor-pou-operators.js";
 import { unionLoweringErrors } from "./semantic/union.js";
 import { fbInitLoweringErrors } from "./semantic/fb-init.js";
 import { walkAST } from "./ast-utils.js";
@@ -644,6 +645,10 @@ function runPipeline(
   // Phase 1: Parse ST source to CST. Lexer errors do not stop the parse,
   // so analyze mode still sees the rest of the file.
   const parseResult = parseSource(effectiveSource);
+  /** File name → the text the parser read, for spellings the AST upper-cases. */
+  const sourcesByFile = new Map<string, string>([
+    [mergedOptions.fileName ?? "main.st", effectiveSource],
+  ]);
   warnings.push(
     ...pragmaWarnings(
       parseResult.pragmas,
@@ -736,6 +741,7 @@ function runPipeline(
         }
 
         const addlParseResult = parseSource(effectiveAddlSource);
+        sourcesByFile.set(addlSource.fileName, effectiveAddlSource);
         warnings.push(
           ...pragmaWarnings(
             addlParseResult.pragmas,
@@ -799,6 +805,19 @@ function runPipeline(
     // Actions first, so lowerInlineTypes qualifies inline enum members in
     // action bodies as it does in the owner's methods.
     const loweringErrors = [
+      ...(dialect.features.has("vendor_operators")
+        ? lowerPouOperators(ast, {
+            sources: sourcesByFile,
+            declaredByLibrary: (name) =>
+              (mergedOptions.libraries ?? []).some((a) =>
+                [
+                  ...a.manifest.functions,
+                  ...a.manifest.functionBlocks,
+                  ...a.manifest.types,
+                ].some((d) => d.name.toUpperCase() === name),
+              ),
+          })
+        : []),
       ...resolveArrayBounds(ast, mergedOptions.globalConstants ?? {}),
       ...foldStructFieldDefaults(ast, mergedOptions.globalConstants ?? {}),
       ...lowerActions(ast),

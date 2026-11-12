@@ -118,6 +118,7 @@ import {
 import { cp1252Byte } from "../byte-utils.js";
 import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import { libraryOverloadFor } from "./library-overload.js";
+import { POU_OPERATORS } from "./vendor-pou-operators.js";
 
 // =============================================================================
 // Located Variable Address Parsing
@@ -5975,6 +5976,7 @@ export class SemanticAnalyzer {
     if (RUNTIME_CALLABLE_NAMES.has(upper)) return;
     // Inline C++ may declare the name (a macro, a lambda)
     if (this.hasExternalCode) return;
+    if (this.refusePouOperator(upper, call.sourceSpan)) return;
     const span = call.sourceSpan;
     this.addError(
       `Undeclared function '${upper}'`,
@@ -5982,6 +5984,35 @@ export class SemanticAnalyzer {
       span.startCol,
       span.file,
     );
+  }
+
+  /**
+   * INDEXOF, and `__POUNAME`, `__POSITION` or `BITADR` left as a call: off,
+   * they need the feature vendor_operators; on, a call that was not lowered
+   * stands where the operator has no value.
+   */
+  private refusePouOperator(upper: string, span: SourceSpan): boolean {
+    if (upper === "INDEXOF") {
+      this.addError(
+        "INDEXOF is not supported: use ADR(x) for the address of a variable or instance",
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+      return true;
+    }
+    if (!POU_OPERATORS.has(upper)) return false;
+    if (this.features.has("vendor_operators")) {
+      this.addError(
+        `${upper} has no value here`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    } else {
+      this.requireFeature("vendor_operators", upper, span);
+    }
+    return true;
   }
 
   /**
