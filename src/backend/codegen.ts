@@ -9,6 +9,7 @@
 
 import type {
   ElementaryType,
+  ReferenceType,
   CompilationUnit,
   FunctionDeclaration,
   VarDeclaration,
@@ -401,6 +402,9 @@ const TEMPORAL_CONVERSION_UNITS = new Map<string, TemporalUnitInfo>([
   ["LDATE_AND_TIME", { toUnit: undefined, fromUnit: undefined }],
   ["LDATE", { toUnit: "DATE_TO_NS", fromUnit: "DATE_FROM_NS" }],
 ]);
+
+/** Nanoseconds in a day, as a C++ literal. */
+const NS_PER_DAY = "86400000000000LL";
 
 /** The stored kind of each temporal type: days for a date, nanoseconds otherwise. */
 const TEMPORAL_KIND: Record<string, "date" | "tod" | "dt" | "duration"> = {
@@ -6149,28 +6153,59 @@ export class CodeGenerator {
     right: string,
   ): string | undefined {
     if (expr.operator !== "+" && expr.operator !== "-") return undefined;
-    const kind = (e: Expression): string | undefined => {
-      const t = e.resolvedType;
-      return t?.typeKind === "elementary"
-        ? canonicalElementaryName((t as ElementaryType).name)
-        : undefined;
-    };
-    const l = kind(expr.left);
-    const r = kind(expr.right);
+    const l = this.temporalBase(expr.left);
+    const r = this.temporalBase(expr.right);
     const isDate = (k: string | undefined): boolean =>
       k === "DATE" || k === "LDATE";
     const isDuration = (k: string | undefined): boolean =>
       k === "TIME" || k === "LTIME";
+    // In days: the difference scales once, and a date moves by the duration's
+    // whole days (truncated toward zero), so no date overflows nanoseconds.
     if (expr.operator === "-" && isDate(l) && isDate(r)) {
-      return `(DATE_TO_NS(${left}) - DATE_TO_NS(${right}))`;
+      return `((DATE_TO_DAYS(${left}) - DATE_TO_DAYS(${right})) * ${NS_PER_DAY})`;
     }
     if (isDate(l) && isDuration(r)) {
-      return `DATE_FROM_NS(DATE_TO_NS(${left}) ${expr.operator} ${right})`;
+      return `DATE_FROM_DAYS(DATE_TO_DAYS(${left}) ${expr.operator} iec_unwrap(${right}) / ${NS_PER_DAY})`;
     }
     if (expr.operator === "+" && isDuration(l) && isDate(r)) {
-      return `DATE_FROM_NS(${left} + DATE_TO_NS(${right}))`;
+      return `DATE_FROM_DAYS(iec_unwrap(${left}) / ${NS_PER_DAY} + DATE_TO_DAYS(${right}))`;
     }
     return undefined;
+  }
+
+  /**
+   * The canonical elementary type of a temporal operand, through aliases, a
+   * dereference, parentheses and the untyped CONCAT_DATE_TOD (a DT).
+   */
+  private temporalBase(e: Expression): string | undefined {
+    if (e.kind === "ParenthesizedExpression")
+      return this.temporalBase(e.expression);
+    let t = e.resolvedType;
+    if (t?.typeKind === "reference") t = (t as ReferenceType).referencedType;
+    let name: string | undefined =
+      t?.typeKind === "elementary"
+        ? (t as ElementaryType).name.toUpperCase()
+        : t === undefined
+          ? this.inferExprType(e)
+          : undefined;
+    if (
+      name === undefined &&
+      e.kind === "FunctionCallExpression" &&
+      e.functionName.toUpperCase() === "CONCAT_DATE_TOD"
+    ) {
+      name = "DT";
+    }
+    for (let i = 0; i < 32 && name !== undefined; i++) {
+      const upper = name;
+      const def = this.ast?.types.find(
+        (d) => d.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+        break;
+      }
+      name = def.name.toUpperCase();
+    }
+    return name === undefined ? undefined : canonicalElementaryName(name);
   }
 
   /** The fields of STRUCT `typeName` (through aliases), or undefined for any other type. */
@@ -7076,7 +7111,8 @@ export class CodeGenerator {
           // `specificReturnType`, so we have everything needed without
           // adding a new schema field.
           if (idx === 0 && stdFunc.isConversion && stdFunc.specificReturnType) {
-            const fromType = this.inferExprType(arg.value);
+            const fromType =
+              this.temporalBase(arg.value) ?? this.inferExprType(arg.value);
             if (fromType) {
               generated = this.scaleConversionArg(
                 generated,

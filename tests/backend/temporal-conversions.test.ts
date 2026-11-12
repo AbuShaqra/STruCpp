@@ -44,13 +44,38 @@ describe("DT_TO_DATE, DT_TO_TOD and DATE arithmetic", () => {
           "tm := d2 - d;\nd := d + T#1d;\nd := d - T#2d;",
           options,
         );
-        expect(code).toContain("TM = (DATE_TO_NS(D2) - DATE_TO_NS(D));");
         expect(code).toContain(
-          "D = DATE_FROM_NS(DATE_TO_NS(D) + 86400000000000LL);",
+          "TM = ((DATE_TO_DAYS(D2) - DATE_TO_DAYS(D)) * 86400000000000LL);",
         );
         expect(code).toContain(
-          "D = DATE_FROM_NS(DATE_TO_NS(D) - 172800000000000LL);",
+          "D = DATE_FROM_DAYS(DATE_TO_DAYS(D) + iec_unwrap(86400000000000LL) / 86400000000000LL);",
         );
+        expect(code).toContain(
+          "D = DATE_FROM_DAYS(DATE_TO_DAYS(D) - iec_unwrap(172800000000000LL) / 86400000000000LL);",
+        );
+      });
+
+      it("classifies through aliases, dereferences and results", () => {
+        const r = compile(
+          `TYPE MyDate : DATE; END_TYPE
+TYPE MyDT : DT; END_TYPE
+FUNCTION GetD : DATE GetD := D#2024-01-20; END_FUNCTION
+PROGRAM Main
+VAR m1 : MyDate; m2 : MyDate; m : MyDT; t : TOD; d : DATE; tm : TIME; END_VAR
+tm := m2 - m1;
+tm := GetD() - d;
+d := TO_DATE(m);
+t := TO_TOD(CONCAT_DATE_TOD(d, t));
+END_PROGRAM
+`,
+          options,
+        );
+        expect(r.errors).toEqual([]);
+        expect(r.cppCode).toContain(
+          "TM = ((DATE_TO_DAYS(M2) - DATE_TO_DAYS(M1)) * 86400000000000LL);",
+        );
+        expect(r.cppCode).toContain("TO_DATE(DATE_OF_DT(M))");
+        expect(r.cppCode).toContain("TO_TOD(TOD_OF_DT(CONCAT_DATE_TOD(D, T)))");
       });
     });
   }
