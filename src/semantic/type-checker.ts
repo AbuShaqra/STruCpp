@@ -4919,7 +4919,7 @@ export class TypeChecker {
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
-    if (this.strict) this.checkStrictFbOutputs(expr, scope);
+    this.checkFbOutputBindings(expr, scope);
     if (expr.instance || expr.functionName.includes(".")) return;
     if (this.calledInstance(expr.functionName, scope)) return;
     const params = this.calledFunctionParameters(expr.functionName);
@@ -5462,10 +5462,11 @@ export class TypeChecker {
   }
 
   /**
-   * `--strict`: an FB call's `o => v` follows the strict conversion rules of
-   * `v := o`, as a FUNCTION's output does (checkOutputBindings).
+   * An FB call's `o => v` follows the rules of the assignment `v := o`, as a
+   * FUNCTION's output does (checkOutputBindings): its refusals, its narrowing
+   * warning, and its `--strict` errors. The value is copied out by assignment.
    */
-  private checkStrictFbOutputs(
+  private checkFbOutputBindings(
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
@@ -5486,6 +5487,15 @@ export class TypeChecker {
       ) {
         continue;
       }
+      if (scope.lookup(arg.value.name)?.kind === "constant") {
+        this.addError(
+          `Cannot assign to CONSTANT variable '${arg.value.name}'`,
+          arg.value.sourceSpan.startLine,
+          arg.value.sourceSpan.startCol,
+          arg.value.sourceSpan.file,
+        );
+        continue;
+      }
       const bound = this.boundAccessType(arg.value, scope);
       const boundType =
         bound === undefined
@@ -5493,7 +5503,7 @@ export class TypeChecker {
           : this.resolveNamedType(bound.name);
       if (boundType === undefined) continue;
       const outType = this.resolveNamedType(out.typeName);
-      this.checkStrictConversion(boundType, {
+      this.validateAssignment(boundType, outType, arg.value, {
         kind: "VariableExpression",
         sourceSpan: arg.value.sourceSpan,
         name: out.name,
