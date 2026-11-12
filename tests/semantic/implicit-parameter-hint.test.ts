@@ -113,6 +113,28 @@ END_PROGRAM
     ]);
   });
 
+  it("gives an attribute that trails a declaration on its line to neither", () => {
+    const src = `FUNCTION Log : INT
+VAR_INPUT
+  a : INT; {attribute 'implicit-parameter' := 'pouname'}
+  b : INT;
+  {attribute 'implicit-parameter' := 'pouname'} c : STRING;
+  d : INT; {attribute 'implicit-parameter' := 'pouname'} e : STRING;
+  {attribute 'implicit-parameter' := 'position'}
+  f : STRING;
+END_VAR
+Log := 1;
+END_FUNCTION
+PROGRAM Main
+VAR r : INT; END_VAR
+r := Log();
+END_PROGRAM
+`;
+    expect(compile(src).errors.map((e) => e.message)).toEqual([
+      "'LOG' is missing required inputs: A, B, C, D, E, F; this compiler does not fill {attribute 'implicit-parameter'} inputs (C, F): pass them or give them an initial value",
+    ]);
+  });
+
   it("changes nothing when every input is passed", () => {
     for (const opts of MODES) {
       expect(errors("b := LOG('x', 'P', '', 'Q', 1);", opts)).toEqual([]);

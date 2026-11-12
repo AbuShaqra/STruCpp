@@ -65,7 +65,8 @@ function before(
  * with the attribute's value. An attribute belongs to the first declaration
  * after it: one written between the previous declaration of the VAR_INPUT
  * block (or the block's start) and this one, other pragmas and comments
- * between them included.
+ * between them included. An attribute on the line where the previous
+ * declaration ends belongs to neither.
  */
 export function markImplicitParameters(
   ast: CompilationUnit,
@@ -79,17 +80,21 @@ export function markImplicitParameters(
         line: block.sourceSpan.startLine,
         col: block.sourceSpan.startCol,
       };
+      // A pragma on the line where the previous declaration ends trails it.
+      let trailingLine: number | undefined;
       for (const decl of block.declarations) {
         const span = decl.sourceSpan;
         const start = { line: span.startLine, col: span.startCol };
         const pragma = pragmas.find(
           (p) =>
             p.file === span.file &&
+            p.startLine !== trailingLine &&
             before(from, { line: p.startLine, col: p.startColumn }) &&
             before({ line: p.endLine, col: p.endColumn }, start),
         );
         if (pragma) decl.implicitParameter = pragma.value;
         from = { line: span.endLine, col: span.endCol };
+        trailingLine = span.endLine;
       }
     }
   }

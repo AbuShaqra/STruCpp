@@ -510,7 +510,9 @@ input is an ordinary one: a call must pass it unless it has an initial value. Wh
 missing, in every dialect, the error names the attribute: `'LOG' is missing required input: POUNAME; this
 compiler does not fill {attribute 'implicit-parameter'} inputs (POUNAME): pass it or give it an initial
 value`. The attribute belongs to the first declaration after it in its `VAR_INPUT` block; other pragmas
-and comments may stand between them, and an input with no attribute of its own never gets the hint.
+and comments may stand between them, and an input with no attribute of its own never gets the hint. An
+attribute written after a declaration on the line where that declaration ends (`a : INT; {attribute ...}`)
+belongs to neither declaration.
 
 ## Conditional pragmas
 
