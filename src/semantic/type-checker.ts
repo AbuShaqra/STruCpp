@@ -4421,7 +4421,9 @@ export class TypeChecker {
   private calledFunctionParameters(
     name: string,
   ): Array<{ name: string; type: AccessType; output: boolean }> | undefined {
-    const userFn = this.findUserFunction(name);
+    // A bare call of a method of this FB, its bases or this PROGRAM reaches
+    // the method, not a FUNCTION of its name.
+    const userFn = this.ownMethod(name) ?? this.findUserFunction(name);
     if (userFn) {
       return userFn.varBlocks
         .filter(
@@ -4472,12 +4474,36 @@ export class TypeChecker {
     ) {
       return;
     }
-    const boundName = this.boundTypeName(value, scope);
+    const sym = scope.lookup(value.name);
+    if (sym?.kind === "constant") {
+      this.addError(
+        `Cannot assign to CONSTANT variable '${value.name}'`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+      return;
+    }
+    // A bit, a dereference or a REFERENCE TO cannot bind the output's reference.
+    const steps =
+      value.accessChain?.map((st) => (st.kind === "field" ? st.name : "")) ??
+      value.fieldAccess;
+    const indirect =
+      /^\d+$/.test(steps[steps.length - 1] ?? "") ||
+      value.isDereference ||
+      value.accessChain?.some((st) => st.kind === "dereference") === true ||
+      (sym?.kind === "variable" &&
+        !this.hasMemberAccess(value) &&
+        (sym.declaration as VarDeclaration | undefined)?.type.referenceKind ===
+          "reference_to");
+    const bound = indirect ? undefined : this.boundAccessType(value, scope);
+    const boundName = bound?.name;
     const paramType = this.resolveNamedType(param.name);
     const boundType =
       boundName === undefined
         ? value.resolvedType
         : this.resolveNamedType(boundName);
+    if (indirect) arg.inOutCopy = true;
     if (boundType === undefined) return;
     this.validateAssignment(boundType, paramType, value, {
       kind: "VariableExpression",
@@ -4488,23 +4514,40 @@ export class TypeChecker {
       isDereference: false,
       resolvedType: paramType,
     });
-    if (boundName === undefined) return;
+    if (bound === undefined || boundName === undefined) return;
     const paramKey = this.storageKey(param.name);
     const boundKey = this.storageKey(boundName);
     if (
-      paramKey !== undefined &&
-      boundKey !== undefined &&
-      paramKey !== boundKey
+      (paramKey !== undefined &&
+        boundKey !== undefined &&
+        paramKey !== boundKey) ||
+      this.defaultStringIntoSized(param, bound)
     ) {
       arg.inOutCopy = true;
     }
   }
 
-  /** The declared type name of a bound variable, a member or THIS.x one. */
-  private boundTypeName(
+  /** A STRING or WSTRING output of the default length bound to one declared with a length. */
+  private defaultStringIntoSized(
+    param: AccessType,
+    bound: AccessType,
+  ): boolean {
+    const p = this.aliasBase(param.name);
+    if ((p !== "STRING" && p !== "WSTRING") || param.maxLength !== undefined) {
+      return false;
+    }
+    return (
+      this.aliasBase(bound.name) === p &&
+      bound.maxLength !== undefined &&
+      String(bound.maxLength) !== "254"
+    );
+  }
+
+  /** The declared type of a bound variable, a member or THIS.x one. */
+  private boundAccessType(
     value: VariableExpression,
     scope: Scope,
-  ): string | undefined {
+  ): AccessType | undefined {
     const root = value.name.toUpperCase();
     if (root === "THIS" || root === "SUPER") {
       const field = value.fieldAccess[0];
@@ -4523,9 +4566,11 @@ export class TypeChecker {
           : this.ast?.functionBlocks.find(
               (f) => f.name.toUpperCase() === this.currentFBName!.toUpperCase(),
             )?.extends;
-      return owner === undefined
-        ? undefined
-        : this.resolveFieldTypeAnywhere(this.aliasBase(owner), field);
+      const name =
+        owner === undefined
+          ? undefined
+          : this.resolveFieldTypeAnywhere(this.aliasBase(owner), field);
+      return name === undefined ? undefined : { name, referenceKind: "none" };
     }
     const sym = scope.lookup(value.name);
     if (sym?.kind !== "variable") return undefined;
@@ -4541,7 +4586,7 @@ export class TypeChecker {
     ) {
       return undefined;
     }
-    return type.name;
+    return type;
   }
 
   /**
@@ -4551,7 +4596,12 @@ export class TypeChecker {
    */
   private storageKey(name: string): string | undefined {
     const base = this.aliasBase(name);
-    if (ELEMENTARY_TYPES[base] === undefined) return undefined;
+    if (ELEMENTARY_TYPES[base] === undefined) {
+      // A type a library declares (`TYPE LU : USINT` of a -L library): its
+      // manifest gives no base, so it is its own storage.
+      const resolved = this.symbolTables.lookupType(base)?.resolvedType;
+      return resolved?.typeKind === "elementary" ? `lib:${base}` : undefined;
+    }
     if (base === "STRING" || base === "WSTRING") return undefined;
     const storage = INTEGER_STORAGE[base] ?? TEMPORAL_STORAGE[base] ?? base;
     return `${base === name.toUpperCase() ? "iec" : "raw"}:${storage}`;

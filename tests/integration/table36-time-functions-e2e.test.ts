@@ -226,5 +226,69 @@ int main() {
         expect(stdout).toBe("1 9 9 2024 2024 3 5 2024 12 9 2 1969 12 31 23");
       });
     }
+
+    const more = (
+      vendor: boolean,
+    ): string => `FUNCTION Get : BOOL VAR_OUTPUT o : TIME; END_VAR o := T#1s; Get := TRUE; END_FUNCTION
+FUNCTION_BLOCK Fb
+VAR_OUTPUT r : DINT; END_VAR
+VAR ok : BOOL; d : DINT; END_VAR
+METHOD Get : BOOL VAR_OUTPUT o : DINT; END_VAR o := 77; Get := TRUE; END_METHOD
+ok := Get(o => d);
+r := d;
+END_FUNCTION_BLOCK
+FUNCTION FS : BOOL VAR_OUTPUT s : STRING(20); END_VAR s := 'abcdefg'; FS := TRUE; END_FUNCTION
+FUNCTION FStr : BOOL VAR_OUTPUT s : STRING; END_VAR s := 'hello world'; FStr := TRUE; END_FUNCTION
+FUNCTION Nx : INT VAR_IN_OUT k : INT; END_VAR k := k + 1; Nx := k; END_FUNCTION
+FUNCTION FI : BOOL VAR_OUTPUT o : INT; END_VAR o := 42; FI := TRUE; END_FUNCTION
+FUNCTION FB1 : BOOL VAR_OUTPUT b : BOOL; END_VAR b := TRUE; FB1 := TRUE; END_FUNCTION
+PROGRAM Main
+VAR
+  f : Fb; ok : BOOL; arr : ARRAY[0..3] OF STRING(5); k : INT; n1, n2 : INT; v : STRING(5);
+  x, z : INT; p : REF_TO INT; ${vendor ? "rf : REFERENCE TO INT;" : ""} w : WORD;
+END_VAR
+f();
+ok := FS(s => arr[Nx(k)]);
+n1 := k * 10 + LEN(arr[1]);
+ok := FStr(s => v);
+n2 := LEN(v);
+p := REF(x);
+ok := FI(o => p^);
+${vendor ? "rf REF= z;\nok := FI(o => rf);" : "z := 42;"}
+ok := FB1(b => w.3);
+END_PROGRAM
+`;
+
+    for (const [label, options] of [
+      ["no dialect", {}],
+      ["iec-3", { dialect: "iec-3" }],
+      ["strict", { strict: true }],
+    ] as const) {
+      it(`binds a bare method's own output, a STRING(n) once, a dereference, a reference and a bit (${label})`, () => {
+        const result = compile(more(label !== "iec-3"), {
+          ...options,
+          headerFileName: "generated.hpp",
+        });
+        expect(result.errors).toEqual([]);
+        const stdout = compileAndRunStandalone({
+          tempDir,
+          pchPath,
+          headerCode: result.headerCode,
+          cppCode: result.cppCode,
+          testName: `t36_more_${label.replace(/\W/g, "_")}`,
+          mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.F.R.get() << " " << p.N1.get() << " " << p.N2.get() << " " << p.X.get() << " "
+              << p.Z.get() << " " << p.W.get() << std::endl;
+    return 0;
+}
+`,
+        });
+        expect(stdout).toBe("77 15 5 42 42 8");
+      });
+    }
   },
 );

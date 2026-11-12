@@ -4510,13 +4510,23 @@ export class CodeGenerator {
     const read = this.generateVariableExpression(arg);
     const copyIn = arg.unionMember === true ? `union_value(${read})` : read;
     const upper = arg.name.toUpperCase();
-    const copyOut = this.compositeExternals.has(upper)
-      ? this.compositeGlobalStore(arg, tmp)
-      : this.programExternals.has(upper) &&
-          arg.fieldAccess.length === 0 &&
-          !arg.isDereference
-        ? `${arg.name}->write(${tmp});`
-        : `${read} = ${tmp};`;
+    const bitStore = this.bitStore(arg, tmp);
+    // A dereference, a REFERENCE TO or a bit is no lvalue a reference can hold.
+    const plainLvalue =
+      bitStore === undefined &&
+      !arg.isDereference &&
+      arg.accessChain?.some((s) => s.kind === "dereference") !== true &&
+      this.currentScopeVarRefKinds.get(upper) !== "reference_to";
+    const copyOut =
+      bitStore !== undefined
+        ? bitStore
+        : this.compositeExternals.has(upper)
+          ? this.compositeGlobalStore(arg, tmp)
+          : this.programExternals.has(upper) &&
+              arg.fieldAccess.length === 0 &&
+              !arg.isDereference
+            ? `${arg.name}->write(${tmp});`
+            : `${read} = ${tmp};`;
     // A temporary of the parameter's type when the argument's type differs.
     const declaration =
       cppType !== undefined
@@ -4524,6 +4534,7 @@ export class CodeGenerator {
         : `auto ${tmp} = ${copyIn};`;
     if (
       once === true &&
+      plainLvalue &&
       cppType !== undefined &&
       copyOut === `${read} = ${tmp};`
     ) {
@@ -4533,6 +4544,26 @@ export class CodeGenerator {
       };
     }
     return { declaration, copyOut };
+  }
+
+  /** `v.N := value` for a bit access `v.N` (see generateAssignmentStatement); undefined otherwise. */
+  private bitStore(
+    target: VariableExpression,
+    value: string,
+  ): string | undefined {
+    const bitIdx = this.lastFieldBitIndex(target);
+    if (bitIdx === undefined) return undefined;
+    const baseVar: VariableExpression = {
+      ...target,
+      fieldAccess: target.fieldAccess.slice(0, -1),
+    };
+    if (target.accessChain) {
+      const trimmed = this.trimLastFieldFromAccessChain(target.accessChain);
+      if (trimmed) baseVar.accessChain = trimmed;
+      else delete baseVar.accessChain;
+    }
+    const baseCode = this.generateLvalue(baseVar);
+    return `${baseCode} = (${baseCode} & ~(1ULL << ${bitIdx})) | ((${value} ? 1ULL : 0ULL) << ${bitIdx});`;
   }
 
   /** Write the queued copy-outs of the current statement. */
@@ -4757,7 +4788,7 @@ export class CodeGenerator {
         result.push({
           value,
           cppType: this.inOutParamType(param.type),
-          ...(arg.inOutCopy === true ? { once: true as const } : {}),
+          once: true as const,
         });
       } else if (
         (arg.isOutput || param.blockType === "VAR_OUTPUT") &&

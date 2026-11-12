@@ -67,7 +67,7 @@ END_PROGRAM
           /IECStringVar<5> (__gio_\d+); \1 = U;\n\s*I = FL\(\1\);\n\s*U = \1;/,
         );
         expect(r.cppCode).toMatch(
-          /IECStringVar<5> (__gio_\d+); \1 = W;\n\s*I = FO\(\1\);\n\s*W = \1;/,
+          /auto& (__gio_\d+)_ref = W; IECStringVar<5> \1; \1 = \1_ref;\n\s*I = FO\(\1\);\n\s*\1_ref = \1;/,
         );
       });
     });

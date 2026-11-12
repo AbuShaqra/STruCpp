@@ -246,7 +246,12 @@ export class TestCodeGenerator extends CodeGenerator {
   protected override generateFunctionCallExpression(
     expr: FunctionCallExpression,
   ): string {
-    if (this.userFunctionNames.has(expr.functionName.toUpperCase())) {
+    // With the AST the production path binds named arguments, defaults and
+    // omitted outputs, and already prefers a user FUNCTION.
+    if (
+      this.ast === undefined &&
+      this.userFunctionNames.has(expr.functionName.toUpperCase())
+    ) {
       const args = expr.arguments
         .map((arg) => this.generateExpression(arg.value))
         .join(", ");

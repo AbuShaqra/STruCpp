@@ -176,6 +176,18 @@ END_PROGRAM
     });
   }
 
+  for (const [label, options] of MODES) {
+    it(`refuses an output bound to a CONSTANT, as its assignment (${label})`, () => {
+      const r = compile(
+        "FUNCTION FU : BOOL VAR_OUTPUT o : USINT; END_VAR o := 9; FU := TRUE; END_FUNCTION\nPROGRAM Main VAR CONSTANT c : USINT := 1; END_VAR VAR ok : BOOL; END_VAR ok := FU(o => c); END_PROGRAM\n",
+        { ...options, libraries: noOscat },
+      );
+      expect(r.errors.map((e) => e.message)).toEqual([
+        "Cannot assign to CONSTANT variable 'C'",
+      ]);
+    });
+  }
+
   it("keeps the other Table 36 functions when a library declares one name", () => {
     const lib = compileStlib(
       [
