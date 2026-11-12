@@ -221,9 +221,11 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 `--strict` applies in every mode that compiles ST (compile, build, `--test`, `--compile-lib`,
 `--import-lib`) and reports each problem at its ST line. It rejects:
 
-- implicit conversions other than exact widenings (narrowing, signed to unsigned, lossy
-  integer/REAL conversions, BOOL to or from a number); untyped constants such as `-1` or
-  `1 + 2` take the type they are assigned to, and `0`, `1` and `NOT 1` fit a BOOL;
+- implicit conversions other than those of IEC Ed. 3 Figures 11 and 12 (narrowing, signed to
+  unsigned, lossy integer/REAL conversions, BOOL to or from a number, a bit string to or from an
+  integer or REAL, a bit string into a narrower one or into BOOL); BOOL or a bit string into a
+  wider bit string is accepted; untyped constants such as `-1`, `16#FF` or `1 + 2` take the type
+  they are assigned to, and `0`, `1` and `NOT 1` fit a BOOL;
 - arithmetic on BOOL or on BYTE/WORD/DWORD/LWORD, and an integer used as TIME;
 - the reserved names ON, STEP and MOVE for a variable, POU, method, type, field, enum value,
   configuration, resource, task or program instance (a FUNCTION may still be named MOVE);

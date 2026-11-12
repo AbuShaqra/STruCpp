@@ -173,8 +173,8 @@ into a wider one of the same signedness, an unsigned integer into a wider signed
 LINT; UINT into DINT or LINT; UDINT into LINT), SINT, INT, USINT and UINT into REAL, an integer up to 32 bits into
 LREAL, REAL into LREAL, a bit string into a wider one (BOOL into BYTE included), and TIME, DT, DATE and TOD into
 their long forms. Without `--strict` some conversions the figures leave explicit are also accepted (a bit string
-and an integer of a sufficient width, DINT into REAL), and a narrowing is a warning; `--strict` refuses a narrowing
-between integers and REALs but keeps the warning for one involving a bit string.
+and an integer of a sufficient width, DINT into REAL), and a narrowing is a warning; `--strict` refuses every
+conversion the figures do not list, a bit string to or from an integer or REAL included.
 
 **REAL/LREAL to integer.** `REAL_TO_*` and `LREAL_TO_*` to an integer type round to nearest (half away from
 zero), saturate at the target's range and give 0 for NaN, instead of the undefined behaviour of a plain C++

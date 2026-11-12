@@ -412,7 +412,7 @@ const STRICT_BIT_STRINGS: ReadonlySet<string> = new Set([
   "LWORD",
 ]);
 
-type StrictKind = "int" | "real" | "bool";
+type StrictKind = "int" | "real" | "bool" | "bit";
 /** The literal kind of an untyped constant expression. */
 type StrictConstKind = "INT" | "REAL" | "BOOL";
 /** Generic constraints: a parameter or result of this kind takes its type from the call. */
@@ -431,6 +431,7 @@ function strictKind(name: string): StrictKind | undefined {
   if (n === "BOOL") return "bool";
   if (n === "REAL" || n === "LREAL") return "real";
   if (/^U?(SINT|INT|DINT|LINT)$/.test(n)) return "int";
+  if (STRICT_BIT_STRINGS.has(n)) return "bit";
   return undefined;
 }
 
@@ -439,9 +440,10 @@ function strictConversionMessage(from: string, to: string): string {
 }
 
 /**
- * Whether converting `from` to `to` loses nothing: integer to a wider integer
- * (unsigned to a wider signed too, never signed to unsigned), SINT/INT/USINT/UINT
- * to REAL, any integer up to 32 bits to LREAL, and REAL to LREAL.
+ * Whether converting `from` to `to` is implicit (Ed. 3 Figures 11 and 12):
+ * integer to a wider integer (unsigned to a wider signed too, never signed to
+ * unsigned), SINT/INT/USINT/UINT to REAL, any integer up to 32 bits to LREAL,
+ * REAL to LREAL, and BOOL or a bit string to a wider bit string.
  */
 function strictIsExactWidening(from: string, to: string): boolean {
   const fromKind = strictKind(from);
@@ -461,6 +463,9 @@ function strictIsExactWidening(from: string, to: string): boolean {
   }
   if (fromKind === "real" && toKind === "real") {
     return from === "REAL" && to === "LREAL";
+  }
+  if ((fromKind === "bit" || fromKind === "bool") && toKind === "bit") {
+    return toBits > fromBits;
   }
   return false;
 }
@@ -6354,10 +6359,10 @@ export class TypeChecker {
     kind: StrictKind | undefined,
   ): boolean {
     return k === "INT"
-      ? kind === "int" || kind === "real"
+      ? kind === "int" || kind === "real" || kind === "bit"
       : k === "REAL"
         ? kind === "real"
-        : kind === "bool";
+        : kind === "bool" || kind === "bit";
   }
 
   /**

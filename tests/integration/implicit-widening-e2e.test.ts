@@ -66,4 +66,45 @@ int main() {
       expect(stdout).toBe("65535 255 4294967295 255 65535 131070");
     });
   }
+
+  const BITS = `PROGRAM Main
+VAR b : BYTE := 16#81; w : WORD; d : DWORD; x : BOOL := TRUE; bx : BYTE; i : INT; r : REAL; END_VAR
+w := b;
+d := w;
+bx := x;
+i := WORD_TO_INT(w);
+r := DWORD_TO_REAL(d);
+END_PROGRAM
+`;
+  for (const [label, options] of [
+    ["no dialect", {}],
+    ["iec-3", { dialect: "iec-3" }],
+    ["strict", { strict: true }],
+  ] as const) {
+    it(`widens bit strings and converts them explicitly (${label})`, () => {
+      const result = compile(BITS, {
+        ...options,
+        headerFileName: "generated.hpp",
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `bits_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.W.get() << " " << p.D.get() << " " << int(p.BX.get()) << " " << p.I.get() << " "
+              << p.R.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe("129 129 1 129 129");
+    });
+  }
 });
