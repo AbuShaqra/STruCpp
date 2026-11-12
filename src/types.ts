@@ -127,6 +127,14 @@ export interface CompileOptions {
   /** Whether this is a test build (adds mock infrastructure to generated code) */
   isTestBuild?: boolean;
 
+  /**
+   * The generated C++ is built with STRUCPP_THREADED (each task on its own
+   * thread). The warnings about a shared global reached by reference then
+   * apply even to a single-task CONFIGURATION. The CLI sets it for `--build`
+   * and `--test` when `--cxx-flags` defines STRUCPP_THREADED.
+   */
+  threaded?: boolean;
+
   /** Global constants injected as constexpr into the C++ header preamble (before namespace).
    *  Useful for library-wide sizing parameters like STRING_LENGTH, LIST_LENGTH. */
   globalConstants?: Record<string, number>;

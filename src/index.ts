@@ -1149,6 +1149,7 @@ export function compile(
       ? { emitChunkMarkers: true }
       : {}),
     ...(pipeline.fbInit ? { fbInit: true } : {}),
+    ...(pipeline.mergedOptions.threaded === true ? { threaded: true } : {}),
   });
   codegen.setProjectModel(pipeline.projectModel!);
 

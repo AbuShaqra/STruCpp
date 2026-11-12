@@ -211,7 +211,7 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 | `--build`             | Build interactive REPL binary after compilation               |
 | `--gpp <path>`        | Custom g++ path (default: `g++`)                              |
 | `--cc <path>`         | Custom C compiler path (default: `cc`)                        |
-| `--cxx-flags <flags>` | Extra flags passed to g++ (supports quoted paths)             |
+| `--cxx-flags <flags>` | Extra flags passed to g++ (supports quoted paths); `-DSTRUCPP_THREADED` here marks a `--build`/`--test` build as threaded (below) |
 | `-D NAME[=VALUE]`     | Define a conditional-pragma name (`--define`, `-DNAME`; repeatable; the name is case-sensitive in `defined()`, and `{undefine}` in a source cannot remove it); an integer VALUE also defines a global constant (emits `constexpr size_t`). A name that is not an identifier is a usage error. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
 | `--pragma-define NAME[=VALUE]` | Define a conditional-pragma name only (repeatable): whatever VALUE is, no global constant. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
 | `--file-define <file>=NAME[=VALUE]` | Define a conditional-pragma name for input `<file>` only, on top of the project defines (repeatable; not with `--compile-lib`): seen by `defined()` and `hasvalue()` in that file (over a project define of the same name), not by `project_defined()`. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
@@ -221,9 +221,13 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 `--strict` applies in every mode that compiles ST (compile, build, `--test`, `--compile-lib`,
 `--import-lib`) and reports each problem at its ST line. It rejects:
 
-- implicit conversions other than exact widenings (narrowing, signed to unsigned, lossy
-  integer/REAL conversions, BOOL to or from a number); untyped constants such as `-1` or
-  `1 + 2` take the type they are assigned to, and `0`, `1` and `NOT 1` fit a BOOL;
+- implicit conversions other than those of IEC Ed. 3 Figures 11 and 12 (narrowing, signed to
+  unsigned, lossy integer/REAL conversions, BOOL to or from a number, a bit string to or from an
+  integer or REAL, a bit string into a narrower one or into BOOL); BOOL or a bit string into a
+  wider bit string is accepted; untyped constants such as `-1`, `16#FF` or `1 + 2` take the type
+  they are assigned to, and `0`, `1` and `NOT 1` fit a BOOL; AND, OR and XOR with a bit-string
+  operand have the wider bit string's type; the same rules apply to an output captured with
+  `o => v`, from a FUNCTION or a function block;
 - arithmetic on BOOL or on BYTE/WORD/DWORD/LWORD, and an integer used as TIME;
 - the reserved names ON, STEP and MOVE for a variable, POU, method, type, field, enum value,
   configuration, resource, task or program instance (a FUNCTION may still be named MOVE);
@@ -234,6 +238,11 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 
 A dialect feature can relax one of these checks: `end_semicolon_optional` accepts the missing `;`
 under `--strict`. See "Strict checks a feature relaxes" in [DIALECTS.md](DIALECTS.md).
+
+A VAR_IN_OUT bound to a shared CONFIGURATION global, or a REF/ADR of one, is warned about only where
+another task can use the global at the same time: when the CONFIGURATION runs more than one task, or when
+`--build` or `--test` builds threaded (`--cxx-flags` defines `STRUCPP_THREADED`). A single-task program
+compiled without threading gets no such warning. API callers pass `threaded: true` to `compile()` instead.
 
 ### Dialects
 

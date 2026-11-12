@@ -616,11 +616,14 @@ describe('Error Handling Tests', () => {
           VAR mv : Mover; END_VAR
           mv(a := ax);
         END_PROGRAM
+        PROGRAM Other END_PROGRAM
         CONFIGURATION Config0
           VAR_GLOBAL ax : Axis; END_VAR
           RESOURCE Res0 ON PLC
             TASK t(INTERVAL := T#20ms, PRIORITY := 1);
+            TASK t2(INTERVAL := T#50ms, PRIORITY := 2);
             PROGRAM p WITH t : Main;
+            PROGRAM q WITH t2 : Other;
           END_RESOURCE
         END_CONFIGURATION
       `;
