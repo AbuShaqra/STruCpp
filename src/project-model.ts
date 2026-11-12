@@ -60,6 +60,8 @@ export interface ProjectConfig {
 export interface TimeValue {
   /** Time in nanoseconds */
   nanoseconds: number;
+  /** Time in nanoseconds, exact (LTIME spans past 2^53 ns) */
+  exact: bigint;
   /** Original string representation */
   rawValue: string;
 }
@@ -427,36 +429,38 @@ export function parseDtLiteralToNs(literal: string): bigint {
 }
 
 export function parseTimeLiteral(literal: string): TimeValue {
-  const rawValue = literal;
-  let nanoseconds = 0;
+  const exact = exactTimeLiteralNanoseconds(literal);
+  return { nanoseconds: Number(exact), exact, rawValue: literal };
+}
 
-  // Remove T# or TIME# prefix (case insensitive), then the optional sign
-  let value = literal.replace(/^(T|TIME)#/i, "");
+const TIME_UNIT_NS: Record<string, bigint> = {
+  d: 86_400_000_000_000n,
+  h: 3_600_000_000_000n,
+  m: 60_000_000_000n,
+  s: 1_000_000_000n,
+  ms: 1_000_000n,
+  us: 1_000n,
+  ns: 1n,
+};
+
+/**
+ * The exact nanosecond count of a TIME or LTIME literal (`T#1d2h`, `LTIME#-1_500ms`,
+ * `LT#1.5s`): prefix and underscores dropped, each number times its unit, a
+ * fraction truncated to whole nanoseconds.
+ */
+export function exactTimeLiteralNanoseconds(literal: string): bigint {
+  let value = literal.replace(/^(?:LTIME|LT|TIME|T)#/i, "").replace(/_/g, "");
   const negative = value.startsWith("-");
   value = value.replace(/^[+-]/, "");
-
-  // Parse components: d (days), h (hours), m (minutes), s (seconds), ms (milliseconds), us (microseconds), ns (nanoseconds)
-  const patterns = [
-    { regex: /(\d+(?:\.\d+)?)d/i, multiplier: 24 * 60 * 60 * 1_000_000_000 },
-    { regex: /(\d+(?:\.\d+)?)h/i, multiplier: 60 * 60 * 1_000_000_000 },
-    { regex: /(\d+(?:\.\d+)?)m(?!s)/i, multiplier: 60 * 1_000_000_000 },
-    { regex: /(\d+(?:\.\d+)?)s(?!$)/i, multiplier: 1_000_000_000 },
-    { regex: /(\d+(?:\.\d+)?)ms/i, multiplier: 1_000_000 },
-    { regex: /(\d+(?:\.\d+)?)us/i, multiplier: 1_000 },
-    { regex: /(\d+(?:\.\d+)?)ns/i, multiplier: 1 },
-    // Handle bare seconds at the end (e.g., T#1s)
-    { regex: /(\d+(?:\.\d+)?)s$/i, multiplier: 1_000_000_000 },
-  ];
-
-  for (const { regex, multiplier } of patterns) {
-    const match = value.match(regex);
-    if (match && match[1] !== undefined) {
-      nanoseconds += parseFloat(match[1]) * multiplier;
-      value = value.replace(regex, "");
+  let total = 0n;
+  for (const m of value.matchAll(/(\d+)(?:\.(\d+))?(ms|us|ns|d|h|m|s)/gi)) {
+    const unit = TIME_UNIT_NS[m[3]!.toLowerCase()]!;
+    total += BigInt(m[1]!) * unit;
+    if (m[2] !== undefined) {
+      total += (BigInt(m[2]) * unit) / 10n ** BigInt(m[2].length);
     }
   }
-
-  return { nanoseconds: negative ? -nanoseconds : nanoseconds, rawValue };
+  return negative ? -total : total;
 }
 
 // =============================================================================

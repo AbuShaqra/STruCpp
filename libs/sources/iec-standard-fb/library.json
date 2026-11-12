@@ -74,6 +74,15 @@
     },
     "TP": {
       "documentation": "The pulse timer can be used to generate output pulses of a given time duration."
+    },
+    "LTON": {
+      "documentation": "The on-delay timer with an LTIME preset and elapsed time."
+    },
+    "LTOF": {
+      "documentation": "The off-delay timer with an LTIME preset and elapsed time."
+    },
+    "LTP": {
+      "documentation": "The pulse timer with an LTIME preset and elapsed time."
     }
   }
 }

@@ -232,18 +232,27 @@ describe("Codegen - Function Calls", () => {
       expect(result.cppCode).toContain("TO_UDINT(DATE_TO_SECONDS(");
     });
 
-    it("has no declarable L variants yet, so their unit rows are unreachable", () => {
-      // TEMPORAL_CONVERSION_UNITS carries LTIME / LTOD / LDT / LDATE rows and
-      // codegen has always branched on those names, but the frontend does not
-      // accept them as types — `VAR v : LDT;` is "Undefined type 'LDT'", and
-      // they appear nowhere in ELEMENTARY_TYPE_NAMES or the type registry. So
-      // that half of the table is correct-in-principle and dead in practice.
-      //
-      // This test pins that, and is meant to FAIL the day the types are added
-      // — at which point the L rows become reachable and need the coverage
-      // that cannot be written today. CODESYS makes all four nanoseconds,
-      // which is already what the table says.
-      for (const type of ["LTIME", "LTOD", "LDT", "LDATE"]) {
+    it("converts LTIME and integers in nanoseconds, with no unit call", () => {
+      // LTIME is declarable: its TEMPORAL_CONVERSION_UNITS row (nanoseconds,
+      // the stored unit) is reached and emits a plain conversion.
+      const result = compile(
+        `PROGRAM Main
+ VAR v : LTIME; n : LINT; END_VAR
+ n := LTIME_TO_LINT(v);
+ v := LINT_TO_LTIME(n);
+END_PROGRAM`,
+        { headerFileName: "generated.hpp" },
+      );
+      expect(result.errors).toEqual([]);
+      expect(result.cppCode).toContain("N = TO_LINT(V);");
+      expect(result.cppCode).toContain("V = TO_LTIME(N);");
+    });
+
+    it("has no declarable LTOD, LDT or LDATE yet, so their unit rows are unreachable", () => {
+      // TEMPORAL_CONVERSION_UNITS carries LTOD / LDT / LDATE rows, but the
+      // frontend does not accept them as types yet. This test is meant to FAIL
+      // the day they are added, at which point those rows need real tests.
+      for (const type of ["LTOD", "LDT", "LDATE"]) {
         const result = compile(
           `PROGRAM Main\n VAR v : ${type}; END_VAR\nEND_PROGRAM`,
           { headerFileName: "generated.hpp" },
@@ -797,6 +806,8 @@ describe("Codegen - omitted inputs take their default", () => {
       END_PROGRAM
     `);
     expect(result.cppCode).toMatch(/FB\.M\(7, ST_P\(\), __output_tmp_\d+\)/);
-    expect(result.cppCode).toMatch(/RUN_result = M\(1, ST_P\(\), __output_tmp_\d+\)/);
+    expect(result.cppCode).toMatch(
+      /RUN_result = M\(1, ST_P\(\), __output_tmp_\d+\)/,
+    );
   });
 });

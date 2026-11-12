@@ -181,6 +181,15 @@ template<typename T> struct is_any_string;  // IECString, IECWString
 
 Used by standard function templates for type-safe dispatch.
 
+## LTIME
+
+LTIME is stored as TIME is, signed 64-bit nanoseconds (`IEC_LTIME` and
+`IEC_TIME` are both `IECVar<int64_t>`). For debugger hosts an LTIME leaf is a
+`TAG_TIME` leaf of 8 bytes, and `libs/iec-types.json` lists LTIME with the
+`duration-ns-i64` wire format TIME uses; a host tells the two apart by the
+declared type, not by the wire. `TO_LTIME` and `ADD_LTIME` / `SUB_LTIME` /
+`MUL_LTIME` / `DIV_LTIME` are the TIME helpers under their LTIME names.
+
 ## String Types (`iec_string.hpp`, `iec_wstring.hpp`)
 
 ```cpp

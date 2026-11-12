@@ -115,6 +115,7 @@ import {
   integerTypeRange,
 } from "../literal-utils.js";
 import { cp1252Byte } from "../byte-utils.js";
+import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import { libraryOverloadFor } from "./library-overload.js";
 
 // =============================================================================
@@ -1905,6 +1906,7 @@ export class SemanticAnalyzer {
     // Validate that integer literals fit an IEC integer type
     this.validateIntegerLiteralRange(ast);
     this.validateStringLiteralCharset(ast);
+    this.validateLtimeLiteralRange(ast);
 
     // TODO: Implement additional semantic validation
     // - Check CASE statement coverage
@@ -2373,6 +2375,27 @@ export class SemanticAnalyzer {
     for (const root of Array.isArray(roots) ? roots : [roots]) {
       walkAST(root as ASTNode, (n) => visit(n));
     }
+  }
+
+  /**
+   * Reject an LTIME literal outside the signed 64-bit nanosecond range LTIME
+   * holds (about 106751 days either way).
+   */
+  private validateLtimeLiteralRange(ast: CompilationUnit): void {
+    walkAST(ast, (node) => {
+      if (node.kind !== "LiteralExpression") return;
+      const literal = node as LiteralExpression;
+      if (literal.literalType !== "LTIME") return;
+      const ns = exactTimeLiteralNanoseconds(literal.rawValue);
+      if (ns >= -(2n ** 63n) && ns < 2n ** 63n) return;
+      const span = literal.sourceSpan;
+      this.addError(
+        `LTIME literal '${literal.rawValue}' is outside the LTIME range (${-(2n ** 63n)} to ${2n ** 63n - 1n} nanoseconds)`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    });
   }
 
   /**
@@ -4694,6 +4717,14 @@ export class SemanticAnalyzer {
     }
     if (this.testTypeNames.has(upper)) return true;
     const sym = this.symbolTables.globalScope.lookup(upper);
+    // An elementary type that is no global scope builtin (LTIME): a global
+    // variable may still bear its name, as before it was a type.
+    if (
+      (sym === undefined || sym.kind === "variable") &&
+      ELEMENTARY_TYPES[upper] !== undefined
+    ) {
+      return true;
+    }
     if (!sym) return false;
     return (
       sym.kind === "type" ||

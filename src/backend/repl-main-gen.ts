@@ -59,6 +59,7 @@ const TYPE_TAG_MAP: Record<string, string> = {
   DWORD: "DWORD",
   LWORD: "LWORD",
   TIME: "TIME",
+  LTIME: "TIME",
   STRING: "STRING",
 };
 

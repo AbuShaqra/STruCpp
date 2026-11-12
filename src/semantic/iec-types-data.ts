@@ -297,6 +297,17 @@ export const IEC_BASE_TYPES: readonly IECTypeMetadata[] = [
     literalDisplay: "T#1d2h3m",
   },
   {
+    name: "LTIME",
+    aliases: [],
+    byteSize: 8,
+    bits: 64,
+    signed: true,
+    cppType: "LTIME_t",
+    wireFormat: "duration-ns-i64",
+    xml: { elementName: "LTIME", plcopenStandard: false },
+    literalDisplay: "LTIME#1d2h3m",
+  },
+  {
     name: "DATE",
     aliases: [],
     byteSize: 8,
