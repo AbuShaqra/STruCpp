@@ -200,5 +200,42 @@ describe("implicit widening (Figures 11 and 12)", () => {
       );
       expect(constants.errors).toEqual([]);
     });
+
+    it(`types AND, OR and XOR on bit strings as the wider bit string (${label})`, () => {
+      const strict = label === "strict";
+      const r = compile(
+        "PROGRAM Main\nVAR b : BYTE; w : WORD; x, y : BOOL; i : INT; d : DWORD; END_VAR\nb := w OR b;\nx := w AND w;\ni := w XOR w;\nd := w AND b;\nx := x OR y;\nEND_PROGRAM\n",
+        options,
+      );
+      if (strict) {
+        expect(r.errors.map((e) => e.message)).toEqual([
+          "Implicit conversion from WORD to BYTE is not allowed; use WORD_TO_BYTE",
+          "Implicit conversion from WORD to BOOL is not allowed; use WORD_TO_BOOL",
+          "Implicit conversion from WORD to INT is not allowed; use WORD_TO_INT",
+        ]);
+      } else {
+        expect(r.errors).toEqual([]);
+        expect(r.warnings.map((w) => w.message)).toEqual([
+          "Implicit narrowing conversion from WORD to BYTE",
+          "Implicit narrowing conversion from WORD to BOOL",
+        ]);
+      }
+    });
+
+    it(`checks an FB output capture as a FUNCTION's under --strict (${label})`, () => {
+      const strict = label === "strict";
+      const r = compile(
+        "FUNCTION_BLOCK FB VAR_OUTPUT o : WORD; d : DINT; END_VAR END_FUNCTION_BLOCK\nPROGRAM Main\nVAR b : BYTE; s : SINT; fb : FB; l : LINT; dw : DWORD; END_VAR\nfb(o => b);\nfb(d => s);\nfb(d => l, o => dw);\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.errors.map((e) => e.message)).toEqual(
+        strict
+          ? [
+              "Implicit conversion from WORD to BYTE is not allowed; use WORD_TO_BYTE",
+              "Implicit conversion from DINT to SINT is not allowed; use DINT_TO_SINT",
+            ]
+          : [],
+      );
+    });
   }
 });

@@ -74,6 +74,7 @@ d := w;
 bx := x;
 i := WORD_TO_INT(w);
 r := DWORD_TO_REAL(d);
+d := w AND 16#0F OR b;
 END_PROGRAM
 `;
   for (const [label, options] of [

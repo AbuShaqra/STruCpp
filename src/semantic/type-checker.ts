@@ -1789,7 +1789,8 @@ export class TypeChecker {
     }
     // Logical operators return BOOL
     else if (["AND", "OR", "XOR"].includes(expr.operator)) {
-      type = ELEMENTARY_TYPES["BOOL"];
+      type =
+        this.bitwiseResultType(leftType, rightType) ?? ELEMENTARY_TYPES["BOOL"];
     }
     // IEC 61131-3 date/time arithmetic (table 30 of the standard).
     // Date types are int64_t aliases at the C++ level so the operator-
@@ -1889,6 +1890,23 @@ export class TypeChecker {
     const type = ELEMENTARY_TYPES["BOOL"]!;
     expr.resolvedType = type;
     return type;
+  }
+
+  /**
+   * AND, OR or XOR with a bit-string operand (BYTE to LWORD): the wider
+   * bit string of the two. Undefined otherwise (BOOL operands give BOOL).
+   */
+  private bitwiseResultType(
+    leftType: IECType,
+    rightType: IECType,
+  ): IECType | undefined {
+    const bits = [leftType, rightType].flatMap((t) => {
+      if (t.typeKind !== "elementary") return [];
+      const name = this.aliasBase((t as ElementaryType).name);
+      return STRICT_BIT_STRINGS.has(name) ? [ELEMENTARY_TYPES[name]!] : [];
+    });
+    if (bits.length === 0) return undefined;
+    return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
   }
 
   /**
@@ -4900,6 +4918,7 @@ export class TypeChecker {
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
+    if (this.strict) this.checkStrictFbOutputs(expr, scope);
     if (expr.instance || expr.functionName.includes(".")) return;
     if (this.calledInstance(expr.functionName, scope)) return;
     const params = this.calledFunctionParameters(expr.functionName);
@@ -5439,6 +5458,127 @@ export class TypeChecker {
     const declared = sym.declaration as VarDeclaration | undefined;
     if (!declared) return undefined;
     return this.fbInputsOf(declared.type.name);
+  }
+
+  /**
+   * `--strict`: an FB call's `o => v` follows the strict conversion rules of
+   * `v := o`, as a FUNCTION's output does (checkOutputBindings).
+   */
+  private checkStrictFbOutputs(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (!expr.arguments.some((a) => a.isOutput)) return;
+    const fbType = this.calledFbType(expr, scope);
+    if (fbType === undefined) return;
+    const outputs = this.fbOutputsOf(fbType);
+    for (const arg of expr.arguments) {
+      if (!arg.isOutput || arg.name === undefined) continue;
+      if (arg.value.kind !== "VariableExpression") continue;
+      const upper = arg.name.toUpperCase();
+      if (upper === "ENO") continue;
+      const out = outputs.find((o) => o.name.toUpperCase() === upper);
+      if (
+        out === undefined ||
+        out.arrayDimensions !== undefined ||
+        (out.referenceKind ?? "none") !== "none"
+      ) {
+        continue;
+      }
+      const bound = this.boundAccessType(arg.value, scope);
+      const boundType =
+        bound === undefined
+          ? arg.value.resolvedType
+          : this.resolveNamedType(bound.name);
+      if (boundType === undefined) continue;
+      const outType = this.resolveNamedType(out.typeName);
+      this.checkStrictConversion(boundType, {
+        kind: "VariableExpression",
+        sourceSpan: arg.value.sourceSpan,
+        name: out.name,
+        fieldAccess: [],
+        subscripts: [],
+        isDereference: false,
+        resolvedType: outType,
+      });
+    }
+  }
+
+  /** The FB type an instance call invokes: `fb(...)`, `arr[i](...)`, `s.f(...)`. */
+  private calledFbType(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): string | undefined {
+    if (expr.instance !== undefined) {
+      const t = this.resolveExprType(expr.instance, scope);
+      return t?.typeKind === "elementary"
+        ? (t as ElementaryType).name
+        : undefined;
+    }
+    const parts = expr.functionName.split(".");
+    if (parts.length === 1) {
+      if (!this.calledInstance(expr.functionName, scope)) return undefined;
+      const sym = scope.lookup(expr.functionName);
+      return sym?.kind === "variable"
+        ? (sym.declaration as VarDeclaration | undefined)?.type.name
+        : this.inheritedMemberType(expr.functionName)?.name;
+    }
+    if (parts.length !== 2) return undefined;
+    const owner = this.callOwnerType(parts[0]!, scope);
+    return owner === undefined
+      ? undefined
+      : this.resolveFieldTypeAnywhere(this.aliasBase(owner), parts[1]!);
+  }
+
+  /** The VAR_OUTPUTs of a function block type and its bases, a library's too. */
+  private fbOutputsOf(fbTypeName: string): Array<{
+    name: string;
+    typeName: string;
+    arrayDimensions?: unknown;
+    referenceKind?: string;
+  }> {
+    const upper = this.aliasBase(fbTypeName).toUpperCase();
+    const out: Array<{
+      name: string;
+      typeName: string;
+      arrayDimensions?: unknown;
+      referenceKind?: string;
+    }> = [];
+    let current: string | undefined = upper;
+    for (let depth = 0; current !== undefined && depth < 32; depth++) {
+      const name: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name,
+      );
+      if (!fb) {
+        const lib = this.symbolTables.lookupFunctionBlock(name);
+        for (const m of lib?.outputs ?? []) {
+          const t = m.declaration.type;
+          out.push({
+            name: m.name,
+            typeName: t.name,
+            arrayDimensions: t.arrayDimensions,
+            referenceKind: t.referenceKind,
+          });
+        }
+        break;
+      }
+      for (const b of fb.varBlocks) {
+        if (b.blockType !== "VAR_OUTPUT") continue;
+        for (const d of b.declarations) {
+          for (const n of d.names) {
+            out.push({
+              name: n,
+              typeName: d.type.name,
+              arrayDimensions: d.type.arrayDimensions,
+              referenceKind: d.type.referenceKind,
+            });
+          }
+        }
+      }
+      current = fb.extends?.toUpperCase();
+    }
+    return out;
   }
 
   /** The VAR_INPUT and VAR_IN_OUT of a function block type, its bases' first; a library's too. */
