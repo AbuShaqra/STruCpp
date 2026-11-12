@@ -2,6 +2,7 @@ name: CLA
 
 on:
   pull_request:
+    branches: [main]
     types: [opened, edited, reopened, synchronize]
 
 permissions:
