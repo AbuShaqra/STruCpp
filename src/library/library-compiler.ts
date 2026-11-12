@@ -1000,6 +1000,7 @@ export function compileStlib(
     },
     options.dialectIO?.readFile,
     options.dialectIO?.listDir,
+    options.dialectIO?.realPath,
   );
   if (dialect.features.has("conditional_pragmas")) {
     archive.pragmaDefines = { ...(options.pragmaDefines ?? {}) };

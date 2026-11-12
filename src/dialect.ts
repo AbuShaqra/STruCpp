@@ -102,6 +102,8 @@ export interface DialectIO {
   readFile: (path: string) => string;
   /** Entry names (not paths) in a folder. */
   listDir: (dir: string) => string[];
+  /** The canonical path of a file or folder, so one reached twice is loaded once. */
+  realPath?: (path: string) => string;
 }
 
 const KNOWN_FEATURE_SET: ReadonlySet<string> = new Set(KNOWN_FEATURES);
@@ -148,8 +150,18 @@ function validateProfile(raw: unknown, where: string): DialectProfile {
     );
   }
   if (id === IEC_PROFILE.id) {
+    // The built-in profile itself (IEC_PROFILE, or `{"id":"iec-3"}` with no
+    // feature) is accepted as it; any other profile of that id is refused.
+    const same =
+      (name === undefined || name === IEC_PROFILE.name) &&
+      raw["extends"] === undefined &&
+      (features === undefined ||
+        (Array.isArray(features) && features.length === 0)) &&
+      (semantics === undefined ||
+        (isRecord(semantics) && Object.keys(semantics).length === 0));
+    if (same) return IEC_PROFILE;
     throw new DialectError(
-      `${where}: the id '${id}' is the built-in profile's; give the profile its own id and "extends": "${IEC_PROFILE.id}"`,
+      `${where}: the id '${id}' is the built-in profile's; a profile that differs from it needs its own id and "extends": "${IEC_PROFILE.id}"`,
     );
   }
   if (name !== undefined && typeof name !== "string") {
@@ -185,6 +197,31 @@ function validateProfile(raw: unknown, where: string): DialectProfile {
   };
   if (typeof parent === "string") profile.extends = parent;
   return profile;
+}
+
+/** `a/./b//c/` as `a/b/c`: one spelling of a path when no real path is known. */
+function normalisePath(p: string): string {
+  const parts: string[] = [];
+  for (const part of p.replace(/\\/g, "/").split("/")) {
+    if (part === "." || (part === "" && parts.length > 0)) continue;
+    if (part === ".." && parts.length > 0 && parts[parts.length - 1] !== "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return parts.join("/") || ".";
+}
+
+/** The items of `list` whose key was not seen before, in order. */
+function uniqueBy<T>(list: readonly T[], key: (t: T) => string): T[] {
+  const seen = new Set<string>();
+  return list.filter((t) => {
+    const k = key(t);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 function joinPath(dir: string, name: string): string {
@@ -289,9 +326,19 @@ export function resolveDialect(
   req: DialectRequest,
   readFile?: (p: string) => string,
   listDir?: (d: string) => string[],
+  realPath?: (p: string) => string,
 ): ResolvedDialect {
-  const files = req.dialectFiles ?? [];
-  const dirs = req.dialectPath ?? [];
+  /** One spelling per file or folder: its real path when known, else a normalised one. */
+  const key = (p: string): string => {
+    try {
+      if (realPath) return realPath(p);
+    } catch {
+      // an unreadable path is reported where it is read
+    }
+    return normalisePath(p);
+  };
+  const files = uniqueBy(req.dialectFiles ?? [], key);
+  const dirs = uniqueBy(req.dialectPath ?? [], key);
   if ((files.length > 0 || dirs.length > 0) && !readFile) {
     throw new DialectError("dialect files need a file reader");
   }
@@ -303,26 +350,47 @@ export function resolveDialect(
   const warnings: string[] = [];
   /** Where each loaded profile id comes from, for a duplicate's error. */
   const source = new Map<string, string>();
-  const add = (profile: DialectProfile, where: string): void => {
+  /** The real path of the file each loaded profile id was read from. */
+  const sourceKey = new Map<string, string>();
+  /** Add a profile; the same file reached again is the same profile. True when added. */
+  const add = (
+    profile: DialectProfile,
+    where: string,
+    fileKey?: string,
+  ): boolean => {
+    if (profile === IEC_PROFILE) return false;
     const first = source.get(profile.id);
     if (first !== undefined) {
+      if (fileKey !== undefined && sourceKey.get(profile.id) === fileKey) {
+        return false;
+      }
       throw new DialectError(
         `dialect '${profile.id}' is defined twice: by ${first} and by ${where}`,
       );
     }
     source.set(profile.id, where);
+    if (fileKey !== undefined) sourceKey.set(profile.id, fileKey);
     loaded.push(profile);
+    return true;
   };
   let selected: DialectProfile | undefined;
-  const selectedId = typeof req.dialect === "string" ? req.dialect : undefined;
+  let selectedId = typeof req.dialect === "string" ? req.dialect : undefined;
 
   if (typeof req.dialect === "object") {
     const where = `dialect '${String((req.dialect as { id?: unknown }).id)}'`;
     selected = validateProfile(req.dialect, where);
     add(selected, "the dialect option");
   }
-  for (const path of [...new Set(files)]) {
-    add(readProfile(path, readFile!), `dialect file ${path}`);
+  /** The profile read from each --dialect-file, in order. */
+  const fromFiles: Array<{ path: string; profile: DialectProfile }> = [];
+  for (const path of files) {
+    const profile = readProfile(path, readFile!);
+    add(profile, `dialect file ${path}`, key(path));
+    fromFiles.push({ path, profile });
+  }
+  // One --dialect-file and no --dialect selects it, for the folders too.
+  if (req.dialect === undefined && fromFiles.length === 1) {
+    selectedId = fromFiles[0]!.profile.id;
   }
   /** Profiles of a dialect path, which only stop the resolution when selected. */
   const fromPath = new Set<DialectProfile>();
@@ -347,8 +415,9 @@ export function resolveDialect(
         warnings.push(`${e.message}; it is not selected, so it is skipped`);
         continue;
       }
-      add(profile, `dialect file ${path}`);
-      fromPath.add(profile);
+      if (add(profile, `dialect file ${path}`, key(path))) {
+        fromPath.add(profile);
+      }
     }
   }
 
@@ -386,24 +455,12 @@ export function resolveDialect(
         `unknown dialect '${selectedId}' (known: ${known.join(", ")})${retiredIdHint(selectedId)}`,
       );
     }
-  } else if (req.dialect === undefined && files.length > 0) {
-    const distinct = [...new Set(files)];
-    if (distinct.length === 1) {
-      selected = loaded.find(
-        (p) => source.get(p.id) === `dialect file ${distinct[0]}`,
-      );
-    } else {
-      warnings.push(
-        `${distinct.length} dialect files and no --dialect: none is selected, so the default features apply; select one with --dialect (${distinct
-          .map((f) => {
-            const p = loaded.find(
-              (x) => source.get(x.id) === `dialect file ${f}`,
-            );
-            return p === undefined ? f : `${p.id} from ${f}`;
-          })
-          .join(", ")})`,
-      );
-    }
+  } else if (req.dialect === undefined && fromFiles.length > 1) {
+    warnings.push(
+      `${fromFiles.length} dialect files and no --dialect: none is selected, so the default features apply; select one with --dialect (${fromFiles
+        .map(({ path, profile }) => `${profile.id} from ${path}`)
+        .join(", ")})`,
+    );
   }
 
   const features = selected

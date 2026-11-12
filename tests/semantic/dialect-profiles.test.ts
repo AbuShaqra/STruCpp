@@ -512,10 +512,81 @@ describe("resolveDialect", () => {
     );
   });
 
+  it("loads one file reached twice once, with or without a real-path reader", () => {
+    const a = profile({ id: "va", features: ["pointer_to"] });
+    const files = { "d/va.json": a };
+    const io = fakeFs(files);
+    const real = (p: string): string =>
+      p.replace(/^\.\//, "").replace(/\/$/, "");
+    for (const req of [
+      { dialectPath: ["d", "d"] },
+      { dialectPath: ["d", "./d/"], dialect: "va" },
+      { dialectFiles: ["d/va.json"], dialectPath: ["d"] },
+      { dialectFiles: ["d/va.json", "./d/va.json"] },
+    ] as DialectRequest[]) {
+      for (const withReal of [false, true]) {
+        const d = resolveDialect(
+          req,
+          io.readFile,
+          (dir) => io.listDir(real(dir)),
+          withReal ? real : undefined,
+        );
+        expect(d.loaded.map((p) => p.id)).toEqual(["va"]);
+        expect(d.warnings).toEqual([]);
+      }
+    }
+    // the same id in two different files stays an error
+    expect(
+      errorOf(() =>
+        resolve(
+          { dialectFiles: ["p/va.json"], dialectPath: ["d"] },
+          {
+            ...files,
+            "p/va.json": a,
+          },
+        ),
+      ).message,
+    ).toBe(
+      "dialect 'va' is defined twice: by dialect file p/va.json and by dialect file d/va.json",
+    );
+  });
+
+  it("treats a profile selected as the single file like one selected by --dialect", () => {
+    const files = {
+      "p/va.json": profile({ id: "x", features: [] }),
+      "e/va.json": "{oops",
+    };
+    // the folder's broken va.json is not the selection (x is): a warning
+    expect(
+      resolve({ dialectFiles: ["p/va.json"], dialectPath: ["e"] }, files)
+        .warnings,
+    ).toHaveLength(1);
+    const broken = {
+      "p/va.json": profile({ id: "va", features: [] }),
+      "e/va.json": "{oops",
+    };
+    expect(
+      errorOf(() =>
+        resolve({ dialectFiles: ["p/va.json"], dialectPath: ["e"] }, broken),
+      ).message,
+    ).toMatch(/^dialect file e\/va\.json: /);
+  });
+
+  it("accepts the built-in profile itself under its id", () => {
+    expect(resolveDialect({ dialect: IEC_PROFILE }).id).toBe("iec-3");
+    const d = resolve(
+      { dialectFiles: ["p/i.json"] },
+      { "p/i.json": JSON.stringify({ id: "iec-3" }) },
+    );
+    expect(d.id).toBe("iec-3");
+    expect(d.features.size).toBe(0);
+    expect(d.loaded).toEqual([]);
+  });
+
   it("refuses a profile file that takes the built-in id iec-3", () => {
     const fake = profile({ id: "iec-3", features: ["program_methods"] });
     const message =
-      'dialect file p/fake.json: the id \'iec-3\' is the built-in profile\'s; give the profile its own id and "extends": "iec-3"';
+      'dialect file p/fake.json: the id \'iec-3\' is the built-in profile\'s; a profile that differs from it needs its own id and "extends": "iec-3"';
     expect(
       errorOf(() =>
         resolve({ dialectFiles: ["p/fake.json"] }, { "p/fake.json": fake }),

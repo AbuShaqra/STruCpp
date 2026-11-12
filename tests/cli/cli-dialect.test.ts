@@ -4,7 +4,14 @@
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { spawnSync } from "child_process";
-import { mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } from "fs";
+import {
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+  rmSync,
+  readdirSync,
+  symlinkSync,
+} from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
 import { compile } from "../../src/index.js";
@@ -352,4 +359,64 @@ END_PROGRAM
       "unknown dialect 'nope' (known: iec-3)",
     ]);
   });
+});
+
+describe("one profile file reached twice, and dialect warnings in --test", () => {
+  const prep = (): string => {
+    const dir = freshDir("reached-twice");
+    mkdirSync(join(dir, "d"), { recursive: true });
+    writeFileSync(
+      join(dir, "d", "va.json"),
+      JSON.stringify({ id: "va", extends: "iec-3", features: ["pointer_to"] }),
+    );
+    symlinkSync(join(dir, "d", "va.json"), join(dir, "link.json"));
+    return dir;
+  };
+
+  it("loads it once, whatever spelling reaches it", () => {
+    const dir = prep();
+    const d = join(dir, "d");
+    for (const args of [
+      ["--dialect-path", d, "--dialect-path", d],
+      ["--dialect-path", d, "--dialect-path", `${d}/./`, "--dialect", "va"],
+      ["--dialect-file", join(d, "va.json"), "--dialect-path", d],
+      [
+        "--dialect-file",
+        join(d, "va.json"),
+        "--dialect-file",
+        join(dir, "link.json"),
+      ],
+    ]) {
+      const r = run([...args, "--print-dialect"]);
+      expect(r.status, args.join(" ")).toBe(0);
+      expect(r.err, args.join(" ")).toBe("");
+    }
+  });
+
+  for (const flags of [[], ["--strict"]]) {
+    it(`a --test run prints the warning for a skipped profile (${flags.join(" ") || "no flag"})`, () => {
+      const dir = freshDir(`test-warn-${flags.length}`);
+      mkdirSync(join(dir, "dp"), { recursive: true });
+      writeFileSync(join(dir, "dp", "broken.json"), "{oops");
+      const src = join(dir, "src.st");
+      const test = join(dir, "test_src.st");
+      writeFileSync(
+        src,
+        "PROGRAM Main\nVAR x : INT; END_VAR\nx := 1;\nEND_PROGRAM\n",
+      );
+      writeFileSync(test, "TEST 't'\nASSERT_TRUE(TRUE);\nEND_TEST\n");
+      const r = run([
+        src,
+        "--test",
+        test,
+        "--dialect-path",
+        join(dir, "dp"),
+        ...flags,
+      ]);
+      expect(r.out).toContain("1 test, 1 passed, 0 failed");
+      expect(r.err).toMatch(
+        /warning: dialect file .*broken\.json: .*; it is not selected, so it is skipped/,
+      );
+    }, 300000);
+  }
 });

@@ -22,20 +22,24 @@ behaves exactly as before. `iec-3` is the strict profile: it enables no feature.
 
 The id `iec` is reserved and is not an alias: `--dialect iec`, a profile with `"extends": "iec"` and a
 profile whose own `id` is `iec` (file, `--dialect-path` entry or object) are refused with an error that
-names `iec-3`. A profile whose own `id` is `iec-3` is refused as well, so a file can never report itself as
-the built-in profile while enabling other features: a profile derived from it names its own id and
-`"extends": "iec-3"`.
+names `iec-3`. A profile whose own `id` is `iec-3` is refused unless it is the built-in profile itself (no
+`extends`, no features, empty `semantics`, and no `name` or the built-in's): such a file or object (the
+exported `IEC_PROFILE` included) selects `iec-3`. A file can never report itself as the built-in profile while
+enabling other features: a profile derived from it names its own id and `"extends": "iec-3"`.
 
-Each profile id is loaded once: the same id from two files (`--dialect-file`, `--dialect-path` folders, or
-a profile object) is an error naming both. The same `--dialect-file` path given twice counts once.
+Each profile id is loaded once: the same id from two different files (`--dialect-file`, `--dialect-path`
+folders, or a profile object) is an error naming both. A file or folder reached more than once (given twice,
+spelled `./d/` and `d`, absolute and relative, through a symbolic link, or a `--dialect-file` inside a
+`--dialect-path` folder) is one source, compared by its real path.
 
-A profile from a `--dialect-path` folder stops the compile only when it is the selected one (or the
-selected one extends it). Any other that cannot be read, is invalid or does not resolve is skipped with a
+A profile from a `--dialect-path` folder stops the compile only when it is the selected one, by `--dialect`
+or as the single `--dialect-file` (or the selected one extends it). Any other that cannot be read, is invalid or does not resolve is skipped with a
 warning naming the file, and the compile goes on. A `--dialect-file` is named explicitly, so its errors
 always stop the compile.
 
-`--dialect <id>` looks the id up in this order: the built-in `iec-3`, the `--dialect-file` profiles, then
-`<dir>/<id>.json` in each `--dialect-path` folder in the order given. `--feature +id`, `--feature -id`
+`--dialect <id>` selects the built-in `iec-3` or the loaded profile of that id. A profile id is unique
+across every source (the `--dialect-file` files, every `*.json` in the `--dialect-path` folders and a
+profile object), so the order the sources are given in never decides which profile an id names. `--feature +id`, `--feature -id`
 (and a bare `--feature id`, the same as `+id`) are applied in order after the profile.
 
 `--print-dialect` prints the result and exits without compiling:

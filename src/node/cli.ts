@@ -645,8 +645,9 @@ function checkDialect(options: CLIOptions): void {
       req,
       nodeDialectIO.readFile,
       nodeDialectIO.listDir,
+      nodeDialectIO.realPath,
     );
-    // compile, build, --test and --check report these with their diagnostics
+    // compile, build, --test and --check report these with their own output
     if (
       options.printDialect ||
       options.compileLib ||
@@ -1013,6 +1014,10 @@ function runTestMode(options: CLIOptions): void {
     printDiagnostics(result.errors, sourceDiagSources);
     printDiagnostics(result.warnings, sourceDiagSources, "warn");
     process.exit(1);
+  }
+  // A test run shows no other source warning, but a skipped profile's.
+  for (const w of result.warnings) {
+    if (w.code === "dialect") console.error(`warning: ${w.message}`);
   }
 
   // 2. Build POU info from the compiled AST
@@ -1432,6 +1437,7 @@ function checkMode(options: CLIOptions): never {
       dialectOptions,
       nodeDialectIO.readFile,
       nodeDialectIO.listDir,
+      nodeDialectIO.realPath,
     ).id;
   } catch (e) {
     if (!(e instanceof DialectError)) throw e;
