@@ -3276,7 +3276,7 @@ export class ASTBuilder {
       return {
         kind: "LiteralExpression",
         sourceSpan: tokenToSourceSpan(token),
-        literalType: "DATE",
+        literalType: /^L/i.test(token.image) ? "LDATE" : "DATE",
         value: token.image,
         rawValue: token.image,
       };
@@ -3287,7 +3287,7 @@ export class ASTBuilder {
       return {
         kind: "LiteralExpression",
         sourceSpan: tokenToSourceSpan(token),
-        literalType: "TIME_OF_DAY",
+        literalType: /^L/i.test(token.image) ? "LTIME_OF_DAY" : "TIME_OF_DAY",
         value: token.image,
         rawValue: token.image,
       };
@@ -3298,7 +3298,9 @@ export class ASTBuilder {
       return {
         kind: "LiteralExpression",
         sourceSpan: tokenToSourceSpan(token),
-        literalType: "DATE_AND_TIME",
+        literalType: /^L/i.test(token.image)
+          ? "LDATE_AND_TIME"
+          : "DATE_AND_TIME",
         value: token.image,
         rawValue: token.image,
       };

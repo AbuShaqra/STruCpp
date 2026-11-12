@@ -935,6 +935,20 @@ template<typename T> inline IEC_LTIME TO_LTIME(T v) noexcept {
     return IEC_LTIME(static_cast<LTIME_t>(iec_unwrap(v)));
 }
 
+// LDATE, LTOD and LDT have the representations of DATE (days), TOD and DT
+// (nanoseconds).
+template<typename T> inline IEC_LDATE TO_LDATE(T v) noexcept {
+    return IEC_LDATE(static_cast<LDATE_t>(iec_unwrap(v)));
+}
+
+template<typename T> inline IEC_LTOD TO_LTOD(T v) noexcept {
+    return IEC_LTOD(static_cast<LTOD_t>(iec_unwrap(v)));
+}
+
+template<typename T> inline IEC_LDT TO_LDT(T v) noexcept {
+    return IEC_LDT(static_cast<LDT_t>(iec_unwrap(v)));
+}
+
 // ---------------------------------------------------------------------------
 // STRING -> TIME / TOD / DATE / DT parsing
 //
@@ -1044,6 +1058,12 @@ template<size_t N> inline IEC_TIME TO_TIME(const IECString<N>& s) noexcept { ret
 template<size_t N> inline IEC_TIME TO_TIME(const IECStringVar<N>& s) noexcept { return IEC_TIME(iec_strparse::parse_time_ns(s.get().c_str())); }
 template<size_t N> inline IEC_LTIME TO_LTIME(const IECString<N>& s) noexcept { return IEC_LTIME(iec_strparse::parse_time_ns(s.c_str())); }
 template<size_t N> inline IEC_LTIME TO_LTIME(const IECStringVar<N>& s) noexcept { return IEC_LTIME(iec_strparse::parse_time_ns(s.get().c_str())); }
+template<size_t N> inline IEC_LTOD TO_LTOD(const IECString<N>& s) noexcept { return IEC_LTOD(iec_strparse::parse_tod_ns(s.c_str())); }
+template<size_t N> inline IEC_LTOD TO_LTOD(const IECStringVar<N>& s) noexcept { return IEC_LTOD(iec_strparse::parse_tod_ns(s.get().c_str())); }
+template<size_t N> inline IEC_LDATE TO_LDATE(const IECString<N>& s) noexcept { return IEC_LDATE(iec_strparse::parse_date_days(s.c_str())); }
+template<size_t N> inline IEC_LDATE TO_LDATE(const IECStringVar<N>& s) noexcept { return IEC_LDATE(iec_strparse::parse_date_days(s.get().c_str())); }
+template<size_t N> inline IEC_LDT TO_LDT(const IECString<N>& s) noexcept { return IEC_LDT(iec_strparse::parse_dt_ns(s.c_str())); }
+template<size_t N> inline IEC_LDT TO_LDT(const IECStringVar<N>& s) noexcept { return IEC_LDT(iec_strparse::parse_dt_ns(s.get().c_str())); }
 template<size_t N> inline IEC_TOD TO_TOD(const IECString<N>& s) noexcept { return IEC_TOD(iec_strparse::parse_tod_ns(s.c_str())); }
 template<size_t N> inline IEC_TOD TO_TOD(const IECStringVar<N>& s) noexcept { return IEC_TOD(iec_strparse::parse_tod_ns(s.get().c_str())); }
 template<size_t N> inline IEC_DATE TO_DATE(const IECString<N>& s) noexcept { return IEC_DATE(iec_strparse::parse_date_days(s.c_str())); }

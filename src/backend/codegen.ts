@@ -8,6 +8,7 @@
  */
 
 import type {
+  ElementaryType,
   CompilationUnit,
   FunctionDeclaration,
   VarDeclaration,
@@ -400,6 +401,56 @@ const TEMPORAL_CONVERSION_UNITS = new Map<string, TemporalUnitInfo>([
   ["LDATE_AND_TIME", { toUnit: undefined, fromUnit: undefined }],
   ["LDATE", { toUnit: "DATE_TO_NS", fromUnit: "DATE_FROM_NS" }],
 ]);
+
+/** The stored kind of each temporal type: days for a date, nanoseconds otherwise. */
+const TEMPORAL_KIND: Record<string, "date" | "tod" | "dt" | "duration"> = {
+  DATE: "date",
+  D: "date",
+  LDATE: "date",
+  TOD: "tod",
+  TIME_OF_DAY: "tod",
+  LTOD: "tod",
+  LTIME_OF_DAY: "tod",
+  DT: "dt",
+  DATE_AND_TIME: "dt",
+  LDT: "dt",
+  LDATE_AND_TIME: "dt",
+  TIME: "duration",
+  LTIME: "duration",
+};
+const LONG_TEMPORAL_NAMES = new Set([
+  "LDATE",
+  "LTOD",
+  "LTIME_OF_DAY",
+  "LDT",
+  "LDATE_AND_TIME",
+  "LTIME",
+]);
+
+/**
+ * A conversion between two temporal types where one is a long (Ed. 3) form:
+ * the date or time of day of a date-and-time is split off, a date becomes the
+ * date-and-time of its midnight, and the same kind converts unchanged.
+ * Undefined when neither side is long, or the pair is no such conversion.
+ */
+function longTemporalConversion(
+  argExpr: string,
+  from: string,
+  to: string,
+): string | undefined {
+  if (!LONG_TEMPORAL_NAMES.has(from) && !LONG_TEMPORAL_NAMES.has(to)) {
+    return undefined;
+  }
+  const f = TEMPORAL_KIND[from];
+  const t = TEMPORAL_KIND[to];
+  if (f === undefined || t === undefined) return undefined;
+  if (f === t) return argExpr;
+  if (f === "dt" && t === "date") return `DATE_OF_DT(${argExpr})`;
+  if (f === "dt" && t === "tod") return `TOD_OF_DT(${argExpr})`;
+  if (f === "date" && t === "dt") return `DATE_TO_NS(${argExpr})`;
+  if (f === "tod" && t === "dt") return argExpr;
+  return undefined;
+}
 
 /**
  * Numeric and bit-string targets for the `TO_*` family — i.e. every elementary
@@ -5391,15 +5442,18 @@ export class CodeGenerator {
         return `${timeVal.exact}LL`;
       }
       case "DATE":
+      case "LDATE":
         // DATE: int64 days since Unix epoch (UTC).  `iec_date.hpp`
         // stores DATE as days (see `DT_FROM_DATE_AND_TOD`'s
         // `iec_unwrap(date) * DT_NS_PER_DAY` math).  Lowering to ns
         // here would break every conversion / arithmetic helper.
         return `${parseDateLiteralToDays(String(expr.value))}LL`;
       case "TIME_OF_DAY":
+      case "LTIME_OF_DAY":
         // TOD: int64 nanoseconds since midnight.
         return `${parseTodLiteralToNs(String(expr.value))}LL`;
       case "DATE_AND_TIME":
+      case "LDATE_AND_TIME":
         // DT: int64 nanoseconds since Unix epoch (UTC).
         return `${parseDtLiteralToNs(String(expr.value))}LL`;
       case "NULL":
@@ -6056,6 +6110,10 @@ export class CodeGenerator {
 
     const cppOp = CodeGenerator.BINARY_OP_MAP[expr.operator] ?? expr.operator;
 
+    // LDATE arithmetic: an LDATE holds days, a duration nanoseconds.
+    const ldate = this.ldateArithmetic(expr, left, right);
+    if (ldate !== undefined) return ldate;
+
     // IEC 61131-3 AND/OR/XOR are always bitwise. C++ bitwise & | ^ have
     // higher precedence than comparison operators (== != < >), unlike ST
     // where AND/OR have lower precedence. Parenthesize operands to preserve
@@ -6077,6 +6135,42 @@ export class CodeGenerator {
     }
 
     return `${left} ${cppOp} ${right}`;
+  }
+
+  /**
+   * `a - b` of two dates where one is LDATE gives an LTIME in nanoseconds, and
+   * an LDATE plus or minus a duration moves it by whole days; undefined for any
+   * other operation.
+   */
+  private ldateArithmetic(
+    expr: BinaryExpression,
+    left: string,
+    right: string,
+  ): string | undefined {
+    if (expr.operator !== "+" && expr.operator !== "-") return undefined;
+    const kind = (e: Expression): string | undefined => {
+      const t = e.resolvedType;
+      return t?.typeKind === "elementary"
+        ? canonicalElementaryName((t as ElementaryType).name)
+        : undefined;
+    };
+    const l = kind(expr.left);
+    const r = kind(expr.right);
+    const isDate = (k: string | undefined): boolean =>
+      k === "DATE" || k === "LDATE";
+    const isDuration = (k: string | undefined): boolean =>
+      k === "TIME" || k === "LTIME";
+    if (l !== "LDATE" && r !== "LDATE") return undefined;
+    if (expr.operator === "-" && isDate(l) && isDate(r)) {
+      return `(DATE_TO_NS(${left}) - DATE_TO_NS(${right}))`;
+    }
+    if (isDate(l) && isDuration(r)) {
+      return `DATE_FROM_NS(DATE_TO_NS(${left}) ${expr.operator} ${right})`;
+    }
+    if (expr.operator === "+" && isDuration(l) && isDate(r)) {
+      return `DATE_FROM_NS(${left} + DATE_TO_NS(${right}))`;
+    }
+    return undefined;
   }
 
   /** The fields of STRUCT `typeName` (through aliases), or undefined for any other type. */
@@ -6595,6 +6689,8 @@ export class CodeGenerator {
     fromTypeUpper: string,
     toTypeUpper: string,
   ): string {
+    const between = longTemporalConversion(argExpr, fromTypeUpper, toTypeUpper);
+    if (between !== undefined) return between;
     if (TEMPORAL_CONVERSION_UNITS.has(fromTypeUpper)) {
       return this.wrapTemporalArgForNumericConversion(
         argExpr,

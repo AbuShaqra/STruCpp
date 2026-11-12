@@ -602,25 +602,28 @@ export const TimeLiteral = createToken({
     /(?:LTIME|LT|TIME|T)#[+-]?(?:[0-9_]+(?:\.[0-9_]+)?(?:ms|us|ns|d|h|m|s))+/i,
 });
 
-// Date literal: D#2024-01-15, D#1970-9-1 (IEC allows 1- or 2-digit month/day)
+// Date literal: D#2024-01-15, D#1970-9-1 (IEC allows 1- or 2-digit month/day);
+// LDATE# / LD# give LDATE
 export const DateLiteral = createToken({
   name: "DateLiteral",
-  pattern: /(?:D|DATE)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}/i,
+  pattern: /(?:LDATE|LD|DATE|D)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}/i,
 });
 
-// Time of day literal: TOD#12:30:00, TOD#1:2:3 (1- or 2-digit fields; seconds optional)
+// Time of day literal: TOD#12:30:00, TOD#1:2:3 (1- or 2-digit fields; seconds optional);
+// LTOD# / LTIME_OF_DAY# give LTOD
 export const TimeOfDayLiteral = createToken({
   name: "TimeOfDayLiteral",
   pattern:
-    /(?:TOD|TIME_OF_DAY)#[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2}(?:\.[0-9]+)?)?/i,
+    /(?:LTIME_OF_DAY|LTOD|TIME_OF_DAY|TOD)#[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2}(?:\.[0-9]+)?)?/i,
 });
 
-// Date and time literal: DT#2024-01-15-12:30:00, DT#1970-1-1-00:00:00
+// Date and time literal: DT#2024-01-15-12:30:00, DT#1970-1-1-00:00:00 (LDT# and
+// LDATE_AND_TIME# give LDT)
 // (1- or 2-digit month/day/time fields; seconds optional)
 export const DateTimeLiteral = createToken({
   name: "DateTimeLiteral",
   pattern:
-    /(?:DT|DATE_AND_TIME)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2}(?:\.[0-9]+)?)?/i,
+    /(?:LDATE_AND_TIME|LDT|DATE_AND_TIME|DT)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2}(?:\.[0-9]+)?)?/i,
 });
 
 // Typed literal: BYTE#255, DWORD#16#FF, INT#0, BOOL#1, REAL#1.5E10, INT#-123, etc.

@@ -95,25 +95,77 @@ export type { TypeCategory } from "./type-utils.js";
 // IEC 61131-3 date/time arithmetic helpers
 // =============================================================================
 
+/** Elementary type names Ed. 3 added; a user TYPE may already bear one. */
+const ED3_ELEMENTARY_NAMES = new Set([
+  "LTIME",
+  "LDATE",
+  "LTOD",
+  "LTIME_OF_DAY",
+  "LDT",
+  "LDATE_AND_TIME",
+]);
+
+/** Canonical name of an elementary operand type, or undefined. */
+function temporalName(t: IECType): string | undefined {
+  return t.typeKind === "elementary"
+    ? canonicalElementaryName((t as ElementaryType).name)
+    : undefined;
+}
+
+/** The long form of an instant or duration type (DT → LDT); itself when long. */
+const LONG_FORM: Record<string, string> = {
+  DT: "LDT",
+  DATE: "LDATE",
+  TOD: "LTOD",
+  TIME: "LTIME",
+  LDT: "LDT",
+  LDATE: "LDATE",
+  LTOD: "LTOD",
+  LTIME: "LTIME",
+};
+const LONG_TYPES = new Set(["LDT", "LDATE", "LTOD", "LTIME"]);
+
+/** Instant types by the name the operand carries (TIME_OF_DAY and
+ *  DATE_AND_TIME stay out, as before the long forms came). */
+const INSTANT_NAMES = new Set([
+  "DT",
+  "DATE",
+  "TOD",
+  "LDT",
+  "LDATE_AND_TIME",
+  "LDATE",
+  "LTOD",
+  "LTIME_OF_DAY",
+]);
+
 /** True when the operand type is one of the absolute-time types. */
 function isInstantType(t: IECType): boolean {
-  if (t.typeKind !== "elementary") return false;
-  const name = (t as ElementaryType).name;
-  return name === "DT" || name === "DATE" || name === "TOD";
+  return (
+    t.typeKind === "elementary" &&
+    INSTANT_NAMES.has((t as ElementaryType).name.toUpperCase())
+  );
 }
 
 /** True when the operand type is a duration type (TIME, LTIME). */
 function isDurationType(t: IECType): boolean {
-  if (t.typeKind !== "elementary") return false;
-  const name = (t as ElementaryType).name;
+  const name = temporalName(t);
   return name === "TIME" || name === "LTIME";
+}
+
+/** True when either operand is a long (64-bit Ed. 3) temporal type. */
+function anyLong(left: IECType, right: IECType): boolean {
+  return (
+    LONG_TYPES.has(temporalName(left) ?? "") ||
+    LONG_TYPES.has(temporalName(right) ?? "")
+  );
 }
 
 /** True when the operand pair maps to a recognised date/time arithmetic
  *  rule from IEC 61131-3 §6.6.2.2 — instant minus instant, or instant
  *  ± duration. Anything else (DT * 2, TIME / DT, …) falls through to
  *  the normal arithmetic path so we don't widen the rule beyond what
- *  the standard sanctions. */
+ *  the standard sanctions. A type and its long form (DT, LDT) count as one
+ *  instant kind, the short converting implicitly to the long. */
 function isDateTimeArithmetic(
   left: IECType,
   right: IECType,
@@ -124,10 +176,10 @@ function isDateTimeArithmetic(
   const leftIsTime = isDurationType(left);
   const rightIsTime = isDurationType(right);
 
-  // instant - instant → TIME (duration). Both must be the same instant
-  // type per the standard (DT - TOD is meaningless).
+  // instant - instant → duration. Both must be the same instant kind per
+  // the standard (DT - TOD is meaningless).
   if (op === "-" && leftIsInstant && rightIsInstant) {
-    return (left as ElementaryType).name === (right as ElementaryType).name;
+    return LONG_FORM[temporalName(left)!] === LONG_FORM[temporalName(right)!];
   }
   // instant ± duration → instant (offset)
   if (leftIsInstant && rightIsTime) return true;
@@ -137,7 +189,8 @@ function isDateTimeArithmetic(
 }
 
 /** Resolves the result type for a recognised date/time arithmetic pair.
- *  Pre-condition: isDateTimeArithmetic returned true for the same args. */
+ *  Pre-condition: isDateTimeArithmetic returned true for the same args.
+ *  A long operand makes the result long (LTIME, or the long instant). */
 function resolveDateTimeArithmetic(
   left: IECType,
   right: IECType,
@@ -145,15 +198,15 @@ function resolveDateTimeArithmetic(
 ): IECType | undefined {
   const leftIsInstant = isInstantType(left);
   const rightIsInstant = isInstantType(right);
+  const long = anyLong(left, right);
 
   if (op === "-" && leftIsInstant && rightIsInstant) {
-    return ELEMENTARY_TYPES["TIME"];
+    return ELEMENTARY_TYPES[long ? "LTIME" : "TIME"];
   }
-  // instant ± duration: result keeps the instant type.
-  if (leftIsInstant) return left;
-  // duration + instant (commutative): result is the instant type.
-  if (rightIsInstant) return right;
-  return undefined;
+  // instant ± duration: result keeps the instant kind.
+  const instant = leftIsInstant ? left : rightIsInstant ? right : undefined;
+  if (instant === undefined) return undefined;
+  return long ? ELEMENTARY_TYPES[LONG_FORM[temporalName(instant)!]!] : instant;
 }
 
 // =============================================================================
@@ -1301,6 +1354,15 @@ export class TypeChecker {
         break;
       case "DATE_AND_TIME":
         type = ELEMENTARY_TYPES["DATE_AND_TIME"];
+        break;
+      case "LDATE":
+        type = ELEMENTARY_TYPES["LDATE"];
+        break;
+      case "LTIME_OF_DAY":
+        type = ELEMENTARY_TYPES["LTOD"];
+        break;
+      case "LDATE_AND_TIME":
+        type = ELEMENTARY_TYPES["LDT"];
         break;
       case "NULL":
         return undefined;
@@ -3406,7 +3468,12 @@ export class TypeChecker {
         const tIsFbOrStruct = this.isKnownCompositeType(tName);
         const vIsFbOrStruct = this.isKnownCompositeType(vName);
         if (!tIsFbOrStruct && !vIsFbOrStruct) {
-          if (!ELEMENTARY_TYPES[tName] || !ELEMENTARY_TYPES[vName]) {
+          if (
+            !ELEMENTARY_TYPES[tName] ||
+            !ELEMENTARY_TYPES[vName] ||
+            this.isUserTypeOfEd3Name(tName) ||
+            this.isUserTypeOfEd3Name(vName)
+          ) {
             return;
           }
         }
@@ -4249,6 +4316,18 @@ export class TypeChecker {
    * The type an alias chain (`TYPE A : B; END_TYPE`, plain, no reference or
    * array) ends at, upper case; `name` itself when it is not an alias.
    */
+  /**
+   * A user TYPE named like an elementary type Ed. 3 added (`LTIME_OF_DAY`),
+   * which programs declared before the type existed: the user's type stays.
+   */
+  private isUserTypeOfEd3Name(name: string): boolean {
+    const upper = name.toUpperCase();
+    return (
+      ED3_ELEMENTARY_NAMES.has(upper) &&
+      this.ast?.types.some((t) => t.name.toUpperCase() === upper) === true
+    );
+  }
+
   private aliasBase(name: string): string {
     let upper = name.toUpperCase();
     for (let i = 0; i < 32; i++) {

@@ -248,20 +248,26 @@ END_PROGRAM`,
       expect(result.cppCode).toContain("V = TO_LTIME(N);");
     });
 
-    it("has no declarable LTOD, LDT or LDATE yet, so their unit rows are unreachable", () => {
-      // TEMPORAL_CONVERSION_UNITS carries LTOD / LDT / LDATE rows, but the
-      // frontend does not accept them as types yet. This test is meant to FAIL
-      // the day they are added, at which point those rows need real tests.
-      for (const type of ["LTOD", "LDT", "LDATE"]) {
-        const result = compile(
-          `PROGRAM Main\n VAR v : ${type}; END_VAR\nEND_PROGRAM`,
-          { headerFileName: "generated.hpp" },
-        );
-        expect(
-          result.errors.some((e) => /Undefined type/i.test(e.message)),
-          `${type} unexpectedly compiles — the L unit rows are now reachable and need real tests`,
-        ).toBe(true);
-      }
+    it("converts LDATE, LTOD and LDT and integers in nanoseconds", () => {
+      // The LDATE row scales its stored day count to nanoseconds; LTOD and
+      // LDT are stored in nanoseconds and need no call.
+      const result = compile(
+        `PROGRAM Main
+ VAR d : LDATE; t : LTOD; dt : LDT; n : LINT; END_VAR
+ n := LDATE_TO_LINT(d);
+ d := LINT_TO_LDATE(n);
+ n := LTOD_TO_LINT(t);
+ n := LDT_TO_LINT(dt);
+ dt := LINT_TO_LDT(n);
+END_PROGRAM`,
+        { headerFileName: "generated.hpp" },
+      );
+      expect(result.errors).toEqual([]);
+      expect(result.cppCode).toContain("N = TO_LINT(DATE_TO_NS(D));");
+      expect(result.cppCode).toContain("D = TO_LDATE(DATE_FROM_NS(N));");
+      expect(result.cppCode).toContain("N = TO_LINT(T);");
+      expect(result.cppCode).toContain("N = TO_LINT(DT);");
+      expect(result.cppCode).toContain("DT = TO_LDT(N);");
     });
 
     it("scales a numeric source INTO a temporal target, in codegen", () => {

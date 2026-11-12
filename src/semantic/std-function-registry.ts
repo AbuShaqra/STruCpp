@@ -122,6 +122,11 @@ const ELEMENTARY_TYPE_NAMES = new Set([
   "WSTRING",
   "TOD",
   "DT",
+  "LDATE",
+  "LTOD",
+  "LTIME_OF_DAY",
+  "LDT",
+  "LDATE_AND_TIME",
 ]);
 
 // =============================================================================
@@ -602,6 +607,9 @@ export class StdFunctionRegistry {
       "DATE",
       "TOD",
       "DT",
+      "LDATE",
+      "LTOD",
+      "LDT",
       "STRING",
       "BYTE",
       "WORD",

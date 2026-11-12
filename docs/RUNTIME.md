@@ -190,6 +190,11 @@ LTIME is stored as TIME is, signed 64-bit nanoseconds (`IEC_LTIME` and
 declared type, not by the wire. `TO_LTIME` and `ADD_LTIME` / `SUB_LTIME` /
 `MUL_LTIME` / `DIV_LTIME` are the TIME helpers under their LTIME names.
 
+LDATE, LTOD and LDT are stored as DATE (days since 1970-01-01), TOD and DT
+(nanoseconds) are; an LDATE, LTOD or LDT leaf is a `TAG_DATE`, `TAG_TOD` or
+`TAG_DT` leaf of 8 bytes, and `libs/iec-types.json` lists them with the DATE,
+TOD and DT wire formats. `TO_LDATE`, `TO_LTOD` and `TO_LDT` are the casts.
+
 ## String Types (`iec_string.hpp`, `iec_wstring.hpp`)
 
 ```cpp
