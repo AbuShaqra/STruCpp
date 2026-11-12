@@ -299,5 +299,30 @@ describe("implicit widening (Figures 11 and 12)", () => {
           : [],
       );
     });
+
+    it(`takes a method named like a conversion as the method under --strict (${label})`, () => {
+      const r = compile(
+        "FUNCTION_BLOCK FB\nMETHOD INT_TO_BYTE : BYTE VAR_INPUT v : DWORD; END_VAR INT_TO_BYTE := DWORD_TO_BYTE(v); END_METHOD\nMETHOD Run : BYTE VAR d : DWORD := 5; END_VAR Run := INT_TO_BYTE(d); END_METHOD\nEND_FUNCTION_BLOCK\nPROGRAM Main\nVAR fb : FB; b : BYTE; END_VAR\nb := fb.Run();\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.errors).toEqual([]);
+    });
+
+    it(`checks duration, date and string conversion arguments under --strict only (${label})`, () => {
+      const r = compile(
+        "PROGRAM Main\nVAR t : TIME; lt : LTIME; d : DINT; da : DATE; ws : WSTRING; s : STRING; i : INT; END_VAR\nd := TIME_TO_DINT(t);\nd := LTIME_TO_DINT(t);\nd := TIME_TO_DINT(lt);\nt := DINT_TO_TIME(t);\nd := DATE_TO_DINT(t);\ni := STRING_TO_INT(ws);\ni := STRING_TO_INT(s);\ni := STRING_TO_INT('12');\nd := TIME_TO_DINT(T#1s);\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.errors.map((e) => e.message)).toEqual(
+        label === "strict"
+          ? [
+              "Implicit conversion from LTIME to TIME is not allowed; use LTIME_TO_TIME",
+              "Implicit conversion from TIME to DINT is not allowed; use TIME_TO_DINT",
+              "Implicit conversion from TIME to DATE is not allowed; use TIME_TO_DATE",
+              "Implicit conversion from WSTRING to STRING is not allowed; use WSTRING_TO_STRING",
+            ]
+          : [],
+      );
+    });
   }
 });

@@ -228,7 +228,9 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
   they are assigned to, and `0`, `1` and `NOT 1` fit a BOOL; AND, OR and XOR with a bit-string
   operand have the wider bit string's type; the same rules apply to an output captured with
   `o => v`, from a FUNCTION or a function block, and to the argument of a typed conversion
-  `X_TO_Y`, which must be an X (`BYTE_TO_INT(w)` with a WORD is refused);
+  `X_TO_Y`, which must be an X or convert to it implicitly (`BYTE_TO_INT(w)` with a WORD,
+  `DINT_TO_TIME(t)` with a TIME and `STRING_TO_INT(ws)` with a WSTRING are refused; a function, method
+  or FB instance of the conversion's name is not checked as one);
 - a condition of IF, ELSIF, WHILE or REPEAT ... UNTIL that is not a BOOL (`IF w THEN` with a WORD);
 - arithmetic on BOOL or on BYTE/WORD/DWORD/LWORD, an integer used as TIME, and an integer operand of
   AND, OR or XOR (Table 31: ANY_BIT only; also refused under `--dialect iec-3`, see DIALECTS.md);

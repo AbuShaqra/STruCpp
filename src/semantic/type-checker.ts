@@ -438,6 +438,16 @@ function strictKind(name: string): StrictKind | undefined {
   return undefined;
 }
 
+/** `to` is the Ed. 3 long form of `from` (TIME into LTIME and the like). */
+function isLongFormOf(to: string, from: string): boolean {
+  return (
+    (from === "TIME" && to === "LTIME") ||
+    (from === "DATE" && to === "LDATE") ||
+    (from === "DATE_AND_TIME" && to === "LDATE_AND_TIME") ||
+    (from === "TIME_OF_DAY" && to === "LTIME_OF_DAY")
+  );
+}
+
 function strictConversionMessage(from: string, to: string): string {
   return `Implicit conversion from ${from} to ${to} is not allowed; use ${from}_TO_${to}`;
 }
@@ -2094,7 +2104,7 @@ export class TypeChecker {
         expr.arguments,
         scope,
       );
-      this.checkStrictConversionArgument(expr);
+      this.checkStrictConversionArgument(expr, scope);
     }
 
     const nameUpper = expr.functionName.toUpperCase();
@@ -6795,10 +6805,18 @@ export class TypeChecker {
    * `--strict`: the argument of a typed conversion `X_TO_Y` is an X, so it
    * follows the strict conversion rules into X (`BYTE_TO_INT(w)` with a WORD).
    */
-  private checkStrictConversionArgument(expr: FunctionCallExpression): void {
+  private checkStrictConversionArgument(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    // A user callable of the name (a FUNCTION, a method of this POU, an FB
+    // instance or PROGRAM, a dotted method call) is not the conversion.
     if (
       expr.instance !== undefined ||
-      this.findUserFunction(expr.functionName)
+      expr.functionName.includes(".") ||
+      this.findUserFunction(expr.functionName) ||
+      this.ownMethod(expr.functionName) !== undefined ||
+      this.calledInstance(expr.functionName, scope)
     ) {
       return;
     }
@@ -6810,7 +6828,19 @@ export class TypeChecker {
     const from = conv ? ELEMENTARY_TYPES[conv.fromType] : undefined;
     const arg = stripEnEno(expr.arguments)[0];
     if (from === undefined || arg === undefined) return;
-    this.checkStrictConversion(from, arg.value);
+    if (this.checkStrictConversion(from, arg.value)) return;
+    // Kinds the integer/REAL/BOOL/bit rules leave open (durations, dates,
+    // strings, characters): the argument is an X, or its implicit long form.
+    const value = this.strictExprType(arg.value);
+    if (value?.typeKind !== "elementary") return;
+    const v = canonicalElementaryName(
+      this.aliasBase((value as ElementaryType).name),
+    );
+    const t = canonicalElementaryName(conv!.fromType);
+    if (v === t || ELEMENTARY_TYPES[v] === undefined) return;
+    if (strictKind(v) !== undefined && strictKind(t) !== undefined) return;
+    if (_isAssignable(from, ELEMENTARY_TYPES[v]) && isLongFormOf(t, v)) return;
+    this.addStrictError(strictConversionMessage(v, t), arg.value);
   }
 
   /** Strict conversion check for each input argument of a call. */
