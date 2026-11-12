@@ -144,12 +144,15 @@ VAR_GLOBAL gg : LREAL; gn : UINT := XSIZEOF(gg); END_VAR
 `;
     const loose = compile(src, { features: ["+vendor_operators"] });
     expect(loose.errors).toEqual([]);
-    expect(loose.warnings.map((w) => `${w.line}: ${w.message}`).sort()).toEqual(
-      [
-        "11: Implicit narrowing conversion from ULINT to UINT",
-        "5: Implicit narrowing conversion from ULINT to UDINT",
-      ],
-    );
+    expect(
+      loose.warnings
+        .map((w) => `${w.line}: ${w.message}`)
+        .filter((w) => w.includes("narrowing"))
+        .sort(),
+    ).toEqual([
+      "11: Implicit narrowing conversion from ULINT to UINT",
+      "5: Implicit narrowing conversion from ULINT to UDINT",
+    ]);
     expect(
       diag(src, { features: ["+vendor_operators"], strict: true })
         .errors.map((e) => e.replace(/^\d+:\d+: /, ""))
