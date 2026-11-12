@@ -27,31 +27,15 @@
 namespace strucpp {
 namespace cp1252 {
 
-// On AVR the table lives in flash, not SRAM. This header reaches TUs that name
-// user variables, so it must not include <avr/pgmspace.h> (its <avr/io.h>
-// register macros, SP or SREG, collide with IEC names; see debug_table.hpp):
-// the attribute is spelled directly and the word is read with LPM.
-#if defined(__AVR__) && defined(__AVR_HAVE_LPMX__)
-#define STRUCPP_CP1252_FLASH __attribute__((__progmem__))
-inline uint16_t cp1252_read_word(const uint16_t* p) noexcept {
-    uint16_t r;
-    __asm__("lpm %A0, Z+\n\tlpm %B0, Z" : "=r"(r), "+z"(p));
-    return r;
-}
-#else
-#define STRUCPP_CP1252_FLASH
-inline uint16_t cp1252_read_word(const uint16_t* p) noexcept { return *p; }
-#endif
-
-/** Code point of the CP1252 bytes 0x80-0x9F. */
+/** Code point of the CP1252 bytes 0x80-0x9F (64 bytes of const data; SRAM on AVR). */
 inline uint16_t high_code_point(unsigned char byte) noexcept {
-    static const uint16_t table[32] STRUCPP_CP1252_FLASH = {
+    static const uint16_t table[32] = {
         0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
         0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
         0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
         0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
     };
-    return cp1252_read_word(&table[byte - 0x80u]);
+    return table[byte - 0x80u];
 }
 
 /** The Unicode code point a CP1252 byte stands for. */

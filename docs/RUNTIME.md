@@ -234,8 +234,8 @@ characters (0x80 is U+20AC); the five unassigned ones (0x81, 0x8D, 0x8F, 0x90,
 - `handle_ptr` (the copy-free path OPC-UA uses) returns the stored CP1252 bytes
   and their count, not UTF-8: a host that needs Unicode transcodes them
   (`cp1252::to_utf8`).
-- On AVR (with `LPM Rd, Z+`) the 32-entry table for 0x80-0x9F is in flash, read
-  without `<avr/pgmspace.h>`, which must stay out of user-variable TUs.
+- The 32-entry table for 0x80-0x9F is plain const data on every target: on AVR
+  it costs 64 bytes of SRAM.
 - The REPL shows a STRING as UTF-8 and decodes UTF-8 input; the test framework
   shows STRING values and assertion messages as UTF-8.
 
