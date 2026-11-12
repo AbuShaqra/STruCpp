@@ -73,8 +73,8 @@ constexpr uint8_t STATUS_READ_ONLY       = 0x87;
 constexpr uint8_t STATUS_FORCE_TABLE_FULL = 0x88;
 // Returned when a STRING write or force carries a payload that is not
 // well-formed UTF-8, holds a character Windows-1252 lacks (a STRING stores one
-// CP1252 byte per character), or holds a NUL (a STRING ends at its first NUL,
-// so the stored value would be cut there). The leaf is left as it was.
+// CP1252 byte per character), or holds a NUL: a STRING ends at its first NUL,
+// so the stored value would be cut there. The leaf is left as it was.
 constexpr uint8_t STATUS_NOT_ENCODABLE   = 0x89;
 
 // ---------------------------------------------------------------------------

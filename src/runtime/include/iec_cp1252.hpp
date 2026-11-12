@@ -102,8 +102,8 @@ inline std::size_t to_utf8(const char* src, std::size_t n, uint8_t* out,
 /**
  * Decode UTF-8 `src[0..n)` into CP1252 bytes in `out` (room for `n` bytes is
  * always enough). Returns false, leaving `out` unspecified, when the input is
- * not well-formed UTF-8, holds a character CP1252 lacks, or holds a NUL (a
- * STRING ends at its first NUL, so one inside the text would cut it short).
+ * not well-formed UTF-8, holds a character CP1252 lacks, or holds a NUL: a
+ * STRING ends at its first NUL, so one inside the text would cut it short.
  * `*out_len` is the number of bytes written on success.
  */
 inline bool from_utf8(const uint8_t* src, std::size_t n, char* out,
