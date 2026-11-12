@@ -2000,28 +2000,57 @@ export class SemanticAnalyzer {
         span.file,
       );
     };
-    // The VAR_INPUTs of each user FUNCTION, in order.
-    const functionInputs = new Map<
-      string,
-      Array<{ name: string; type: string }>
-    >();
-    for (const f of ast.functions) {
-      functionInputs.set(
-        f.name.toUpperCase(),
-        f.varBlocks
-          .filter((b) => b.blockType === "VAR_INPUT")
-          .flatMap((b) =>
-            b.declarations.flatMap((d) =>
-              d.type.arrayDimensions === undefined
-                ? d.names.map((n) => ({ name: n, type: d.type.name }))
-                : [],
-            ),
+    // A callable's VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT in declaration order,
+    // which positional arguments bind to, as in the call check.
+    type Param = { name: string; type: string; input: boolean };
+    const paramsOf = (blocks: readonly VarBlock[]): Param[] =>
+      blocks
+        .filter(
+          (b) =>
+            b.blockType === "VAR_INPUT" ||
+            b.blockType === "VAR_IN_OUT" ||
+            b.blockType === "VAR_OUTPUT",
+        )
+        .flatMap((b) =>
+          b.declarations.flatMap((d) =>
+            d.names.map((n) => ({
+              name: n,
+              type: d.type.name,
+              input:
+                b.blockType === "VAR_INPUT" &&
+                d.type.arrayDimensions === undefined &&
+                (d.type.referenceKind ?? "none") === "none",
+            })),
           ),
-      );
+        );
+    const functionParams = new Map<string, Param[]>();
+    for (const f of ast.functions) {
+      functionParams.set(f.name.toUpperCase(), paramsOf(f.varBlocks));
     }
+    /** The methods a bare call in an FB (its bases' too) or PROGRAM reaches. */
+    const methodsOf = (owner: {
+      methods: readonly { name: string; varBlocks: VarBlock[] }[];
+      extends?: string;
+    }): Map<string, Param[]> => {
+      const out = new Map<string, Param[]>();
+      const seen = new Set<string>();
+      let current: typeof owner | undefined = owner;
+      while (current) {
+        for (const m of current.methods) {
+          const upper = m.name.toUpperCase();
+          if (!out.has(upper)) out.set(upper, paramsOf(m.varBlocks));
+        }
+        const base: string | undefined = current.extends?.toUpperCase();
+        if (base === undefined || seen.has(base)) break;
+        seen.add(base);
+        current = ast.functionBlocks.find((f) => f.name.toUpperCase() === base);
+      }
+      return out;
+    };
     const visitPou = (
       blocks: readonly VarBlock[],
       bodies: readonly Statement[][],
+      methods: ReadonlyMap<string, Param[]> = new Map(),
     ): void => {
       const types = new Map<string, string>();
       for (const b of [...ast.globalVarBlocks, ...blocks]) {
@@ -2037,20 +2066,30 @@ export class SemanticAnalyzer {
           walkAST(stmt as ASTNode, (n) => {
             if (n.kind === "FunctionCallExpression") {
               const call = n as FunctionCallExpression;
-              const inputs = functionInputs.get(
-                call.functionName.toUpperCase(),
+              const upper = call.functionName.toUpperCase();
+              // A variable of the name (an FB instance) is what the call invokes.
+              if (call.instance !== undefined || types.has(upper)) return;
+              const params = methods.get(upper) ?? functionParams.get(upper);
+              if (params === undefined) return;
+              const claimed = new Set(
+                call.arguments.flatMap((a) =>
+                  a.name === undefined ? [] : [a.name.toUpperCase()],
+                ),
               );
-              if (inputs === undefined || call.instance !== undefined) return;
+              const free = params.filter(
+                (p) => !claimed.has(p.name.toUpperCase()),
+              );
               let position = 0;
               for (const arg of call.arguments) {
-                if (arg.isOutput) continue;
-                const input =
+                const param =
                   arg.name === undefined
-                    ? inputs[position++]
-                    : inputs.find(
-                        (i) => i.name.toUpperCase() === arg.name!.toUpperCase(),
+                    ? free[position++]
+                    : params.find(
+                        (p) => p.name.toUpperCase() === arg.name!.toUpperCase(),
                       );
-                if (input) adapt(arg.value, input.type, input.name);
+                if (param?.input === true && !arg.isOutput) {
+                  adapt(arg.value, param.type, param.name);
+                }
               }
               return;
             }
@@ -2068,12 +2107,15 @@ export class SemanticAnalyzer {
         }
       }
     };
-    for (const p of ast.programs) visitPou(p.varBlocks, [p.body]);
+    for (const p of ast.programs) {
+      visitPou(p.varBlocks, [p.body], methodsOf(p));
+    }
     for (const f of ast.functions) visitPou(f.varBlocks, [f.body]);
     for (const fb of ast.functionBlocks) {
-      visitPou(fb.varBlocks, [fb.body]);
+      const own = methodsOf(fb);
+      visitPou(fb.varBlocks, [fb.body], own);
       for (const m of fb.methods) {
-        visitPou([...fb.varBlocks, ...m.varBlocks], [m.body]);
+        visitPou([...fb.varBlocks, ...m.varBlocks], [m.body], own);
       }
     }
   }
