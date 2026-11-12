@@ -13,7 +13,6 @@ import type {
   LibraryVarType,
   StlibArchive,
 } from "./library-manifest.js";
-import { YIELDING_FUNCTIONS_LIBRARY } from "./library-manifest.js";
 import type {
   FunctionSymbol,
   SymbolTables,
@@ -377,18 +376,8 @@ export function registerLibrarySymbols(
     try {
       symbolTables.globalScope.defineFromLibrary(symbol);
     } catch (e) {
-      // Skip duplicate symbol errors (first definition wins), re-throw others;
-      // a Table 36 function of the bundled library gives way to another library's.
+      // Skip duplicate symbol errors (first definition wins), re-throw others
       if (!(e instanceof DuplicateSymbolError)) throw e;
-      const existing = symbolTables.globalScope.lookupLocal(fn.name);
-      if (
-        existing?.kind === "function" &&
-        existing.libraryName === YIELDING_FUNCTIONS_LIBRARY &&
-        manifest.name !== YIELDING_FUNCTIONS_LIBRARY &&
-        symbolTables.globalScope.definedByLibrary(fn.name)
-      ) {
-        symbolTables.globalScope.replaceLibrarySymbol(symbol);
-      }
     }
   }
 

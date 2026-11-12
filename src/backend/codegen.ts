@@ -58,7 +58,6 @@ import type {
   LibraryFunctionEntry,
   StlibArchive,
 } from "../library/library-manifest.js";
-import { YIELDING_FUNCTIONS_LIBRARY } from "../library/library-manifest.js";
 import {
   collectFileScopeGlobals,
   getProjectNamespace,
@@ -674,8 +673,6 @@ export class CodeGenerator {
 
   /** Library functions by upper-cased name, and their parsed declarations. */
   private libraryFunctions: Map<string, LibraryFunctionEntry> = new Map();
-  /** The library each entry of {@link libraryFunctions} came from. */
-  private libraryFunctionOwners: Map<string, string> = new Map();
   /** Every library FUNCTION, keyed `LIBRARY:NAME` (upper case), shadowed ones included. */
   private libraryFunctionsByLibrary: Map<string, LibraryFunctionEntry> =
     new Map();
@@ -1166,15 +1163,8 @@ export class CodeGenerator {
     for (const archive of archives) {
       for (const fn of archive.manifest.functions) {
         const upper = fn.name.toUpperCase();
-        // A Table 36 function of the bundled library gives way to another library's.
-        if (
-          !this.libraryFunctions.has(upper) ||
-          (this.libraryFunctionOwners.get(upper) ===
-            YIELDING_FUNCTIONS_LIBRARY &&
-            archive.manifest.name !== YIELDING_FUNCTIONS_LIBRARY)
-        ) {
+        if (!this.libraryFunctions.has(upper)) {
           this.libraryFunctions.set(upper, fn);
-          this.libraryFunctionOwners.set(upper, archive.manifest.name);
         }
         this.libraryFunctionsByLibrary.set(
           `${archive.manifest.name.toUpperCase()}:${upper}`,
@@ -4627,7 +4617,12 @@ export class CodeGenerator {
         this.currentScopeVarRefKinds.get(e.name.toUpperCase()) ===
           "reference_to");
     const varBlocks =
-      this.calleeVarBlocks(call) ?? this.librarySizedStringBlocks(call);
+      this.calleeVarBlocks(call) ??
+      this.librarySizedStringBlocks(call) ??
+      (call.arguments.some((a) => a.inOutCopy === true) &&
+      call.kind === "FunctionCallExpression"
+        ? this.libraryFunctionDeclaration(call.functionName)?.varBlocks
+        : undefined);
     const hasSizedStringParam =
       varBlocks?.some(
         (b) =>
@@ -4733,11 +4728,16 @@ export class CodeGenerator {
         param.blockType === "VAR_OUTPUT" &&
         !isCompositeGlobal(value) &&
         !isUnionMember(value) &&
-        ((this.sizedStringLength(param.type) !== undefined &&
-          !this.hasStringLength(value, this.sizedStringLength(param.type)!)) ||
+        (arg.inOutCopy === true ||
+          (this.sizedStringLength(param.type) !== undefined &&
+            !this.hasStringLength(
+              value,
+              this.sizedStringLength(param.type)!,
+            )) ||
           this.stringElementLengthDiffers(param.type, value))
       ) {
-        // A STRING(n) output binds only a variable of that length.
+        // A STRING(n) output binds only a variable of that length, an integer
+        // output only one of its own C++ type: others go through a temporary.
         result.push({ value, cppType: this.inOutParamType(param.type) });
       } else if (
         (arg.isOutput || param.blockType === "VAR_OUTPUT") &&

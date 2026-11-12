@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
-import { compile } from "../../src/index.js";
+import { compile, compileStlib } from "../../src/index.js";
 import { discoverStlibs } from "../../src/node/library-loader.js";
 
 type Options = Parameters<typeof compile>[1];
@@ -81,5 +81,40 @@ describe.skipIf(!libsAvailable)("Table 36 date and time functions", () => {
     expect(r.errors).toEqual([]);
     expect(r.cppCode).toContain("SPLIT_DATE_result = 42;");
     expect(r.cppCode).not.toContain("YEAR");
+  });
+
+  it("gives way to another library's FUNCTION_BLOCK or TYPE of the name, in any order", () => {
+    const lib = compileStlib(
+      [
+        {
+          fileName: "a.st",
+          source:
+            "FUNCTION_BLOCK SPLIT_TOD\nVAR_INPUT IN : INT; END_VAR\nVAR_OUTPUT o : INT; END_VAR\no := IN;\nEND_FUNCTION_BLOCK\nTYPE CONCAT_DATE : STRUCT a : INT; END_STRUCT; END_TYPE\nFUNCTION_BLOCK UseIt\nVAR c : CONCAT_DATE; END_VAR\nEND_FUNCTION_BLOCK\n",
+        },
+      ],
+      {
+        name: "zlib3",
+        version: "1.0.0",
+        namespace: "strucpp",
+        dependencies: all,
+      },
+    );
+    expect(lib.errors).toEqual([]);
+    const clean =
+      "PROGRAM Main\nVAR f : SPLIT_TOD; r : INT; c : CONCAT_DATE; END_VAR\nf(IN := 42); r := f.o; c.a := 1;\nEND_PROGRAM\n";
+    for (const libraries of [
+      [...noOscat, lib.archive],
+      [lib.archive, ...noOscat],
+    ]) {
+      expect(compile(clean, { libraries }).errors).toEqual([]);
+    }
+  });
+
+  it("copies a SPLIT_* part out to a variable of another integer type", () => {
+    const r = compile(
+      "PROGRAM Main\nVAR ok : BOOL; y : DINT; m : INT; d : LINT; END_VAR\nok := SPLIT_DATE(IN := D#2024-03-05, YEAR => y, MONTH => m, DAY => d);\nEND_PROGRAM\n",
+      { libraries: noOscat },
+    );
+    expect(r.errors).toEqual([]);
   });
 });

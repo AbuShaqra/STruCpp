@@ -9,7 +9,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { compile } from "../../src/index.js";
+import { compile, compileStlib } from "../../src/index.js";
 import { discoverStlibs } from "../../src/node/library-loader.js";
 import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 
@@ -111,6 +111,55 @@ describe.skipIf(!hasGpp || !libsAvailable)(
       // OSCAT counts Monday 1 to Sunday 7, and reads a pre-1970 date through a
       // DWORD, so 1969-12-31 comes out 6: its own results, unchanged.
       expect(run("oscat", {})).toBe(values(7, 6));
+    });
+
+    it("runs another library's FB of a Table 36 name and copies SPLIT_* parts out", () => {
+      const all = discoverStlibs(LIBS_DIR).filter(
+        (a) => a.manifest.name !== "oscat-basic",
+      );
+      const lib = compileStlib(
+        [
+          {
+            fileName: "a.st",
+            source:
+              "FUNCTION_BLOCK SPLIT_TOD\nVAR_INPUT IN : INT; END_VAR\nVAR_OUTPUT o : INT; END_VAR\no := IN;\nEND_FUNCTION_BLOCK\n",
+          },
+        ],
+        {
+          name: "zlib3",
+          version: "1.0.0",
+          namespace: "strucpp",
+          dependencies: all,
+        },
+      );
+      expect(lib.errors).toEqual([]);
+      const result = compile(
+        `PROGRAM Main
+VAR f : SPLIT_TOD; r : INT; ok : BOOL; y : DINT; m : INT; d : LINT; END_VAR
+f(IN := 42); r := f.o;
+ok := SPLIT_DATE(IN := D#2024-03-05, YEAR => y, MONTH => m, DAY => d);
+END_PROGRAM
+`,
+        { headerFileName: "generated.hpp", libraries: [...all, lib.archive] },
+      );
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: "t36_fb_and_copy_out",
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.R.get() << " " << p.Y.get() << " " << p.M.get() << " " << p.D.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe("42 2024 3 5");
     });
   },
 );

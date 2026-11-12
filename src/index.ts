@@ -13,6 +13,7 @@ import {
   CompileError,
   AnalysisResult,
 } from "./types.js";
+import { withYieldedFunctions } from "./library/yield-library.js";
 import { parse as parseSource } from "./frontend/parser.js";
 import { toCompileErrors, pragmaWarnings } from "./frontend/parse-errors.js";
 import { buildAST } from "./frontend/ast-builder.js";
@@ -53,7 +54,6 @@ import { walkAST } from "./ast-utils.js";
 import { registerLibrarySymbols } from "./library/library-loader.js";
 import { renameRuntimeCollidingPous } from "./backend/pou-naming.js";
 import type { LibraryChunk, StlibArchive } from "./library/library-manifest.js";
-import { YIELDING_FUNCTIONS_LIBRARY } from "./library/library-manifest.js";
 import { annotateErrorsWithPouContext } from "./diagnostic-pou-context.js";
 import {
   DialectError,
@@ -175,7 +175,6 @@ function collectUsedSymbols(
     for (const archive of archives) {
       const chunkNames = new Set<string>();
       for (const chunk of archive.chunks ?? []) {
-        if (yieldsChunk(archive.manifest.name, chunk, archives)) continue;
         if (
           shadowed.size === 0 ||
           !needsShadowedChunk(chunk, byKey, shadowed)
@@ -188,26 +187,6 @@ function collectUsedSymbols(
     return all;
   }
   return shakeLibraryChunks(ast, archives, shadowed).byLibrary;
-}
-
-/**
- * True for a FUNCTION chunk of the bundled Table 36 library when another
- * library has a chunk of the same name: that one is emitted instead.
- */
-function yieldsChunk(
-  libName: string,
-  chunk: LibraryChunk,
-  archives: StlibArchive[],
-): boolean {
-  if (libName !== YIELDING_FUNCTIONS_LIBRARY || chunk.kind !== "function") {
-    return false;
-  }
-  const upper = chunk.name.toUpperCase();
-  return archives.some(
-    (a) =>
-      a.manifest.name !== YIELDING_FUNCTIONS_LIBRARY &&
-      (a.chunks ?? []).some((c) => c.name.toUpperCase() === upper),
-  );
 }
 
 /**
@@ -304,12 +283,7 @@ function shakeLibraryChunks(
     const libName = archive.manifest.name;
     for (const chunk of archive.chunks ?? []) {
       const entry = { library: libName, chunk: chunk.name };
-      if (!yieldsChunk(libName, chunk, archives)) {
-        symbolIndex.set(chunk.name.toUpperCase(), {
-          ...entry,
-          kind: chunk.kind,
-        });
-      }
+      symbolIndex.set(chunk.name.toUpperCase(), { ...entry, kind: chunk.kind });
       chunkByKey.set(`${libName}:${chunk.name}`, entry);
     }
   }
@@ -941,7 +915,8 @@ function runPipeline(
 
   // Phase 4: Library loading.  Archives arrive pre-loaded;
   // fs-based discovery lives in `strucpp/node`.
-  allArchives.push(...(mergedOptions.libraries ?? []));
+  // The Table 36 FUNCTIONs of the bundled library give way to another library's name.
+  allArchives.push(...withYieldedFunctions(mergedOptions.libraries ?? []));
 
   if (!continueOnError && errors.length > 0) {
     return {

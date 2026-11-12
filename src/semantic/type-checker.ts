@@ -321,6 +321,22 @@ function referenceShapeOf(type: AccessType): ReferenceShape | undefined {
   };
 }
 
+/** The C++ storage of each integer and bit-string type (same storage, same C++ type). */
+const INTEGER_STORAGE: Readonly<Record<string, string>> = {
+  SINT: "i8",
+  INT: "i16",
+  DINT: "i32",
+  LINT: "i64",
+  USINT: "u8",
+  BYTE: "u8",
+  UINT: "u16",
+  WORD: "u16",
+  UDINT: "u32",
+  DWORD: "u32",
+  ULINT: "u64",
+  LWORD: "u64",
+};
+
 const COMPARISON_OPS: ReadonlySet<string> = new Set([
   "=",
   "<>",
@@ -1779,6 +1795,7 @@ export class TypeChecker {
       this.resolveExprType(arg.value, scope);
     }
     this.validateReferenceArguments(expr, scope);
+    this.markOutputCopies(expr);
     this.checkDottedMethodCall(expr, scope);
     this.checkMethodCallArgumentNames(expr, scope);
     this.checkFunctionCallArgumentNames(expr, scope);
@@ -4326,6 +4343,54 @@ export class TypeChecker {
       ED3_ELEMENTARY_NAMES.has(upper) &&
       this.ast?.types.some((t) => t.name.toUpperCase() === upper) === true
     );
+  }
+
+  /**
+   * `F(o => v)` where F's VAR_OUTPUT `o` and the variable `v` are integers of
+   * different C++ types (USINT output, INT variable): the output is copied out
+   * through a temporary of its own type, as a reference cannot bind.
+   */
+  private markOutputCopies(expr: FunctionCallExpression): void {
+    if (expr.instance || expr.functionName.includes(".")) return;
+    if (!expr.arguments.some((a) => a.isOutput && a.name !== undefined)) return;
+    const outputs = new Map<string, string>();
+    const userFn = this.findUserFunction(expr.functionName);
+    if (userFn) {
+      for (const block of userFn.varBlocks) {
+        if (block.blockType !== "VAR_OUTPUT") continue;
+        for (const decl of block.declarations) {
+          for (const n of decl.names) {
+            outputs.set(n.toUpperCase(), decl.type.name.toUpperCase());
+          }
+        }
+      }
+    } else {
+      const fn = this.symbolTables.lookupFunction(expr.functionName);
+      for (const p of fn?.parameters ?? []) {
+        if (!p.isOutput || p.isInput) continue;
+        const t = (p.declaration as VarDeclaration | undefined)?.type;
+        if (t && t.arrayDimensions === undefined) {
+          outputs.set(p.name.toUpperCase(), t.name.toUpperCase());
+        }
+      }
+    }
+    for (const arg of expr.arguments) {
+      if (!arg.isOutput || arg.name === undefined) continue;
+      const param = outputs.get(arg.name.toUpperCase());
+      const t = arg.value.resolvedType;
+      if (param === undefined || t?.typeKind !== "elementary") continue;
+      if (arg.value.kind !== "VariableExpression") continue;
+      const argStorage =
+        INTEGER_STORAGE[this.aliasBase((t as ElementaryType).name)];
+      const paramStorage = INTEGER_STORAGE[this.aliasBase(param)];
+      if (
+        argStorage !== undefined &&
+        paramStorage !== undefined &&
+        argStorage !== paramStorage
+      ) {
+        arg.inOutCopy = true;
+      }
+    }
   }
 
   private aliasBase(name: string): string {
