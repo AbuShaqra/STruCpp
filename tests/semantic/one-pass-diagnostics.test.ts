@@ -47,5 +47,33 @@ describe("one-pass diagnostics", () => {
       );
       expect(found.some((m) => m.includes("NOPE"))).toBe(true);
     });
+
+    it(`reports a literal the type checks refused once (${label})`, () => {
+      for (const body of [
+        "VAR n : INT; END_VAR\nn := '☃';",
+        "VAR w : WCHAR; END_VAR\nw := '☃';",
+        "VAR c : CHAR; END_VAR\nc := '☃x';",
+      ]) {
+        const r = compile(`PROGRAM P\n${body}\nEND_PROGRAM\n`, {
+          ...options,
+          libraries,
+        });
+        expect(r.errors, body).toHaveLength(1);
+        expect(r.errors[0]!.message, body).toMatch(/^Cannot assign STRING to /);
+      }
+    });
+
+    it(`gives a CHAR literal its own message after a declaration error (${label})`, () => {
+      const r = compile(
+        "PROGRAM P\nVAR\n  c : CHAR;\n  x : INT;\n  x : INT;\nEND_VAR\nc := '☃';\nEND_PROGRAM\n",
+        { ...options, libraries },
+      );
+      expect(
+        r.errors.map((e) => `${e.line}:${e.column}: ${e.message}`),
+      ).toEqual([
+        "5:3: Symbol 'X' already defined in scope 'P'",
+        "7:6: CHAR#'☃' holds a character Windows-1252 lacks, which a CHAR cannot store; use a WCHAR literal (WCHAR#\"...\") for it",
+      ]);
+    });
   }
 });
