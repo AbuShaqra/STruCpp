@@ -81,6 +81,38 @@ END_PROGRAM
     ]);
   });
 
+  it("tags only the declaration the attribute precedes", () => {
+    const src = `FUNCTION Log : INT
+VAR_INPUT
+  msg : STRING;
+  {attribute 'implicit-parameter' := 'position'} nPos : DINT;
+  plain : INT;
+END_VAR
+Log := 1;
+END_FUNCTION
+FUNCTION Log2 : INT
+VAR_INPUT
+  {attribute 'implicit-parameter' := 'position'}
+  {attribute 'hide'}
+  // a comment
+  (* another *)
+  nPos : DINT;
+  {attribute 'implicit-parameter' := 'pouname'} a : STRING; b : INT;
+END_VAR
+Log2 := 1;
+END_FUNCTION
+PROGRAM Main
+VAR r : INT; END_VAR
+r := Log(msg := 'x', nPos := 1);
+r := Log2();
+END_PROGRAM
+`;
+    expect(compile(src).errors.map((e) => `${e.line}: ${e.message}`)).toEqual([
+      "22: 'LOG' is missing required input: PLAIN",
+      "23: 'LOG2' is missing required inputs: NPOS, A, B; this compiler does not fill {attribute 'implicit-parameter'} inputs (NPOS, A): pass them or give them an initial value",
+    ]);
+  });
+
   it("changes nothing when every input is passed", () => {
     for (const opts of MODES) {
       expect(errors("b := LOG('x', 'P', '', 'Q', 1);", opts)).toEqual([]);

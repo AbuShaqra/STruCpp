@@ -9,12 +9,16 @@
  */
 
 import type { IToken } from "chevrotain";
-import type { CompilationUnit, VarDeclaration } from "../frontend/ast.js";
+import type { CompilationUnit } from "../frontend/ast.js";
 import { pragmaSourceText } from "../frontend/lexer.js";
 
 /** An implicit-parameter attribute found in a source file. */
 export interface ImplicitParameterPragma {
   file: string;
+  /** Line of the pragma's `{` (1-indexed). */
+  startLine: number;
+  /** Column of the pragma's `{` (1-indexed). */
+  startColumn: number;
   /** Line of the pragma's last character (1-indexed). */
   endLine: number;
   /** Column of the pragma's last character (1-indexed). */
@@ -38,6 +42,8 @@ export function implicitParameterPragmas(
     if (!match) continue;
     out.push({
       file,
+      startLine: tok.startLine ?? 1,
+      startColumn: tok.startColumn ?? 1,
       endLine: tok.endLine ?? tok.startLine ?? 1,
       endColumn: tok.endColumn ?? tok.startColumn ?? 1,
       value: match[1]!,
@@ -46,36 +52,46 @@ export function implicitParameterPragmas(
   return out;
 }
 
-/** Every VAR_INPUT declaration of the unit's FUNCTIONs. */
-function functionInputs(ast: CompilationUnit): VarDeclaration[] {
-  const out: VarDeclaration[] = [];
-  for (const fn of ast.functions) {
-    for (const block of fn.varBlocks) {
-      if (block.blockType === "VAR_INPUT") out.push(...block.declarations);
-    }
-  }
-  return out;
+/** `a` is before `b`, comparing line then column. */
+function before(
+  a: { line: number; col: number },
+  b: { line: number; col: number },
+): boolean {
+  return a.line < b.line || (a.line === b.line && a.col < b.col);
 }
 
 /**
- * Mark each FUNCTION input written right after an implicit-parameter
- * attribute (on the same or the next line) with the attribute's value.
+ * Mark each FUNCTION input that an implicit-parameter attribute precedes
+ * with the attribute's value. An attribute belongs to the first declaration
+ * after it: one written between the previous declaration of the VAR_INPUT
+ * block (or the block's start) and this one, other pragmas and comments
+ * between them included.
  */
 export function markImplicitParameters(
   ast: CompilationUnit,
   pragmas: readonly ImplicitParameterPragma[],
 ): void {
   if (pragmas.length === 0) return;
-  for (const decl of functionInputs(ast)) {
-    const span = decl.sourceSpan;
-    const pragma = pragmas.find(
-      (p) =>
-        p.file === span.file &&
-        (p.endLine === span.startLine
-          ? p.endColumn < span.startCol
-          : p.endLine + 1 === span.startLine),
-    );
-    if (pragma) decl.implicitParameter = pragma.value;
+  for (const fn of ast.functions) {
+    for (const block of fn.varBlocks) {
+      if (block.blockType !== "VAR_INPUT") continue;
+      let from = {
+        line: block.sourceSpan.startLine,
+        col: block.sourceSpan.startCol,
+      };
+      for (const decl of block.declarations) {
+        const span = decl.sourceSpan;
+        const start = { line: span.startLine, col: span.startCol };
+        const pragma = pragmas.find(
+          (p) =>
+            p.file === span.file &&
+            before(from, { line: p.startLine, col: p.startColumn }) &&
+            before({ line: p.endLine, col: p.endColumn }, start),
+        );
+        if (pragma) decl.implicitParameter = pragma.value;
+        from = { line: span.endLine, col: span.endCol };
+      }
+    }
   }
 }
 

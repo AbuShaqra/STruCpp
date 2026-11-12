@@ -509,7 +509,8 @@ each call (`pouname`, `position`, `instance-path`). This compiler skips it like 
 input is an ordinary one: a call must pass it unless it has an initial value. When such an input is
 missing, in every dialect, the error names the attribute: `'LOG' is missing required input: POUNAME; this
 compiler does not fill {attribute 'implicit-parameter'} inputs (POUNAME): pass it or give it an initial
-value`. The attribute counts when it is written on the input's line, before it, or on the line above.
+value`. The attribute belongs to the first declaration after it in its `VAR_INPUT` block; other pragmas
+and comments may stand between them, and an input with no attribute of its own never gets the hint.
 
 ## Conditional pragmas
 
