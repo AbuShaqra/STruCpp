@@ -1050,10 +1050,13 @@ export class STParser extends CstParser {
     this.OPTION3({
       GATE: () => {
         const name = typeNameTok.image.toUpperCase();
+        // Not after a parenthesised length, and only an Unsigned_Int (no base)
         return (
           (name === "STRING" || name === "WSTRING") &&
+          this.LA(0).tokenType !== tokens.RParen &&
           this.LA(1).tokenType === tokens.LBracket &&
-          (this.LA(2).tokenType === tokens.IntegerLiteral ||
+          ((this.LA(2).tokenType === tokens.IntegerLiteral &&
+            !this.LA(2).image.includes("#")) ||
             this.LA(2).tokenType === tokens.Identifier) &&
           this.LA(3).tokenType === tokens.RBracket
         );
