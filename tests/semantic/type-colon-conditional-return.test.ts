@@ -171,6 +171,15 @@ describe("conditional_return", () => {
     );
   });
 
+  it("takes one parenthesised condition, not an expression that starts with one", () => {
+    const src = CONDITIONAL.replace("RETURN (x > 5);", "RETURN (x) + 1 > 5;");
+    expect(diag(src, { features: ["+conditional_return"] }).errors).toContain(
+      "4:12: Expected `Semicolon`, found `+`.",
+    );
+    const ok = CONDITIONAL.replace("RETURN (x > 5);", "RETURN ((x) + 1 > 5);");
+    expect(diag(ok, { features: ["+conditional_return"] }).errors).toEqual([]);
+  });
+
   it("works in a METHOD and an FB body", () => {
     const src = `FUNCTION_BLOCK FB_A
 VAR_INPUT go : BOOL; END_VAR

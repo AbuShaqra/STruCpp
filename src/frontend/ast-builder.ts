@@ -2475,15 +2475,22 @@ export class ASTBuilder {
       sourceSpan: nodeToSourceSpan(node),
     };
     // `RETURN (cond);` is `IF cond THEN RETURN; END_IF;` (feature conditional_return).
-    const conditionNode = getFirstNode(
-      (node.children as CstChildren).expression,
-    );
-    const condition = conditionNode && this.buildExpression(conditionNode);
-    if (!condition) return ret;
+    const children = node.children as CstChildren;
+    const conditionNode = getFirstNode(children.expression);
+    const inner = conditionNode && this.buildExpression(conditionNode);
+    const open = getFirstToken(children.LParen);
+    const close = getFirstToken(children.RParen);
+    if (!inner || !open || !close) return ret;
+    const start = tokenToSourceSpan(open);
+    const end = tokenToSourceSpan(close);
     return {
       kind: "IfStatement",
       sourceSpan: ret.sourceSpan,
-      condition,
+      condition: {
+        kind: "ParenthesizedExpression",
+        sourceSpan: { ...start, endLine: end.endLine, endCol: end.endCol },
+        expression: inner,
+      },
       thenStatements: [ret],
       elsifClauses: [],
       elseStatements: [],

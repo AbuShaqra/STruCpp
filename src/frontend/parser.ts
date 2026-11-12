@@ -2060,7 +2060,11 @@ export class STParser extends CstParser {
     // `RETURN (cond);`; gated by the feature conditional_return in the analyzer.
     this.OPTION({
       GATE: (): boolean => this.LA(1).tokenType === tokens.LParen,
-      DEF: (): CstNode => this.SUBRULE(this.expression),
+      DEF: (): void => {
+        this.CONSUME(tokens.LParen);
+        this.SUBRULE(this.expression);
+        this.CONSUME(tokens.RParen);
+      },
     });
     this.CONSUME(tokens.Semicolon);
   });

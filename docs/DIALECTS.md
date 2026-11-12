@@ -642,7 +642,8 @@ END_FUNCTION
 - `conditional_return` takes a parenthesised condition after `RETURN`, in any POU body, method, action
   or property accessor. It means `IF cond THEN RETURN; END_IF;`: the condition is checked as an IF
   condition (`Condition must be a boolean or bit type, got INT`), and the C++ is that of the IF form.
-  `RETURN x;` without parentheses stays a parse error.
+  `RETURN x;` without parentheses stays a parse error, and so does an expression that only starts with a
+  parenthesis (`RETURN (a) OR b;`): the condition is the one parenthesised expression.
 - In a `--test` file, `RETURN (cond);` follows the dialect flags of the run, as conditional pragmas do: it is
   refused without the feature, and with it a TEST ends there (passing) when `cond` holds.
 
