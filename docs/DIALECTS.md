@@ -80,6 +80,7 @@ the root. A profile without `extends` has only its own features.
 | `interface_zero`     | `itf := 0` stores NULL in an interface variable              |
 | `end_semicolon_optional` | under `--strict`, `END_IF` and the like need no `;`      |
 | `conditional_pragmas` | `{IF}`/`{ELSIF}`/`{ELSE}`/`{END_IF}` with `defined()`, `project_defined()`, `hasvalue()`, `AND`/`OR`/`NOT`; defines from `-D` and from `{define}`/`{undefine}` in the source ([below](#conditional-pragmas)) |
+| `platform_types`     | the types `__XINT`/`XINT`, `__UXINT`/`UXINT`, `XWORD` and `PVOID` ([below](#platform-types)) |
 
 ## Refusals
 
@@ -101,6 +102,7 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `TYPE U_A : UNION ... END_UNION`            | `union`              | `UNION type 'U_A' needs the feature union`                                           |
 | `fb : FB_A(p := 1);` (init arguments)       | `fb_init`            | `The init argument list of 'FB' needs the feature fb_init` (at `(`)                  |
 | `itf := 0` (interface variable)             | `interface_zero`     | `Assigning 0 to interface I_A needs the feature interface_zero` (at the `0`)         |
+| `x : XINT;` (any platform type)            | `platform_types`     | `XINT needs the feature platform_types` (at the type)                                |
 | `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive). With the feature on, `{define}`/`{undefine}` are accepted ([below](#conditional-pragmas)) |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
@@ -615,6 +617,29 @@ strucpp main.st -o main.cpp --feature +conditional_pragmas -D MODE=fast
   project define of the same name for `hasvalue`; a `hasvalue` text compared exactly, with no escapes.
 - **Follow-up.** The symbol operators above stay refused until a compile can answer them the same way in
   every entry point.
+
+## Platform types
+
+Common vendor toolchains have integer types whose width is the target's address width, 32 or 64 bits.
+This compiler generates C++ for a 64-bit target, so under `platform_types` each is its 64-bit type:
+
+| Type                | Is        | Notes                                                                       |
+| ------------------- | --------- | --------------------------------------------------------------------------- |
+| `__XINT`, `XINT`    | `LINT`    |                                                                             |
+| `__UXINT`, `UXINT`  | `ULINT`   |                                                                             |
+| `XWORD`             | `__XWORD` | the address-width bit string `ADR` returns; 64 bits on the 64-bit target    |
+| `PVOID`             | `__XWORD` | an untyped address: `pv := ADR(x)` and `pd := pv` (a `POINTER TO`) work     |
+
+- The name is replaced by its type wherever a type is written (a variable, a STRUCT field, an ARRAY
+  element, a POINTER TO target, an alias, a FUNCTION result, an input), before analysis. So messages, hover
+  and the generated C++ show the 64-bit type (`Implicit narrowing conversion from LINT to DINT`), and the
+  C++ is that of the 64-bit spelling. A 32-bit target is not supported: there these types would be
+  `DINT`, `UDINT` and `DWORD`.
+- A TYPE, FUNCTION_BLOCK, PROGRAM or INTERFACE of the same name, in the sources or in a library, wins and
+  the name means that declaration in every dialect. A variable named `xint` is unaffected.
+- With the feature off, each use is refused at the type, instead of `Undefined type`.
+- Not supported: typed literals (`XINT#5`) and conversion functions named after these types
+  (`XINT_TO_INT`, `TO_UXINT`). Use the 64-bit names (`LINT#5`, `LINT_TO_INT`).
 
 ## Strict checks a feature relaxes
 

@@ -118,6 +118,7 @@ import {
 import { cp1252Byte } from "../byte-utils.js";
 import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import { libraryOverloadFor } from "./library-overload.js";
+import { platformTypeTarget } from "./platform-types.js";
 
 // =============================================================================
 // Located Variable Address Parsing
@@ -4883,6 +4884,18 @@ export class SemanticAnalyzer {
     // For inline arrays, validate the element type instead
     const nameToCheck = typeRef.elementTypeName ?? typeRef.name;
 
+    // A platform type is lowered where its feature is on.
+    if (
+      !this.isKnownType(nameToCheck) &&
+      platformTypeTarget(nameToCheck) !== undefined
+    ) {
+      this.requireFeature(
+        "platform_types",
+        nameToCheck.toUpperCase(),
+        typeRef.sourceSpan,
+      );
+      return;
+    }
     if (!this.isKnownType(nameToCheck)) {
       this.addError(
         `Undefined type '${nameToCheck}'${context ? " in " + context : ""}`,

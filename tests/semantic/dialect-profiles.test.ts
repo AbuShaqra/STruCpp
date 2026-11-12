@@ -322,7 +322,7 @@ describe("resolveDialect", () => {
 
   it("an unknown --feature is an error", () => {
     expect(errorOf(() => resolveDialect({ features: ["+goto"] })).message).toBe(
-      "unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas)",
+      "unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, platform_types)",
     );
   });
 
@@ -334,7 +334,7 @@ describe("resolveDialect", () => {
       ),
     );
     expect(e.message).toBe(
-      "unknown feature 'goto' in dialect file p/x.json (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas)",
+      "unknown feature 'goto' in dialect file p/x.json (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, platform_types)",
     );
   });
 

@@ -27,6 +27,7 @@ export const KNOWN_FEATURES = [
   "interface_zero",
   "end_semicolon_optional",
   "conditional_pragmas",
+  "platform_types",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];
