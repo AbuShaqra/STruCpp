@@ -759,7 +759,10 @@ export class STParser extends CstParser {
       this.CONSUME(tokens.EXTENDS);
       this.CONSUME2(tokens.Identifier);
     });
-    this.CONSUME(tokens.Colon);
+    // `TYPE X STRUCT` without the colon; gated by the feature type_colon_optional in the analyzer.
+    if (this.RECORDING_PHASE || this.LA(1).tokenType !== tokens.STRUCT) {
+      this.CONSUME(tokens.Colon);
+    }
     // IGNORE_AMBIGUITIES: ARRAY keyword has LONGER_ALT=Identifier which causes
     // Chevrotain to see ambiguity between arrayType (starts with ARRAY token) and
     // typedEnumOrSubrangeOrAlias (starts with Identifier). The GATE on arrayType
@@ -2054,6 +2057,11 @@ export class STParser extends CstParser {
    */
   public returnStatement = this.RULE("returnStatement", () => {
     this.CONSUME(tokens.RETURN);
+    // `RETURN (cond);`; gated by the feature conditional_return in the analyzer.
+    this.OPTION({
+      GATE: (): boolean => this.LA(1).tokenType === tokens.LParen,
+      DEF: (): CstNode => this.SUBRULE(this.expression),
+    });
     this.CONSUME(tokens.Semicolon);
   });
 

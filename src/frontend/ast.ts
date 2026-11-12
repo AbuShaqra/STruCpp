@@ -377,6 +377,8 @@ export interface TypeDeclaration extends ASTNode {
   extendsKeywordSpan?: SourceSpan;
   /** Set on a TYPE hoisted from an inline enumeration or subrange. */
   inline?: InlineTypeOrigin;
+  /** The STRUCT keyword of `TYPE X STRUCT`, written without the colon; needs the feature type_colon_optional. */
+  colonOmittedSpan?: SourceSpan;
 }
 
 /** Where a hoisted inline type was written. */
@@ -630,6 +632,8 @@ export interface IfStatement extends ASTNode {
   thenStatements: Statement[];
   elsifClauses: ElsifClause[];
   elseStatements: Statement[];
+  /** Set when written `RETURN (cond);`: the RETURN statement; needs the feature conditional_return. */
+  conditionalReturn?: SourceSpan;
 }
 
 /**

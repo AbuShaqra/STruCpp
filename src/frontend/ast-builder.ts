@@ -995,6 +995,12 @@ export class ASTBuilder {
     const [nameToken, baseToken] = getAllTokens(children.Identifier);
     const name = nameToken?.image ?? "";
     const extendsToken = getFirstToken(children.EXTENDS);
+    // `TYPE X STRUCT` without the colon (feature type_colon_optional).
+    const colonlessStruct = children.Colon
+      ? undefined
+      : getFirstToken(
+          (getFirstNode(children.structType)?.children as CstChildren)?.STRUCT,
+        );
 
     const definition = this.buildTypeDefinition(node);
 
@@ -1012,6 +1018,9 @@ export class ASTBuilder {
       name,
       definition,
       ...(defaultValue !== undefined ? { defaultValue } : {}),
+      ...(colonlessStruct
+        ? { colonOmittedSpan: tokenToSourceSpan(colonlessStruct) }
+        : {}),
       ...(extendsToken && baseToken
         ? {
             extends: {
@@ -2460,10 +2469,25 @@ export class ASTBuilder {
   /**
    * Build a ReturnStatement from a CST node.
    */
-  buildReturnStatement(node: CstNode): ReturnStatement {
-    return {
+  buildReturnStatement(node: CstNode): ReturnStatement | IfStatement {
+    const ret: ReturnStatement = {
       kind: "ReturnStatement",
       sourceSpan: nodeToSourceSpan(node),
+    };
+    // `RETURN (cond);` is `IF cond THEN RETURN; END_IF;` (feature conditional_return).
+    const conditionNode = getFirstNode(
+      (node.children as CstChildren).expression,
+    );
+    const condition = conditionNode && this.buildExpression(conditionNode);
+    if (!condition) return ret;
+    return {
+      kind: "IfStatement",
+      sourceSpan: ret.sourceSpan,
+      condition,
+      thenStatements: [ret],
+      elsifClauses: [],
+      elseStatements: [],
+      conditionalReturn: ret.sourceSpan,
     };
   }
 

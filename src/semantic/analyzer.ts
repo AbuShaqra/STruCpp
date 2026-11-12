@@ -490,6 +490,7 @@ export class SemanticAnalyzer {
     // flattened, so its members resolve. Flattening precedes the symbol tables.
     const errorsBeforeStructFeature = this.errors.length;
     this.validateStructExtendsFeature(ast);
+    this.validateTypeColonFeature(ast);
     this.flattenStructTypes(ast);
     // UNION refusals and rules are located and gate nothing either.
     this.validateUnions(ast);
@@ -781,6 +782,18 @@ export class SemanticAnalyzer {
       needFeature: (construct, span) =>
         this.requireFeature("fb_init", construct, span),
     });
+  }
+
+  /** `TYPE X STRUCT` without the colon needs the feature type_colon_optional. Reported at STRUCT. */
+  private validateTypeColonFeature(ast: CompilationUnit): void {
+    for (const typeDecl of ast.types) {
+      if (!typeDecl.colonOmittedSpan) continue;
+      this.requireFeature(
+        "type_colon_optional",
+        `TYPE ${typeDecl.name.toUpperCase()} without ':' before STRUCT`,
+        typeDecl.colonOmittedSpan,
+      );
+    }
   }
 
   /** `TYPE X EXTENDS Base : STRUCT` needs the feature struct_extends. Reported at EXTENDS. */
@@ -3842,6 +3855,12 @@ export class SemanticAnalyzer {
       if (stmt.kind === "AssignmentStatement") {
         this.validateExpression(stmt.target, varTypeMap, ast);
         this.validateExpression(stmt.value, varTypeMap, ast);
+      } else if (stmt.kind === "IfStatement" && stmt.conditionalReturn) {
+        this.requireFeature(
+          "conditional_return",
+          "RETURN (condition)",
+          stmt.conditionalReturn,
+        );
       } else if (stmt.kind === "RefAssignStatement") {
         this.requireFeature("ref_assign", "REF=", stmt.sourceSpan);
         this.validateExpression(stmt.target, varTypeMap, ast);
