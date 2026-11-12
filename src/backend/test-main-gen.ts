@@ -543,6 +543,8 @@ class TestFunctionGenerator {
     for (const varBlock of tc.varBlocks) {
       this.generateVarBlock(lines, varBlock);
     }
+    // A RETURN nested in the body (in an IF, a loop) ends the TEST, passing.
+    this.testCodegen.setReturnValue("true");
 
     if (setupStructName) {
       // Wrap body in a lambda so assert failures (return false) don't skip teardown
@@ -564,6 +566,7 @@ class TestFunctionGenerator {
       }
       lines.push(`${this.indent}return true;`);
     }
+    this.testCodegen.setReturnValue(undefined);
 
     lines.push("}");
     return lines.join("\n");
