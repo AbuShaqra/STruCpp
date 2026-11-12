@@ -2043,6 +2043,7 @@ export class TypeChecker {
         expr.arguments,
         scope,
       );
+      this.checkStrictConversionArgument(expr);
     }
 
     const nameUpper = expr.functionName.toUpperCase();
@@ -6622,6 +6623,28 @@ export class TypeChecker {
         return;
       }
     }
+  }
+
+  /**
+   * `--strict`: the argument of a typed conversion `X_TO_Y` is an X, so it
+   * follows the strict conversion rules into X (`BYTE_TO_INT(w)` with a WORD).
+   */
+  private checkStrictConversionArgument(expr: FunctionCallExpression): void {
+    if (
+      expr.instance !== undefined ||
+      this.findUserFunction(expr.functionName)
+    ) {
+      return;
+    }
+    const fn = this.symbolTables.lookupFunction(expr.functionName);
+    if (fn !== undefined && fn.libraryName !== STD_FUNCTIONS_LIBRARY) return;
+    const conv = this.stdRegistry?.resolveConversion(
+      expr.functionName.toUpperCase(),
+    );
+    const from = conv ? ELEMENTARY_TYPES[conv.fromType] : undefined;
+    const arg = stripEnEno(expr.arguments)[0];
+    if (from === undefined || arg === undefined) return;
+    this.checkStrictConversion(from, arg.value);
   }
 
   /** Strict conversion check for each input argument of a call. */

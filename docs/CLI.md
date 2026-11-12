@@ -227,7 +227,8 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
   wider bit string is accepted; untyped constants such as `-1`, `16#FF` or `1 + 2` take the type
   they are assigned to, and `0`, `1` and `NOT 1` fit a BOOL; AND, OR and XOR with a bit-string
   operand have the wider bit string's type; the same rules apply to an output captured with
-  `o => v`, from a FUNCTION or a function block;
+  `o => v`, from a FUNCTION or a function block, and to the argument of a typed conversion
+  `X_TO_Y`, which must be an X (`BYTE_TO_INT(w)` with a WORD is refused);
 - arithmetic on BOOL or on BYTE/WORD/DWORD/LWORD, and an integer used as TIME;
 - the reserved names ON, STEP and MOVE for a variable, POU, method, type, field, enum value,
   configuration, resource, task or program instance (a FUNCTION may still be named MOVE);

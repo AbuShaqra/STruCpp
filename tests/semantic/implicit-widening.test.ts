@@ -237,5 +237,23 @@ describe("implicit widening (Figures 11 and 12)", () => {
           : [],
       );
     });
+
+    it(`checks the argument of a typed conversion under --strict only (${label})`, () => {
+      const strict = label === "strict";
+      const r = compile(
+        "PROGRAM Main\nVAR b : BYTE; w : WORD; i : INT; r : REAL; d : DINT; u : UINT; END_VAR\ni := BYTE_TO_INT(w);\nb := INT_TO_BYTE(w);\ni := BYTE_TO_INT(r);\nb := INT_TO_BYTE(d);\ni := BYTE_TO_INT(b);\ni := BYTE_TO_INT(16#FF);\nr := INT_TO_REAL(i);\ni := UINT_TO_INT(u);\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.errors.map((e) => e.message)).toEqual(
+        strict
+          ? [
+              "Implicit conversion from WORD to BYTE is not allowed; use WORD_TO_BYTE",
+              "Implicit conversion from WORD to INT is not allowed; use WORD_TO_INT",
+              "Implicit conversion from REAL to BYTE is not allowed; use REAL_TO_BYTE",
+              "Implicit conversion from DINT to INT is not allowed; use DINT_TO_INT",
+            ]
+          : [],
+      );
+    });
   }
 });

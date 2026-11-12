@@ -75,5 +75,23 @@ describe("one-pass diagnostics", () => {
         "7:6: CHAR#'☃' holds a character Windows-1252 lacks, which a CHAR cannot store; use a WCHAR literal (WCHAR#\"...\") for it",
       ]);
     });
+
+    it(`gives literals into WCHAR, WSTRING, CHAR inputs and CHAR their own messages after a declaration error (${label})`, () => {
+      const body = (dup: boolean): string =>
+        `FUNCTION F : INT\nVAR_INPUT c : CHAR; END_VAR\nF := 0;\nEND_FUNCTION\nPROGRAM P\nVAR ${dup ? "x : INT; x : INT; " : ""}r : INT; w : WCHAR; c : CHAR; ws : WSTRING; END_VAR\nr := F(c := '☃');\nw := '☃';\nc := '☃☃';\nws := '☃';\nr := F('é');\nEND_PROGRAM\n`;
+      const list = (dup: boolean): string[] =>
+        compile(body(dup), { ...options, libraries })
+          .errors.map((e) => `${e.line}:${e.column}: ${e.message}`)
+          .filter((m) => !m.includes("already defined"))
+          .sort();
+      const expected = [
+        "10:7: Cannot assign STRING to WSTRING",
+        "7:13: CHAR#'☃' holds a character Windows-1252 lacks, which a CHAR cannot store; use a WCHAR literal (WCHAR#\"...\") for it",
+        "8:6: Cannot assign STRING to WCHAR",
+        "9:6: Cannot assign STRING to CHAR",
+      ];
+      expect(list(true)).toEqual(expected);
+      expect(list(false)).toEqual(expected);
+    });
   }
 });
