@@ -48,6 +48,7 @@ import { foldStructFieldDefaults } from "./semantic/struct-defaults.js";
 import { lowerActions } from "./semantic/lower-actions.js";
 import { lowerAccessorLocals } from "./semantic/lower-accessor-locals.js";
 import { lowerProgramSelfMembers } from "./semantic/program-access.js";
+import { lowerBitType } from "./semantic/bit-type.js";
 import { unionLoweringErrors } from "./semantic/union.js";
 import { fbInitLoweringErrors } from "./semantic/fb-init.js";
 import { walkAST } from "./ast-utils.js";
@@ -807,6 +808,15 @@ function runPipeline(
     ];
     // After the actions, so `PRG_A.x` in an action of PRG_A is lowered too.
     if (dialect.features.has("program_methods")) lowerProgramSelfMembers(ast);
+    loweringErrors.push(
+      ...lowerBitType(ast, dialect.features.has("bit_type"), (name) =>
+        (mergedOptions.libraries ?? []).some((a) =>
+          [...a.manifest.types, ...a.manifest.functionBlocks].some(
+            (d) => d.name.toUpperCase() === name,
+          ),
+        ),
+      ),
+    );
     errors.push(...loweringErrors);
     if (!continueOnError && loweringErrors.length > 0) {
       return {

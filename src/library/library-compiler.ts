@@ -665,6 +665,25 @@ export function compileLibrary(
     compileOpts.globalConstants = options.globalConstants;
   }
   const result = compile(primarySource.source, compileOpts);
+  // A STRUCT with BIT members (feature bit_type) is not exported yet.
+  if (result.success) {
+    for (const t of result.ast?.types ?? []) {
+      const def = t.definition;
+      const bit =
+        def.kind === "StructDefinition"
+          ? def.fields.find((f) => f.type.bit)
+          : undefined;
+      if (bit === undefined) continue;
+      result.success = false;
+      result.errors.push({
+        message: `STRUCT '${t.name.toUpperCase()}' has BIT members: a library cannot export BIT members yet`,
+        line: bit.sourceSpan.startLine,
+        column: bit.sourceSpan.startCol,
+        severity: "error",
+        ...(bit.sourceSpan.file ? { file: bit.sourceSpan.file } : {}),
+      });
+    }
+  }
 
   if (!result.success) {
     return {

@@ -343,6 +343,85 @@ inline Status set(void* ptr, const void* bytes, uint16_t size, uint8_t flags = 0
     return detail::set_locked(t, ptr, bytes, size, flags, apply, lock);
 }
 
+namespace detail {
+/**
+ * Apply of a byte holding forced BIT members (feature bit_type): `bytes[0]`
+ * holds the forced values, `bytes[1]` the mask of forced bits; other bits of
+ * the byte keep the program's values.
+ */
+inline void apply_bits(void* dst, const uint8_t* bytes, uint16_t) noexcept {
+    uint8_t* p = static_cast<uint8_t*>(dst);
+    *p = static_cast<uint8_t>((*p & ~bytes[1]) | (bytes[0] & bytes[1]));
+}
+
+/** set_bit() with the table lock (and the global's, if any) held. */
+inline Status set_bit_locked(Table& t, void* ptr, uint8_t bit, bool value,
+                             uint8_t flags, void* lock) noexcept {
+    if (ptr == nullptr || bit > 7) return Status::BadArgument;
+    const uint8_t mask = static_cast<uint8_t>(1u << bit);
+    uint8_t bytes[2] = {0, 0};
+    ScalarSlot* s = find_in(t.scalars, ptr);
+    if (s != nullptr && s->apply == &apply_bits) {
+        bytes[0] = s->bytes[0];
+        bytes[1] = s->bytes[1];
+    }
+    bytes[0] = static_cast<uint8_t>(value ? (bytes[0] | mask) : (bytes[0] & ~mask));
+    bytes[1] = static_cast<uint8_t>(bytes[1] | mask);
+    return put(t, t.scalars, t.strings, ptr, bytes, 2, flags, &apply_bits, lock);
+}
+}  // namespace detail
+
+/**
+ * Force bit `bit` (0 the least significant) of the byte at `ptr` to `value`
+ * and write it now: a BIT member of a STRUCT (feature bit_type). The other
+ * bits of the byte keep their values; forced bits of one byte share a slot.
+ * `lock` is as for set().
+ */
+inline Status set_bit(void* ptr, uint8_t bit, bool value, uint8_t flags = 0,
+                      void* lock = nullptr) noexcept {
+    detail::Table& t = detail::table();
+#ifdef STRUCPP_THREADED
+    if (lock != nullptr) {
+        std::lock_guard<std::mutex> guard(*static_cast<std::mutex*>(lock));
+        detail::Lock table_lock(t);
+        return detail::set_bit_locked(t, ptr, bit, value, flags, lock);
+    }
+#endif
+    detail::Lock table_lock(t);
+    return detail::set_bit_locked(t, ptr, bit, value, flags, lock);
+}
+
+/** Stop forcing bit `bit` of the byte at `ptr`. False if it was not forced. */
+inline bool clear_bit(const void* ptr, uint8_t bit) noexcept {
+    detail::Table& t = detail::table();
+    detail::Lock lock(t);
+    detail::ScalarSlot* s = detail::find_in(t.scalars, ptr);
+    const uint8_t mask = static_cast<uint8_t>(1u << (bit & 7u));
+    if (s == nullptr || s->apply != &detail::apply_bits || (s->bytes[1] & mask) == 0) {
+        return false;
+    }
+    s->bytes[1] = static_cast<uint8_t>(s->bytes[1] & ~mask);
+    if (s->bytes[1] == 0) {
+        s->used = false;
+        detail::add_count(t, -1);
+    }
+    return true;
+}
+
+/** True, with the forced value in `*value`, while bit `bit` of the byte at `ptr` is forced. */
+inline bool read_bit(const void* ptr, uint8_t bit, bool* value) noexcept {
+    detail::Table& t = detail::table();
+    if (detail::load_count(t) == 0) return false;
+    detail::Lock lock(t);
+    const detail::ScalarSlot* s = detail::find_in(t.scalars, ptr);
+    const uint8_t mask = static_cast<uint8_t>(1u << (bit & 7u));
+    if (s == nullptr || s->apply != &detail::apply_bits || (s->bytes[1] & mask) == 0) {
+        return false;
+    }
+    *value = (s->bytes[0] & mask) != 0;
+    return true;
+}
+
 /** Stop forcing the variable at `ptr`; it keeps its current value. False if it was not forced. */
 inline bool clear(const void* ptr) noexcept {
     detail::Table& t = detail::table();

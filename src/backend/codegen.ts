@@ -132,6 +132,8 @@ import {
   isStructInitializerValue,
   type StructInitEmitter,
 } from "./struct-init-codegen.js";
+import { bitPlaceOf, bitRunMemberName } from "./bit-runs.js";
+import type { StructDefinition } from "../frontend/ast.js";
 
 // =============================================================================
 // Located Variable Support
@@ -5705,13 +5707,11 @@ export class CodeGenerator {
             }
           }
           const fieldType = this.resolveMemberType(currentType, field);
-          const fieldCppName = this.needsFieldMangling(
-            field,
-            fieldType,
-            currentType,
-          )
-            ? `${field}_`
-            : field;
+          const fieldCppName =
+            this.bitMemberPath(currentType, field) ??
+            (this.needsFieldMangling(field, fieldType, currentType)
+              ? `${field}_`
+              : field);
           if (i > 0) result += ".";
           result += fieldCppName;
           if (this.isRefInOutMember(currentType, field)) {
@@ -5742,13 +5742,11 @@ export class CodeGenerator {
             }
           }
           const fieldType = this.resolveMemberType(currentType, field);
-          const fieldCppName = this.needsFieldMangling(
-            field,
-            fieldType,
-            currentType,
-          )
-            ? `${field}_`
-            : field;
+          const fieldCppName =
+            this.bitMemberPath(currentType, field) ??
+            (this.needsFieldMangling(field, fieldType, currentType)
+              ? `${field}_`
+              : field);
           if (i > 0) result += ".";
           result += fieldCppName;
           if (this.isRefInOutMember(currentType, field)) {
@@ -6021,6 +6019,7 @@ export class CodeGenerator {
     // Field access (struct members) — detect property reads and bit access on last field
     if (expr.fieldAccess.length > 0) {
       let currentType = baseType ?? this.currentScopeVarTypes.get(nameUpper);
+      let bitOwner = currentType ?? this.bitGlobalType(nameUpper);
       for (let i = 0; i < expr.fieldAccess.length; i++) {
         const field = expr.fieldAccess[i]!;
         const isLast = i === expr.fieldAccess.length - 1;
@@ -6039,13 +6038,12 @@ export class CodeGenerator {
         }
         // Check if this field needs mangling (name == type or interface method in parent)
         const fieldType = this.resolveMemberType(currentType, field);
-        const fieldCppName = this.needsFieldMangling(
-          field,
-          fieldType,
-          currentType,
-        )
-          ? `${field}_`
-          : field;
+        const fieldCppName =
+          this.bitMemberPath(bitOwner, field) ??
+          (this.needsFieldMangling(field, fieldType, currentType)
+            ? `${field}_`
+            : field);
+        bitOwner = this.bitFieldType(bitOwner, field);
         result += `.${fieldCppName}`;
         if (this.isRefInOutMember(currentType, field)) {
           result = `(*${result})`;
@@ -6120,6 +6118,7 @@ export class CodeGenerator {
   ): string {
     let result = base;
     let currentType = baseType ?? this.currentScopeVarTypes.get(baseNameUpper);
+    let bitOwner = currentType ?? this.bitGlobalType(baseNameUpper);
 
     for (let i = 0; i < chain.length; i++) {
       const step = chain[i]!;
@@ -6141,13 +6140,12 @@ export class CodeGenerator {
             }
           }
           const fieldType = this.resolveMemberType(currentType, step.name);
-          const fieldCppName = this.needsFieldMangling(
-            step.name,
-            fieldType,
-            currentType,
-          )
-            ? `${step.name}_`
-            : step.name;
+          const fieldCppName =
+            this.bitMemberPath(bitOwner, step.name) ??
+            (this.needsFieldMangling(step.name, fieldType, currentType)
+              ? `${step.name}_`
+              : step.name);
+          bitOwner = this.bitFieldType(bitOwner, step.name);
           // Array elements store T directly — always use . for field access
           result += `.${fieldCppName}`;
           if (this.isRefInOutMember(currentType, step.name)) {
@@ -6562,9 +6560,11 @@ export class CodeGenerator {
     const parts: string[] = [];
     for (const field of fields) {
       for (const name of field.names) {
-        const member = this.needsFieldMangling(name, field.type.name, typeName)
-          ? `${name}_`
-          : name;
+        const member =
+          this.bitMemberPath(typeName, name) ??
+          (this.needsFieldMangling(name, field.type.name, typeName)
+            ? `${name}_`
+            : name);
         const fl = `${l}.${member}`;
         const fr = `${r}.${member}`;
         const element = this.arrayElementTypeOf(field.type);
@@ -9324,6 +9324,81 @@ export class CodeGenerator {
   }
 
   /**
+   * `bits_<n>_.NAME` for a BIT member of a STRUCT (feature bit_type): the
+   * member lives in the bitfield struct of its run. Undefined otherwise.
+   */
+  protected bitMemberPath(
+    ownerType: string | undefined,
+    field: string,
+  ): string | undefined {
+    const def = this.bitStructDefinition(ownerType);
+    if (def === undefined) return undefined;
+    const upper = field.toUpperCase();
+    const place = bitPlaceOf(def.fields, upper);
+    if (place === undefined) return undefined;
+    const name = def.fields
+      .flatMap((f) => f.names)
+      .find((n) => n.toUpperCase() === upper);
+    return `${bitRunMemberName(place.run)}.${name ?? field}`;
+  }
+
+  /** The STRUCT a type name stands for, through aliases and array element types. */
+  private bitStructDefinition(
+    typeName: string | undefined,
+  ): StructDefinition | undefined {
+    let name = typeName;
+    for (let depth = 0; depth < 16 && name !== undefined && this.ast; depth++) {
+      const upper = name.toUpperCase();
+      if (upper.startsWith("__INLINE_ARRAY_")) {
+        name = name.slice("__INLINE_ARRAY_".length);
+        continue;
+      }
+      const decl = this.ast.types.find((t) => t.name.toUpperCase() === upper);
+      const def = decl?.definition;
+      if (def?.kind === "StructDefinition") return def;
+      if (def?.kind === "ArrayDefinition") name = def.elementType.name;
+      else if (def?.kind === "TypeReference") name = def.name;
+      else return undefined;
+    }
+    return undefined;
+  }
+
+  /** The type of member `field` of `ownerType`, for following BIT members. */
+  private bitFieldType(
+    ownerType: string | undefined,
+    field: string,
+  ): string | undefined {
+    const def = this.bitStructDefinition(ownerType);
+    const upper = field.toUpperCase();
+    const decl = def?.fields.find((f) =>
+      f.names.some((n) => n.toUpperCase() === upper),
+    );
+    if (decl === undefined) return this.resolveMemberType(ownerType, field);
+    return decl.type.arrayDimensions && decl.type.elementTypeName !== undefined
+      ? `__INLINE_ARRAY_${decl.type.elementTypeName}`
+      : decl.type.name;
+  }
+
+  /** The declared type of a top-level or CONFIGURATION global, for BIT members. */
+  private bitGlobalType(nameUpper: string): string | undefined {
+    if (!this.ast) return undefined;
+    for (const block of [
+      ...this.ast.globalVarBlocks,
+      ...this.ast.configurations.flatMap((c) => c.varBlocks),
+    ]) {
+      for (const decl of block.declarations) {
+        if (decl.names.some((n) => n.toUpperCase() === nameUpper)) {
+          return decl.type.arrayDimensions &&
+            decl.type.elementTypeName !== undefined
+            ? `__INLINE_ARRAY_${decl.type.elementTypeName}`
+            : decl.type.name;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Check if a field access needs mangling — true when the field name collides
    * with its type name (GCC -Wchanges-meaning) or with an interface method name.
    *
@@ -9472,13 +9547,14 @@ export class CodeGenerator {
         fieldName: string,
         ownerTypeName: string | undefined,
       ): string =>
-        this.needsFieldMangling(
+        this.bitMemberPath(ownerTypeName, fieldName) ??
+        (this.needsFieldMangling(
           fieldName,
           this.resolveMemberType(ownerTypeName, fieldName),
           ownerTypeName,
         )
           ? `${fieldName}_`
-          : fieldName,
+          : fieldName),
       fieldTypeName: (
         fieldName: string,
         ownerTypeName: string | undefined,

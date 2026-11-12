@@ -35,6 +35,12 @@ import {
 import { wrapReferenceChain } from "./reference-types.js";
 import { mangledMemberName } from "./member-mangling.js";
 import {
+  bitRunMemberName,
+  bitRunTypeName,
+  bitRuns,
+  type BitRun,
+} from "./bit-runs.js";
+import {
   parseDateLiteralToDays,
   parseDtLiteralToNs,
   parseTimeLiteral,
@@ -472,9 +478,20 @@ export class TypeCodeGenerator {
    * struct's bytes without alias analysis reordering the accesses.
    */
   private generateStructType(name: string, def: StructDefinition): void {
+    const runs = bitRuns(def.fields);
+    for (const run of runs) this.emitBitRun(name, run);
     this.emit(`struct STRUCPP_MAY_ALIAS ${name} {`);
 
     for (const field of def.fields) {
+      // A run of BIT members: one member holding their bitfields (feature bit_type).
+      if (field.type.bit) {
+        for (const run of runs.filter((r) => r.first === field)) {
+          this.emit(
+            `${this.options.indent}${bitRunTypeName(name, run.index)} ${bitRunMemberName(run.index)}{};`,
+          );
+        }
+        continue;
+      }
       const cppType = this.structFieldCppType(field.type);
       for (const fieldName of field.names) {
         const emitName = this.structFieldEmitName(fieldName, field.type);
@@ -512,6 +529,31 @@ export class TypeCodeGenerator {
       }
     }
 
+    this.emit("};");
+    this.emit("");
+  }
+
+  /**
+   * The struct holding one byte of BIT members as `bool` bitfields, packed
+   * from the least significant bit; its constructor zeroes the byte and sets
+   * their initial values.
+   */
+  private emitBitRun(owner: string, run: BitRun): void {
+    const type = bitRunTypeName(owner, run.index);
+    const inits: string[] = [];
+    this.emit(`struct STRUCPP_MAY_ALIAS ${type} {`);
+    for (const { field, name: fieldName } of run.members) {
+      const value = field.initialValue
+        ? `static_cast<bool>(${this.expressionToCpp(field.initialValue)})`
+        : "false";
+      const member = this.structFieldEmitName(fieldName, field.type);
+      this.emit(`${this.options.indent}bool ${member} : 1;`);
+      inits.push(`${member} = ${value};`);
+    }
+    // The unused bits of the byte are zero too.
+    this.emit(
+      `${this.options.indent}${type}() noexcept { std::memset(static_cast<void*>(this), 0, sizeof(*this)); ${inits.join(" ")} }`,
+    );
     this.emit("};");
     this.emit("");
   }

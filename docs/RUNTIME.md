@@ -124,6 +124,8 @@ variable:
 | Call | Purpose |
 |------|---------|
 | `set(ptr, bytes, size, flags, apply, lock)` | Force a variable; writes it now. `lock` (optional, used under `STRUCPP_THREADED`) is the `std::mutex` of the shared global the variable lives in. Returns `Ok`, `Full`, `TooLarge` or `BadArgument` |
+| `set_bit(ptr, bit, value, flags, lock)` | Force bit `bit` (0..7, 0 the least significant) of the byte at `ptr`, a BIT member: only that bit is written, now and at every apply. The forced bits of one byte share one slot (`bytes[0]` values, `bytes[1]` mask) |
+| `clear_bit(ptr, bit)`, `read_bit(ptr, bit, &value)` | Stop forcing one bit (the slot is freed with its last bit); query a forced bit |
 | `clear(ptr)` / `clear_all()` | Stop forcing; the variable keeps its current value |
 | `is_forced(ptr)`, `read(ptr, dest, cap)`, `value_ptr(ptr, &size)` | Query a force |
 | `apply_all()`, `apply_owned(base, len)` | Write forced values in |
@@ -160,6 +162,29 @@ leaf is a global.
 The dispatch's `TypeOps::force` op takes a fourth argument in every build, the
 leaf's lock (`void*`, null when there is none); `force_impl`, `force_string`
 and `force_wstring` default it to null.
+
+### BIT leaves (feature bit_type)
+
+A BIT member of a STRUCT has no address of its own, so its debug-table entry
+addresses the byte that holds it:
+
+- `Entry.tag` is `TAG_BIT` (21) and `Entry.ptr` points at the byte;
+- the bit number, 0 the least significant bit of that byte, is in the three high
+  bits of `Entry.flags` (`leaf_bit(flags)`, `flags >> LEAF_BIT_SHIFT` with
+  `LEAF_BIT_SHIFT` 5); the low bits keep their meaning (`LEAF_FLAG_READONLY`,
+  `LEAF_FLAG_RETAIN`);
+- on the wire the value is one byte, 0 or 1, as for BOOL (`handle_read` writes
+  one byte; `handle_write` and `handle_set` take one byte, non-zero for TRUE).
+
+`handle_read` reads the bit, or its forced value while it is forced;
+`handle_write` sets or clears only that bit and is ignored while it is forced;
+`handle_set` forces or unforces only that bit through `force::set_bit` /
+`force::clear_bit`, so the other bits of the byte keep the program's values.
+`handle_ptr` returns `nullptr` with length 0 for a BIT leaf. For a configuration
+global the same `debug_leaf_lock` is held as for its other leaves. In the debug
+map (`debugMap.leaves`) such a leaf has `"type": "BIT"`, `"size": 1` and
+`"bit": n`, and `typeTags` lists `"BIT": 21`, only in a map that has a BIT leaf.
+A host that does not know the tag treats the leaf as of an unknown type.
 
 For a source-level debugger that has stopped the program (the VS Code
 extension), the header exports `strucpp_force_capture(void* ptr, unsigned size)`
@@ -331,7 +356,11 @@ Uses `malloc`/`free` with placement new. Sets pointer to `nullptr` after deletio
 
 ## Composite Types
 
-- **Structs** (`iec_struct.hpp`): Plain C++ structs with IECVar-wrapped fields
+- **Structs** (`iec_struct.hpp`): Plain C++ structs with IECVar-wrapped fields. Each byte of BIT members
+  (feature bit_type) is one member `bits_<n>_` of a struct `<STRUCT>_bits<n>` holding up to 8 `bool`
+  bitfields, least significant bit first; its constructor zeroes the byte, so unused bits read 0. In a
+  UNION's storage such a byte is reached through `union_bit<Bit, Loc>` proxies (`iec_union.hpp`) that
+  write one bit only
 - **Enums** (`iec_enum.hpp`): C++ `enum class` with configurable underlying type; without a declared base it is `INT_t` (`DINT_t` when a value is outside the INT range or not a foldable constant)
 - **Subranges** (`iec_subrange.hpp`): Runtime range validation on assignment
 

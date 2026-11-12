@@ -1359,6 +1359,9 @@ export class TypeChecker {
         if (this.refuseStringElement(expr.operand, "REF() cannot take")) {
           return undefined;
         }
+        if (this.refuseBitMember(expr.operand, "REF() cannot take", scope)) {
+          return undefined;
+        }
         if (operandType) {
           const refType: ReferenceType = {
             typeKind: "reference",
@@ -1987,6 +1990,7 @@ export class TypeChecker {
     for (const arg of expr.arguments) {
       this.resolveExprType(arg.value, scope);
     }
+    this.refuseBitMemberArguments(expr, scope);
     this.checkCharStdArguments(expr);
     this.adaptCharConversionArgument(expr);
     this.validateReferenceArguments(expr, scope);
@@ -3375,6 +3379,7 @@ export class TypeChecker {
       case "RefAssignStatement": {
         this.resolveExprType(stmt.target, scope);
         this.resolveExprType(stmt.source, scope);
+        this.refuseBitMember(stmt.source, "REF= cannot bind to", scope);
         // REF= rebinds a reference, so the target must be declared
         // REF_TO / REFERENCE TO. Catch `plainVar REF= x` here with a clear
         // message rather than letting it fall through to a confusing C++
@@ -4333,6 +4338,15 @@ export class TypeChecker {
       ) {
         return;
       }
+      if (
+        this.refuseBitMember(
+          arg.value,
+          `VAR_IN_OUT '${input.name}' cannot be bound to`,
+          scope,
+        )
+      ) {
+        return;
+      }
       this.validateInOutArgument(input, arg, scope);
     });
     for (const input of inputs) {
@@ -4657,6 +4671,91 @@ export class TypeChecker {
       this.symbolTables.lookupFunctionBlock(typeName)?.libraryName ===
       "iec-standard-fb"
     );
+  }
+
+  /**
+   * A BIT member of a STRUCT (feature bit_type) has no address of its own: it
+   * cannot be referenced or bound to an in/out. True when it was refused.
+   */
+  private refuseBitMember(
+    expr: Expression,
+    what: string,
+    scope: Scope,
+  ): boolean {
+    let e = expr;
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    if (e.kind !== "VariableExpression" || !this.hasMemberAccess(e)) {
+      return false;
+    }
+    let base: AccessType | undefined;
+    if (this.isSelfMember(e)) {
+      base = { name: this.currentFBName!, referenceKind: "none" };
+    } else {
+      const sym = scope.lookup(e.name);
+      base =
+        sym?.kind === "variable"
+          ? (sym.declaration as VarDeclaration | undefined)?.type
+          : undefined;
+    }
+    const type =
+      base === undefined
+        ? undefined
+        : resolveAccessType(base, e, this.accessLookup);
+    if ((type as TypeReference | undefined)?.bit !== true) return false;
+    const path = [e.name, ...e.fieldAccess].join(".").toUpperCase();
+    this.addError(
+      `${what} the BIT member ${path}: a BIT has no address of its own; copy it to a BOOL variable first`,
+      e.sourceSpan.startLine,
+      e.sourceSpan.startCol,
+      e.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /** `ADR(s.bit)`, `REF_LINK(s.bit)` and a BIT member bound to a REFERENCE TO input. */
+  private refuseBitMemberArguments(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    const name = expr.functionName.toUpperCase();
+    const args = stripEnEno(expr.arguments);
+    if (
+      (name === "ADR" || name === "REF_LINK") &&
+      !this.findUserFunction(name) &&
+      args.length > 0
+    ) {
+      this.refuseBitMember(args[0]!.value, `${name}() cannot take`, scope);
+      return;
+    }
+    const inputs =
+      this.callInputs(expr, scope) ??
+      this.dottedMethodInputs(expr.functionName, scope);
+    // A FUNCTION or METHOD output is passed by reference; an FB call assigns it.
+    if (!this.isFBInstanceCall(expr, scope)) {
+      for (const arg of args) {
+        if (!arg.isOutput) continue;
+        this.refuseBitMember(
+          arg.value,
+          `VAR_OUTPUT '${(arg.name ?? "").toUpperCase()}' cannot be bound to`,
+          scope,
+        );
+      }
+    }
+    if (!inputs) return;
+    args.forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (input?.type.referenceKind !== "reference_to") return;
+      this.refuseBitMember(
+        arg.value,
+        `REFERENCE TO input '${input.name}' cannot be bound to`,
+        scope,
+      );
+    });
   }
 
   /**
