@@ -89,4 +89,69 @@ int main() {
       );
     });
   }
+
+  const ORDERING = `TYPE MyC : CHAR; END_TYPE
+FUNCTION FAl : BOOL VAR_INPUT a : MyC; b : MyC; END_VAR FAl := a < b; END_FUNCTION
+FUNCTION FChr : CHAR VAR_INPUT x : INT; END_VAR IF x > 0 THEN FChr := 'Y'; ELSE FChr := CHAR#'N'; END_IF; END_FUNCTION
+PROGRAM MAIN
+VAR
+  a : CHAR := CHAR#'a'; ae : CHAR := 'ä'; z : CHAR := CHAR#'z';
+  mx : CHAR; mn : CHAR; li : CHAR; gt : BOOL; al : BOOL; eq : BOOL; sq : BOOL;
+  s : STRING := 'abc'; ws : WSTRING := "x☃"; w : WCHAR; w2 : WCHAR; c2 : CHAR; s2 : STRING; ws2 : WSTRING;
+  k : INT; hx : CHAR; wx : WCHAR; fc : CHAR;
+END_VAR
+mx := MAX(a, ae);
+mn := MIN(ae, a);
+li := LIMIT(a, ae, z);
+gt := GT(ae, a);
+al := FAl(ae, a);
+eq := a = 'a';
+sq := s[1] = 'a';
+w := STRING_TO_WCHAR(s);
+c2 := WSTRING_TO_CHAR(ws);
+ws2 := CHAR_TO_WSTRING(ae);
+w2 := WCHAR#"☃";
+s2 := WCHAR_TO_STRING(w2);
+CASE ae OF 'a': k := 1; CHAR#'ä': k := 2; ELSE k := 3; END_CASE;
+hx := CHAR#16#41;
+wx := WCHAR#'X';
+fc := FChr(1);
+END_PROGRAM
+`;
+
+  for (const [label, options] of [
+    ["no dialect", {}],
+    ["iec-3", { dialect: "iec-3" }],
+    ["strict", { strict: true }],
+  ] as const) {
+    it(`orders by code, adapts one-character literals and converts across widths (${label})`, () => {
+      const result = compile(ORDERING, {
+        ...options,
+        headerFileName: "generated.hpp",
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `char_order_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+static int u(char c) { return static_cast<unsigned char>(c); }
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << u(p.MX.get()) << " " << u(p.MN.get()) << " " << u(p.LI.get()) << " "
+              << p.GT.get() << " " << p.AL.get() << " " << p.EQ.get() << " " << p.SQ.get() << " "
+              << int(p.W.get()) << " " << u(p.C2.get()) << " " << int(p.WS2.get().c_str()[0]) << " "
+              << u(p.S2.get().c_str()[0]) << " " << p.K.get() << " " << u(p.HX.get()) << " "
+              << int(p.WX.get()) << " " << u(p.FC.get()) << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe("228 97 122 1 0 1 1 97 120 228 63 2 65 88 89");
+    });
+  }
 });

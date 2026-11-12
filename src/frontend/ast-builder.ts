@@ -8,6 +8,7 @@
  */
 
 import type { CstNode, IToken } from "chevrotain";
+import { exactIntegerLiteralValue } from "../literal-utils.js";
 import type {
   CompilationUnit,
   ProgramDeclaration,
@@ -1891,7 +1892,10 @@ export class ASTBuilder {
     let maxLength: number | string | undefined;
     const lengthToken = getFirstToken(children.IntegerLiteral);
     if (lengthToken) {
-      maxLength = parseInt(lengthToken.image, 10);
+      // An Unsigned_Int may hold underscores (1_0) and, in parentheses, a base (16#20).
+      const exact = exactIntegerLiteralValue(lengthToken.image);
+      maxLength =
+        exact !== undefined ? Number(exact) : parseInt(lengthToken.image, 10);
     } else {
       // Check for identifier-based length (STRING(CONSTANT_NAME))
       // Note: children.Identifier[0] is the type name itself; [1] would be the length constant

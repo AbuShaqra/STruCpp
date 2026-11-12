@@ -96,6 +96,68 @@ describe("CHAR and WCHAR", () => {
           "X = static_cast<uint8_t>(iec_unwrap(C)) < static_cast<uint8_t>(iec_unwrap(static_cast<CHAR_t>(122)));",
         );
       });
+
+      it("refuses CHAR beside a number, a WCHAR or a STRING variable, and arithmetic", () => {
+        expect(errors("b := 1; x := c = b;", options)).toContain(
+          "Cannot compare CHAR with BYTE",
+        );
+        expect(errors("x := c = w;", options)).toEqual([
+          "Cannot compare CHAR with WCHAR",
+        ]);
+        expect(errors("x := c = s;", options)).toEqual([
+          "Cannot compare CHAR with STRING",
+        ]);
+        expect(errors("c := c + CHAR#'a';", options)).toEqual([
+          "Operator '+' does not apply to CHAR",
+        ]);
+        expect(errors("c := MAX(c, b);", options)).toEqual([
+          "Argument of 'MAX' is BYTE where the others are CHAR; CHAR does not convert implicitly",
+        ]);
+      });
+
+      it("reads a one-character literal as a CHAR or WCHAR where one is expected", () => {
+        const r = result(
+          "c := 'A';\nw := \"A\";\nx := c = 'B';\nx := s[1] = 'a';\nc := MAX(c, 'z');",
+          options,
+        );
+        expect(r.errors).toEqual([]);
+        expect(r.cppCode).toContain("C = static_cast<CHAR_t>(65);");
+        expect(r.cppCode).toContain("W = static_cast<WCHAR_t>(65);");
+        expect(errors("c := 'AB';", options)).toEqual([
+          "Cannot assign STRING to CHAR",
+        ]);
+      });
+
+      it("takes WCHAR#'X' and a code as CHAR#16#41", () => {
+        const r = result(
+          "w := WCHAR#'X';\nc := CHAR#16#41;\nw := WCHAR#8364;",
+          options,
+        );
+        expect(r.errors).toEqual([]);
+        expect(r.cppCode).toContain("W = static_cast<WCHAR_t>(88);");
+        expect(r.cppCode).toContain("C = static_cast<CHAR_t>(65);");
+        expect(errors("c := CHAR#16#141;", options)).toEqual([
+          "CHAR#16#141 is past the CHAR range",
+        ]);
+      });
+
+      it("refuses s[i] as an in/out argument or REF() operand", () => {
+        expect(errors("x := REF(s[1]) = REF(s[2]);", options)[0]).toContain(
+          "REF() cannot take a character of a string",
+        );
+      });
+
+      it("takes CHAR labels on a CHAR selector", () => {
+        expect(
+          errors(
+            "CASE c OF CHAR#'a': b := 1; 'b', 'c': b := 2; ELSE b := 0; END_CASE;",
+            options,
+          ),
+        ).toEqual([]);
+        expect(errors("CASE c OF 1: b := 1; END_CASE;", options)).toEqual([
+          "CASE label of type INT does not match the selector of type CHAR",
+        ]);
+      });
     });
   }
 });

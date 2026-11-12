@@ -2401,6 +2401,10 @@ export class SemanticAnalyzer {
       );
       return;
     }
+    if (units[0] === -1 && !/#['"]/.test(literal.rawValue)) {
+      fail(`${literal.rawValue} is past the ${type} range`);
+      return;
+    }
     if (units[0] === -1) {
       fail(
         `${literal.rawValue} holds a character Windows-1252 lacks, which a CHAR cannot store; use a WCHAR literal (WCHAR#"...") for it`,

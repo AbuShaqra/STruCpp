@@ -1180,6 +1180,22 @@ inline IECWString<254> TO_WSTRING(WCHAR_t c) noexcept {
 }
 inline IECWString<254> TO_WSTRING(const IEC_WCHAR& c) noexcept { return TO_WSTRING(c.get()); }
 
+// Across the two widths, through Windows-1252: a CHAR is the one-unit WSTRING
+// of its code point, a WCHAR the one-character STRING ('?' when CP1252 lacks it),
+// a STRING's first character the WCHAR and a WSTRING's first unit the CHAR.
+inline IECWString<254> TO_WSTRING(CHAR_t c) noexcept { return TO_WSTRING(TO_WCHAR(c).get()); }
+inline IECWString<254> TO_WSTRING(const IEC_CHAR& c) noexcept { return TO_WSTRING(c.get()); }
+inline IECString<254> TO_STRING(WCHAR_t c) noexcept { return TO_STRING(TO_CHAR(c).get()); }
+inline IECString<254> TO_STRING(const IEC_WCHAR& c) noexcept { return TO_STRING(c.get()); }
+template<size_t N> inline IEC_WCHAR TO_WCHAR(const IECString<N>& s) noexcept {
+    return TO_WCHAR(s.length() > 0 ? s.c_str()[0] : '\0');
+}
+template<size_t N> inline IEC_WCHAR TO_WCHAR(const IECStringVar<N>& s) noexcept { return TO_WCHAR(s.get()); }
+template<size_t N> inline IEC_CHAR TO_CHAR(const IECWString<N>& s) noexcept {
+    return TO_CHAR(static_cast<WCHAR_t>(s.length() > 0 ? s[0] : u'\0'));
+}
+template<size_t N> inline IEC_CHAR TO_CHAR(const IECWStringVar<N>& s) noexcept { return TO_CHAR(s.get()); }
+
 // =============================================================================
 // WSTRING → Numeric Conversions
 // =============================================================================
