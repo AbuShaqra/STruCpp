@@ -12,6 +12,7 @@ import { parseTestSource } from "../frontend/parser.js";
 import { toCompileErrors } from "../frontend/parse-errors.js";
 import { buildTestAST } from "../frontend/ast-builder.js";
 import { lowerTestInlineTypes } from "../frontend/lower-inline-types.js";
+import { lowerTestPouOperators } from "../semantic/vendor-pou-operators.js";
 import type { TestFile } from "./test-model.js";
 import type { CompileError, CompileOptions } from "../types.js";
 import { tokenizeTest } from "../frontend/lexer.js";
@@ -124,6 +125,9 @@ export function parseTestFile(
   try {
     const testFile = buildTestAST(parseResult.cst, fileName);
     errors.push(...lowerTestInlineTypes(testFile));
+    if (dialect.features.has("vendor_operators")) {
+      errors.push(...lowerTestPouOperators(testFile, fileName));
+    }
     return { testFile, errors };
   } catch (e) {
     errors.push({

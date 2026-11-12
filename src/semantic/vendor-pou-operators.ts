@@ -24,6 +24,7 @@ import type {
   CompilationUnit,
   FunctionCallExpression,
   LiteralExpression,
+  TestFile,
   VarBlock,
   VarDeclaration,
 } from "../frontend/ast.js";
@@ -376,6 +377,62 @@ export function lowerPouOperators(
   }
   for (const c of ast.configurations) {
     pou(name(c.name, c.sourceSpan), globals, c.varBlocks, []);
+  }
+  return errors;
+}
+
+/**
+ * The operators in a test file whose dialect has vendor_operators:
+ * `__POSITION()` is lowered as in a source; `__POUNAME()` and `BITADR` have
+ * no value there and are refused.
+ */
+export function lowerTestPouOperators(
+  testFile: TestFile,
+  fileName: string,
+): CompileError[] {
+  const errors: CompileError[] = [];
+  const rewrite = (node: unknown, section: "Decl" | "Impl"): void => {
+    if (typeof node !== "object" || node === null) return;
+    if (Array.isArray(node)) {
+      for (const item of node) rewrite(item, section);
+      return;
+    }
+    const call = node as FunctionCallExpression;
+    const op =
+      call.kind === "FunctionCallExpression" && call.instance === undefined
+        ? call.functionName.toUpperCase()
+        : undefined;
+    if (op !== undefined && POU_OPERATORS.has(op)) {
+      const span = call.sourceSpan;
+      if (op !== "__POSITION") {
+        errors.push({
+          message: `${op} is not supported in a test file`,
+          line: span.startLine,
+          column: span.startCol,
+          severity: "error",
+          file: fileName,
+        });
+        return;
+      }
+      const text =
+        section === "Impl"
+          ? `Line ${span.startLine}, Column ${span.startCol} (Impl)`
+          : `Line ${span.startLine} (Decl)`;
+      const target = node as Record<string, unknown>;
+      for (const key of Object.keys(target)) delete target[key];
+      Object.assign(target, stringLiteral(text, span));
+      return;
+    }
+    for (const value of Object.values(node)) rewrite(value, section);
+  };
+  for (const block of [
+    testFile.setup,
+    testFile.teardown,
+    ...testFile.testCases,
+  ]) {
+    if (!block) continue;
+    if ("varBlocks" in block) rewrite(block.varBlocks, "Decl");
+    rewrite(block.body, "Impl");
   }
   return errors;
 }

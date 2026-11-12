@@ -650,6 +650,9 @@ before analysis. Their exact results are **this compiler's rules**:
 - `__POUNAME` and `__POSITION` take no argument: `__POUNAME takes no argument`.
 - With the feature off each call is refused naming the feature. A FUNCTION, POU, method, TYPE or variable of
   the operator's name, in the sources or a library, wins in every dialect, and the call reaches it.
+- In a `--test` file the operators follow the dialect flags of the run: `__POSITION()` is lowered there too
+  (its position in the test file), while `__POUNAME()` and `BITADR` have no value there (`__POUNAME is not
+  supported in a test file`).
 - `INDEXOF` is refused in every dialect: `INDEXOF is not supported: use ADR(x) for the address of a
   variable or instance`, unless something of that name is declared.
 
