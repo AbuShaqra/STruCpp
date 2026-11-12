@@ -95,6 +95,13 @@ public:
     IECVar(const IECVar<U>& other) noexcept
         : value_{static_cast<T>(other.get())} {}
 
+    /** Construct from a raw pointer, storing the address as an integer: the
+     *  initial value `w : __XWORD := ADR(x)`. Integral targets only, through
+     *  uintptr_t, as operator=(U*) does. */
+    template<typename U, typename V = T, std::enable_if_t<std::is_integral<V>::value, int> = 0>
+    IECVar(U* p) noexcept
+        : value_{static_cast<T>(reinterpret_cast<std::uintptr_t>(p))} {}
+
     /** Copies are plain value copies: a force is keyed by address, so a copy
      *  neither carries one nor clears one. */
     IECVar(const IECVar&) = default;
