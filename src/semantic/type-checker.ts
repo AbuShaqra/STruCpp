@@ -103,6 +103,8 @@ const ED3_ELEMENTARY_NAMES = new Set([
   "LTIME_OF_DAY",
   "LDT",
   "LDATE_AND_TIME",
+  "CHAR",
+  "WCHAR",
 ]);
 
 /** Canonical name of an elementary operand type, or undefined. */
@@ -1364,6 +1366,12 @@ export class TypeChecker {
       case "LDATE_AND_TIME":
         type = ELEMENTARY_TYPES["LDT"];
         break;
+      case "CHAR":
+        type = ELEMENTARY_TYPES["CHAR"];
+        break;
+      case "WCHAR":
+        type = ELEMENTARY_TYPES["WCHAR"];
+        break;
       case "NULL":
         return undefined;
       default:
@@ -1497,8 +1505,15 @@ export class TypeChecker {
             }
           }
         } else if (step.kind === "subscript") {
+          this.refuseStringIndexCount(
+            currentTypeName,
+            step.indices.length,
+            expr,
+          );
           // Resolve array element type
-          const elemType = resolveArrayElementType(currentTypeName, this.ast);
+          const elemType =
+            resolveArrayElementType(currentTypeName, this.ast) ??
+            this.stringElementType(currentTypeName, step.indices.length);
           if (elemType) {
             currentTypeName = elemType;
             currentType = this.resolveNamedType(elemType);
@@ -1532,7 +1547,9 @@ export class TypeChecker {
           this.resolveExprType(sub, scope);
           this.refuseEnumIndex(sub);
         }
-        const elemType = resolveArrayElementType(currentTypeName, this.ast);
+        const elemType =
+          resolveArrayElementType(currentTypeName, this.ast) ??
+          this.stringElementType(currentTypeName, expr.subscripts.length);
         if (elemType) {
           currentTypeName = elemType;
           currentType = this.resolveNamedType(elemType);
@@ -4326,6 +4343,38 @@ export class TypeChecker {
       ED3_ELEMENTARY_NAMES.has(upper) &&
       this.ast?.types.some((t) => t.name.toUpperCase() === upper) === true
     );
+  }
+
+  /** A STRING or WSTRING (not an ARRAY of them) takes exactly one index. */
+  private refuseStringIndexCount(
+    typeName: string,
+    indexCount: number,
+    expr: VariableExpression,
+  ): void {
+    if (indexCount === 1 || !this.ast) return;
+    if (resolveArrayElementType(typeName, this.ast) !== undefined) return;
+    const base = this.aliasBase(typeName);
+    if (base !== "STRING" && base !== "WSTRING") return;
+    this.addError(
+      `A ${base} takes one index (a character position), not ${indexCount}`,
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
+  }
+
+  /** CHAR or WCHAR for one index into a STRING or WSTRING (Ed. 3 `s[i]`). */
+  private stringElementType(
+    typeName: string,
+    indexCount: number,
+  ): string | undefined {
+    if (indexCount !== 1) return undefined;
+    const base = this.aliasBase(typeName);
+    return base === "STRING"
+      ? "CHAR"
+      : base === "WSTRING"
+        ? "WCHAR"
+        : undefined;
   }
 
   private aliasBase(name: string): string {

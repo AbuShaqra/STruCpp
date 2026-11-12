@@ -40,6 +40,7 @@ import type {
   Visibility,
   ASTNode,
 } from "../frontend/ast.js";
+import { charLiteralUnits } from "../literal-utils.js";
 import { walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry, SourceSpan } from "../types.js";
@@ -5441,6 +5442,11 @@ export class CodeGenerator {
         const timeVal = parseTimeLiteral(String(expr.value));
         return `${timeVal.exact}LL`;
       }
+      case "CHAR":
+      case "WCHAR": {
+        const { wide, units } = charLiteralUnits(expr.rawValue);
+        return `static_cast<${wide ? "WCHAR_t" : "CHAR_t"}>(${Math.max(units[0] ?? 0, 0)})`;
+      }
       case "DATE":
       case "LDATE":
         // DATE: int64 days since Unix epoch (UTC).  `iec_date.hpp`
@@ -6114,6 +6120,18 @@ export class CodeGenerator {
     const ldate = this.ldateArithmetic(expr, left, right);
     if (ldate !== undefined) return ldate;
 
+    // CHAR ordering compares Windows-1252 codes, not signed C++ chars.
+    if (["<", ">", "<=", ">="].includes(expr.operator)) {
+      const isChar = (e: Expression): boolean =>
+        e.resolvedType?.typeKind === "elementary" &&
+        (e.resolvedType as ElementaryType).name.toUpperCase() === "CHAR";
+      if (isChar(expr.left) || isChar(expr.right)) {
+        const code = (e: Expression, s: string): string =>
+          isChar(e) ? `static_cast<uint8_t>(iec_unwrap(${s}))` : s;
+        return `${code(expr.left, left)} ${cppOp} ${code(expr.right, right)}`;
+      }
+    }
+
     // IEC 61131-3 AND/OR/XOR are always bitwise. C++ bitwise & | ^ have
     // higher precedence than comparison operators (== != < >), unlike ST
     // where AND/OR have lower precedence. Parenthesize operands to preserve
@@ -6691,6 +6709,13 @@ export class CodeGenerator {
   ): string {
     const between = longTemporalConversion(argExpr, fromTypeUpper, toTypeUpper);
     if (between !== undefined) return between;
+    // A CHAR converts to a number by its Windows-1252 code (0..255).
+    if (
+      fromTypeUpper === "CHAR" &&
+      NUMERIC_OR_BIT_CONVERSION_TARGETS.has(toTypeUpper)
+    ) {
+      return `static_cast<uint8_t>(iec_unwrap(${argExpr}))`;
+    }
     if (TEMPORAL_CONVERSION_UNITS.has(fromTypeUpper)) {
       return this.wrapTemporalArgForNumericConversion(
         argExpr,

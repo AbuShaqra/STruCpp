@@ -943,6 +943,8 @@ export type LiteralType =
   | "LDATE"
   | "LTIME_OF_DAY"
   | "LDATE_AND_TIME"
+  | "CHAR"
+  | "WCHAR"
   | "NULL";
 
 /**

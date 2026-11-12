@@ -2502,6 +2502,7 @@ export class STParser extends CstParser {
       { ALT: () => this.CONSUME(tokens.RealLiteral) },
       { ALT: () => this.CONSUME(tokens.StringLiteral) },
       { ALT: () => this.CONSUME(tokens.WideStringLiteral) },
+      { ALT: (): IToken => this.CONSUME(tokens.CharLiteral) },
       { ALT: () => this.CONSUME(tokens.TimeLiteral) },
       { ALT: () => this.CONSUME(tokens.DateLiteral) },
       { ALT: () => this.CONSUME(tokens.TimeOfDayLiteral) },
