@@ -141,6 +141,8 @@ const VLA_TYPE_NAME = /^__VLA_(\d+)D_(.+)$/;
 interface InOutCopyArg {
   value: VariableExpression;
   cppType?: string;
+  /** Reads and writes the variable through one reference (its index runs once). */
+  once?: true;
 }
 
 /** The parts of a type reference that decide its C++ type. */
@@ -3192,7 +3194,11 @@ export class CodeGenerator {
   ): string[] {
     const names: string[] = [];
     for (const block of func.varBlocks) {
-      if (block.blockType === "VAR_INPUT" || block.blockType === "VAR_IN_OUT") {
+      if (
+        block.blockType === "VAR_INPUT" ||
+        block.blockType === "VAR_IN_OUT" ||
+        block.blockType === "VAR_OUTPUT"
+      ) {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
             names.push(name);
@@ -4498,7 +4504,7 @@ export class CodeGenerator {
    * member's field type, so it binds the callee's `T&`).
    */
   private inOutCopy(
-    { value: arg, cppType }: InOutCopyArg,
+    { value: arg, cppType, once }: InOutCopyArg,
     tmp: string,
   ): { declaration: string; copyOut: string } {
     const read = this.generateVariableExpression(arg);
@@ -4516,6 +4522,16 @@ export class CodeGenerator {
       cppType !== undefined
         ? `${cppType} ${tmp}; ${tmp} = ${copyIn};`
         : `auto ${tmp} = ${copyIn};`;
+    if (
+      once === true &&
+      cppType !== undefined &&
+      copyOut === `${read} = ${tmp};`
+    ) {
+      return {
+        declaration: `auto& ${tmp}_ref = ${read}; ${cppType} ${tmp}; ${tmp} = ${tmp}_ref;`,
+        copyOut: `${tmp}_ref = ${tmp};`,
+      };
+    }
     return { declaration, copyOut };
   }
 
@@ -4738,7 +4754,11 @@ export class CodeGenerator {
       ) {
         // A STRING(n) output binds only a variable of that length, an integer
         // output only one of its own C++ type: others go through a temporary.
-        result.push({ value, cppType: this.inOutParamType(param.type) });
+        result.push({
+          value,
+          cppType: this.inOutParamType(param.type),
+          ...(arg.inOutCopy === true ? { once: true as const } : {}),
+        });
       } else if (
         (arg.isOutput || param.blockType === "VAR_OUTPUT") &&
         (isCompositeGlobal(value) || isUnionMember(value))

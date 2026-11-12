@@ -337,6 +337,22 @@ const INTEGER_STORAGE: Readonly<Record<string, string>> = {
   LWORD: "u64",
 };
 
+/** Long temporal types stored as their short form. */
+const TEMPORAL_STORAGE: Readonly<Record<string, string>> = {
+  TIME: "time",
+  LTIME: "time",
+  DATE: "date",
+  LDATE: "date",
+  TIME_OF_DAY: "tod",
+  TOD: "tod",
+  LTIME_OF_DAY: "tod",
+  LTOD: "tod",
+  DATE_AND_TIME: "dt",
+  DT: "dt",
+  LDATE_AND_TIME: "dt",
+  LDT: "dt",
+};
+
 const COMPARISON_OPS: ReadonlySet<string> = new Set([
   "=",
   "<>",
@@ -455,6 +471,28 @@ export class TypeChecker {
     /** The IEC profile is selected: in-out binding forms that compile elsewhere are errors. */
     private readonly inOutErrors = false,
   ) {}
+
+  /**
+   * The output bindings of the calls in TEST, SETUP and TEARDOWN bodies (see
+   * checkOutputBindings), which are not otherwise type-checked.
+   */
+  checkTestOutputBindings(
+    roots: readonly ASTNode[],
+    scope: Scope,
+    ast: CompilationUnit | undefined,
+  ): { errors: CompileError[]; warnings: CompileError[] } {
+    this.errors = [];
+    this.warnings = [];
+    this.ast = ast;
+    for (const root of roots) {
+      walkAST(root, (node) => {
+        if (node.kind === "FunctionCallExpression") {
+          this.checkOutputBindings(node as FunctionCallExpression, scope);
+        }
+      });
+    }
+    return { errors: [...this.errors], warnings: [...this.warnings] };
+  }
 
   /**
    * Check types for a complete compilation unit.
@@ -1795,7 +1833,7 @@ export class TypeChecker {
       this.resolveExprType(arg.value, scope);
     }
     this.validateReferenceArguments(expr, scope);
-    this.markOutputCopies(expr);
+    this.checkOutputBindings(expr, scope);
     this.checkDottedMethodCall(expr, scope);
     this.checkMethodCallArgumentNames(expr, scope);
     this.checkFunctionCallArgumentNames(expr, scope);
@@ -4346,51 +4384,177 @@ export class TypeChecker {
   }
 
   /**
-   * `F(o => v)` where F's VAR_OUTPUT `o` and the variable `v` are integers of
-   * different C++ types (USINT output, INT variable): the output is copied out
-   * through a temporary of its own type, as a reference cannot bind.
+   * `F(o => v)` or `F(a, v)` binding F's VAR_OUTPUT `o` to the variable `v`:
+   * checked as the assignment `v := o`, and copied out through a temporary of
+   * the output's type where the two C++ types differ (USINT into INT, or an
+   * alias variable, which is not stored as its base type).
    */
-  private markOutputCopies(expr: FunctionCallExpression): void {
+  private checkOutputBindings(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
     if (expr.instance || expr.functionName.includes(".")) return;
-    if (!expr.arguments.some((a) => a.isOutput && a.name !== undefined)) return;
-    const outputs = new Map<string, string>();
-    const userFn = this.findUserFunction(expr.functionName);
-    if (userFn) {
-      for (const block of userFn.varBlocks) {
-        if (block.blockType !== "VAR_OUTPUT") continue;
-        for (const decl of block.declarations) {
-          for (const n of decl.names) {
-            outputs.set(n.toUpperCase(), decl.type.name.toUpperCase());
-          }
-        }
-      }
-    } else {
-      const fn = this.symbolTables.lookupFunction(expr.functionName);
-      for (const p of fn?.parameters ?? []) {
-        if (!p.isOutput || p.isInput) continue;
-        const t = (p.declaration as VarDeclaration | undefined)?.type;
-        if (t && t.arrayDimensions === undefined) {
-          outputs.set(p.name.toUpperCase(), t.name.toUpperCase());
-        }
-      }
-    }
+    if (this.calledInstance(expr.functionName, scope)) return;
+    const params = this.calledFunctionParameters(expr.functionName);
+    if (params === undefined || !params.some((p) => p.output)) return;
+    const claimed = new Set(
+      expr.arguments.flatMap((a) =>
+        a.name === undefined ? [] : [a.name.toUpperCase()],
+      ),
+    );
+    const free = params.filter((p) => !claimed.has(p.name.toUpperCase()));
+    let positional = 0;
     for (const arg of expr.arguments) {
-      if (!arg.isOutput || arg.name === undefined) continue;
-      const param = outputs.get(arg.name.toUpperCase());
-      const t = arg.value.resolvedType;
-      if (param === undefined || t?.typeKind !== "elementary") continue;
-      if (arg.value.kind !== "VariableExpression") continue;
-      const argStorage =
-        INTEGER_STORAGE[this.aliasBase((t as ElementaryType).name)];
-      const paramStorage = INTEGER_STORAGE[this.aliasBase(param)];
-      if (
-        argStorage !== undefined &&
-        paramStorage !== undefined &&
-        argStorage !== paramStorage
-      ) {
-        arg.inOutCopy = true;
-      }
+      const param =
+        arg.name === undefined
+          ? free[positional++]
+          : params.find(
+              (p) => p.name.toUpperCase() === arg.name!.toUpperCase(),
+            );
+      if (param?.output !== true) continue;
+      if (arg.name !== undefined && !arg.isOutput) continue;
+      this.checkOutputBinding(param.type, arg, scope);
     }
+  }
+
+  /** VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT of a user or library FUNCTION, in order. */
+  private calledFunctionParameters(
+    name: string,
+  ): Array<{ name: string; type: AccessType; output: boolean }> | undefined {
+    const userFn = this.findUserFunction(name);
+    if (userFn) {
+      return userFn.varBlocks
+        .filter(
+          (b) =>
+            b.blockType === "VAR_INPUT" ||
+            b.blockType === "VAR_IN_OUT" ||
+            b.blockType === "VAR_OUTPUT",
+        )
+        .flatMap((b) =>
+          b.declarations.flatMap((d) =>
+            d.names.map((n) => ({
+              name: n,
+              type: d.type as AccessType,
+              output: b.blockType === "VAR_OUTPUT",
+            })),
+          ),
+        );
+    }
+    const fn = this.symbolTables.lookupFunction(name);
+    if (fn === undefined || fn.libraryName === STD_FUNCTIONS_LIBRARY) {
+      return undefined;
+    }
+    const params: Array<{ name: string; type: AccessType; output: boolean }> =
+      [];
+    for (const p of fn.parameters) {
+      const type = (p.declaration as VarDeclaration | undefined)?.type;
+      if (type === undefined) return undefined;
+      params.push({
+        name: p.name,
+        type,
+        output: p.isOutput && !p.isInput && !p.isInOut,
+      });
+    }
+    return params;
+  }
+
+  /** One output binding (see checkOutputBindings). */
+  private checkOutputBinding(
+    param: AccessType,
+    arg: Argument,
+    scope: Scope,
+  ): void {
+    const value = arg.value;
+    if (value.kind !== "VariableExpression") return;
+    if (
+      param.arrayDimensions !== undefined ||
+      (param.referenceKind !== undefined && param.referenceKind !== "none")
+    ) {
+      return;
+    }
+    const boundName = this.boundTypeName(value, scope);
+    const paramType = this.resolveNamedType(param.name);
+    const boundType =
+      boundName === undefined
+        ? value.resolvedType
+        : this.resolveNamedType(boundName);
+    if (boundType === undefined) return;
+    this.validateAssignment(boundType, paramType, value, {
+      kind: "VariableExpression",
+      sourceSpan: value.sourceSpan,
+      name: param.name,
+      fieldAccess: [],
+      subscripts: [],
+      isDereference: false,
+      resolvedType: paramType,
+    });
+    if (boundName === undefined) return;
+    const paramKey = this.storageKey(param.name);
+    const boundKey = this.storageKey(boundName);
+    if (
+      paramKey !== undefined &&
+      boundKey !== undefined &&
+      paramKey !== boundKey
+    ) {
+      arg.inOutCopy = true;
+    }
+  }
+
+  /** The declared type name of a bound variable, a member or THIS.x one. */
+  private boundTypeName(
+    value: VariableExpression,
+    scope: Scope,
+  ): string | undefined {
+    const root = value.name.toUpperCase();
+    if (root === "THIS" || root === "SUPER") {
+      const field = value.fieldAccess[0];
+      if (
+        this.currentFBName === undefined ||
+        value.fieldAccess.length !== 1 ||
+        field === undefined ||
+        value.subscripts.length > 0 ||
+        value.accessChain?.some((s) => s.kind !== "field") === true
+      ) {
+        return undefined;
+      }
+      const owner =
+        root === "THIS"
+          ? this.currentFBName
+          : this.ast?.functionBlocks.find(
+              (f) => f.name.toUpperCase() === this.currentFBName!.toUpperCase(),
+            )?.extends;
+      return owner === undefined
+        ? undefined
+        : this.resolveFieldTypeAnywhere(this.aliasBase(owner), field);
+    }
+    const sym = scope.lookup(value.name);
+    if (sym?.kind !== "variable") return undefined;
+    const declared = sym.declaration as VarDeclaration | undefined;
+    if (!declared) return undefined;
+    const type = this.hasMemberAccess(value)
+      ? resolveAccessType(declared.type, value, this.accessLookup)
+      : declared.type;
+    if (
+      type === undefined ||
+      type.arrayDimensions !== undefined ||
+      (type.referenceKind !== undefined && type.referenceKind !== "none")
+    ) {
+      return undefined;
+    }
+    return type.name;
+  }
+
+  /**
+   * The C++ storage of an elementary type, or undefined for any other (a
+   * STRING keeps its own copy rule): an alias is stored as its base's raw
+   * value, not as the base's IEC variable type.
+   */
+  private storageKey(name: string): string | undefined {
+    const base = this.aliasBase(name);
+    if (ELEMENTARY_TYPES[base] === undefined) return undefined;
+    if (base === "STRING" || base === "WSTRING") return undefined;
+    const storage = INTEGER_STORAGE[base] ?? TEMPORAL_STORAGE[base] ?? base;
+    return `${base === name.toUpperCase() ? "iec" : "raw"}:${storage}`;
   }
 
   private aliasBase(name: string): string {

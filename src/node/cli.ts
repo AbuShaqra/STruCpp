@@ -1040,7 +1040,11 @@ function runTestMode(options: CLIOptions): void {
   if (result.symbolTables) {
     let hasTestErrors = false;
     for (const tf of testFiles) {
-      const analysisResult = analyzeTestFile(tf, result.symbolTables);
+      const analysisResult = analyzeTestFile(
+        tf,
+        result.symbolTables,
+        result.ast,
+      );
       if (analysisResult.errors.length > 0) {
         hasTestErrors = true;
         console.error(`Error in test file '${tf.fileName}':\n`);
