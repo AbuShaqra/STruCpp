@@ -4978,7 +4978,10 @@ export class TypeChecker {
     methodName: string,
   ): OutputParams | undefined {
     const upper = this.aliasBase(fbType).toUpperCase();
-    if (!this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper)) {
+    if (
+      this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper) !==
+      true
+    ) {
       return undefined;
     }
     const method = this.lookupChainMethod(upper, methodName);
