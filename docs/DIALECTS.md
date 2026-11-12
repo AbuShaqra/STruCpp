@@ -268,7 +268,7 @@ END_TYPE
   the language server's outline lists each STRUCT's own fields.
 
 `union` is in neither the default set nor `iec-3`: IEC 61131-3 Ed. 3 has no UNION (its overlay form is
-`STRUCT OVERLAP`, 6.4.4.7, accepted in every dialect and compiled as the UNION of its members). With the feature on, a `TYPE` may be a UNION, whose members
+`STRUCT OVERLAP` (Table 11), accepted in every dialect and compiled as the UNION of its members). With the feature on, a `TYPE` may be a UNION, whose members
 share one storage:
 
 ```

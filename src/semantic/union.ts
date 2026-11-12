@@ -328,7 +328,7 @@ function collectNamedProblems(
   const decl = index.resolve(name);
   const def = decl?.definition;
   if (decl && def && isUnionDefinition(def)) {
-    // IEC 61131-3 Ed. 3 6.4.4.7.2: an overlapped structure has no explicit
+    // An overlapped structure (Ed. 3 Table 11) has no explicit
     // initial value.
     if (def.overlap === true) {
       out.push({
