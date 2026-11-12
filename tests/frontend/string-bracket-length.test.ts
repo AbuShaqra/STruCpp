@@ -66,4 +66,35 @@ describe("STRING[n] and WSTRING[n]", () => {
     );
     expect(r.errors.some((e) => /Expected/.test(e.message))).toBe(false);
   });
+
+  it("reads an Unsigned_Int length with underscores, in either spelling", () => {
+    for (const t of ["STRING[1_0]", "STRING(1_0)", "WSTRING[1_0]"]) {
+      const r = compile(
+        `PROGRAM Main\nVAR s : ${t}; END_VAR\nEND_PROGRAM\n`,
+        {},
+      );
+      expect(r.errors).toEqual([]);
+      expect(r.headerCode).toMatch(/StringVar<10> S;/);
+    }
+  });
+
+  it("reads a based length in parentheses and refuses one in brackets", () => {
+    const paren = compile(
+      "PROGRAM Main\nVAR s : STRING(16#20); END_VAR\nEND_PROGRAM\n",
+      {},
+    );
+    expect(paren.errors).toEqual([]);
+    expect(paren.headerCode).toContain("IECStringVar<32> S;");
+    expect(
+      compile("PROGRAM Main\nVAR s : STRING[16#20]; END_VAR\nEND_PROGRAM\n", {})
+        .errors.length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("refuses both length spellings at once", () => {
+    expect(
+      compile("PROGRAM Main\nVAR s : STRING(3)[5]; END_VAR\nEND_PROGRAM\n", {})
+        .errors.length,
+    ).toBeGreaterThan(0);
+  });
 });
