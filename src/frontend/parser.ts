@@ -1062,8 +1062,8 @@ export class STParser extends CstParser {
         this.CONSUME(tokens.LBracket);
         this.OR5({
           DEF: [
-            { ALT: () => this.CONSUME2(tokens.IntegerLiteral) },
-            { ALT: () => this.CONSUME5(tokens.Identifier) },
+            { ALT: (): IToken => this.CONSUME2(tokens.IntegerLiteral) },
+            { ALT: (): IToken => this.CONSUME5(tokens.Identifier) },
           ],
           IGNORE_AMBIGUITIES: true,
         });
