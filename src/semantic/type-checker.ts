@@ -553,6 +553,7 @@ export class TypeChecker {
 
     this.checkGlobalInitialCycles(ast);
     this.checkStructReferenceDefaults(ast);
+    this.markGlobalVendorOperators(ast);
 
     // Init arguments of global FB instances (feature fb_init)
     if (this.features.has("fb_init")) {
@@ -2985,6 +2986,29 @@ export class TypeChecker {
    * its methods, inherited ones included. The method is called, as the C++
    * member shadows a FUNCTION or standard function of the same name.
    */
+  /** `__ISVALIDREF` and `XSIZEOF` in a top-level or CONFIGURATION global's initial value. */
+  private markGlobalVendorOperators(ast: CompilationUnit): void {
+    const scope = this.symbolTables.globalScope;
+    const blocks = [
+      ...ast.globalVarBlocks,
+      ...ast.configurations.flatMap((c) => c.varBlocks),
+    ];
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (!decl.initialValue) continue;
+        walkAST(decl.initialValue, (node) => {
+          if (node.kind !== "FunctionCallExpression") return;
+          const call = node as FunctionCallExpression;
+          this.vendorOperatorCallType(
+            call,
+            call.functionName.toUpperCase(),
+            scope,
+          );
+        });
+      }
+    }
+  }
+
   /**
    * The result type of a call of a built-in operator whose feature is on and
    * whose name nothing in scope declares; marks the call for codegen.
@@ -3004,6 +3028,18 @@ export class TypeChecker {
     expr.vendorOperator = op;
     const error = vendorOperatorArgumentError(expr, op, (arg) => {
       if (arg.value.kind !== "VariableExpression") return false;
+      // `THIS.r` / `THIS^.r`: a member of the enclosing FB.
+      if (this.isSelfMember(arg.value)) {
+        const type = resolveAccessType(
+          { name: this.currentFBName!, referenceKind: "none" },
+          arg.value,
+          this.accessLookup,
+        );
+        return (
+          type?.referenceKind === "reference_to" &&
+          (type.referenceChain?.length ?? 1) === 1
+        );
+      }
       const shape = this.declaredReferenceShape(arg.value, scope);
       return shape?.chain.length === 1 && shape.chain[0] === "reference_to";
     });

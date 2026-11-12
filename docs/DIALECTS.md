@@ -627,15 +627,17 @@ of the same name always wins: a call reaches the operator only where nothing in 
 
 | Operator          | Feature            | Result  | Meaning                                                                   |
 | ----------------- | ------------------ | ------- | ------------------------------------------------------------------------- |
-| `__ISVALIDREF(r)` | `reference_to`     | `BOOL`  | TRUE when the REFERENCE TO `r` is bound (by `REF=`, an initial value or a call) |
+| `__ISVALIDREF(r)` | `reference_to`     | `BOOL`  | TRUE when the REFERENCE TO `r` is bound (by `REF=`, or by the call that passes it as an input) |
 | `XSIZEOF(x)`      | `vendor_operators` | `ULINT` | the size of `x` in bytes, the value `SIZEOF(x)` gives                     |
 
 - `__ISVALIDREF` is on wherever `REFERENCE TO` is, so also with no dialect flag. Its one argument is a
-  variable, member or VAR_INPUT declared `REFERENCE TO`; anything else is `__ISVALIDREF needs a REFERENCE TO
-  variable`. Reading it never raises the null-reference fault. In C++ it is `!r.is_null()`.
+  variable, member (`s.r`, `THIS.r`, `THIS^.r`) or VAR_INPUT declared `REFERENCE TO`; anything else is
+  `__ISVALIDREF needs a REFERENCE TO variable`. Reading it never raises the null-reference fault. In C++ it is `!r.is_null()`.
 - `XSIZEOF` is the pointer-sized form of `SIZEOF`: its type is the unsigned integer of the target's address
   width, which on the 64-bit target this compiler generates for is `ULINT`. So `n : UDINT := XSIZEOF(x)`
-  is a narrowing (an error under `--strict`), as on a 64-bit PLC. It works in a body and in an initial value.
+  is a narrowing (an error under `--strict`), as on a 64-bit PLC.
+- Both work in a body and in an initial value, a top-level or CONFIGURATION `VAR_GLOBAL`'s included. Not
+  yet in a STRUCT member's default, where no call is supported.
 - Either operator takes exactly one positional argument: `XSIZEOF takes one argument, got 2`, `XSIZEOF
   takes its argument without a name`.
 - Not implemented yet: `BITADR`, `INDEXOF`, `__POSITION` and `__POUNAME`. Their names stay ordinary names

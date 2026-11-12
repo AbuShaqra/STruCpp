@@ -77,7 +77,10 @@ END_PROGRAM
     vars: string[],
     name: string,
   ): string[] {
-    const result = compile(source, { headerFileName: "generated.hpp", ...opts });
+    const result = compile(source, {
+      headerFileName: "generated.hpp",
+      ...opts,
+    });
     expect(result.errors.map((e) => `${e.line}: ${e.message}`)).toEqual([]);
     const prints = vars
       .map((v) => `std::cout << (unsigned long long)p.${v}.get() << " ";`)
@@ -135,6 +138,40 @@ END_PROGRAM
         "16",
       ]);
     }
+  });
+
+  it("works in global initial values and on THIS members", () => {
+    const src = `VAR_GLOBAL g : LREAL; gn : ULINT := XSIZEOF(g); x : INT; r : REFERENCE TO INT; gb : BOOL := __ISVALIDREF(r); END_VAR
+VAR_GLOBAL CONSTANT C : ULINT := XSIZEOF(g); END_VAR
+FUNCTION_BLOCK FB_A
+VAR rr : REFERENCE TO INT; y : INT; END_VAR
+VAR_OUTPUT q0, q1, q2 : BOOL; END_VAR
+q0 := __ISVALIDREF(THIS.rr);
+rr REF= y;
+q1 := __ISVALIDREF(THIS.rr);
+q2 := __ISVALIDREF(THIS^.rr);
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR f : FB_A; n : ULINT; b : BOOL; END_VAR
+n := gn + C;
+b := gb;
+f();
+END_PROGRAM
+`;
+    const result = compile(src, {
+      headerFileName: "generated.hpp",
+      features: ["+vendor_operators", "+self_caret"],
+    });
+    expect(result.errors).toEqual([]);
+    const out = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "vendorops_globals_this",
+      mainCode: `#include <iostream>\nint main() {\n using namespace strucpp;\n Program_MAIN p; p.run();\n std::cout << (unsigned long long)p.N.get() << " " << (int)p.B.get() << " " << (int)p.F.Q0.get() << " " << (int)p.F.Q1.get() << " " << (int)p.F.Q2.get();\n return 0;\n}\n`,
+    });
+    expect(out.trim().split(/\s+/)).toEqual(["16", "0", "0", "1", "1"]);
   });
 
   it("XSIZEOF is refused without the feature", () => {
