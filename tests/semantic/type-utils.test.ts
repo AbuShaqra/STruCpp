@@ -39,10 +39,10 @@ function parseAST(source: string) {
 
 describe("type-utils", () => {
   describe("ELEMENTARY_TYPES", () => {
-    it("should define all 24 types (22 canonical + TOD + DT aliases)", () => {
-      // 22 canonical = 21 standard elementary types + __XWORD (platform-width
-      // address type); plus the TOD and DT alias entries.
-      expect(Object.keys(ELEMENTARY_TYPES)).toHaveLength(24);
+    it("should define all 25 types (23 canonical + TOD + DT aliases)", () => {
+      // 23 canonical = 22 standard elementary types (LTIME included) + __XWORD
+      // (platform-width address type); plus the TOD and DT alias entries.
+      expect(Object.keys(ELEMENTARY_TYPES)).toHaveLength(25);
     });
 
     it("should have correct sizes for integer types", () => {

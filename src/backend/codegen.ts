@@ -5385,9 +5385,10 @@ export class CodeGenerator {
         const wEscaped = translateIECString(wInner, true);
         return `u"${wEscaped}"`;
       }
-      case "TIME": {
+      case "TIME":
+      case "LTIME": {
         const timeVal = parseTimeLiteral(String(expr.value));
-        return `${timeVal.nanoseconds}LL`;
+        return `${timeVal.exact}LL`;
       }
       case "DATE":
         // DATE: int64 days since Unix epoch (UTC).  `iec_date.hpp`

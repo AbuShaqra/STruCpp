@@ -936,6 +936,7 @@ export type LiteralType =
   | "STRING"
   | "WSTRING"
   | "TIME"
+  | "LTIME"
   | "DATE"
   | "TIME_OF_DAY"
   | "DATE_AND_TIME"

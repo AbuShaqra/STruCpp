@@ -102,10 +102,11 @@ function isInstantType(t: IECType): boolean {
   return name === "DT" || name === "DATE" || name === "TOD";
 }
 
-/** True when the operand type is the duration type (TIME). */
+/** True when the operand type is a duration type (TIME, LTIME). */
 function isDurationType(t: IECType): boolean {
   if (t.typeKind !== "elementary") return false;
-  return (t as ElementaryType).name === "TIME";
+  const name = (t as ElementaryType).name;
+  return name === "TIME" || name === "LTIME";
 }
 
 /** True when the operand pair maps to a recognised date/time arithmetic
@@ -1288,6 +1289,9 @@ export class TypeChecker {
         break;
       case "TIME":
         type = ELEMENTARY_TYPES["TIME"];
+        break;
+      case "LTIME":
+        type = ELEMENTARY_TYPES["LTIME"];
         break;
       case "DATE":
         type = ELEMENTARY_TYPES["DATE"];
@@ -5551,7 +5555,9 @@ export class TypeChecker {
     // Row f: an integer where a duration is expected.
     if ((t === "TIME" || t === "LTIME") && vKind === "int") {
       this.addStrictError(
-        `An integer cannot be used as ${t}; write a TIME literal such as T#100ms`,
+        t === "LTIME"
+          ? "An integer cannot be used as LTIME; write an LTIME literal such as LTIME#100ms"
+          : `An integer cannot be used as ${t}; write a TIME literal such as T#100ms`,
         value,
       );
       return true;

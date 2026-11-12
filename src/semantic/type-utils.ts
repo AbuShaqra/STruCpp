@@ -118,11 +118,17 @@ export const TYPE_CATEGORIES: Record<string, TypeCategory[]> = {
   REAL: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_REAL"],
   LREAL: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_NUM", "ANY_REAL"],
   TIME: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_DATE"],
+  LTIME: ["ANY", "ANY_ELEMENTARY", "ANY_MAGNITUDE", "ANY_DATE"],
   DATE: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
   TIME_OF_DAY: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
   DATE_AND_TIME: ["ANY", "ANY_ELEMENTARY", "ANY_DATE"],
   STRING: ["ANY", "ANY_ELEMENTARY", "ANY_STRING"],
   WSTRING: ["ANY", "ANY_ELEMENTARY", "ANY_STRING"],
+};
+
+/** A temporal type and the long form it converts to implicitly (Ed. 3). */
+const LONG_TEMPORAL: Record<string, string> = {
+  TIME: "LTIME",
 };
 
 /**
@@ -333,6 +339,9 @@ export function isImplicitlyConvertible(
   const t = target.toUpperCase();
   if (s === t) return true;
 
+  // Ed. 3 implicit conversion of a duration or instant to its long form
+  if (LONG_TEMPORAL[s] === t) return true;
+
   // __XWORD is a platform-width address type (CODESYS __XWORD semantics).
   // It is freely convertible — in either direction, without a narrowing
   // warning — with any bit-string or integer type, since ADR()/REF_LINK()
@@ -440,6 +449,12 @@ export function getCommonType(a: IECType, b: IECType): IECType | undefined {
 
   // Same type
   if (aElem.name === bElem.name) return a;
+
+  // A temporal type and its long form: the long form
+  const aName = canonicalElementaryName(aElem.name);
+  const bName = canonicalElementaryName(bElem.name);
+  if (LONG_TEMPORAL[aName] === bName) return b;
+  if (LONG_TEMPORAL[bName] === aName) return a;
 
   const aCat = WIDENING_CATEGORY[aElem.name];
   const bCat = WIDENING_CATEGORY[bElem.name];

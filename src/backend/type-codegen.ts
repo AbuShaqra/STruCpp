@@ -800,9 +800,10 @@ export class TypeCodeGenerator {
         const str = String(expr.value);
         return str.includes(".") || /[eE]/.test(str) ? str : `${str}.0`;
       }
-      case "TIME": {
+      case "TIME":
+      case "LTIME": {
         const timeVal = parseTimeLiteral(String(expr.value));
-        return `${timeVal.nanoseconds}LL`;
+        return `${timeVal.exact}LL`;
       }
       case "DATE":
         return `${parseDateLiteralToDays(String(expr.value))}LL`;

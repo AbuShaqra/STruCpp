@@ -1,0 +1,4 @@
+FUNCTION LTimeSum : LTIME
+VAR_INPUT a : LTIME; b : TIME; END_VAR
+LTimeSum := a + b;
+END_FUNCTION

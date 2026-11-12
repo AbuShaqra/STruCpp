@@ -592,12 +592,14 @@ export const VAR_INST = createToken({
 // Literals
 // =============================================================================
 
-// Time literal: T#1s, T#100ms, TIME#1h2m3s, T#-14ms (signed: Ed. 3 Table 8)
+// Time literal: T#1s, T#100ms, TIME#1h2m3s, T#-14ms (signed: Ed. 3 Table 8);
+// LTIME#1d_2h, LT#5ns are the 64-bit duration (LTIME)
 // Note: Each numeric component must have a unit suffix (ms, us, ns, d, h, m, s)
 // Longer suffixes (ms, us, ns) must come before shorter ones (m, s) in the alternation
 export const TimeLiteral = createToken({
   name: "TimeLiteral",
-  pattern: /(?:T|TIME)#[+-]?(?:[0-9_]+(?:\.[0-9_]+)?(?:ms|us|ns|d|h|m|s))+/i,
+  pattern:
+    /(?:LTIME|LT|TIME|T)#[+-]?(?:[0-9_]+(?:\.[0-9_]+)?(?:ms|us|ns|d|h|m|s))+/i,
 });
 
 // Date literal: D#2024-01-15, D#1970-9-1 (IEC allows 1- or 2-digit month/day)

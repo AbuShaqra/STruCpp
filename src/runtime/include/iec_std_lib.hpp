@@ -930,6 +930,11 @@ template<typename T> inline IEC_TOD TO_TOD(T v) noexcept {
     return IEC_TOD(static_cast<TOD_t>(iec_unwrap(v)));
 }
 
+// LTIME has the representation of TIME (signed 64-bit nanoseconds).
+template<typename T> inline IEC_LTIME TO_LTIME(T v) noexcept {
+    return IEC_LTIME(static_cast<LTIME_t>(iec_unwrap(v)));
+}
+
 // ---------------------------------------------------------------------------
 // STRING -> TIME / TOD / DATE / DT parsing
 //
@@ -1037,6 +1042,8 @@ inline int64_t parse_dt_ns(const char* s) noexcept {
 // win overload resolution for STRING arguments).
 template<size_t N> inline IEC_TIME TO_TIME(const IECString<N>& s) noexcept { return IEC_TIME(iec_strparse::parse_time_ns(s.c_str())); }
 template<size_t N> inline IEC_TIME TO_TIME(const IECStringVar<N>& s) noexcept { return IEC_TIME(iec_strparse::parse_time_ns(s.get().c_str())); }
+template<size_t N> inline IEC_LTIME TO_LTIME(const IECString<N>& s) noexcept { return IEC_LTIME(iec_strparse::parse_time_ns(s.c_str())); }
+template<size_t N> inline IEC_LTIME TO_LTIME(const IECStringVar<N>& s) noexcept { return IEC_LTIME(iec_strparse::parse_time_ns(s.get().c_str())); }
 template<size_t N> inline IEC_TOD TO_TOD(const IECString<N>& s) noexcept { return IEC_TOD(iec_strparse::parse_tod_ns(s.c_str())); }
 template<size_t N> inline IEC_TOD TO_TOD(const IECStringVar<N>& s) noexcept { return IEC_TOD(iec_strparse::parse_tod_ns(s.get().c_str())); }
 template<size_t N> inline IEC_DATE TO_DATE(const IECString<N>& s) noexcept { return IEC_DATE(iec_strparse::parse_date_days(s.c_str())); }

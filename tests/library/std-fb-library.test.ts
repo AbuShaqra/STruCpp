@@ -10,7 +10,10 @@ import { describe, it, expect } from "vitest";
 import { resolve } from "path";
 import { compileLibrary } from "../../src/library/library-compiler.js";
 import { registerLibrarySymbols } from "../../src/library/library-loader.js";
-import { discoverStlibs, loadStlibFromFile } from "../../src/node/library-loader.js";
+import {
+  discoverStlibs,
+  loadStlibFromFile,
+} from "../../src/node/library-loader.js";
 
 import { SymbolTables } from "../../src/semantic/symbol-table.js";
 import { compile } from "../../src/index.js";
@@ -103,7 +106,7 @@ describe("Standard FB Library", () => {
       expect(counterFBs).toHaveLength(15);
     });
 
-    it("should compile timer FBs (TP, TON, TOF)", () => {
+    it("should compile timer FBs (TP, TON, TOF and the LTIME LTP, LTON, LTOF)", () => {
       const result = compileLibrary(
         [{ source: timerST, fileName: "timer.st" }],
         {
@@ -115,11 +118,11 @@ describe("Standard FB Library", () => {
 
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
-      expect(result.manifest.functionBlocks).toHaveLength(3);
+      expect(result.manifest.functionBlocks).toHaveLength(6);
       const fbNames = result.manifest.functionBlocks.map((fb) => fb.name);
-      expect(fbNames).toContain("TON");
-      expect(fbNames).toContain("TOF");
-      expect(fbNames).toContain("TP");
+      for (const name of ["TON", "TOF", "TP", "LTON", "LTOF", "LTP"]) {
+        expect(fbNames).toContain(name);
+      }
     });
 
     it("should compile all standard FBs together as a complete library", () => {
@@ -141,8 +144,8 @@ describe("Standard FB Library", () => {
 
       expect(result.success).toBe(true);
       expect(result.errors).toHaveLength(0);
-      // 2 edge + 2 bistable + 1 sema + 15 counters + 3 timers = 23
-      expect(result.manifest.functionBlocks).toHaveLength(23);
+      // 2 edge + 2 bistable + 1 sema + 15 counters + 6 timers = 26
+      expect(result.manifest.functionBlocks).toHaveLength(26);
       expect(result.manifest.name).toBe("iec-standard-fb");
 
       // Verify all expected FBs are present
@@ -381,11 +384,11 @@ describe("Standard FB Library", () => {
       expect(stlibArchive.manifest.isBuiltin).toBe(true);
     });
 
-    it("should contain all 23 standard FBs", () => {
-      // 23 = 2 bistables (SR/RS) + 1 SEMA + 2 edge detectors (R_TRIG/F_TRIG)
+    it("should contain all 26 standard FBs", () => {
+      // 26 = 2 bistables (SR/RS) + 1 SEMA + 2 edge detectors (R_TRIG/F_TRIG)
       // + 15 counter variants (CTU/CTD/CTUD × 5 width variants) + 3 timers
-      // (TP/TON/TOF). Matches MatIEC's iec_std_FB.h verbatim.
-      expect(stlibArchive.manifest.functionBlocks).toHaveLength(23);
+      // (TP/TON/TOF) + their LTIME variants (LTP/LTON/LTOF).
+      expect(stlibArchive.manifest.functionBlocks).toHaveLength(26);
     });
 
     it("populates per-block documentation from library.json", () => {
@@ -396,7 +399,10 @@ describe("Standard FB Library", () => {
       // build script fails — this test guards against that loop being
       // weakened in the future.
       for (const fb of stlibArchive.manifest.functionBlocks) {
-        expect(fb.documentation, `${fb.name} should have documentation`).toMatch(/\S/);
+        expect(
+          fb.documentation,
+          `${fb.name} should have documentation`,
+        ).toMatch(/\S/);
       }
     });
 
@@ -446,8 +452,12 @@ describe("Standard FB Library", () => {
     });
 
     it("should have correct bistable FB entries", () => {
-      const sr = stlibArchive.manifest.functionBlocks.find((fb) => fb.name === "SR");
-      const rs = stlibArchive.manifest.functionBlocks.find((fb) => fb.name === "RS");
+      const sr = stlibArchive.manifest.functionBlocks.find(
+        (fb) => fb.name === "SR",
+      );
+      const rs = stlibArchive.manifest.functionBlocks.find(
+        (fb) => fb.name === "RS",
+      );
       expect(sr).toBeDefined();
       expect(sr!.inputs).toEqual([
         { name: "S1", type: "BOOL" },
@@ -463,7 +473,9 @@ describe("Standard FB Library", () => {
     });
 
     it("should have correct counter FB entries", () => {
-      const ctu = stlibArchive.manifest.functionBlocks.find((fb) => fb.name === "CTU");
+      const ctu = stlibArchive.manifest.functionBlocks.find(
+        (fb) => fb.name === "CTU",
+      );
       expect(ctu).toBeDefined();
       expect(ctu!.inputs).toEqual([
         { name: "CU", type: "BOOL" },
@@ -475,7 +487,9 @@ describe("Standard FB Library", () => {
         { name: "CV", type: "INT" },
       ]);
 
-      const ctud = stlibArchive.manifest.functionBlocks.find((fb) => fb.name === "CTUD");
+      const ctud = stlibArchive.manifest.functionBlocks.find(
+        (fb) => fb.name === "CTUD",
+      );
       expect(ctud).toBeDefined();
       expect(ctud!.inputs).toHaveLength(5);
       expect(ctud!.outputs).toHaveLength(3);
@@ -508,7 +522,9 @@ describe("Standard FB Library", () => {
 
     it("should have correct timer FB entries", () => {
       for (const name of ["TON", "TOF", "TP"]) {
-        const timer = stlibArchive.manifest.functionBlocks.find((fb) => fb.name === name);
+        const timer = stlibArchive.manifest.functionBlocks.find(
+          (fb) => fb.name === name,
+        );
         expect(timer).toBeDefined();
         expect(timer!.inputs).toEqual([
           { name: "IN", type: "BOOL" },
@@ -548,12 +564,8 @@ describe("Standard FB Library", () => {
       registerLibrarySymbols(stlibArchive.manifest, symbolTables);
 
       for (const suffix of ["DINT", "LINT", "UDINT", "ULINT"]) {
-        expect(
-          symbolTables.lookupFunctionBlock(`CTU_${suffix}`),
-        ).toBeDefined();
-        expect(
-          symbolTables.lookupFunctionBlock(`CTD_${suffix}`),
-        ).toBeDefined();
+        expect(symbolTables.lookupFunctionBlock(`CTU_${suffix}`)).toBeDefined();
+        expect(symbolTables.lookupFunctionBlock(`CTD_${suffix}`)).toBeDefined();
         expect(
           symbolTables.lookupFunctionBlock(`CTUD_${suffix}`),
         ).toBeDefined();
