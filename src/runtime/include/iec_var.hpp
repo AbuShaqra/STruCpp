@@ -96,9 +96,12 @@ public:
         : value_{static_cast<T>(other.get())} {}
 
     /** Construct from a raw pointer, storing the address as an integer: the
-     *  initial value `w : __XWORD := ADR(x)`. Integral targets only, through
-     *  uintptr_t, as operator=(U*) does. */
-    template<typename U, typename V = T, std::enable_if_t<std::is_integral<V>::value, int> = 0>
+     *  initial value `w : __XWORD := ADR(x)`. Only an integer as wide as an
+     *  address (no truncation) and not from a character pointer, so a string
+     *  literal does not convert. */
+    template<typename U, typename V = T, std::enable_if_t<
+        std::is_integral<V>::value && sizeof(V) == sizeof(void*) &&
+        !std::is_same<typename std::remove_cv<U>::type, char>::value, int> = 0>
     IECVar(U* p) noexcept
         : value_{static_cast<T>(reinterpret_cast<std::uintptr_t>(p))} {}
 
