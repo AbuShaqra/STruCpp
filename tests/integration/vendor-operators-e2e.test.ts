@@ -174,6 +174,33 @@ END_PROGRAM
     expect(out.trim().split(/\s+/)).toEqual(["16", "0", "0", "1", "1"]);
   });
 
+  it("resolves a CONFIGURATION REFERENCE TO global, unbound at start-up", () => {
+    const src = `PROGRAM MAIN
+VAR_EXTERNAL cb : BOOL; END_VAR
+VAR before : BOOL := TRUE; END_VAR
+before := cb;
+END_PROGRAM
+CONFIGURATION Cfg
+VAR_GLOBAL cg : INT; cr : REFERENCE TO INT; cb : BOOL := __ISVALIDREF(cr); END_VAR
+RESOURCE R1 ON PLC
+TASK t(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM p WITH t : MAIN;
+END_RESOURCE
+END_CONFIGURATION
+`;
+    const result = compile(src, { headerFileName: "generated.hpp" });
+    expect(result.errors).toEqual([]);
+    const out = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "vendorops_config_ref",
+      mainCode: `#include <iostream>\nint main() {\n using namespace strucpp;\n Configuration_CFG c; c.P.run();\n std::cout << (int)c.P.BEFORE.get();\n return 0;\n}\n`,
+    });
+    expect(out.trim()).toBe("0");
+  });
+
   it("XSIZEOF is refused without the feature", () => {
     const result = compile(XSIZEOF, { dialect: "iec-3" });
     expect(result.errors.map((e) => e.message)).toContain(

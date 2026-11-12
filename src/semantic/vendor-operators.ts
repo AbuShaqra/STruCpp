@@ -49,12 +49,14 @@ export function vendorOperatorResultType(op: VendorOperator): string {
 
 /**
  * The error for a call of `op` whose arguments do not fit, or undefined.
- * `isReferenceTo` tells whether an expression is a REFERENCE TO variable.
+ * `isReferenceTo` is true for a REFERENCE TO variable, else says what the argument is.
  */
 export function vendorOperatorArgumentError(
   expr: FunctionCallExpression,
   op: VendorOperator,
-  isReferenceTo: (arg: FunctionCallExpression["arguments"][number]) => boolean,
+  isReferenceTo: (
+    arg: FunctionCallExpression["arguments"][number],
+  ) => true | string,
 ): string | undefined {
   const args = expr.arguments;
   if (args.length !== 1) {
@@ -63,8 +65,9 @@ export function vendorOperatorArgumentError(
   if (args[0]!.name !== undefined || args[0]!.isOutput) {
     return `${op} takes its argument without a name`;
   }
-  if (op === "__ISVALIDREF" && !isReferenceTo(args[0]!)) {
-    return `${op} needs a REFERENCE TO variable`;
+  if (op === "__ISVALIDREF") {
+    const found = isReferenceTo(args[0]!);
+    if (found !== true) return `${op} needs a REFERENCE TO variable; ${found}`;
   }
   return undefined;
 }

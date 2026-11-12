@@ -119,11 +119,44 @@ b := __ISVALIDREF(r := h.r);
 END_PROGRAM
 `;
     expect(diag(src).errors).toEqual([
-      "4:6: __ISVALIDREF needs a REFERENCE TO variable",
-      "5:6: __ISVALIDREF needs a REFERENCE TO variable",
+      "4:6: __ISVALIDREF needs a REFERENCE TO variable; 'X' is declared INT",
+      "5:6: __ISVALIDREF needs a REFERENCE TO variable; 'P' is declared REF_TO INT",
       "7:6: __ISVALIDREF takes one argument, got 0",
       "8:6: __ISVALIDREF takes one argument, got 2",
       "9:6: __ISVALIDREF takes its argument without a name",
+    ]);
+  });
+});
+
+describe("in a global's initial value", () => {
+  it("resolves a CONFIGURATION REFERENCE TO and checks a narrowing", () => {
+    const src = `PROGRAM MAIN
+VAR_EXTERNAL cb : BOOL; END_VAR
+END_PROGRAM
+CONFIGURATION Cfg
+VAR_GLOBAL cr : REFERENCE TO INT; cb : BOOL := __ISVALIDREF(cr); g : LREAL; n : UDINT := XSIZEOF(g); END_VAR
+RESOURCE R1 ON PLC
+TASK t(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM p WITH t : MAIN;
+END_RESOURCE
+END_CONFIGURATION
+VAR_GLOBAL gg : LREAL; gn : UINT := XSIZEOF(gg); END_VAR
+`;
+    const loose = compile(src, { features: ["+vendor_operators"] });
+    expect(loose.errors).toEqual([]);
+    expect(loose.warnings.map((w) => `${w.line}: ${w.message}`).sort()).toEqual(
+      [
+        "11: Implicit narrowing conversion from ULINT to UINT",
+        "5: Implicit narrowing conversion from ULINT to UDINT",
+      ],
+    );
+    expect(
+      diag(src, { features: ["+vendor_operators"], strict: true })
+        .errors.map((e) => e.replace(/^\d+:\d+: /, ""))
+        .filter((e) => e.startsWith("Implicit")),
+    ).toEqual([
+      "Implicit conversion from ULINT to UDINT is not allowed; use ULINT_TO_UDINT",
+      "Implicit conversion from ULINT to UINT is not allowed; use ULINT_TO_UINT",
     ]);
   });
 });

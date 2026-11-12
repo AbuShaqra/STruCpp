@@ -47,6 +47,7 @@ import type {
   SymbolTables,
   Scope,
 } from "./symbol-table.js";
+import { Scope as SymbolScope } from "./symbol-table.js";
 import type { StdFunctionRegistry } from "./std-function-registry.js";
 import type { CompileError, SourceSpan } from "../types.js";
 import {
@@ -2982,33 +2983,94 @@ export class TypeChecker {
   }
 
   /**
-   * A bare `Name(...)` inside a PROGRAM or FUNCTION_BLOCK that names one of
-   * its methods, inherited ones included. The method is called, as the C++
-   * member shadows a FUNCTION or standard function of the same name.
+   * `__ISVALIDREF` and `XSIZEOF` in a top-level or CONFIGURATION global's
+   * initial value; an initial value that is such a call is checked as an
+   * assignment to the global.
    */
-  /** `__ISVALIDREF` and `XSIZEOF` in a top-level or CONFIGURATION global's initial value. */
   private markGlobalVendorOperators(ast: CompilationUnit): void {
-    const scope = this.symbolTables.globalScope;
-    const blocks = [
-      ...ast.globalVarBlocks,
-      ...ast.configurations.flatMap((c) => c.varBlocks),
+    const scopes: Array<{ blocks: VarBlock[]; scope: Scope }> = [
+      { blocks: ast.globalVarBlocks, scope: this.symbolTables.globalScope },
+      ...ast.configurations.map((c) => ({
+        blocks: c.varBlocks,
+        scope: this.configurationGlobalScope(c.varBlocks),
+      })),
     ];
-    for (const block of blocks) {
-      for (const decl of block.declarations) {
-        if (!decl.initialValue) continue;
-        walkAST(decl.initialValue, (node) => {
-          if (node.kind !== "FunctionCallExpression") return;
-          const call = node as FunctionCallExpression;
-          this.vendorOperatorCallType(
-            call,
-            call.functionName.toUpperCase(),
-            scope,
-          );
-        });
+    for (const { blocks, scope } of scopes) {
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          const value = decl.initialValue;
+          if (!value) continue;
+          walkAST(value, (node) => {
+            if (node.kind !== "FunctionCallExpression") return;
+            const call = node as FunctionCallExpression;
+            this.vendorOperatorCallType(
+              call,
+              call.functionName.toUpperCase(),
+              scope,
+            );
+          });
+          const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
+          if (
+            value.kind === "FunctionCallExpression" &&
+            value.vendorOperator !== undefined &&
+            value.resolvedType !== undefined &&
+            targetType !== undefined &&
+            (decl.type.referenceKind ?? "none") === "none"
+          ) {
+            this.validateAssignment(
+              targetType,
+              value.resolvedType,
+              {
+                kind: "VariableExpression",
+                sourceSpan: decl.sourceSpan,
+                name: decl.names[0] ?? "<unnamed>",
+                fieldAccess: [],
+                subscripts: [],
+                isDereference: false,
+              },
+              value,
+            );
+          }
+        }
       }
     }
   }
 
+  /** A scope holding a CONFIGURATION's globals, over the global scope. */
+  private configurationGlobalScope(blocks: readonly VarBlock[]): Scope {
+    const scope = new SymbolScope(
+      "configuration",
+      this.symbolTables.globalScope,
+    );
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          try {
+            scope.define({
+              name,
+              kind: "variable",
+              declaration: decl,
+              isInput: false,
+              isOutput: false,
+              isInOut: false,
+              isExternal: false,
+              isGlobal: true,
+              isRetain: block.isRetain,
+            });
+          } catch {
+            // A duplicate is reported by the analyzer.
+          }
+        }
+      }
+    }
+    return scope;
+  }
+
+  /**
+   * A bare `Name(...)` inside a PROGRAM or FUNCTION_BLOCK that names one of
+   * its methods, inherited ones included. The method is called, as the C++
+   * member shadows a FUNCTION or standard function of the same name.
+   */
   /**
    * The result type of a call of a built-in operator whose feature is on and
    * whose name nothing in scope declares; marks the call for codegen.
@@ -3027,21 +3089,34 @@ export class TypeChecker {
     }
     expr.vendorOperator = op;
     const error = vendorOperatorArgumentError(expr, op, (arg) => {
-      if (arg.value.kind !== "VariableExpression") return false;
+      const value = arg.value;
+      if (value.kind !== "VariableExpression")
+        return "an expression is not one";
+      const name = [value.name, ...value.fieldAccess].join(".").toUpperCase();
       // `THIS.r` / `THIS^.r`: a member of the enclosing FB.
-      if (this.isSelfMember(arg.value)) {
+      if (this.isSelfMember(value)) {
         const type = resolveAccessType(
           { name: this.currentFBName!, referenceKind: "none" },
-          arg.value,
+          value,
           this.accessLookup,
         );
-        return (
+        if (
           type?.referenceKind === "reference_to" &&
           (type.referenceChain?.length ?? 1) === 1
-        );
+        ) {
+          return true;
+        }
+        return type === undefined
+          ? `'${name}' is not a variable here`
+          : `'${name}' is declared ${describeReferenceShape(referenceShapeOf(type as TypeReference) ?? { chain: [], base: type.name })}`;
       }
-      const shape = this.declaredReferenceShape(arg.value, scope);
-      return shape?.chain.length === 1 && shape.chain[0] === "reference_to";
+      const shape = this.declaredReferenceShape(value, scope);
+      if (shape?.chain.length === 1 && shape.chain[0] === "reference_to") {
+        return true;
+      }
+      return shape === undefined
+        ? `'${name}' is not a variable here`
+        : `'${name}' is declared ${describeReferenceShape(shape)}`;
     });
     if (error !== undefined) {
       this.addError(

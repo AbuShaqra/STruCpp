@@ -632,7 +632,7 @@ of the same name always wins: a call reaches the operator only where nothing in 
 
 - `__ISVALIDREF` is on wherever `REFERENCE TO` is, so also with no dialect flag. Its one argument is a
   variable, member (`s.r`, `THIS.r`, `THIS^.r`) or VAR_INPUT declared `REFERENCE TO`; anything else is
-  `__ISVALIDREF needs a REFERENCE TO variable`. Reading it never raises the null-reference fault. In C++ it is `!r.is_null()`.
+  `__ISVALIDREF needs a REFERENCE TO variable; 'X' is declared INT`. Reading it never raises the null-reference fault. In C++ it is `!r.is_null()`.
 - `XSIZEOF` is the pointer-sized form of `SIZEOF`: its type is the unsigned integer of the target's address
   width, which on the 64-bit target this compiler generates for is `ULINT`. So `n : UDINT := XSIZEOF(x)`
   is a narrowing (an error under `--strict`), as on a 64-bit PLC.
