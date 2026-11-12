@@ -207,7 +207,9 @@ export function lowerPouOperators(
               b.blockType === "VAR_EXTERNAL" && b.declarations.includes(decl),
           ),
         ) && globals.get(name);
-      if (external) map.set(name, external);
+      if (external !== false && external !== undefined) {
+        map.set(name, external);
+      }
     }
     for (const [name, decl] of globals) if (!map.has(name)) map.set(name, decl);
     return map;
@@ -246,7 +248,11 @@ export function lowerPouOperators(
         (value.accessChain?.length ?? 0) === 0
           ? ctx.variables.get(value.name.toUpperCase())
           : undefined;
-      if (!decl?.address || decl.addressKind === "alias") {
+      if (
+        decl?.address === undefined ||
+        decl.address === "" ||
+        decl.addressKind === "alias"
+      ) {
         const byName =
           value.kind === "VariableExpression" &&
           value.fieldAccess.length === 0 &&
