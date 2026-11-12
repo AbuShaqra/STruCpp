@@ -313,6 +313,8 @@ export type VarAccess = "PUBLIC" | "PRIVATE" | "PROTECTED" | "INTERNAL";
 export interface VarDeclaration extends ASTNode {
   kind: "VarDeclaration";
   names: string[];
+  /** Value of an `{attribute 'implicit-parameter' := '...'}` written right before a FUNCTION input. */
+  implicitParameter?: string;
   /** Global list aliases of these names (`LIST__NAME`), emitted as C++ references (feature named_global_lists). */
   listAliases?: Array<{ name: string; alias: string }>;
   type: TypeReference;

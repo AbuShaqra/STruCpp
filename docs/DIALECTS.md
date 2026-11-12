@@ -504,6 +504,13 @@ and `parseTestFile()` without options under the default dialect); only the raw l
 `tokenize()` and `tokenizeTest()` report the bare `Conditional compilation pragmas are not supported: {...}`.
 A pragma ends at the first `}`; an unclosed `{` is the error `Unterminated pragma: '{' has no closing '}'`.
 
+`{attribute 'implicit-parameter' := '<value>'}` marks a FUNCTION input that common vendor toolchains fill at
+each call (`pouname`, `position`, `instance-path`). This compiler skips it like any other pragma, so the
+input is an ordinary one: a call must pass it unless it has an initial value. When such an input is
+missing, in every dialect, the error names the attribute: `'LOG' is missing required input: POUNAME; this
+compiler does not fill {attribute 'implicit-parameter'} inputs (POUNAME): pass it or give it an initial
+value`. The attribute counts when it is written on the input's line, before it, or on the line above.
+
 ## Conditional pragmas
 
 Conditional compilation is a CODESYS / vendor-toolchain extension; IEC 61131-3 has no conditional
