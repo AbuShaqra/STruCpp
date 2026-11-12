@@ -643,6 +643,8 @@ END_FUNCTION
   or property accessor. It means `IF cond THEN RETURN; END_IF;`: the condition is checked as an IF
   condition (`Condition must be a boolean or bit type, got INT`), and the C++ is that of the IF form.
   `RETURN x;` without parentheses stays a parse error.
+- In a `--test` file, `RETURN (cond);` follows the dialect flags of the run, as conditional pragmas do: it is
+  refused without the feature, and with it a TEST ends there (passing) when `cond` holds.
 
 ## Strict checks a feature relaxes
 

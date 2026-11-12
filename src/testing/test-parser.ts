@@ -15,7 +15,13 @@ import { lowerTestInlineTypes } from "../frontend/lower-inline-types.js";
 import type { TestFile } from "./test-model.js";
 import type { CompileError, CompileOptions } from "../types.js";
 import { tokenizeTest } from "../frontend/lexer.js";
-import { DialectError, resolveDialect } from "../dialect.js";
+import {
+  DialectError,
+  profilesWithFeature,
+  resolveDialect,
+  type ResolvedDialect,
+} from "../dialect.js";
+import type { IfStatement } from "../frontend/ast.js";
 import {
   applyConditionalPragmas,
   conditionalPragmaHint,
@@ -124,6 +130,7 @@ export function parseTestFile(
   try {
     const testFile = buildTestAST(parseResult.cst, fileName);
     errors.push(...lowerTestInlineTypes(testFile));
+    errors.push(...conditionalReturnErrors(testFile, dialect, fileName));
     return { testFile, errors };
   } catch (e) {
     errors.push({
@@ -135,4 +142,34 @@ export function parseTestFile(
     });
     return { errors };
   }
+}
+
+/** `RETURN (cond);` in a test file needs the feature conditional_return, as in a source. */
+function conditionalReturnErrors(
+  testFile: TestFile,
+  dialect: ResolvedDialect,
+  fileName: string,
+): CompileError[] {
+  if (dialect.features.has("conditional_return")) return [];
+  const profiles = profilesWithFeature(dialect, "conditional_return");
+  const hint = profiles.length > 0 ? ` (profiles: ${profiles.join(", ")})` : "";
+  const errors: CompileError[] = [];
+  const seen = new Set<object>();
+  const visit = (node: unknown): void => {
+    if (typeof node !== "object" || node === null || seen.has(node)) return;
+    seen.add(node);
+    const stmt = node as Partial<IfStatement>;
+    if (stmt.kind === "IfStatement" && stmt.conditionalReturn) {
+      errors.push({
+        message: `RETURN (condition) needs the feature conditional_return${hint}`,
+        line: stmt.conditionalReturn.startLine,
+        column: stmt.conditionalReturn.startCol,
+        severity: "error",
+        file: fileName,
+      });
+    }
+    for (const value of Object.values(node)) visit(value);
+  };
+  visit(testFile);
+  return errors;
 }
