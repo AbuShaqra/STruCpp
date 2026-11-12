@@ -362,6 +362,9 @@ export interface CodeGenOptions {
 
   /** The feature fb_init is on: run FB_init at start-up (see fb-init.ts). */
   fbInit?: boolean;
+
+  /** The C++ is built with STRUCPP_THREADED (see CompileOptions.threaded). */
+  threaded?: boolean;
 }
 
 /**
@@ -5851,15 +5854,17 @@ export class CodeGenerator {
       !operand.isDereference &&
       this.programExternals.has(operand.name.toUpperCase())
     ) {
-      this.codegenWarnings.push({
-        message:
-          `${what} of the shared global '${operand.name}': in a build with STRUCPP_THREADED, ` +
-          `accesses through the result are not serialized by the global's lock, ` +
-          `so another task using '${operand.name}' at the same time races with them`,
-        line: at.sourceSpan.startLine,
-        column: at.sourceSpan.startCol,
-        file: at.sourceSpan.file,
-      });
+      if (this.tasksMayRace()) {
+        this.codegenWarnings.push({
+          message:
+            `${what} of the shared global '${operand.name}': in a build with STRUCPP_THREADED, ` +
+            `accesses through the result are not serialized by the global's lock, ` +
+            `so another task using '${operand.name}' at the same time races with them`,
+          line: at.sourceSpan.startLine,
+          column: at.sourceSpan.startCol,
+          file: at.sourceSpan.file,
+        });
+      }
       return this.renderInOutBound(operand);
     }
     return what === "ADR"
@@ -9190,6 +9195,7 @@ export class CodeGenerator {
     param: string,
     call: FunctionCallExpression | MethodCallExpression,
   ): void {
+    if (!this.tasksMayRace()) return;
     this.codegenWarnings.push({
       message:
         `VAR_IN_OUT '${param}' refers to the shared global '${global}' during the call: ` +
@@ -9591,6 +9597,18 @@ export class CodeGenerator {
       }
     }
     return instances;
+  }
+
+  /**
+   * Another task can run at the same time as this code: the build is threaded
+   * (STRUCPP_THREADED), or a CONFIGURATION runs more than one task.
+   */
+  private tasksMayRace(): boolean {
+    if (this.options.threaded === true) return true;
+    return (
+      this.projectModel?.configurations.some((c) => this.countTasks(c) > 1) ===
+      true
+    );
   }
 
   /**

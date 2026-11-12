@@ -67,7 +67,7 @@ describe("REF / ADR of a CONFIGURATION global", () => {
           PROGRAM Inst WITH T : Main;
         END_RESOURCE
       END_CONFIGURATION`,
-      { headerFileName: "generated.hpp" },
+      { headerFileName: "generated.hpp", threaded: true },
     );
     expect(r.errors).toEqual([]);
     expect(r.cppCode).toContain("R = REF(GI->value);");

@@ -318,7 +318,12 @@ END_CONFIGURATION
     const MAIN = ` Configuration_C c; c.INST.run();\n std::cout << GAX.value.POS.get() << ' ' << GN.value.get() << ' ' << c.INST.S.get() << ' ' << c.INST.R.get() << std::endl;`;
 
     it("bind to the global's storage, with a warning for the threaded build", () => {
-      const result = compileOk(SOURCE);
+      expect(
+        compileOk(SOURCE)
+          .warnings.map((w) => w.message)
+          .filter((m) => m.includes("STRUCPP_THREADED")),
+      ).toEqual([]);
+      const result = compileOk(SOURCE, { threaded: true });
       expect(result.cppCode).toContain("D.AX.bind(GAX->value);");
       expect(result.cppCode).toContain("D.N.bind(GN->value);");
       expect(result.cppCode).toContain("F_INC(GN->value)");
