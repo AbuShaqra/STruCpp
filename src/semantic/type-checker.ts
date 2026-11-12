@@ -3305,6 +3305,9 @@ export class TypeChecker {
         if (this.checkArrayScalarAssignment(stmt.target, stmt.value, scope)) {
           break;
         }
+        if (this.isTimerPresetTakingLtime(stmt.target, valueType, scope)) {
+          break;
+        }
         const errorsBefore = this.errors.length;
         this.validateAssignment(targetType, valueType, stmt.target, stmt.value);
         // One error per mistake: the REF_TO check only adds what the general one missed.
@@ -4543,6 +4546,61 @@ export class TypeChecker {
     return (
       ED3_ELEMENTARY_NAMES.has(upper) &&
       this.ast?.types.some((t) => t.name.toUpperCase() === upper) === true
+    );
+  }
+
+  /**
+   * `x.PT := ltimeValue` on a TP, TON or TOF of the standard library, held in
+   * a variable, an array element or a member: Table 46 overloads those timers
+   * on TIME and LTIME, and both have one representation.
+   */
+  private isTimerPresetTakingLtime(
+    target: Expression,
+    valueType: IECType | undefined,
+    scope: Scope,
+  ): boolean {
+    if (
+      valueType === undefined ||
+      target.kind !== "VariableExpression" ||
+      valueType.typeKind !== "elementary" ||
+      (valueType as ElementaryType).name.toUpperCase() !== "LTIME"
+    ) {
+      return false;
+    }
+    const v = target;
+    const chain = v.accessChain ?? [];
+    const last = chain[chain.length - 1];
+    const lastField =
+      last !== undefined
+        ? last.kind === "field"
+          ? last.name
+          : undefined
+        : v.subscripts.length === 0
+          ? v.fieldAccess[v.fieldAccess.length - 1]
+          : undefined;
+    if (lastField?.toUpperCase() !== "PT") return false;
+    // The type holding PT: the target without its last step, typed silently.
+    const owner: VariableExpression = {
+      ...v,
+      fieldAccess: v.fieldAccess.slice(0, -1),
+    };
+    if (chain.length > 0) owner.accessChain = chain.slice(0, -1);
+    else delete owner.accessChain;
+    const errors = this.errors.length;
+    const warnings = this.warnings.length;
+    const ownerType = this.inferType(owner, scope);
+    this.errors.length = errors;
+    this.warnings.length = warnings;
+    const typeName =
+      ownerType !== undefined
+        ? typeNameUtil(ownerType).toUpperCase()
+        : undefined;
+    if (typeName !== "TP" && typeName !== "TON" && typeName !== "TOF") {
+      return false;
+    }
+    return (
+      this.symbolTables.lookupFunctionBlock(typeName)?.libraryName ===
+      "iec-standard-fb"
     );
   }
 

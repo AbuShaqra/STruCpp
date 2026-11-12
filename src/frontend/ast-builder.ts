@@ -1084,7 +1084,11 @@ export class ASTBuilder {
     // Check for struct type
     const structNode = getFirstNode(children.structType);
     if (structNode) {
-      return this.buildStructDefinition(structNode);
+      const def = this.buildStructDefinition(structNode);
+      // `STRUCT OVERLAP`: the fields share storage, as in a UNION.
+      return getFirstToken((structNode.children as CstChildren).Identifier)
+        ? { ...def, isUnion: true, overlap: true }
+        : def;
     }
 
     // `UNION ... END_UNION`: a STRUCT whose fields share storage.

@@ -812,6 +812,15 @@ export class STParser extends CstParser {
    */
   public structType = this.RULE("structType", () => {
     this.CONSUME(tokens.STRUCT);
+    // Ed. 3 `STRUCT OVERLAP`: OVERLAP is a word, not a keyword, so a field
+    // named overlap (`STRUCT overlap : INT;`) still parses as a field.
+    this.OPTION({
+      GATE: (): boolean =>
+        this.isWord(this.LA(1), "OVERLAP") &&
+        (this.isIdentifierOrKeywordToken(this.LA(2).tokenType) ||
+          this.LA(2).tokenType === tokens.END_STRUCT),
+      DEF: (): IToken => this.CONSUME(tokens.Identifier),
+    });
     this.MANY(() => {
       this.SUBRULE(this.varDeclaration);
     });
