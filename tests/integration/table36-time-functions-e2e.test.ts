@@ -135,7 +135,7 @@ describe.skipIf(!hasGpp || !libsAvailable)(
       expect(lib.errors).toEqual([]);
       const result = compile(
         `PROGRAM Main
-VAR f : SPLIT_TOD; r : INT; ok : BOOL; y : UDINT; m : UINT; d : ULINT; END_VAR
+VAR f : SPLIT_TOD; r : INT; ok : BOOL; y : DINT; m : INT; d : LINT; END_VAR
 f(IN := 42); r := f.o;
 ok := SPLIT_DATE(IN := D#2024-03-05, YEAR => y, MONTH => m, DAY => d);
 END_PROGRAM
@@ -170,7 +170,7 @@ FUNCTION Nx : INT VAR_IN_OUT k : INT; END_VAR k := k + 1; Nx := k; END_FUNCTION
 FUNCTION_BLOCK FBt VAR_OUTPUT x : UINT; END_VAR VAR ok : BOOL; END_VAR ok := FOut(o => THIS.x); END_FUNCTION_BLOCK
 PROGRAM Main
 VAR
-  ok : BOOL; arr : ARRAY[0..3] OF UINT; k : INT; n : INT; y, y2, mo, d : UDINT;
+  ok : BOOL; arr : ARRAY[0..3] OF UINT; k : INT; n : INT; y : UDINT; y2, mo, d : DINT;
   mu : MyU; ms : MyS; t : TOD := TOD#12:30:15.250; fb : FBt; m1, m2, m3 : UDINT;
   odt : DT; oy : UINT; omo, odd, oh : USINT; wk : INT;
 END_VAR

@@ -125,11 +125,19 @@ describe.skipIf(!libsAvailable)("Table 36 date and time functions", () => {
         "PROGRAM Main\nVAR ok : BOOL; y : DINT; m : INT; END_VAR\nok := SPLIT_DATE(IN := D#2024-03-05, YEAR => y, MONTH => m);\nEND_PROGRAM\n",
         { ...options, libraries: noOscat },
       );
-      // UINT into DINT is refused as an assignment outside --strict.
-      expect(signed.errors.map((e) => e.message)).toEqual(
+      // An unsigned output into a wider signed variable: implicit (Figure 12).
+      expect(signed.errors).toEqual([]);
+      expect(signed.cppCode).toContain("IEC_UINT __gio_0;");
+      const wrongSign = compile(
+        "PROGRAM Main\nVAR ok : BOOL; y : INT; END_VAR\nok := SPLIT_DATE(IN := D#2024-03-05, YEAR => y);\nEND_PROGRAM\n",
+        { ...options, libraries: noOscat },
+      );
+      expect(wrongSign.errors.map((e) => e.message)).toEqual(
         strict
-          ? []
-          : ["Cannot assign UINT to DINT", "Cannot assign USINT to INT"],
+          ? [
+              "Implicit conversion from UINT to INT is not allowed; use UINT_TO_INT",
+            ]
+          : [],
       );
       const narrow = compile(
         "PROGRAM Main\nVAR ok : BOOL; m : SINT; END_VAR\nok := SPLIT_DATE(IN := D#2024-03-05, MONTH => m);\nEND_PROGRAM\n",
