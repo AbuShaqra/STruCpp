@@ -9,6 +9,7 @@
 
 import type {
   ElementaryType,
+  ReferenceType,
   CompilationUnit,
   FunctionDeclaration,
   VarDeclaration,
@@ -90,11 +91,13 @@ import {
 } from "../library/library-methods.js";
 import { TypeCodeGenerator, IEC_TO_CPP_VAR_TYPE } from "./type-codegen.js";
 import {
+  dateArithmeticCpp,
   formatArrayType,
   formatIntegerLiteral,
   iecBaseToCppLiteral,
   isComparison,
   isComparisonExpr,
+  literalTemporalType,
   translateIECString,
 } from "./codegen-utils.js";
 import {
@@ -442,25 +445,31 @@ const LONG_TEMPORAL_NAMES = new Set([
 ]);
 
 /**
- * A conversion between two temporal types where one is a long (Ed. 3) form:
- * the date or time of day of a date-and-time is split off, a date becomes the
- * date-and-time of its midnight, and the same kind converts unchanged.
- * Undefined when neither side is long, or the pair is no such conversion.
+ * A conversion between two temporal types: the date or time of day of a
+ * date-and-time is split off (in every form, Table 26); with a long (Ed. 3)
+ * form on either side, a date becomes the date-and-time of its midnight and the
+ * same kind converts unchanged. Undefined for any other pair.
  */
 function longTemporalConversion(
   argExpr: string,
   from: string,
   to: string,
 ): string | undefined {
-  if (!LONG_TEMPORAL_NAMES.has(from) && !LONG_TEMPORAL_NAMES.has(to)) {
-    return undefined;
-  }
   const f = TEMPORAL_KIND[from];
   const t = TEMPORAL_KIND[to];
   if (f === undefined || t === undefined) return undefined;
+  // Table 26: the date or the time of day of a date-and-time, in every form.
+  // Through the stored nanoseconds, so a REFERENCE TO DT converts too.
+  if (f === "dt" && t === "date") {
+    return `DATE_OF_DT(IEC_DT(static_cast<int64_t>(${argExpr})))`;
+  }
+  if (f === "dt" && t === "tod") {
+    return `TOD_OF_DT(IEC_DT(static_cast<int64_t>(${argExpr})))`;
+  }
+  if (!LONG_TEMPORAL_NAMES.has(from) && !LONG_TEMPORAL_NAMES.has(to)) {
+    return undefined;
+  }
   if (f === t) return argExpr;
-  if (f === "dt" && t === "date") return `DATE_OF_DT(${argExpr})`;
-  if (f === "dt" && t === "tod") return `TOD_OF_DT(${argExpr})`;
   if (f === "date" && t === "dt") return `DATE_TO_NS(${argExpr})`;
   if (f === "tod" && t === "dt") return argExpr;
   return undefined;
@@ -6225,8 +6234,8 @@ export class CodeGenerator {
 
     const cppOp = CodeGenerator.BINARY_OP_MAP[expr.operator] ?? expr.operator;
 
-    // LDATE arithmetic: an LDATE holds days, a duration nanoseconds.
-    const ldate = this.ldateArithmetic(expr, left, right);
+    // Date arithmetic: a DATE or LDATE holds days, a duration nanoseconds.
+    const ldate = this.dateArithmetic(expr, left, right);
     if (ldate !== undefined) return ldate;
 
     // CHAR ordering compares Windows-1252 codes, not signed C++ chars.
@@ -6260,39 +6269,93 @@ export class CodeGenerator {
   }
 
   /**
-   * `a - b` of two dates where one is LDATE gives an LTIME in nanoseconds, and
-   * an LDATE plus or minus a duration moves it by whole days; undefined for any
-   * other operation.
+   * `a - b` of two dates (DATE or LDATE) gives a duration in nanoseconds
+   * (Table 35: DATE - DATE is a TIME), and a date plus or minus a duration
+   * moves it by whole days; undefined for any other operation.
    */
-  private ldateArithmetic(
+  private dateArithmetic(
     expr: BinaryExpression,
     left: string,
     right: string,
   ): string | undefined {
-    if (expr.operator !== "+" && expr.operator !== "-") return undefined;
-    const kind = (e: Expression): string | undefined => {
-      const t = e.resolvedType;
-      return t?.typeKind === "elementary"
-        ? canonicalElementaryName((t as ElementaryType).name)
+    return dateArithmeticCpp(
+      expr.operator,
+      this.temporalBase(expr.left),
+      this.temporalBase(expr.right),
+      left,
+      right,
+    );
+  }
+
+  /**
+   * The canonical elementary type of a temporal operand, through aliases, a
+   * dereference, parentheses and the untyped CONCAT_DATE_TOD (a DT).
+   */
+  private temporalBase(e: Expression): string | undefined {
+    if (e.kind === "ParenthesizedExpression")
+      return this.temporalBase(e.expression);
+    // SEL, MUX, LIMIT, MAX and MIN yield the type their operands share.
+    const selected = this.selectionOperands(e);
+    if (selected !== undefined) {
+      const kinds = selected.map((a) => this.temporalBase(a));
+      return kinds.length > 0 && kinds.every((k) => k === kinds[0])
+        ? kinds[0]
         : undefined;
+    }
+    const literal = literalTemporalType(e);
+    if (literal !== undefined && e.resolvedType === undefined) return literal;
+    let t = e.resolvedType;
+    if (t?.typeKind === "reference") t = (t as ReferenceType).referencedType;
+    let name: string | undefined =
+      t?.typeKind === "elementary"
+        ? (t as ElementaryType).name.toUpperCase()
+        : t === undefined
+          ? this.inferExprType(e)
+          : undefined;
+    if (
+      name === undefined &&
+      e.kind === "FunctionCallExpression" &&
+      e.functionName.toUpperCase() === "CONCAT_DATE_TOD"
+    ) {
+      name = "DT";
+    }
+    for (let i = 0; i < 32 && name !== undefined; i++) {
+      const upper = name;
+      const def = this.ast?.types.find(
+        (d) => d.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+        break;
+      }
+      name = def.name.toUpperCase();
+    }
+    return name === undefined ? undefined : canonicalElementaryName(name);
+  }
+
+  /** The selected or compared operands of a standard SEL, MUX, LIMIT, MAX or MIN call. */
+  private selectionOperands(e: Expression): Expression[] | undefined {
+    if (e.kind !== "FunctionCallExpression" || e.instance !== undefined) {
+      return undefined;
+    }
+    const name = e.functionName.toUpperCase();
+    const skip: Record<string, number> = {
+      SEL: 1,
+      MUX: 1,
+      LIMIT: 0,
+      MAX: 0,
+      MIN: 0,
     };
-    const l = kind(expr.left);
-    const r = kind(expr.right);
-    const isDate = (k: string | undefined): boolean =>
-      k === "DATE" || k === "LDATE";
-    const isDuration = (k: string | undefined): boolean =>
-      k === "TIME" || k === "LTIME";
-    if (l !== "LDATE" && r !== "LDATE") return undefined;
-    if (expr.operator === "-" && isDate(l) && isDate(r)) {
-      return `(DATE_TO_NS(${left}) - DATE_TO_NS(${right}))`;
+    if (skip[name] === undefined) return undefined;
+    if (
+      this.ast?.functions.some((f) => f.name.toUpperCase() === name) === true
+    ) {
+      return undefined;
     }
-    if (isDate(l) && isDuration(r)) {
-      return `DATE_FROM_NS(DATE_TO_NS(${left}) ${expr.operator} ${right})`;
-    }
-    if (expr.operator === "+" && isDuration(l) && isDate(r)) {
-      return `DATE_FROM_NS(${left} + DATE_TO_NS(${right}))`;
-    }
-    return undefined;
+    if (e.libraryFunction !== undefined) return undefined;
+    return e.arguments
+      .filter((a) => !isEnEnoArgument(a))
+      .slice(skip[name])
+      .map((a) => a.value);
   }
 
   /**
@@ -7295,7 +7358,8 @@ export class CodeGenerator {
           // `specificReturnType`, so we have everything needed without
           // adding a new schema field.
           if (idx === 0 && stdFunc.isConversion && stdFunc.specificReturnType) {
-            const fromType = this.inferExprType(arg.value);
+            const fromType =
+              this.temporalBase(arg.value) ?? this.inferExprType(arg.value);
             if (fromType) {
               generated = this.scaleConversionArg(
                 generated,

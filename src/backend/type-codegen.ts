@@ -19,14 +19,17 @@ import type {
   VariableExpression,
   BinaryExpression,
   UnaryExpression,
+  ElementaryType,
 } from "../frontend/ast.js";
 import { charLiteralUnits } from "../literal-utils.js";
 import { TypeRegistry, isElementaryType } from "../semantic/type-registry.js";
 import {
+  dateArithmeticCpp,
   formatArrayType,
   formatIntegerLiteral,
   isComparison,
   isComparisonExpr,
+  literalTemporalType,
   translateIECString,
 } from "./codegen-utils.js";
 import { wrapReferenceChain } from "./reference-types.js";
@@ -865,6 +868,21 @@ export class TypeCodeGenerator {
   private binaryExprToCpp(expr: BinaryExpression): string {
     const left = this.expressionToCpp(expr.left);
     const right = this.expressionToCpp(expr.right);
+    // Date arithmetic in a default goes by days, as in a body.
+    const temporal = (e: Expression): string | undefined => {
+      const t = e.resolvedType;
+      return t?.typeKind === "elementary"
+        ? (t as ElementaryType).name.toUpperCase()
+        : literalTemporalType(e);
+    };
+    const dated = dateArithmeticCpp(
+      expr.operator,
+      temporal(expr.left),
+      temporal(expr.right),
+      left,
+      right,
+    );
+    if (dated !== undefined) return dated;
 
     const opMap: Record<string, string> = {
       "+": "+",
