@@ -602,6 +602,9 @@ function runPipeline(
       fbInit,
     };
   }
+  for (const message of dialect.warnings) {
+    warnings.push({ message, line: 0, column: 0, severity: "warning" });
+  }
   fbInit = dialect.features.has("fb_init");
 
   const prep = sourcePrepFor(dialect, mergedOptions.pragmaDefines);

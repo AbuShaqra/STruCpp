@@ -3,7 +3,7 @@
  * --dialect-file, --feature, and one plain error line for a bad profile.
  */
 import { describe, it, expect, beforeAll } from "vitest";
-import { execFileSync } from "child_process";
+import { spawnSync } from "child_process";
 import { mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
@@ -19,17 +19,11 @@ const BAD = resolve(__dirname, "../fixtures/dialects/bad");
 
 /** Run the CLI; returns exit status and both streams. */
 function run(args: string[]): { status: number; out: string; err: string } {
-  try {
-    const stdout = execFileSync("node", [CLI_PATH, ...args], {
-      encoding: "utf-8",
-      timeout: 60000,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return { status: 0, out: stdout, err: "" };
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string; stderr?: string };
-    return { status: e.status ?? -1, out: e.stdout ?? "", err: e.stderr ?? "" };
-  }
+  const r = spawnSync("node", [CLI_PATH, ...args], {
+    encoding: "utf-8",
+    timeout: 60000,
+  });
+  return { status: r.status ?? -1, out: r.stdout, err: r.stderr };
 }
 
 function freshDir(name: string): string {
@@ -136,10 +130,25 @@ describe("bad dialect input", () => {
     ]);
   });
 
+  /** The id each bad case's folder selects: its (first) file's name. */
+  const SELECTS: Record<string, string> = {
+    cycle: "bad-cycle-a",
+    json: "bad-json",
+    semantics: "bad-semantics",
+    "unknown-feature": "bad-feature",
+    "wrong-id": "bad-id",
+  };
+
   it.each(cases)(
-    "a bad profile exits 1 with one error line and no stack trace (%s)",
+    "a bad profile that is selected exits 1 with one error line and no stack trace (%s)",
     (name) => {
-      const r = run(["--dialect-path", join(BAD, name), "--print-dialect"]);
+      const r = run([
+        "--dialect-path",
+        join(BAD, name),
+        "--dialect",
+        SELECTS[name]!,
+        "--print-dialect",
+      ]);
       expect(r.status).toBe(1);
       expect(r.out).toBe("");
       const lines = r.err.trimEnd().split("\n");
@@ -149,9 +158,32 @@ describe("bad dialect input", () => {
     },
   );
 
+  it.each(cases)(
+    "a bad profile that is not selected is skipped with a warning (%s)",
+    (name) => {
+      const r = run(["--dialect-path", join(BAD, name), "--print-dialect"]);
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.out)).toEqual({
+        id: null,
+        features: ["pointer_to", "ref_assign", "reference_to"],
+      });
+      for (const line of r.err.trimEnd().split("\n")) {
+        expect(line).toMatch(
+          /^warning: .*; it is not selected, so it is skipped$/,
+        );
+      }
+    },
+  );
+
   it("names the problem of each bad case", () => {
     const msg = (name: string): string =>
-      run(["--dialect-path", join(BAD, name), "--print-dialect"]).err.trim();
+      run([
+        "--dialect-path",
+        join(BAD, name),
+        "--dialect",
+        SELECTS[name]!,
+        "--print-dialect",
+      ]).err.trim();
     expect(msg("cycle")).toBe(
       "error: dialect 'bad-cycle-a': extends cycle bad-cycle-a -> bad-cycle-b -> bad-cycle-a",
     );

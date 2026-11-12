@@ -222,15 +222,13 @@ describe("resolveDialect", () => {
       "dialect file p/x.json: the id 'iec' is reserved; the IEC 61131-3 Ed. 3 profile is 'iec-3'",
     );
     expect(
-      errorOf(() =>
-        resolve(
-          { dialect: "iec-3", dialectPath: ["dir"] },
-          { "dir/iec.json": own },
-        ),
-      ).message,
-    ).toBe(
-      "dialect file dir/iec.json: the id 'iec' is reserved; the IEC 61131-3 Ed. 3 profile is 'iec-3'",
-    );
+      resolve(
+        { dialect: "iec-3", dialectPath: ["dir"] },
+        { "dir/iec.json": own },
+      ).warnings,
+    ).toEqual([
+      "dialect file dir/iec.json: the id 'iec' is reserved; the IEC 61131-3 Ed. 3 profile is 'iec-3'; it is not selected, so it is skipped",
+    ]);
     expect(
       errorOf(() =>
         resolveDialect({
@@ -354,7 +352,7 @@ describe("resolveDialect", () => {
   it("extends cycle is an error", () => {
     const e = errorOf(() =>
       resolve(
-        { dialectPath: ["dir"] },
+        { dialect: "a", dialectPath: ["dir"] },
         {
           "dir/a.json": profile({ id: "a", extends: "b", features: [] }),
           "dir/b.json": profile({ id: "b", extends: "a", features: [] }),
@@ -402,7 +400,10 @@ describe("resolveDialect", () => {
 
   it("id must match the file name in --dialect-path", () => {
     const e = errorOf(() =>
-      resolve({ dialectPath: ["dir"] }, { "dir/vendor-b.json": VENDOR_A }),
+      resolve(
+        { dialect: "vendor-b", dialectPath: ["dir"] },
+        { "dir/vendor-b.json": VENDOR_A },
+      ),
     );
     expect(e.message).toBe(
       "dialect file dir/vendor-b.json: id 'vendor-a' does not match the file name",
@@ -461,24 +462,122 @@ describe("resolveDialect", () => {
     ]);
   });
 
-  it("a bad file in --dialect-path is an error even when another id is selected", () => {
-    const e = errorOf(() =>
-      resolve(
-        { dialect: "vendor-a", dialectPath: ["dir"] },
-        {
-          "dir/vendor-a.json": VENDOR_A,
-          "dir/broken.json": profile({ id: "broken", features: ["goto"] }),
-        },
-      ),
+  it("a bad file in --dialect-path that is not selected is skipped with a warning", () => {
+    const d = resolve(
+      { dialect: "vendor-a", dialectPath: ["dir"] },
+      {
+        "dir/vendor-a.json": VENDOR_A,
+        "dir/broken.json": profile({ id: "broken", features: ["goto"] }),
+      },
     );
-    expect(e.message).toContain("dialect file dir/broken.json");
-    const iec = errorOf(() =>
-      resolve(
-        { dialect: "iec-3", dialectPath: ["dir"] },
-        { "dir/broken.json": "[" },
-      ),
+    expect(d.id).toBe("vendor-a");
+    expect(d.warnings).toHaveLength(1);
+    expect(d.warnings[0]).toMatch(
+      /^unknown feature 'goto' in dialect file dir\/broken\.json .*; it is not selected, so it is skipped$/,
     );
-    expect(iec.message).toMatch(/^dialect file dir\/broken\.json: /);
+    const iec = resolve(
+      { dialect: "iec-3", dialectPath: ["dir"] },
+      { "dir/broken.json": "[" },
+    );
+    expect(iec.id).toBe("iec-3");
+    expect(iec.warnings[0]).toMatch(/^dialect file dir\/broken\.json: /);
+    // selected, it stops the resolution
+    expect(
+      errorOf(() =>
+        resolve(
+          { dialect: "broken", dialectPath: ["dir"] },
+          {
+            "dir/broken.json": "[",
+          },
+        ),
+      ).message,
+    ).toMatch(/^dialect file dir\/broken\.json: /);
+    // a selected profile that extends a skipped one names why it was skipped
+    expect(
+      errorOf(() =>
+        resolve(
+          { dialect: "child", dialectPath: ["dir"] },
+          {
+            "dir/broken.json": "[",
+            "dir/child.json": profile({
+              id: "child",
+              extends: "broken",
+              features: [],
+            }),
+          },
+        ),
+      ).message,
+    ).toMatch(
+      /^dialect 'child': extends 'broken', which is skipped \(dialect file dir\/broken\.json: /,
+    );
+  });
+
+  it("refuses a profile file that takes the built-in id iec-3", () => {
+    const fake = profile({ id: "iec-3", features: ["program_methods"] });
+    const message =
+      'dialect file p/fake.json: the id \'iec-3\' is the built-in profile\'s; give the profile its own id and "extends": "iec-3"';
+    expect(
+      errorOf(() =>
+        resolve({ dialectFiles: ["p/fake.json"] }, { "p/fake.json": fake }),
+      ).message,
+    ).toBe(message);
+    expect(
+      errorOf(() =>
+        resolveDialect({
+          dialect: { id: "iec-3", name: "x", features: [], semantics: {} },
+        }),
+      ).message,
+    ).toMatch(/the id 'iec-3' is the built-in profile's/);
+  });
+
+  it("warns when several profile files are given and none is selected", () => {
+    const d = resolve(
+      { dialectFiles: ["p/a.json", "p/b.json"] },
+      {
+        "p/a.json": profile({ id: "a", features: ["union"] }),
+        "p/b.json": profile({ id: "b", features: [] }),
+      },
+    );
+    expect(d.id).toBeNull();
+    expect([...d.features].sort()).toEqual([
+      "pointer_to",
+      "ref_assign",
+      "reference_to",
+    ]);
+    expect(d.warnings).toEqual([
+      "2 dialect files and no --dialect: none is selected, so the default features apply; select one with --dialect (a from p/a.json, b from p/b.json)",
+    ]);
+    // one file still selects itself, with no warning
+    const one = resolve(
+      { dialectFiles: ["p/a.json"] },
+      { "p/a.json": profile({ id: "a", features: ["union"] }) },
+    );
+    expect(one.id).toBe("a");
+    expect(one.warnings).toEqual([]);
+  });
+
+  it("refuses a profile id defined twice, naming both files", () => {
+    const a = profile({ id: "a", features: [] });
+    expect(
+      errorOf(() =>
+        resolve(
+          { dialect: "a", dialectPath: ["d1", "d2"] },
+          { "d1/a.json": a, "d2/a.json": a },
+        ),
+      ).message,
+    ).toBe(
+      "dialect 'a' is defined twice: by dialect file d1/a.json and by dialect file d2/a.json",
+    );
+    expect(
+      errorOf(() =>
+        resolve(
+          { dialect: "a", dialectFiles: ["p/x.json"], dialectPath: ["d1"] },
+          { "p/x.json": a, "d1/a.json": a },
+        ),
+      ).message,
+    ).toBe(
+      "dialect 'a' is defined twice: by dialect file p/x.json and by dialect file d1/a.json",
+    );
   });
 
   it("a profile object is validated, loaded and selected", () => {

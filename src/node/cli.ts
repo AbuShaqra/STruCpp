@@ -639,6 +639,14 @@ function checkDialect(options: CLIOptions): void {
       nodeDialectIO.readFile,
       nodeDialectIO.listDir,
     );
+    // compile, build, --test and --check report these with their diagnostics
+    if (
+      options.printDialect ||
+      options.compileLib ||
+      options.importLib !== undefined
+    ) {
+      for (const w of d.warnings) console.error(`warning: ${w}`);
+    }
     if (options.printDialect) {
       console.log(
         JSON.stringify({ id: d.id, features: [...d.features].sort() }),

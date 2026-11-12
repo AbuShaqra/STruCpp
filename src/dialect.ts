@@ -89,6 +89,12 @@ export interface ResolvedDialect {
   features: Set<FeatureId>;
   /** Every profile read from files, folders or the request (never the built-in `iec-3`). */
   loaded: DialectProfile[];
+  /**
+   * Problems that did not stop the resolution: a `--dialect-path` profile
+   * that is not selected and cannot be loaded, or several profile files and
+   * no selection.
+   */
+  warnings: string[];
 }
 
 /** File access used to read profiles (fs-backed on Node). */
@@ -139,6 +145,11 @@ function validateProfile(raw: unknown, where: string): DialectProfile {
   if (id === RETIRED_IEC_ID) {
     throw new DialectError(
       `${where}: the id '${id}' is reserved${retiredIdHint(id)}`,
+    );
+  }
+  if (id === IEC_PROFILE.id) {
+    throw new DialectError(
+      `${where}: the id '${id}' is the built-in profile's; give the profile its own id and "extends": "${IEC_PROFILE.id}"`,
     );
   }
   if (name !== undefined && typeof name !== "string") {
@@ -222,6 +233,7 @@ function findProfile(
 function effectiveFeatures(
   profile: DialectProfile,
   loaded: readonly DialectProfile[],
+  skipped?: ReadonlyMap<string, string>,
 ): Set<FeatureId> {
   const chain: string[] = [];
   const features = new Set<FeatureId>();
@@ -238,8 +250,11 @@ function effectiveFeatures(
     if (parentId === undefined) break;
     const parent = findProfile(parentId, loaded);
     if (!parent) {
+      const why = skipped?.get(parentId);
       throw new DialectError(
-        `dialect '${current.id}': extends '${parentId}', which is not loaded${retiredIdHint(parentId)}`,
+        why === undefined
+          ? `dialect '${current.id}': extends '${parentId}', which is not loaded${retiredIdHint(parentId)}`
+          : `dialect '${current.id}': extends '${parentId}', which is skipped (${why})`,
       );
     }
     current = parent;
@@ -285,16 +300,33 @@ export function resolveDialect(
   }
 
   const loaded: DialectProfile[] = [];
+  const warnings: string[] = [];
+  /** Where each loaded profile id comes from, for a duplicate's error. */
+  const source = new Map<string, string>();
+  const add = (profile: DialectProfile, where: string): void => {
+    const first = source.get(profile.id);
+    if (first !== undefined) {
+      throw new DialectError(
+        `dialect '${profile.id}' is defined twice: by ${first} and by ${where}`,
+      );
+    }
+    source.set(profile.id, where);
+    loaded.push(profile);
+  };
   let selected: DialectProfile | undefined;
+  const selectedId = typeof req.dialect === "string" ? req.dialect : undefined;
 
   if (typeof req.dialect === "object") {
     const where = `dialect '${String((req.dialect as { id?: unknown }).id)}'`;
     selected = validateProfile(req.dialect, where);
-    loaded.push(selected);
+    add(selected, "the dialect option");
   }
-  for (const path of files) {
-    loaded.push(readProfile(path, readFile!));
+  for (const path of [...new Set(files)]) {
+    add(readProfile(path, readFile!), `dialect file ${path}`);
   }
+  /** Profiles of a dialect path, which only stop the resolution when selected. */
+  const fromPath = new Set<DialectProfile>();
+  const skipped = new Map<string, string>();
   for (const dir of dirs) {
     let names: string[];
     try {
@@ -305,14 +337,44 @@ export function resolveDialect(
     for (const name of [...names].sort()) {
       if (!name.toLowerCase().endsWith(".json")) continue;
       const id = name.slice(0, -".json".length);
-      loaded.push(readProfile(joinPath(dir, name), readFile!, id));
+      const path = joinPath(dir, name);
+      let profile: DialectProfile;
+      try {
+        profile = readProfile(path, readFile!, id);
+      } catch (e) {
+        if (!(e instanceof DialectError) || id === selectedId) throw e;
+        skipped.set(id, e.message);
+        warnings.push(`${e.message}; it is not selected, so it is skipped`);
+        continue;
+      }
+      add(profile, `dialect file ${path}`);
+      fromPath.add(profile);
     }
   }
 
-  for (const profile of loaded) effectiveFeatures(profile, loaded);
+  // Every loaded profile is checked; one from a dialect path that is not
+  // selected and does not resolve is skipped with a warning.
+  for (const profile of [...loaded]) {
+    try {
+      effectiveFeatures(profile, loaded, skipped);
+    } catch (e) {
+      if (
+        !(e instanceof DialectError) ||
+        !fromPath.has(profile) ||
+        profile.id === selectedId
+      ) {
+        throw e;
+      }
+      skipped.set(profile.id, e.message);
+      warnings.push(
+        `${source.get(profile.id)}: ${e.message}; it is not selected, so it is skipped`,
+      );
+      loaded.splice(loaded.indexOf(profile), 1);
+    }
+  }
 
-  if (typeof req.dialect === "string") {
-    selected = findProfile(req.dialect, loaded);
+  if (selectedId !== undefined) {
+    selected = findProfile(selectedId, loaded);
     if (!selected) {
       const known = [
         IEC_PROFILE.id,
@@ -321,11 +383,27 @@ export function resolveDialect(
           .sort(),
       ];
       throw new DialectError(
-        `unknown dialect '${req.dialect}' (known: ${known.join(", ")})${retiredIdHint(req.dialect)}`,
+        `unknown dialect '${selectedId}' (known: ${known.join(", ")})${retiredIdHint(selectedId)}`,
       );
     }
-  } else if (req.dialect === undefined && files.length === 1) {
-    selected = loaded[0];
+  } else if (req.dialect === undefined && files.length > 0) {
+    const distinct = [...new Set(files)];
+    if (distinct.length === 1) {
+      selected = loaded.find(
+        (p) => source.get(p.id) === `dialect file ${distinct[0]}`,
+      );
+    } else {
+      warnings.push(
+        `${distinct.length} dialect files and no --dialect: none is selected, so the default features apply; select one with --dialect (${distinct
+          .map((f) => {
+            const p = loaded.find(
+              (x) => source.get(x.id) === `dialect file ${f}`,
+            );
+            return p === undefined ? f : `${p.id} from ${f}`;
+          })
+          .join(", ")})`,
+      );
+    }
   }
 
   const features = selected
@@ -333,7 +411,7 @@ export function resolveDialect(
     : new Set(DEFAULT_FEATURES);
   applyFeatureOverrides(features, req.features ?? []);
 
-  return { id: selected ? selected.id : null, features, loaded };
+  return { id: selected ? selected.id : null, features, loaded, warnings };
 }
 
 /** Ids of the loaded profiles whose effective features include `f`, sorted. */
