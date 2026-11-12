@@ -320,7 +320,10 @@ export function isAssignable(target: IECType, source: IECType): boolean {
     if (tCanon === sCanon) return true;
 
     // Use implicit conversion check (includes widening + cross-category)
-    return isImplicitlyConvertible(sCanon, tCanon);
+    return (
+      isImplicitlyConvertible(sCanon, tCanon) ||
+      isUnsignedToWiderSigned(sCanon, tCanon)
+    );
   }
 
   // For reference types, check referenced type compatibility
@@ -332,6 +335,28 @@ export function isAssignable(target: IECType, source: IECType): boolean {
 
   // For other types (struct, array, FB), require exact match
   return JSON.stringify(target) === JSON.stringify(source);
+}
+
+/**
+ * An unsigned integer into a wider signed one (USINT to INT, DINT or LINT, UINT
+ * to DINT or LINT, UDINT to LINT): implicit in Ed. 3 Figures 11 and 12, as it
+ * keeps every value. Only assignment checks use it; codegen casts are unchanged.
+ */
+export function isUnsignedToWiderSigned(
+  source: string,
+  target: string,
+): boolean {
+  const s = source.toUpperCase();
+  const t = target.toUpperCase();
+  const sBits = ELEMENTARY_TYPES[s]?.sizeBits;
+  const tBits = ELEMENTARY_TYPES[t]?.sizeBits;
+  return (
+    WIDENING_CATEGORY[s] === "UINT" &&
+    WIDENING_CATEGORY[t] === "SINT" &&
+    sBits !== undefined &&
+    tBits !== undefined &&
+    tBits > sBits
+  );
 }
 
 /**
