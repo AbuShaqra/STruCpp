@@ -165,6 +165,14 @@ case, that another declaration of the same PROGRAM, FUNCTION_BLOCK (with its met
 uses (`s3 : STRING(3)` next to `a : S3`): the name would otherwise hide the type in the C++ class or body.
 A FUNCTION or METHOD parameter keeps its name. A FUNCTION or standard function called where a variable of its name, in any case, is in scope (a local, a parameter or a member that is no FB instance) is reached through its namespace in the C++; an FB instance of that name is what the call invokes, and its call has no value.
 
+**Implicit conversions** (Figures 11 and 12) are accepted in every dialect and under `--strict`: an integer
+into a wider one of the same signedness, an unsigned integer into a wider signed one (USINT into INT, DINT or
+LINT; UINT into DINT or LINT; UDINT into LINT), SINT, INT, USINT and UINT into REAL, an integer up to 32 bits into
+LREAL, REAL into LREAL, a bit string into a wider one (BOOL into BYTE included), and TIME, DT, DATE and TOD into
+their long forms. Without `--strict` some conversions the figures leave explicit are also accepted (a bit string
+and an integer of a sufficient width, DINT into REAL), and a narrowing is a warning; `--strict` refuses a narrowing
+between integers and REALs but keeps the warning for one involving a bit string.
+
 **REAL/LREAL to integer.** `REAL_TO_*` and `LREAL_TO_*` to an integer type round to nearest (half away from
 zero), saturate at the target's range and give 0 for NaN, instead of the undefined behaviour of a plain C++
 cast. `*_TO_BOOL` still rounds first (0.4 is FALSE). `TRUNC` returns an integer, as the standard says: DINT for
