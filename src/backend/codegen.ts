@@ -41,7 +41,7 @@ import type {
   Visibility,
   ASTNode,
 } from "../frontend/ast.js";
-import { walkAST } from "../ast-utils.js";
+import { isEnEnoArgument, walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry, SourceSpan } from "../types.js";
 import {
@@ -90,11 +90,13 @@ import {
 } from "../library/library-methods.js";
 import { TypeCodeGenerator, IEC_TO_CPP_VAR_TYPE } from "./type-codegen.js";
 import {
+  dateArithmeticCpp,
   formatArrayType,
   formatIntegerLiteral,
   iecBaseToCppLiteral,
   isComparison,
   isComparisonExpr,
+  literalTemporalType,
   translateIECString,
 } from "./codegen-utils.js";
 import {
@@ -402,9 +404,6 @@ const TEMPORAL_CONVERSION_UNITS = new Map<string, TemporalUnitInfo>([
   ["LDATE_AND_TIME", { toUnit: undefined, fromUnit: undefined }],
   ["LDATE", { toUnit: "DATE_TO_NS", fromUnit: "DATE_FROM_NS" }],
 ]);
-
-/** Nanoseconds in a day, as a C++ literal. */
-const NS_PER_DAY = "86400000000000LL";
 
 /** The stored kind of each temporal type: days for a date, nanoseconds otherwise. */
 const TEMPORAL_KIND: Record<string, "date" | "tod" | "dt" | "duration"> = {
@@ -6157,28 +6156,13 @@ export class CodeGenerator {
     left: string,
     right: string,
   ): string | undefined {
-    if (expr.operator !== "+" && expr.operator !== "-") return undefined;
-    const l = this.temporalBase(expr.left);
-    const r = this.temporalBase(expr.right);
-    const isDate = (k: string | undefined): boolean =>
-      k === "DATE" || k === "LDATE";
-    const isDuration = (k: string | undefined): boolean =>
-      k === "TIME" || k === "LTIME";
-    // In days, through the stored value (a REFERENCE TO converts): the
-    // difference scales once, and the result of date +/- duration is the day
-    // that holds the resulting instant (floor), so no date overflows.
-    const raw = (code: string): string => `static_cast<int64_t>(${code})`;
-    if (expr.operator === "-" && isDate(l) && isDate(r)) {
-      return `((${raw(left)} - ${raw(right)}) * ${NS_PER_DAY})`;
-    }
-    if (isDate(l) && isDuration(r)) {
-      const signed = expr.operator === "-" ? `-${raw(right)}` : raw(right);
-      return `DATE_FROM_DAYS(${raw(left)} + iec_floor_div(${signed}, ${NS_PER_DAY}))`;
-    }
-    if (expr.operator === "+" && isDuration(l) && isDate(r)) {
-      return `DATE_FROM_DAYS(iec_floor_div(${raw(left)}, ${NS_PER_DAY}) + ${raw(right)})`;
-    }
-    return undefined;
+    return dateArithmeticCpp(
+      expr.operator,
+      this.temporalBase(expr.left),
+      this.temporalBase(expr.right),
+      left,
+      right,
+    );
   }
 
   /**
@@ -6188,6 +6172,16 @@ export class CodeGenerator {
   private temporalBase(e: Expression): string | undefined {
     if (e.kind === "ParenthesizedExpression")
       return this.temporalBase(e.expression);
+    // SEL, MUX, LIMIT, MAX and MIN yield the type their operands share.
+    const selected = this.selectionOperands(e);
+    if (selected !== undefined) {
+      const kinds = selected.map((a) => this.temporalBase(a));
+      return kinds.length > 0 && kinds.every((k) => k === kinds[0])
+        ? kinds[0]
+        : undefined;
+    }
+    const literal = literalTemporalType(e);
+    if (literal !== undefined && e.resolvedType === undefined) return literal;
     let t = e.resolvedType;
     if (t?.typeKind === "reference") t = (t as ReferenceType).referencedType;
     let name: string | undefined =
@@ -6214,6 +6208,32 @@ export class CodeGenerator {
       name = def.name.toUpperCase();
     }
     return name === undefined ? undefined : canonicalElementaryName(name);
+  }
+
+  /** The selected or compared operands of a standard SEL, MUX, LIMIT, MAX or MIN call. */
+  private selectionOperands(e: Expression): Expression[] | undefined {
+    if (e.kind !== "FunctionCallExpression" || e.instance !== undefined) {
+      return undefined;
+    }
+    const name = e.functionName.toUpperCase();
+    const skip: Record<string, number> = {
+      SEL: 1,
+      MUX: 1,
+      LIMIT: 0,
+      MAX: 0,
+      MIN: 0,
+    };
+    if (skip[name] === undefined) return undefined;
+    if (
+      this.ast?.functions.some((f) => f.name.toUpperCase() === name) === true
+    ) {
+      return undefined;
+    }
+    if (e.libraryFunction !== undefined) return undefined;
+    return e.arguments
+      .filter((a) => !isEnEnoArgument(a))
+      .slice(skip[name])
+      .map((a) => a.value);
   }
 
   /** The fields of STRUCT `typeName` (through aliases), or undefined for any other type. */

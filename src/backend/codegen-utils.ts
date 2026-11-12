@@ -269,3 +269,53 @@ export function translateIECString(inner: string, wide = false): string {
   }
   return result;
 }
+
+/** Nanoseconds in a day, as a C++ literal. */
+export const NS_PER_DAY = "86400000000000LL";
+
+/**
+ * Date arithmetic in days (Table 35): DATE - DATE is a duration in
+ * nanoseconds, and a date plus or minus a duration is the day that holds the
+ * resulting instant (floor). `l` and `r` are the operands' canonical types;
+ * undefined for any other operation.
+ */
+export function dateArithmeticCpp(
+  operator: string,
+  l: string | undefined,
+  r: string | undefined,
+  left: string,
+  right: string,
+): string | undefined {
+  if (operator !== "+" && operator !== "-") return undefined;
+  const isDate = (k: string | undefined): boolean =>
+    k === "DATE" || k === "LDATE";
+  const isDuration = (k: string | undefined): boolean =>
+    k === "TIME" || k === "LTIME";
+  const raw = (code: string): string => `static_cast<int64_t>(${code})`;
+  if (operator === "-" && isDate(l) && isDate(r)) {
+    return `((${raw(left)} - ${raw(right)}) * ${NS_PER_DAY})`;
+  }
+  if (isDate(l) && isDuration(r)) {
+    const signed = operator === "-" ? `-${raw(right)}` : raw(right);
+    return `DATE_FROM_DAYS(${raw(left)} + iec_floor_div(${signed}, ${NS_PER_DAY}))`;
+  }
+  if (operator === "+" && isDuration(l) && isDate(r)) {
+    return `DATE_FROM_DAYS(iec_floor_div(${raw(left)}, ${NS_PER_DAY}) + ${raw(right)})`;
+  }
+  return undefined;
+}
+
+/** The temporal type a literal names (`D#...`, `T#...`, `LTIME#...`), canonical; else undefined. */
+export function literalTemporalType(expr: Expression): string | undefined {
+  if (expr.kind === "ParenthesizedExpression") {
+    return literalTemporalType(expr.expression);
+  }
+  if (expr.kind === "UnaryExpression" && expr.operator === "-") {
+    return literalTemporalType(expr.operand);
+  }
+  if (expr.kind !== "LiteralExpression") return undefined;
+  const t = expr.literalType;
+  return t === "DATE" || t === "LDATE" || t === "TIME" || t === "LTIME"
+    ? t
+    : undefined;
+}

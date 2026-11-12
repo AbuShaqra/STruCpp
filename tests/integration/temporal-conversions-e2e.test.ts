@@ -151,5 +151,48 @@ int main() {
       });
       expect(stdout).toBe("432000000000000 19738 45015000000000 19919");
     });
+
+    for (const options of [{}, { dialect: "iec-3" }, { strict: true }]) {
+      it(`moves a date by days through SEL, LIMIT, MUX, STRUCT defaults and array initialisers (${JSON.stringify(options)})`, () => {
+        const result = compile(
+          `TYPE SD : STRUCT a : DATE := D#2024-01-15 - T#1ms; END_STRUCT; END_TYPE
+PROGRAM Main
+VAR
+  d : DATE := D#2024-01-15; d2 : DATE := D#2024-01-10; b : BOOL := TRUE;
+  r1, r2, r3, r4 : DATE; t1 : TIME; sv : SD;
+  arr : ARRAY[0..1] OF DATE := [D#2024-01-15 + T#-1ms, D#2024-01-15];
+END_VAR
+r1 := SEL(b, d2, d) - T#1ms;
+r2 := d + SEL(b, T#1d, T#2d);
+t1 := SEL(b, d2, d) - d2;
+r3 := LIMIT(d2, d, d) + T#1d;
+r4 := MUX(0, d, d2) + T#1d;
+END_PROGRAM
+`,
+          { ...options, headerFileName: "generated.hpp" },
+        );
+        expect(result.errors).toEqual([]);
+        const stdout = compileAndRunStandalone({
+          tempDir,
+          pchPath,
+          headerCode: result.headerCode,
+          cppCode: result.cppCode,
+          testName: `tconv_select_${Object.keys(options).join("_") || "none"}`,
+          mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.R1.get() << " " << p.R2.get() << " " << p.T1.get() << " " << p.R3.get() << " "
+              << p.R4.get() << " " << p.SV.A.get() << " " << p.ARR[0].get() << std::endl;
+    return 0;
+}
+`,
+        });
+        expect(stdout).toBe(
+          "19736 19739 432000000000000 19738 19738 19736 19736",
+        );
+      });
+    }
   },
 );
