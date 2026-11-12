@@ -3264,6 +3264,17 @@ export class ASTBuilder {
       };
     }
 
+    if (children.CharLiteral) {
+      const token = getFirstToken(children.CharLiteral)!;
+      return {
+        kind: "LiteralExpression",
+        sourceSpan: tokenToSourceSpan(token),
+        literalType: /^W/i.test(token.image) ? "WCHAR" : "CHAR",
+        value: token.image,
+        rawValue: token.image,
+      };
+    }
+
     if (children.TimeLiteral) {
       const token = getFirstToken(children.TimeLiteral)!;
       return {

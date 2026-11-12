@@ -39,11 +39,11 @@ function parseAST(source: string) {
 
 describe("type-utils", () => {
   describe("ELEMENTARY_TYPES", () => {
-    it("should define all 30 types (26 canonical + 4 long-name aliases)", () => {
-      // 26 canonical = 25 standard elementary types (LTIME, LDATE, LTOD, LDT
-      // included) + __XWORD (platform-width address type); plus the
+    it("should define all 32 types (28 canonical + 4 long-name aliases)", () => {
+      // 28 canonical = 27 standard elementary types (LTIME, LDATE, LTOD, LDT,
+      // CHAR, WCHAR included) + __XWORD (platform-width address type); plus the
       // TIME_OF_DAY, DATE_AND_TIME, LTIME_OF_DAY and LDATE_AND_TIME aliases.
-      expect(Object.keys(ELEMENTARY_TYPES)).toHaveLength(30);
+      expect(Object.keys(ELEMENTARY_TYPES)).toHaveLength(32);
     });
 
     it("should have correct sizes for integer types", () => {

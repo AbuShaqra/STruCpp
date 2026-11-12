@@ -13,6 +13,8 @@
  * layers need it and neither should depend on the other for it.
  */
 
+import { cp1252Byte } from "./byte-utils.js";
+
 /** Widest value any IEC 61131-3 integer type (ULINT) can hold. */
 export const IEC_INTEGER_MAX = 18446744073709551615n;
 
@@ -68,4 +70,70 @@ export function integerTypeRange(
   if (name.startsWith("U")) return { min: 0n, max: (1n << BigInt(bits)) - 1n };
   const half = 1n << BigInt(bits - 1);
   return { min: -half, max: half - 1n };
+}
+
+/**
+ * The characters of a typed character literal (`CHAR#'A'`, `WCHAR#"$20AC"`),
+ * after its `$` escapes: Windows-1252 bytes for CHAR (-1 for a character that
+ * encoding lacks), UTF-16 code units for WCHAR.
+ */
+export function charLiteralUnits(raw: string): {
+  wide: boolean;
+  units: number[];
+} {
+  const wide = /^W/i.test(raw);
+  const payload = raw.slice(raw.indexOf("#") + 1);
+  // A code: CHAR#16#41, WCHAR#8364 (-1 when it is past the type's range)
+  if (!payload.startsWith("'") && !payload.startsWith('"')) {
+    const code = exactIntegerLiteralValue(payload);
+    const max = wide ? 0xffffn : 0xffn;
+    return {
+      wide,
+      units: [code !== undefined && code <= max ? Number(code) : -1],
+    };
+  }
+  const quote = payload[0]!;
+  const inner = payload.slice(1, payload.lastIndexOf(quote));
+  const units: number[] = [];
+  const escapes: Record<string, number> = {
+    N: 10,
+    L: 10,
+    R: 13,
+    T: 9,
+    P: 12,
+    $: 36,
+    "'": 39,
+    '"': 34,
+  };
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i]!;
+    if (ch === "$" && i + 1 < inner.length) {
+      const hexLen = wide ? 4 : 2;
+      const hex = inner.substring(i + 1, i + 1 + hexLen);
+      if (new RegExp(`^[0-9A-Fa-f]{${hexLen}}$`).test(hex)) {
+        units.push(parseInt(hex, 16));
+        i += hexLen;
+        continue;
+      }
+      const code = escapes[inner[i + 1]!.toUpperCase()];
+      if (code !== undefined) {
+        units.push(code);
+        i++;
+        continue;
+      }
+    }
+    if (ch === quote && inner[i + 1] === quote) {
+      units.push(quote.charCodeAt(0));
+      i++;
+      continue;
+    }
+    if (wide) {
+      units.push(ch.charCodeAt(0));
+    } else {
+      const cp = inner.codePointAt(i)!;
+      if (cp > 0xffff) i++;
+      units.push(cp1252Byte(cp) ?? -1);
+    }
+  }
+  return { wide, units };
 }

@@ -31,6 +31,10 @@
 #  define STRUCPP_HAS_EXCEPTIONS 0
 #endif
 
+#if STRUCPP_HAS_EXCEPTIONS
+#include <stdexcept>
+#endif
+
 namespace strucpp {
 
 /**
@@ -59,5 +63,14 @@ enum class IecFault : uint8_t {
  * @param context optional human-readable context; may be nullptr
  */
 [[noreturn]] void iec_runtime_fault(IecFault reason, const char* context = nullptr) noexcept;
+
+/** An Ed. 3 `s[i]` outside the string's current length (1..LEN). */
+[[noreturn]] inline void iec_string_index_fault() {
+#if STRUCPP_HAS_EXCEPTIONS
+    throw std::out_of_range("String index out of bounds");
+#else
+    iec_runtime_fault(IecFault::ArrayBounds);
+#endif
+}
 
 }  // namespace strucpp

@@ -40,7 +40,8 @@ import type {
   Visibility,
   ASTNode,
 } from "../frontend/ast.js";
-import { walkAST } from "../ast-utils.js";
+import { charLiteralUnits } from "../literal-utils.js";
+import { isEnEnoArgument, walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry, SourceSpan } from "../types.js";
 import {
@@ -400,6 +401,17 @@ const TEMPORAL_CONVERSION_UNITS = new Map<string, TemporalUnitInfo>([
   ["LDT", { toUnit: undefined, fromUnit: undefined }],
   ["LDATE_AND_TIME", { toUnit: undefined, fromUnit: undefined }],
   ["LDATE", { toUnit: "DATE_TO_NS", fromUnit: "DATE_FROM_NS" }],
+]);
+
+/** Standard functions that order their arguments. */
+const CHAR_ORDERED_FUNCTIONS = new Set([
+  "MAX",
+  "MIN",
+  "LIMIT",
+  "GT",
+  "GE",
+  "LT",
+  "LE",
 ]);
 
 /** The stored kind of each temporal type: days for a date, nanoseconds otherwise. */
@@ -5123,7 +5135,12 @@ export class CodeGenerator {
           // Range: expand to individual case labels
           const startVal = this.evaluateLiteralInt(label.start);
           const endVal = this.evaluateLiteralInt(label.end);
-          if (startVal !== undefined && endVal !== undefined) {
+          const chars = this.charLabelRange(label.start, label.end);
+          if (chars !== undefined) {
+            for (let i = chars.from; i <= chars.to; i++) {
+              this.emit(`${innerIndent}case static_cast<${chars.type}>(${i}):`);
+            }
+          } else if (startVal !== undefined && endVal !== undefined) {
             for (let i = startVal; i <= endVal; i++) {
               this.emit(`${innerIndent}case ${i}:`);
             }
@@ -5152,6 +5169,38 @@ export class CodeGenerator {
     const closingLine = this.currentLine;
     this.emit(`${indent}}`);
     this.recordLineMapping(stmt.sourceSpan.endLine, closingLine);
+  }
+
+  /** The codes of a CHAR or WCHAR literal range label, `'a'..'c'`. */
+  private charLabelRange(
+    start: Expression,
+    end: Expression,
+  ): { type: string; from: number; to: number } | undefined {
+    const code = (
+      e: Expression,
+    ): { wide: boolean; unit: number } | undefined => {
+      if (
+        e.kind !== "LiteralExpression" ||
+        (e.literalType !== "CHAR" && e.literalType !== "WCHAR")
+      ) {
+        return undefined;
+      }
+      const { wide, units } = charLiteralUnits(e.rawValue);
+      const unit = units[0];
+      return units.length === 1 && unit !== undefined && unit >= 0
+        ? { wide, unit }
+        : undefined;
+    };
+    const from = code(start);
+    const to = code(end);
+    if (from === undefined || to === undefined || from.wide !== to.wide) {
+      return undefined;
+    }
+    return {
+      type: from.wide ? "WCHAR_t" : "CHAR_t",
+      from: from.unit,
+      to: to.unit,
+    };
   }
 
   /**
@@ -5440,6 +5489,11 @@ export class CodeGenerator {
       case "LTIME": {
         const timeVal = parseTimeLiteral(String(expr.value));
         return `${timeVal.exact}LL`;
+      }
+      case "CHAR":
+      case "WCHAR": {
+        const { wide, units } = charLiteralUnits(expr.rawValue);
+        return `static_cast<${wide ? "WCHAR_t" : "CHAR_t"}>(${Math.max(units[0] ?? 0, 0)})`;
       }
       case "DATE":
       case "LDATE":
@@ -6114,6 +6168,13 @@ export class CodeGenerator {
     const ldate = this.ldateArithmetic(expr, left, right);
     if (ldate !== undefined) return ldate;
 
+    // CHAR ordering compares Windows-1252 codes, not signed C++ chars.
+    if (["<", ">", "<=", ">="].includes(expr.operator)) {
+      if (this.isCharExpr(expr.left) || this.isCharExpr(expr.right)) {
+        return `${this.charCode(expr.left, left)} ${cppOp} ${this.charCode(expr.right, right)}`;
+      }
+    }
+
     // IEC 61131-3 AND/OR/XOR are always bitwise. C++ bitwise & | ^ have
     // higher precedence than comparison operators (== != < >), unlike ST
     // where AND/OR have lower precedence. Parenthesize operands to preserve
@@ -6171,6 +6232,96 @@ export class CodeGenerator {
       return `DATE_FROM_NS(${left} + DATE_TO_NS(${right}))`;
     }
     return undefined;
+  }
+
+  /**
+   * A standard MAX/MIN/LIMIT/comparison/SEL/MUX call with CHAR or WCHAR
+   * operands; undefined for any other call. A nested EN/ENO runs the call
+   * only when EN is TRUE and writes ENO, as the statement form does.
+   */
+  private charStdCall(
+    stdFunc: { name: string; cppName: string },
+    expr: FunctionCallExpression,
+    args: readonly string[],
+  ): string | undefined {
+    const name = stdFunc.name.toUpperCase();
+    const ordered = CHAR_ORDERED_FUNCTIONS.has(name);
+    if (
+      !ordered &&
+      name !== "SEL" &&
+      name !== "MUX" &&
+      name !== "EQ" &&
+      name !== "NE"
+    ) {
+      return undefined;
+    }
+    const all = expr.arguments;
+    const operands = all.filter((a) => !isEnEnoArgument(a));
+    const isChar = operands.some((a) => this.isCharExpr(a.value));
+    if (!isChar && !operands.some((a) => this.isWcharExpr(a.value))) {
+      return undefined;
+    }
+    let en: string | null = null;
+    let eno: string | null = null;
+    const coded: string[] = [];
+    for (const [i, a] of all.entries()) {
+      const code = args[i] ?? "";
+      if (!isEnEnoArgument(a)) {
+        coded.push(ordered ? this.charCode(a.value, code) : code);
+      } else if (a.isOutput) {
+        eno = code;
+      } else {
+        en = code;
+      }
+    }
+    let call = `${stdFunc.cppName}(${coded.join(", ")})`;
+    if (isChar && ["MAX", "MIN", "LIMIT"].includes(name)) {
+      call = `static_cast<CHAR_t>(${call})`;
+    }
+    if (en === null && eno === null) return call;
+    const setEno = (v: string): string =>
+      eno === null ? "" : `${eno} = ${v}; `;
+    if (en === null) return `[&]() { ${setEno("true")}return ${call}; }()`;
+    return `[&]() { const bool en_ = ${en}; ${setEno("en_")}return en_ ? ${call} : decltype(${call}){}; }()`;
+  }
+
+  /** True when the expression is a WCHAR, through aliases of it. */
+  private isWcharExpr(e: Expression): boolean {
+    const t = e.resolvedType;
+    if (t?.typeKind !== "elementary") return false;
+    let name = (t as ElementaryType).name.toUpperCase();
+    for (let i = 0; i < 32 && name !== "WCHAR"; i++) {
+      const upper = name;
+      const def = this.ast?.types.find(
+        (d) => d.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference") return false;
+      name = def.name.toUpperCase();
+    }
+    return name === "WCHAR";
+  }
+
+  /** True when the expression is a CHAR, through aliases of it. */
+  private isCharExpr(e: Expression): boolean {
+    const t = e.resolvedType;
+    if (t?.typeKind !== "elementary") return false;
+    let name = (t as ElementaryType).name.toUpperCase();
+    for (let i = 0; i < 32 && name !== "CHAR"; i++) {
+      const upper = name;
+      const def = this.ast?.types.find(
+        (d) => d.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference") return false;
+      name = def.name.toUpperCase();
+    }
+    return name === "CHAR";
+  }
+
+  /** A CHAR operand as its unsigned Windows-1252 code; anything else unchanged. */
+  private charCode(e: Expression, code: string): string {
+    return this.isCharExpr(e)
+      ? `static_cast<uint8_t>(iec_unwrap(${code}))`
+      : code;
   }
 
   /** The fields of STRUCT `typeName` (through aliases), or undefined for any other type. */
@@ -6691,6 +6842,13 @@ export class CodeGenerator {
   ): string {
     const between = longTemporalConversion(argExpr, fromTypeUpper, toTypeUpper);
     if (between !== undefined) return between;
+    // A CHAR converts to a number by its Windows-1252 code (0..255).
+    if (
+      fromTypeUpper === "CHAR" &&
+      NUMERIC_OR_BIT_CONVERSION_TARGETS.has(toTypeUpper)
+    ) {
+      return `static_cast<uint8_t>(iec_unwrap(${argExpr}))`;
+    }
     if (TEMPORAL_CONVERSION_UNITS.has(fromTypeUpper)) {
       return this.wrapTemporalArgForNumericConversion(
         argExpr,
@@ -7087,6 +7245,10 @@ export class CodeGenerator {
           }
           return generated;
         });
+        // CHAR and WCHAR operands: CHAR ordered by its unsigned Windows-1252
+        // code, and EN/ENO of a nested call not taken as operands.
+        const charCall = this.charStdCall(stdFunc, expr, args);
+        if (charCall !== undefined) return charCall;
         this.harmonizeStdFuncArgs(args, expr.arguments, stdFunc);
         // TRUNC's C++ result type follows the C++ argument type, but codegen
         // emits REAL literals/expressions containing one as double.  Pass the

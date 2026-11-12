@@ -626,6 +626,14 @@ export const DateTimeLiteral = createToken({
     /(?:LDATE_AND_TIME|LDT|DATE_AND_TIME|DT)#[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}:[0-9]{1,2}(?::[0-9]{1,2}(?:\.[0-9]+)?)?/i,
 });
 
+// Typed character literal: CHAR#'A', CHAR#'$41', WCHAR#"B", WCHAR#"$20AC",
+// WCHAR#'X' (Table 6) and a code, CHAR#16#41 / WCHAR#8364 (Table 5)
+export const CharLiteral = createToken({
+  name: "CharLiteral",
+  pattern:
+    /W?CHAR#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[0-9][0-9_]*)|CHAR#'(?:[^'$]|\$\$|\$'|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{2}|'')*'|WCHAR#'(?:[^'$]|\$\$|\$'|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{4}|'')*'|WCHAR#"(?:[^"$]|\$\$|\$"|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{4})*"/i,
+});
+
 // Typed literal: BYTE#255, DWORD#16#FF, INT#0, BOOL#1, REAL#1.5E10, INT#-123, etc.
 // Must be before keyword tokens and RealLiteral/IntegerLiteral so that BYTE#255 isn't split.
 // A sign is taken only by a decimal integer or real payload (Ed. 3 Annex A
@@ -890,6 +898,7 @@ export const allTokens = [
   DateTimeLiteral,
   DateLiteral,
   TimeOfDayLiteral,
+  CharLiteral,
   TypedLiteral,
   EnumLiteral,
 
