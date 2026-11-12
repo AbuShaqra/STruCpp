@@ -64,6 +64,15 @@ describe.skipIf(!libsAvailable)("Table 36 date and time functions", () => {
     }
   });
 
+  it("keeps OSCAT's own DAY_OF_WEEK behind its chunks' dependencies", () => {
+    const oscat = all.find((a) => a.manifest.name === "oscat-basic")!;
+    const workWeek = oscat.chunks.find((c) => c.name === "WORK_WEEK")!;
+    expect(workWeek.deps).toContainEqual({
+      library: "oscat-basic",
+      name: "DAY_OF_WEEK",
+    });
+  });
+
   it("gives way to a user FUNCTION of the name", () => {
     const r = compile(
       `FUNCTION SPLIT_DATE : INT\nVAR_INPUT IN : DATE; END_VAR\nSPLIT_DATE := 42;\nEND_FUNCTION\nPROGRAM Main\nVAR x : INT; END_VAR\nx := SPLIT_DATE(D#2024-01-01);\nEND_PROGRAM\n`,
