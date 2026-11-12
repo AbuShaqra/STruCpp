@@ -13,6 +13,7 @@ import {
   CompileError,
   AnalysisResult,
 } from "./types.js";
+import { withYieldedFunctions } from "./library/yield-library.js";
 import { parse as parseSource } from "./frontend/parser.js";
 import { toCompileErrors, pragmaWarnings } from "./frontend/parse-errors.js";
 import { buildAST } from "./frontend/ast-builder.js";
@@ -914,7 +915,8 @@ function runPipeline(
 
   // Phase 4: Library loading.  Archives arrive pre-loaded;
   // fs-based discovery lives in `strucpp/node`.
-  allArchives.push(...(mergedOptions.libraries ?? []));
+  // The Table 36 FUNCTIONs of the bundled library give way to another library's name.
+  allArchives.push(...withYieldedFunctions(mergedOptions.libraries ?? []));
 
   if (!continueOnError && errors.length > 0) {
     return {

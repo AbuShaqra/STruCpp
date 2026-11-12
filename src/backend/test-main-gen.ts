@@ -36,6 +36,7 @@ import type {
   TypeDeclaration,
 } from "../frontend/ast.js";
 import { translateIECString } from "./codegen-utils.js";
+import { withYieldedFunctions } from "../library/yield-library.js";
 import { TestCodeGenerator } from "./test-codegen.js";
 import { TypeCodeGenerator } from "./type-codegen.js";
 import type { StlibArchive } from "../library/library-manifest.js";
@@ -185,7 +186,9 @@ export function generateTestMain(
 
   // Register library metadata (FB types, field mappings, enum/struct types)
   if (options.libraryArchives) {
-    testCodegen.registerLibraryArchives(options.libraryArchives);
+    testCodegen.registerLibraryArchives(
+      withYieldedFunctions(options.libraryArchives),
+    );
   }
 
   // Includes

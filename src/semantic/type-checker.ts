@@ -348,6 +348,38 @@ const CHAR_SELECTION_FUNCTIONS: ReadonlySet<string> = new Set([
   "MUX",
 ]);
 
+/** The C++ storage of each integer and bit-string type (same storage, same C++ type). */
+const INTEGER_STORAGE: Readonly<Record<string, string>> = {
+  SINT: "i8",
+  INT: "i16",
+  DINT: "i32",
+  LINT: "i64",
+  USINT: "u8",
+  BYTE: "u8",
+  UINT: "u16",
+  WORD: "u16",
+  UDINT: "u32",
+  DWORD: "u32",
+  ULINT: "u64",
+  LWORD: "u64",
+};
+
+/** Long temporal types stored as their short form. */
+const TEMPORAL_STORAGE: Readonly<Record<string, string>> = {
+  TIME: "time",
+  LTIME: "time",
+  DATE: "date",
+  LDATE: "date",
+  TIME_OF_DAY: "tod",
+  TOD: "tod",
+  LTIME_OF_DAY: "tod",
+  LTOD: "tod",
+  DATE_AND_TIME: "dt",
+  DT: "dt",
+  LDATE_AND_TIME: "dt",
+  LDT: "dt",
+};
+
 const COMPARISON_OPS: ReadonlySet<string> = new Set([
   "=",
   "<>",
@@ -466,6 +498,28 @@ export class TypeChecker {
     /** The IEC profile is selected: in-out binding forms that compile elsewhere are errors. */
     private readonly inOutErrors = false,
   ) {}
+
+  /**
+   * The output bindings of the calls in TEST, SETUP and TEARDOWN bodies (see
+   * checkOutputBindings), which are not otherwise type-checked.
+   */
+  checkTestOutputBindings(
+    roots: readonly ASTNode[],
+    scope: Scope,
+    ast: CompilationUnit | undefined,
+  ): { errors: CompileError[]; warnings: CompileError[] } {
+    this.errors = [];
+    this.warnings = [];
+    this.ast = ast;
+    for (const root of roots) {
+      walkAST(root, (node) => {
+        if (node.kind === "FunctionCallExpression") {
+          this.checkOutputBindings(node as FunctionCallExpression, scope);
+        }
+      });
+    }
+    return { errors: [...this.errors], warnings: [...this.warnings] };
+  }
 
   /**
    * Check types for a complete compilation unit.
@@ -1936,6 +1990,7 @@ export class TypeChecker {
     this.checkCharStdArguments(expr);
     this.adaptCharConversionArgument(expr);
     this.validateReferenceArguments(expr, scope);
+    this.checkOutputBindings(expr, scope);
     this.checkDottedMethodCall(expr, scope);
     this.checkMethodCallArgumentNames(expr, scope);
     this.checkFunctionCallArgumentNames(expr, scope);
@@ -4828,6 +4883,230 @@ export class TypeChecker {
       : base === "WSTRING"
         ? "WCHAR"
         : undefined;
+  }
+
+  /**
+   * `F(o => v)` or `F(a, v)` binding F's VAR_OUTPUT `o` to the variable `v`:
+   * checked as the assignment `v := o`, and copied out through a temporary of
+   * the output's type where the two C++ types differ (USINT into INT, or an
+   * alias variable, which is not stored as its base type).
+   */
+  private checkOutputBindings(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (expr.instance || expr.functionName.includes(".")) return;
+    if (this.calledInstance(expr.functionName, scope)) return;
+    const params = this.calledFunctionParameters(expr.functionName);
+    if (params === undefined || !params.some((p) => p.output)) return;
+    const claimed = new Set(
+      expr.arguments.flatMap((a) =>
+        a.name === undefined ? [] : [a.name.toUpperCase()],
+      ),
+    );
+    const free = params.filter((p) => !claimed.has(p.name.toUpperCase()));
+    let positional = 0;
+    for (const arg of expr.arguments) {
+      const param =
+        arg.name === undefined
+          ? free[positional++]
+          : params.find(
+              (p) => p.name.toUpperCase() === arg.name!.toUpperCase(),
+            );
+      if (param?.output !== true) continue;
+      if (arg.name !== undefined && !arg.isOutput) continue;
+      this.checkOutputBinding(param.type, arg, scope);
+    }
+  }
+
+  /** VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT of a user or library FUNCTION, in order. */
+  private calledFunctionParameters(
+    name: string,
+  ): Array<{ name: string; type: AccessType; output: boolean }> | undefined {
+    // A bare call of a method of this FB, its bases or this PROGRAM reaches
+    // the method, not a FUNCTION of its name.
+    const userFn = this.ownMethod(name) ?? this.findUserFunction(name);
+    if (userFn) {
+      return userFn.varBlocks
+        .filter(
+          (b) =>
+            b.blockType === "VAR_INPUT" ||
+            b.blockType === "VAR_IN_OUT" ||
+            b.blockType === "VAR_OUTPUT",
+        )
+        .flatMap((b) =>
+          b.declarations.flatMap((d) =>
+            d.names.map((n) => ({
+              name: n,
+              type: d.type as AccessType,
+              output: b.blockType === "VAR_OUTPUT",
+            })),
+          ),
+        );
+    }
+    const fn = this.symbolTables.lookupFunction(name);
+    if (fn === undefined || fn.libraryName === STD_FUNCTIONS_LIBRARY) {
+      return undefined;
+    }
+    const params: Array<{ name: string; type: AccessType; output: boolean }> =
+      [];
+    for (const p of fn.parameters) {
+      const type = (p.declaration as VarDeclaration | undefined)?.type;
+      if (type === undefined) return undefined;
+      params.push({
+        name: p.name,
+        type,
+        output: p.isOutput && !p.isInput && !p.isInOut,
+      });
+    }
+    return params;
+  }
+
+  /** One output binding (see checkOutputBindings). */
+  private checkOutputBinding(
+    param: AccessType,
+    arg: Argument,
+    scope: Scope,
+  ): void {
+    const value = arg.value;
+    if (value.kind !== "VariableExpression") return;
+    if (
+      param.arrayDimensions !== undefined ||
+      (param.referenceKind !== undefined && param.referenceKind !== "none")
+    ) {
+      return;
+    }
+    const sym = scope.lookup(value.name);
+    if (sym?.kind === "constant") {
+      this.addError(
+        `Cannot assign to CONSTANT variable '${value.name}'`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+      return;
+    }
+    // A bit, a dereference or a REFERENCE TO cannot bind the output's reference.
+    const steps =
+      value.accessChain?.map((st) => (st.kind === "field" ? st.name : "")) ??
+      value.fieldAccess;
+    const indirect =
+      /^\d+$/.test(steps[steps.length - 1] ?? "") ||
+      value.isDereference ||
+      value.accessChain?.some((st) => st.kind === "dereference") === true ||
+      (sym?.kind === "variable" &&
+        !this.hasMemberAccess(value) &&
+        (sym.declaration as VarDeclaration | undefined)?.type.referenceKind ===
+          "reference_to");
+    const bound = indirect ? undefined : this.boundAccessType(value, scope);
+    const boundName = bound?.name;
+    const paramType = this.resolveNamedType(param.name);
+    const boundType =
+      boundName === undefined
+        ? value.resolvedType
+        : this.resolveNamedType(boundName);
+    if (indirect) arg.inOutCopy = true;
+    if (boundType === undefined) return;
+    this.validateAssignment(boundType, paramType, value, {
+      kind: "VariableExpression",
+      sourceSpan: value.sourceSpan,
+      name: param.name,
+      fieldAccess: [],
+      subscripts: [],
+      isDereference: false,
+      resolvedType: paramType,
+    });
+    if (bound === undefined || boundName === undefined) return;
+    const paramKey = this.storageKey(param.name);
+    const boundKey = this.storageKey(boundName);
+    if (
+      (paramKey !== undefined &&
+        boundKey !== undefined &&
+        paramKey !== boundKey) ||
+      this.defaultStringIntoSized(param, bound)
+    ) {
+      arg.inOutCopy = true;
+    }
+  }
+
+  /** A STRING or WSTRING output of the default length bound to one declared with a length. */
+  private defaultStringIntoSized(
+    param: AccessType,
+    bound: AccessType,
+  ): boolean {
+    const p = this.aliasBase(param.name);
+    if ((p !== "STRING" && p !== "WSTRING") || param.maxLength !== undefined) {
+      return false;
+    }
+    return (
+      this.aliasBase(bound.name) === p &&
+      bound.maxLength !== undefined &&
+      String(bound.maxLength) !== "254"
+    );
+  }
+
+  /** The declared type of a bound variable, a member or THIS.x one. */
+  private boundAccessType(
+    value: VariableExpression,
+    scope: Scope,
+  ): AccessType | undefined {
+    const root = value.name.toUpperCase();
+    if (root === "THIS" || root === "SUPER") {
+      const field = value.fieldAccess[0];
+      if (
+        this.currentFBName === undefined ||
+        value.fieldAccess.length !== 1 ||
+        field === undefined ||
+        value.subscripts.length > 0 ||
+        value.accessChain?.some((s) => s.kind !== "field") === true
+      ) {
+        return undefined;
+      }
+      const owner =
+        root === "THIS"
+          ? this.currentFBName
+          : this.ast?.functionBlocks.find(
+              (f) => f.name.toUpperCase() === this.currentFBName!.toUpperCase(),
+            )?.extends;
+      const name =
+        owner === undefined
+          ? undefined
+          : this.resolveFieldTypeAnywhere(this.aliasBase(owner), field);
+      return name === undefined ? undefined : { name, referenceKind: "none" };
+    }
+    const sym = scope.lookup(value.name);
+    if (sym?.kind !== "variable") return undefined;
+    const declared = sym.declaration as VarDeclaration | undefined;
+    if (!declared) return undefined;
+    const type = this.hasMemberAccess(value)
+      ? resolveAccessType(declared.type, value, this.accessLookup)
+      : declared.type;
+    if (
+      type === undefined ||
+      type.arrayDimensions !== undefined ||
+      (type.referenceKind !== undefined && type.referenceKind !== "none")
+    ) {
+      return undefined;
+    }
+    return type;
+  }
+
+  /**
+   * The C++ storage of an elementary type, or undefined for any other (a
+   * STRING keeps its own copy rule): an alias is stored as its base's raw
+   * value, not as the base's IEC variable type.
+   */
+  private storageKey(name: string): string | undefined {
+    const base = this.aliasBase(name);
+    if (ELEMENTARY_TYPES[base] === undefined) {
+      // A type a library declares (`TYPE LU : USINT` of a -L library): its
+      // manifest gives no base, so it is its own storage.
+      const resolved = this.symbolTables.lookupType(base)?.resolvedType;
+      return resolved?.typeKind === "elementary" ? `lib:${base}` : undefined;
+    }
+    if (base === "STRING" || base === "WSTRING") return undefined;
+    const storage = INTEGER_STORAGE[base] ?? TEMPORAL_STORAGE[base] ?? base;
+    return `${base === name.toUpperCase() ? "iec" : "raw"}:${storage}`;
   }
 
   private aliasBase(name: string): string {

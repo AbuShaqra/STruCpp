@@ -473,6 +473,7 @@ export async function setup() {
       "sema.st",
       "counter.st",
       "timer.st",
+      "time_functions.st",
     ],
   });
 

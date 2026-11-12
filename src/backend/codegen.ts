@@ -142,6 +142,8 @@ const VLA_TYPE_NAME = /^__VLA_(\d+)D_(.+)$/;
 interface InOutCopyArg {
   value: VariableExpression;
   cppType?: string;
+  /** Reads and writes the variable through one reference (its index runs once). */
+  once?: true;
 }
 
 /** The parts of a type reference that decide its C++ type. */
@@ -3204,7 +3206,11 @@ export class CodeGenerator {
   ): string[] {
     const names: string[] = [];
     for (const block of func.varBlocks) {
-      if (block.blockType === "VAR_INPUT" || block.blockType === "VAR_IN_OUT") {
+      if (
+        block.blockType === "VAR_INPUT" ||
+        block.blockType === "VAR_IN_OUT" ||
+        block.blockType === "VAR_OUTPUT"
+      ) {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
             names.push(name);
@@ -4510,25 +4516,66 @@ export class CodeGenerator {
    * member's field type, so it binds the callee's `T&`).
    */
   private inOutCopy(
-    { value: arg, cppType }: InOutCopyArg,
+    { value: arg, cppType, once }: InOutCopyArg,
     tmp: string,
   ): { declaration: string; copyOut: string } {
     const read = this.generateVariableExpression(arg);
     const copyIn = arg.unionMember === true ? `union_value(${read})` : read;
     const upper = arg.name.toUpperCase();
-    const copyOut = this.compositeExternals.has(upper)
-      ? this.compositeGlobalStore(arg, tmp)
-      : this.programExternals.has(upper) &&
-          arg.fieldAccess.length === 0 &&
-          !arg.isDereference
-        ? `${arg.name}->write(${tmp});`
-        : `${read} = ${tmp};`;
+    const bitStore = this.bitStore(arg, tmp);
+    // A dereference, a REFERENCE TO or a bit is no lvalue a reference can hold.
+    const plainLvalue =
+      bitStore === undefined &&
+      !arg.isDereference &&
+      arg.accessChain?.some((s) => s.kind === "dereference") !== true &&
+      this.currentScopeVarRefKinds.get(upper) !== "reference_to";
+    const copyOut =
+      bitStore !== undefined
+        ? bitStore
+        : this.compositeExternals.has(upper)
+          ? this.compositeGlobalStore(arg, tmp)
+          : this.programExternals.has(upper) &&
+              arg.fieldAccess.length === 0 &&
+              !arg.isDereference
+            ? `${arg.name}->write(${tmp});`
+            : `${read} = ${tmp};`;
     // A temporary of the parameter's type when the argument's type differs.
     const declaration =
       cppType !== undefined
         ? `${cppType} ${tmp}; ${tmp} = ${copyIn};`
         : `auto ${tmp} = ${copyIn};`;
+    if (
+      once === true &&
+      plainLvalue &&
+      cppType !== undefined &&
+      copyOut === `${read} = ${tmp};`
+    ) {
+      return {
+        declaration: `auto& ${tmp}_ref = ${read}; ${cppType} ${tmp}; ${tmp} = ${tmp}_ref;`,
+        copyOut: `${tmp}_ref = ${tmp};`,
+      };
+    }
     return { declaration, copyOut };
+  }
+
+  /** `v.N := value` for a bit access `v.N` (see generateAssignmentStatement); undefined otherwise. */
+  private bitStore(
+    target: VariableExpression,
+    value: string,
+  ): string | undefined {
+    const bitIdx = this.lastFieldBitIndex(target);
+    if (bitIdx === undefined) return undefined;
+    const baseVar: VariableExpression = {
+      ...target,
+      fieldAccess: target.fieldAccess.slice(0, -1),
+    };
+    if (target.accessChain) {
+      const trimmed = this.trimLastFieldFromAccessChain(target.accessChain);
+      if (trimmed) baseVar.accessChain = trimmed;
+      else delete baseVar.accessChain;
+    }
+    const baseCode = this.generateLvalue(baseVar);
+    return `${baseCode} = (${baseCode} & ~(1ULL << ${bitIdx})) | ((${value} ? 1ULL : 0ULL) << ${bitIdx});`;
   }
 
   /** Write the queued copy-outs of the current statement. */
@@ -4629,7 +4676,12 @@ export class CodeGenerator {
         this.currentScopeVarRefKinds.get(e.name.toUpperCase()) ===
           "reference_to");
     const varBlocks =
-      this.calleeVarBlocks(call) ?? this.librarySizedStringBlocks(call);
+      this.calleeVarBlocks(call) ??
+      this.librarySizedStringBlocks(call) ??
+      (call.arguments.some((a) => a.inOutCopy === true) &&
+      call.kind === "FunctionCallExpression"
+        ? this.libraryFunctionDeclaration(call.functionName)?.varBlocks
+        : undefined);
     const hasSizedStringParam =
       varBlocks?.some(
         (b) =>
@@ -4735,12 +4787,21 @@ export class CodeGenerator {
         param.blockType === "VAR_OUTPUT" &&
         !isCompositeGlobal(value) &&
         !isUnionMember(value) &&
-        ((this.sizedStringLength(param.type) !== undefined &&
-          !this.hasStringLength(value, this.sizedStringLength(param.type)!)) ||
+        (arg.inOutCopy === true ||
+          (this.sizedStringLength(param.type) !== undefined &&
+            !this.hasStringLength(
+              value,
+              this.sizedStringLength(param.type)!,
+            )) ||
           this.stringElementLengthDiffers(param.type, value))
       ) {
-        // A STRING(n) output binds only a variable of that length.
-        result.push({ value, cppType: this.inOutParamType(param.type) });
+        // A STRING(n) output binds only a variable of that length, an integer
+        // output only one of its own C++ type: others go through a temporary.
+        result.push({
+          value,
+          cppType: this.inOutParamType(param.type),
+          once: true as const,
+        });
       } else if (
         (arg.isOutput || param.blockType === "VAR_OUTPUT") &&
         (isCompositeGlobal(value) || isUnionMember(value))

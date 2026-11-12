@@ -6051,6 +6051,7 @@ export class SemanticAnalyzer {
   analyzeTestFile(
     testFile: TestFile,
     sourceSymbolTables: SymbolTables,
+    sourceAst?: CompilationUnit,
   ): { errors: CompileError[]; warnings: CompileError[] } {
     this.errors = [];
     this.warnings = [];
@@ -6119,10 +6120,34 @@ export class SemanticAnalyzer {
         testScope,
         testFile.setup?.body ?? [],
       );
+      this.checkTestOutputBindings(tc.body, testScope, sourceAst);
+    }
+    if (testFile.setup) {
+      this.checkTestOutputBindings(
+        [...testFile.setup.body, ...(testFile.teardown?.body ?? [])],
+        setupScope,
+        sourceAst,
+      );
     }
 
     this.testTypeNames.clear();
     return { errors: [...this.errors], warnings: [...this.warnings] };
+  }
+
+  /** Output bindings in test bodies: checked as assignments, copied out where needed. */
+  private checkTestOutputBindings(
+    stmts: readonly TestStatement[],
+    scope: Scope,
+    sourceAst: CompilationUnit | undefined,
+  ): void {
+    const checker = new TypeChecker(this.symbolTables, this.stdRegistry);
+    const found = checker.checkTestOutputBindings(
+      stmts as readonly ASTNode[],
+      scope,
+      sourceAst,
+    );
+    this.errors.push(...found.errors);
+    this.warnings.push(...found.warnings);
   }
 
   /**
@@ -6456,9 +6481,10 @@ export function analyze(
 export function analyzeTestFile(
   testFile: TestFile,
   sourceSymbolTables: SymbolTables,
+  sourceAst?: CompilationUnit,
 ): { errors: CompileError[]; warnings: CompileError[] } {
   const analyzer = new SemanticAnalyzer();
-  return analyzer.analyzeTestFile(testFile, sourceSymbolTables);
+  return analyzer.analyzeTestFile(testFile, sourceSymbolTables, sourceAst);
 }
 
 /** The parameters of a method the C++ signature carries, in order. */

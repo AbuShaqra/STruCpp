@@ -284,6 +284,12 @@ export interface LibraryGlobalEntry {
 /** Name of the bundled library that lists the standard functions of the std-function registry. */
 export const STD_FUNCTIONS_LIBRARY = "iec-std-functions";
 
+/**
+ * The bundled library whose FUNCTIONs (the Ed. 3 Table 36 date and time
+ * functions) give way to a FUNCTION of the same name in any other library.
+ */
+export const YIELDING_FUNCTIONS_LIBRARY = "iec-standard-fb";
+
 export interface LibraryManifest {
   /** Library name (kebab-case identifier; matches the .stlib filename
    *  and is what dependency declarations reference). */
