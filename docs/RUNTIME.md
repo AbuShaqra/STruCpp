@@ -193,7 +193,10 @@ declared type, not by the wire. `TO_LTIME` and `ADD_LTIME` / `SUB_LTIME` /
 LDATE, LTOD and LDT are stored as DATE (days since 1970-01-01), TOD and DT
 (nanoseconds) are; an LDATE, LTOD or LDT leaf is a `TAG_DATE`, `TAG_TOD` or
 `TAG_DT` leaf of 8 bytes, and `libs/iec-types.json` lists them with the DATE,
-TOD and DT wire formats. `TO_LDATE`, `TO_LTOD` and `TO_LDT` are the casts.
+TOD and DT wire formats. An LDATE leaf's value on the debug wire is therefore a
+day count since 1970-01-01, as a DATE leaf's is, not the nanoseconds IEC
+61131-3 Ed. 3 (Table 10) specifies for LDATE. `TO_LDATE`, `TO_LTOD` and
+`TO_LDT` are the casts.
 
 ## String Types (`iec_string.hpp`, `iec_wstring.hpp`)
 
