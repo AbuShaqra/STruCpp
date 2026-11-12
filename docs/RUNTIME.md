@@ -212,6 +212,33 @@ deduction limitations with implicit conversions.
 `IECStringVar<N>` / `IECWStringVar<N>`, the type of a STRING / WSTRING variable,
 hold exactly one `IECString<N>` / `IECWString<N>`.
 
+A STRING holds Windows-1252 (CP1252) characters, one byte each, as common vendor
+toolchains do: `STRING(N)` holds N characters, `LEN('ä')` is 1 and
+`CODE('€', 1)` is 128. The compiler writes a STRING literal's characters as their
+CP1252 bytes and refuses one CP1252 lacks. Bytes 0x80-0x9F are the CP1252
+characters (0x80 is U+20AC); the five unassigned ones (0x81, 0x8D, 0x8F, 0x90,
+0x9D) stand for the C1 control of that value. `iec_cp1252.hpp` holds the table:
+
+- `STRING_TO_WSTRING` and `CHAR_TO_WCHAR` widen each byte to its CP1252 code
+  point. `WSTRING_TO_STRING` and `WCHAR_TO_CHAR` write a character CP1252 lacks
+  as `?` (a surrogate pair is one character), as Windows' `WideCharToMultiByte`
+  does with its default character; IEC 61131-3 leaves the case open.
+- The debug wire carries a STRING as UTF-8 (`len8-utf8`, unchanged): `handle_read`
+  transcodes the stored bytes, the length byte counts UTF-8 bytes, and a value
+  whose UTF-8 form passes the 126-byte window is cut before the first character
+  that does not fit whole. `handle_write` and `handle_set` (force) decode a UTF-8
+  payload to CP1252; a payload that is not UTF-8, holds a character CP1252
+  lacks or holds a NUL (the STRING would end there), is refused with
+  `STATUS_NOT_ENCODABLE` (0x89) and the leaf is left as
+  it was.
+- `handle_ptr` (the copy-free path OPC-UA uses) returns the stored CP1252 bytes
+  and their count, not UTF-8: a host that needs Unicode transcodes them
+  (`cp1252::to_utf8`).
+- The 32-entry table for 0x80-0x9F is plain const data on every target: on AVR
+  it costs 64 bytes of SRAM.
+- The REPL shows a STRING as UTF-8 and decodes UTF-8 input; the test framework
+  shows STRING values and assertion messages as UTF-8.
+
 ## Array Types (`iec_array.hpp`)
 
 ```cpp

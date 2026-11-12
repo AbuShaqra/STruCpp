@@ -683,6 +683,7 @@ function getChildren(node: ASTNode): ASTNode[] {
     case "AssertCall": {
       const ac = node as AssertCall;
       children.push(...ac.args);
+      if (ac.messageLiteral) children.push(ac.messageLiteral);
       break;
     }
 

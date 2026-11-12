@@ -1073,6 +1073,8 @@ export interface AssertCall extends ASTNode {
   assertType: AssertType;
   args: Expression[];
   message?: string;
+  /** The message's STRING literal, for its source position and checks. */
+  messageLiteral?: LiteralExpression;
   sourceSpan: SourceSpan;
 }
 

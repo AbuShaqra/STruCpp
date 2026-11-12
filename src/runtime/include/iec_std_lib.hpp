@@ -1048,32 +1048,27 @@ template<size_t N> inline IEC_DT TO_DT(const IECStringVar<N>& s) noexcept { retu
 // String / Wide String Conversion
 // =============================================================================
 //
-// STRING ↔ WSTRING per IEC 61131-3 §6.5.4.6: codepoint-by-codepoint
-// transcoding. Anything outside the BMP would require surrogate
-// handling that the runtime does not implement; OpenPLC programs in
-// practice deal in 7-bit ASCII or simple Latin-1, so a lossy narrow
-// (truncate the high byte) is documented behaviour rather than a
-// surprise. Callers that need full Unicode round-tripping should keep
-// data in WSTRING throughout.
+// STRING <-> WSTRING per IEC 61131-3: character by character. A STRING
+// holds Windows-1252 bytes, so each byte widens to its CP1252 code point
+// (0x80 is U+20AC). Narrowing writes a WSTRING character CP1252 lacks as '?'
+// (a surrogate pair counts as one character), as Windows' WideCharToMultiByte
+// does with its default character.
 
 template<size_t SrcLen>
 inline IECWString<SrcLen> STRING_TO_WSTRING(const IECString<SrcLen>& src) noexcept {
     IECWString<SrcLen> result;
     const size_t n = src.length();
     for (size_t i = 0; i < n; ++i) {
-        // Treat each STRING byte as a codepoint in the U+0000–U+00FF
-        // range. Multi-byte UTF-8 sequences pass through byte-for-byte
-        // and end up as Latin-1 — wrong for non-ASCII, but the IEC
-        // standard doesn't define UTF-8/UTF-16 transcoding either.
-        result.append(static_cast<char16_t>(static_cast<unsigned char>(src[i])));
+        result.append(static_cast<char16_t>(
+            cp1252::to_unicode(static_cast<unsigned char>(src[i]))));
     }
     return result;
 }
 
-// Overload for the per-variable wrapper (handles auto-unwrap).
+// Overload for the per-variable wrapper.
 template<size_t SrcLen>
 inline IECWString<SrcLen> STRING_TO_WSTRING(const IECStringVar<SrcLen>& src) noexcept {
-    return STRING_TO_WSTRING(iec_unwrap(src));
+    return STRING_TO_WSTRING(src.get());
 }
 
 template<size_t SrcLen>
@@ -1081,17 +1076,22 @@ inline IECString<SrcLen> WSTRING_TO_STRING(const IECWString<SrcLen>& src) noexce
     IECString<SrcLen> result;
     const size_t n = src.length();
     for (size_t i = 0; i < n; ++i) {
-        // Truncate to the low byte. Codepoints > U+00FF lose
-        // information; surrogate pairs (rare in IEC programs) collapse
-        // to garbage. Document as "ASCII / Latin-1 only" round-trip.
-        result.append(static_cast<char>(src[i] & 0xFF));
+        const char16_t unit = src[i];
+        if (unit >= 0xD800u && unit <= 0xDBFFu && i + 1 < n
+            && src[i + 1] >= 0xDC00u && src[i + 1] <= 0xDFFFu) {
+            ++i;  // a surrogate pair is one character, outside CP1252
+            result.append('?');
+            continue;
+        }
+        const int byte = cp1252::from_unicode(unit);
+        result.append(byte < 0 ? '?' : static_cast<char>(byte));
     }
     return result;
 }
 
 template<size_t SrcLen>
 inline IECString<SrcLen> WSTRING_TO_STRING(const IECWStringVar<SrcLen>& src) noexcept {
-    return WSTRING_TO_STRING(iec_unwrap(src));
+    return WSTRING_TO_STRING(src.get());
 }
 
 // `*_TO_*` resolution in the frontend collapses STRING_TO_WSTRING /

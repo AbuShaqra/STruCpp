@@ -175,8 +175,13 @@ inline std::string var_value_to_string(VarTypeTag type, void* ptr) {
             // IECStringVar<N> starts with IECString<N> value_ whose layout is:
             //   char data_[N+1]; uint16_t length_;  (data_ first, then length_)
             // data_ is always null-terminated and starts at offset 0
+            // The bytes are Windows-1252; the console shows UTF-8.
             const char* str_data = reinterpret_cast<const char*>(ptr);
-            return std::string("'") + str_data + "'";
+            const size_t n = std::strlen(str_data);
+            std::string utf8(n * 3, '\0');
+            utf8.resize(cp1252::to_utf8(str_data, n,
+                                        reinterpret_cast<uint8_t*>(&utf8[0]), utf8.size()));
+            return std::string("'") + utf8 + "'";
         }
         default: return "<?>";
     }
@@ -224,8 +229,15 @@ inline bool var_set_value(VarTypeTag type, void* ptr, const std::string& val) {
                 // Find where length_ is stored: we need to know N (max capacity)
                 // Since data_[N] should be '\0' for a shorter string, scan for the capacity
                 // For safety, cap at 254 (default STRING max)
-                uint16_t len = static_cast<uint16_t>(s.size() > 254 ? 254 : s.size());
-                std::memcpy(data_ptr, s.c_str(), len);
+                // Console input is UTF-8; the STRING stores Windows-1252 bytes.
+                std::string cp(s.size(), '\0');
+                size_t cp_len = 0;
+                if (!cp1252::from_utf8(reinterpret_cast<const uint8_t*>(s.data()), s.size(),
+                                       &cp[0], &cp_len)) {
+                    return false;
+                }
+                uint16_t len = static_cast<uint16_t>(cp_len > 254 ? 254 : cp_len);
+                std::memcpy(data_ptr, cp.data(), len);
                 data_ptr[len] = '\0';
                 return true;
             }

@@ -378,6 +378,54 @@ TEST(CharTest, Conversions) {
     EXPECT_EQ(WCHAR_TO_CHAR(u'A'), 'A');
 }
 
+TEST(CharTest, Windows1252) {
+    // A CHAR is a Windows-1252 byte.
+    EXPECT_EQ(CHAR_TO_WCHAR('\x80'), u'\u20AC');
+    EXPECT_EQ(CHAR_TO_WCHAR('\xE4'), u'\u00E4');
+    EXPECT_EQ(CHAR_TO_WCHAR('\x81'), u'\u0081');
+    EXPECT_EQ(WCHAR_TO_CHAR(u'\u20AC'), '\x80');
+    EXPECT_EQ(WCHAR_TO_CHAR(u'\u0178'), '\x9F');
+    EXPECT_EQ(WCHAR_TO_CHAR(u'\u2603'), '?');
+    EXPECT_EQ(WCHAR_TO_CHAR(u'\u0080'), '?');
+    for (int b = 0; b < 256; ++b) {
+        EXPECT_EQ(cp1252::from_unicode(cp1252::to_unicode(static_cast<unsigned char>(b))), b);
+    }
+}
+
+TEST(StringConversionTest, Windows1252) {
+    IECString<20> s("A\xE4\x80");
+    IECWString<20> w = STRING_TO_WSTRING(s);
+    ASSERT_EQ(w.length(), 3u);
+    EXPECT_EQ(w[1], u'\u00E4');
+    EXPECT_EQ(w[2], u'\u20AC');
+    IECStringVar<20> sv("\x9F");
+    EXPECT_EQ(STRING_TO_WSTRING(sv)[0], u'\u0178');
+
+    IECWString<20> w2(u"\u20AC\u2603\U0001F600x");
+    IECString<20> n = WSTRING_TO_STRING(w2);
+    EXPECT_STREQ(n.c_str(), "\x80??x");
+}
+
+TEST(StringConversionTest, Utf8Transcoding) {
+    uint8_t out[8];
+    // Cut before a character that does not fit whole.
+    EXPECT_EQ(cp1252::to_utf8("a\x80", 2, out, 3), 1u);
+    EXPECT_EQ(cp1252::to_utf8("a\x80", 2, out, 4), 4u);
+    char cp[8];
+    std::size_t n = 0;
+    const uint8_t ok[] = { 0xC3, 0xA4, 0xE2, 0x82, 0xAC };
+    EXPECT_TRUE(cp1252::from_utf8(ok, sizeof(ok), cp, &n));
+    EXPECT_EQ(n, 2u);
+    const uint8_t snow[] = { 0xE2, 0x98, 0x83 };
+    EXPECT_FALSE(cp1252::from_utf8(snow, sizeof(snow), cp, &n));
+    const uint8_t truncated[] = { 0xC3 };
+    EXPECT_FALSE(cp1252::from_utf8(truncated, sizeof(truncated), cp, &n));
+    const uint8_t overlong[] = { 0xC1, 0x81 };
+    EXPECT_FALSE(cp1252::from_utf8(overlong, sizeof(overlong), cp, &n));
+    const uint8_t nul[] = { 'a', 0x00, 'b' };
+    EXPECT_FALSE(cp1252::from_utf8(nul, sizeof(nul), cp, &n));
+}
+
 TEST(TimeVarTest, Forcing) {
     // IEC_TIME is just `IECVar<TIME_t>`, so debugger forcing works the
     // same way it does for any other elementary type — no per-type

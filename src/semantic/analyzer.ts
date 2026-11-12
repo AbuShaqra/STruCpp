@@ -114,6 +114,7 @@ import {
   IEC_INTEGER_MIN,
   integerTypeRange,
 } from "../literal-utils.js";
+import { cp1252Byte } from "../byte-utils.js";
 import { libraryOverloadFor } from "./library-overload.js";
 
 // =============================================================================
@@ -1903,6 +1904,7 @@ export class SemanticAnalyzer {
 
     // Validate that integer literals fit an IEC integer type
     this.validateIntegerLiteralRange(ast);
+    this.validateStringLiteralCharset(ast);
 
     // TODO: Implement additional semantic validation
     // - Check CASE statement coverage
@@ -2333,6 +2335,44 @@ export class SemanticAnalyzer {
         span.file,
       );
     });
+  }
+
+  /**
+   * Reject a character Windows-1252 cannot hold in a STRING literal: a STRING
+   * stores one CP1252 byte per character. A WSTRING literal holds any.
+   */
+  private validateStringLiteralCharset(
+    roots: CompilationUnit | readonly ASTNode[],
+  ): void {
+    const visit = (node: ASTNode): void => {
+      if (node.kind !== "LiteralExpression") return;
+      const literal = node as LiteralExpression;
+      if (literal.literalType !== "STRING") return;
+      const raw = literal.rawValue;
+      for (let i = raw.indexOf("'") + 1; i < raw.length; i++) {
+        const codePoint = raw.codePointAt(i)!;
+        if (codePoint <= 0x7f || cp1252Byte(codePoint) !== undefined) continue;
+        const span = literal.sourceSpan;
+        const before = raw.substring(0, i);
+        const breaks = before.split("\n").length - 1;
+        const line = span.startLine + breaks;
+        const column =
+          breaks === 0 ? span.startCol + i : i - before.lastIndexOf("\n");
+        const hex = codePoint.toString(16).toUpperCase().padStart(4, "0");
+        this.addError(
+          codePoint === 0xfffd
+            ? "A STRING literal holds U+FFFD, a byte the source could not decode: the file is probably not UTF-8 (saved as Windows-1252?); save it as UTF-8"
+            : `Character '${String.fromCodePoint(codePoint)}' (U+${hex}) cannot be stored in a STRING, which holds Windows-1252 characters; use a WSTRING literal ("...") for it`,
+          line,
+          column,
+          span.file,
+        );
+        return;
+      }
+    };
+    for (const root of Array.isArray(roots) ? roots : [roots]) {
+      walkAST(root as ASTNode, (n) => visit(n));
+    }
   }
 
   /**
@@ -5973,6 +6013,14 @@ export class SemanticAnalyzer {
       );
       this.checkTestMemberAccess(testFile.teardown.body, setupScope);
     }
+
+    // STRING literals (assertion messages included) hold Windows-1252 characters
+    this.validateStringLiteralCharset([
+      ...(testFile.setup?.varBlocks ?? []),
+      ...(testFile.setup?.body ?? []),
+      ...(testFile.teardown?.body ?? []),
+      ...testFile.testCases.flatMap((tc) => [...tc.varBlocks, ...tc.body]),
+    ] as ASTNode[]);
 
     // Walk each TEST body with scope = SETUP vars + TEST-local vars
     for (const tc of testFile.testCases) {

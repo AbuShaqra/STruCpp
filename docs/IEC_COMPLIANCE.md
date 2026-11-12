@@ -16,8 +16,8 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | TIME_OF_DAY | Supported | |
 | DATE_AND_TIME | Supported | |
 | LTIME, LDATE, LTOD, LDT | Supported | 64-bit time types with nanosecond precision |
-| STRING | Supported | Parameterized length: STRING(N), default 254. N may be a constant: a VAR_GLOBAL CONSTANT, a POU's VAR CONSTANT or an expression of them takes its value, a caller-supplied constant (`-D`) keeps its name. An element of an ARRAY OF STRING(N) or ARRAY OF REF_TO STRING(N), inline, named, a STRUCT field or an ARRAY[*] parameter, has that length: a longer value is truncated to N. Arrays whose elements differ only in that length assign and pass element by element (an in/out by copy-in / copy-out) |
-| WSTRING | Supported | Parameterized length: WSTRING(N) |
+| STRING | Supported | Parameterized length: STRING(N), default 254. N may be a constant: a VAR_GLOBAL CONSTANT, a POU's VAR CONSTANT or an expression of them takes its value, a caller-supplied constant (`-D`) keeps its name. An element of an ARRAY OF STRING(N) or ARRAY OF REF_TO STRING(N), inline, named, a STRUCT field or an ARRAY[*] parameter, has that length: a longer value is truncated to N. Arrays whose elements differ only in that length assign and pass element by element (an in/out by copy-in / copy-out). A STRING holds Windows-1252 characters, one byte each, which matches the behaviour of common vendor toolchains: `LEN('ä')` is 1 and STRING(N) holds N such characters. A character Windows-1252 lacks in a STRING literal is an error at its position (`Character '☃' (U+2603) cannot be stored in a STRING, which holds Windows-1252 characters; use a WSTRING literal ("...") for it`). See RUNTIME.md for the debugger and REPL |
+| WSTRING | Supported | Parameterized length: WSTRING(N). STRING_TO_WSTRING widens each STRING character to its Windows-1252 code point; WSTRING_TO_STRING writes a character Windows-1252 lacks as `?` |
 | CHAR, WCHAR | Supported | |
 
 ### Derived Types

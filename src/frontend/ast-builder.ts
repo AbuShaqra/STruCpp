@@ -4525,6 +4525,7 @@ export class ASTBuilder {
 
     // Check for optional message (last STRING literal argument)
     let message: string | undefined;
+    let messageLiteral: import("./ast.js").LiteralExpression | undefined;
     const lastArg = allArgs[allArgs.length - 1];
     const minArgs = this.getMinAssertArgs(assertType);
     if (
@@ -4534,6 +4535,7 @@ export class ASTBuilder {
       lastArg.literalType === "STRING"
     ) {
       message = lastArg.rawValue.replace(/^'|'$/g, "");
+      messageLiteral = lastArg;
       allArgs.pop();
     }
 
@@ -4545,6 +4547,9 @@ export class ASTBuilder {
     };
     if (message !== undefined) {
       result.message = message;
+    }
+    if (messageLiteral !== undefined) {
+      result.messageLiteral = messageLiteral;
     }
     return result;
   }
