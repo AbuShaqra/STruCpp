@@ -546,9 +546,12 @@ export class SemanticAnalyzer {
       this.warnings.push(...typeResult.warnings);
     }
 
-    // Pass 3: Semantic validation
+    // Pass 3: Semantic validation. After an error it does not run, except
+    // its literal checks, which need no resolved type.
     if (this.errors.length - typeReferenceErrors === 0) {
       this.validateSemantics(ast);
+    } else {
+      this.validateLiteralRanges(ast);
     }
 
     this.displayGlobalListNames(this.errors);
@@ -1907,15 +1910,24 @@ export class SemanticAnalyzer {
     this.validateEnumTypeDefaults(ast);
 
     // Validate that integer literals fit an IEC integer type
-    this.validateIntegerLiteralRange(ast);
-    this.validateStringLiteralCharset(ast);
-    this.validateLtimeLiteralRange(ast);
-    this.validateRealLiteralRange(ast);
+    this.validateLiteralRanges(ast);
 
     // TODO: Implement additional semantic validation
     // - Check CASE statement coverage
     // - Validate reference operations
     // - Check for unreachable code
+  }
+
+  /**
+   * Literals a type cannot hold (integer, typed, LTIME, REAL) and STRING
+   * characters outside Windows-1252. Needs no resolved type, so it also runs
+   * when an earlier error stops the type checks.
+   */
+  private validateLiteralRanges(ast: CompilationUnit): void {
+    this.validateIntegerLiteralRange(ast);
+    this.validateStringLiteralCharset(ast);
+    this.validateLtimeLiteralRange(ast);
+    this.validateRealLiteralRange(ast);
   }
 
   /**
