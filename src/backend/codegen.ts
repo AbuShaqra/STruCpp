@@ -6020,7 +6020,7 @@ export class CodeGenerator {
 
     // Field access (struct members) — detect property reads and bit access on last field
     if (expr.fieldAccess.length > 0) {
-      let currentType = baseType ?? this.currentScopeVarTypes.get(nameUpper);
+      let currentType = baseType ?? this.rootVariableType(nameUpper);
       for (let i = 0; i < expr.fieldAccess.length; i++) {
         const field = expr.fieldAccess[i]!;
         const isLast = i === expr.fieldAccess.length - 1;
@@ -6119,7 +6119,7 @@ export class CodeGenerator {
     namedBit = false,
   ): string {
     let result = base;
-    let currentType = baseType ?? this.currentScopeVarTypes.get(baseNameUpper);
+    let currentType = baseType ?? this.rootVariableType(baseNameUpper);
 
     for (let i = 0; i < chain.length; i++) {
       const step = chain[i]!;
@@ -8235,7 +8235,7 @@ export class CodeGenerator {
     let currentType: string | undefined;
     if (nameUpper === "THIS") currentType = this.currentFBName;
     else if (nameUpper === "SUPER") currentType = this.currentFBExtends;
-    else currentType = this.currentScopeVarTypes.get(nameUpper);
+    else currentType = this.rootVariableType(nameUpper);
 
     for (let i = 0; i < expr.fieldAccess.length - 1; i++) {
       if (!currentType) break;
@@ -8728,6 +8728,36 @@ export class CodeGenerator {
     if (this.namespaceGlobalType(upper) === undefined) return undefined;
     const sym = this._symbolTables?.globalScope.lookup(upper);
     return sym?.kind === "variable" ? sym.declaration.type : undefined;
+  }
+
+  /** The type of the variable an access path starts at: a local or member, else a file-level or library global. */
+  private rootVariableType(upper: string): string | undefined {
+    const own = this.currentScopeVarTypes.get(upper);
+    if (own !== undefined) return own;
+    // A member a base FB declares shadows a global; a base this unit does not
+    // declare (a library FB) has members unknown here, so no global is assumed.
+    if (this.currentFBExtends !== undefined) {
+      const inherited = this.inheritedMemberTypeName(upper);
+      if (inherited !== undefined) return inherited;
+      if (!this.baseChainDeclared()) return undefined;
+    }
+    return this.namespaceGlobalType(upper);
+  }
+
+  /** Every base of the current FB is declared in this unit. */
+  private baseChainDeclared(): boolean {
+    const seen = new Set<string>();
+    let current = this.currentFBExtends;
+    while (current !== undefined && !seen.has(current.toUpperCase())) {
+      const base = current.toUpperCase();
+      seen.add(base);
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === base,
+      );
+      if (!fb) return false;
+      current = fb.extends;
+    }
+    return true;
   }
 
   /** Declared type name of a file-level or library VAR_GLOBAL not shadowed here. */
