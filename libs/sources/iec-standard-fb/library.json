@@ -83,6 +83,24 @@
     },
     "LTP": {
       "documentation": "The pulse timer with an LTIME preset and elapsed time."
+    },
+    "TP_TIME": {
+      "documentation": "The pulse timer with a TIME preset and elapsed time."
+    },
+    "TP_LTIME": {
+      "documentation": "The pulse timer with an LTIME preset and elapsed time."
+    },
+    "TON_TIME": {
+      "documentation": "The on-delay timer with a TIME preset and elapsed time."
+    },
+    "TON_LTIME": {
+      "documentation": "The on-delay timer with an LTIME preset and elapsed time."
+    },
+    "TOF_TIME": {
+      "documentation": "The off-delay timer with a TIME preset and elapsed time."
+    },
+    "TOF_LTIME": {
+      "documentation": "The off-delay timer with an LTIME preset and elapsed time."
     }
   },
   "functions": {

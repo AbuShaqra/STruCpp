@@ -8,6 +8,7 @@
  */
 
 import type { CstNode, IToken } from "chevrotain";
+import { exactIntegerLiteralValue } from "../literal-utils.js";
 import type {
   CompilationUnit,
   ProgramDeclaration,
@@ -1083,7 +1084,11 @@ export class ASTBuilder {
     // Check for struct type
     const structNode = getFirstNode(children.structType);
     if (structNode) {
-      return this.buildStructDefinition(structNode);
+      const def = this.buildStructDefinition(structNode);
+      // `STRUCT OVERLAP`: the fields share storage, as in a UNION.
+      return getFirstToken((structNode.children as CstChildren).Identifier)
+        ? { ...def, isUnion: true, overlap: true }
+        : def;
     }
 
     // `UNION ... END_UNION`: a STRUCT whose fields share storage.
@@ -1887,7 +1892,10 @@ export class ASTBuilder {
     let maxLength: number | string | undefined;
     const lengthToken = getFirstToken(children.IntegerLiteral);
     if (lengthToken) {
-      maxLength = parseInt(lengthToken.image, 10);
+      // An Unsigned_Int may hold underscores (1_0) and, in parentheses, a base (16#20).
+      const exact = exactIntegerLiteralValue(lengthToken.image);
+      maxLength =
+        exact !== undefined ? Number(exact) : parseInt(lengthToken.image, 10);
     } else {
       // Check for identifier-based length (STRING(CONSTANT_NAME))
       // Note: children.Identifier[0] is the type name itself; [1] would be the length constant
@@ -3255,6 +3263,17 @@ export class ASTBuilder {
         kind: "LiteralExpression",
         sourceSpan: tokenToSourceSpan(token),
         literalType: "WSTRING",
+        value: token.image,
+        rawValue: token.image,
+      };
+    }
+
+    if (children.CharLiteral) {
+      const token = getFirstToken(children.CharLiteral)!;
+      return {
+        kind: "LiteralExpression",
+        sourceSpan: tokenToSourceSpan(token),
+        literalType: /^W/i.test(token.image) ? "WCHAR" : "CHAR",
         value: token.image,
         rawValue: token.image,
       };

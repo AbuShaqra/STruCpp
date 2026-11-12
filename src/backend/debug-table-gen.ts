@@ -208,6 +208,9 @@ const IEC_NAME_TO_TAG: Record<string, TagName> = {
   DATE_AND_TIME: "DT",
   LDT: "DT",
   LDATE_AND_TIME: "DT",
+  // A CHAR is one Windows-1252 byte, a WCHAR one UTF-16 code unit.
+  CHAR: "BYTE",
+  WCHAR: "WORD",
   STRING: "STRING",
   WSTRING: "WSTRING",
 };
@@ -252,6 +255,8 @@ const IEC_NAME_TO_SIZE: Record<string, number> = {
   DATE_AND_TIME: 8,
   LDT: 8,
   LDATE_AND_TIME: 8,
+  CHAR: 1,
+  WCHAR: 2,
   // STRING / WSTRING wire widths match `DEBUG_STRING_WIDTH` /
   // `DEBUG_WSTRING_WIDTH` in `runtime/include/debug_dispatch.hpp`.
   // The runtime always writes a full fixed-width window

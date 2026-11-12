@@ -949,6 +949,35 @@ template<typename T> inline IEC_LDT TO_LDT(T v) noexcept {
     return IEC_LDT(static_cast<LDT_t>(iec_unwrap(v)));
 }
 
+// CHAR is one Windows-1252 byte, WCHAR one UTF-16 code unit. A bit string or
+// integer converts by its value (codegen passes a CHAR source as its code);
+// CHAR and WCHAR convert through the Windows-1252 table, a WCHAR it lacks
+// becoming '?'; a STRING or WSTRING gives its first character (0 when empty).
+template<typename T> inline IEC_CHAR TO_CHAR(T v) noexcept {
+    return IEC_CHAR(static_cast<CHAR_t>(iec_unwrap(v)));
+}
+inline IEC_CHAR TO_CHAR(WCHAR_t c) noexcept {
+    const int byte = cp1252::from_unicode(c);
+    return IEC_CHAR(static_cast<CHAR_t>(byte < 0 ? '?' : byte));
+}
+inline IEC_CHAR TO_CHAR(const IEC_WCHAR& c) noexcept { return TO_CHAR(c.get()); }
+template<size_t N> inline IEC_CHAR TO_CHAR(const IECString<N>& s) noexcept {
+    return IEC_CHAR(s.length() > 0 ? s.c_str()[0] : '\0');
+}
+template<size_t N> inline IEC_CHAR TO_CHAR(const IECStringVar<N>& s) noexcept { return TO_CHAR(s.get()); }
+
+template<typename T> inline IEC_WCHAR TO_WCHAR(T v) noexcept {
+    return IEC_WCHAR(static_cast<WCHAR_t>(iec_unwrap(v)));
+}
+inline IEC_WCHAR TO_WCHAR(CHAR_t c) noexcept {
+    return IEC_WCHAR(static_cast<WCHAR_t>(cp1252::to_unicode(static_cast<unsigned char>(c))));
+}
+inline IEC_WCHAR TO_WCHAR(const IEC_CHAR& c) noexcept { return TO_WCHAR(c.get()); }
+template<size_t N> inline IEC_WCHAR TO_WCHAR(const IECWString<N>& s) noexcept {
+    return IEC_WCHAR(s.length() > 0 ? s[0] : u'\0');
+}
+template<size_t N> inline IEC_WCHAR TO_WCHAR(const IECWStringVar<N>& s) noexcept { return TO_WCHAR(s.get()); }
+
 // ---------------------------------------------------------------------------
 // STRING -> TIME / TOD / DATE / DT parsing
 //
@@ -1136,6 +1165,41 @@ template<typename T>
 inline auto TO_STRING(const T& src) noexcept -> decltype(WSTRING_TO_STRING(src)) {
     return WSTRING_TO_STRING(src);
 }
+
+// A CHAR is the one-character STRING of it, a WCHAR the one-unit WSTRING.
+inline IECString<254> TO_STRING(CHAR_t c) noexcept {
+    IECString<254> r;
+    r.append(c);
+    return r;
+}
+inline IECString<254> TO_STRING(const IEC_CHAR& c) noexcept { return TO_STRING(c.get()); }
+inline IECWString<254> TO_WSTRING(WCHAR_t c) noexcept {
+    IECWString<254> r;
+    r.append(c);
+    return r;
+}
+inline IECWString<254> TO_WSTRING(const IEC_WCHAR& c) noexcept { return TO_WSTRING(c.get()); }
+
+// Across the two widths, through Windows-1252: a CHAR is the one-unit WSTRING
+// of its code point, a WCHAR the one-character STRING ('?' when CP1252 lacks it),
+// a STRING's first character the WCHAR and a WSTRING's first unit the CHAR.
+inline IECWString<254> TO_WSTRING(CHAR_t c) noexcept { return TO_WSTRING(TO_WCHAR(c).get()); }
+inline IECWString<254> TO_WSTRING(const IEC_CHAR& c) noexcept { return TO_WSTRING(c.get()); }
+inline IECString<254> TO_STRING(WCHAR_t c) noexcept { return TO_STRING(TO_CHAR(c).get()); }
+inline IECString<254> TO_STRING(const IEC_WCHAR& c) noexcept { return TO_STRING(c.get()); }
+template<size_t N> inline IEC_WCHAR TO_WCHAR(const IECString<N>& s) noexcept {
+    return TO_WCHAR(s.length() > 0 ? s.c_str()[0] : '\0');
+}
+template<size_t N> inline IEC_WCHAR TO_WCHAR(const IECStringVar<N>& s) noexcept { return TO_WCHAR(s.get()); }
+template<size_t N> inline IEC_CHAR TO_CHAR(const IECWString<N>& s) noexcept {
+    return TO_CHAR(static_cast<WCHAR_t>(s.length() > 0 ? s[0] : u'\0'));
+}
+template<size_t N> inline IEC_CHAR TO_CHAR(const IECWStringVar<N>& s) noexcept { return TO_CHAR(s.get()); }
+// A STRING or WSTRING literal argument: its first character (0 when empty).
+inline IEC_CHAR TO_CHAR(const char* s) noexcept { return IEC_CHAR(s[0]); }
+inline IEC_CHAR TO_CHAR(const char16_t* s) noexcept { return TO_CHAR(static_cast<WCHAR_t>(s[0])); }
+inline IEC_WCHAR TO_WCHAR(const char* s) noexcept { return TO_WCHAR(static_cast<CHAR_t>(s[0])); }
+inline IEC_WCHAR TO_WCHAR(const char16_t* s) noexcept { return IEC_WCHAR(static_cast<WCHAR_t>(s[0])); }
 
 // =============================================================================
 // WSTRING → Numeric Conversions

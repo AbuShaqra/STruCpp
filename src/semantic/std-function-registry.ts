@@ -127,6 +127,8 @@ const ELEMENTARY_TYPE_NAMES = new Set([
   "LTIME_OF_DAY",
   "LDT",
   "LDATE_AND_TIME",
+  "CHAR",
+  "WCHAR",
 ]);
 
 // =============================================================================
@@ -610,6 +612,8 @@ export class StdFunctionRegistry {
       "LDATE",
       "LTOD",
       "LDT",
+      "CHAR",
+      "WCHAR",
       "STRING",
       "BYTE",
       "WORD",
