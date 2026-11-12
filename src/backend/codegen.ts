@@ -428,25 +428,26 @@ const LONG_TEMPORAL_NAMES = new Set([
 ]);
 
 /**
- * A conversion between two temporal types where one is a long (Ed. 3) form:
- * the date or time of day of a date-and-time is split off, a date becomes the
- * date-and-time of its midnight, and the same kind converts unchanged.
- * Undefined when neither side is long, or the pair is no such conversion.
+ * A conversion between two temporal types: the date or time of day of a
+ * date-and-time is split off (in every form, Table 26); with a long (Ed. 3)
+ * form on either side, a date becomes the date-and-time of its midnight and the
+ * same kind converts unchanged. Undefined for any other pair.
  */
 function longTemporalConversion(
   argExpr: string,
   from: string,
   to: string,
 ): string | undefined {
-  if (!LONG_TEMPORAL_NAMES.has(from) && !LONG_TEMPORAL_NAMES.has(to)) {
-    return undefined;
-  }
   const f = TEMPORAL_KIND[from];
   const t = TEMPORAL_KIND[to];
   if (f === undefined || t === undefined) return undefined;
-  if (f === t) return argExpr;
+  // Table 26: the date or the time of day of a date-and-time, in every form.
   if (f === "dt" && t === "date") return `DATE_OF_DT(${argExpr})`;
   if (f === "dt" && t === "tod") return `TOD_OF_DT(${argExpr})`;
+  if (!LONG_TEMPORAL_NAMES.has(from) && !LONG_TEMPORAL_NAMES.has(to)) {
+    return undefined;
+  }
+  if (f === t) return argExpr;
   if (f === "date" && t === "dt") return `DATE_TO_NS(${argExpr})`;
   if (f === "tod" && t === "dt") return argExpr;
   return undefined;
@@ -6110,8 +6111,8 @@ export class CodeGenerator {
 
     const cppOp = CodeGenerator.BINARY_OP_MAP[expr.operator] ?? expr.operator;
 
-    // LDATE arithmetic: an LDATE holds days, a duration nanoseconds.
-    const ldate = this.ldateArithmetic(expr, left, right);
+    // Date arithmetic: a DATE or LDATE holds days, a duration nanoseconds.
+    const ldate = this.dateArithmetic(expr, left, right);
     if (ldate !== undefined) return ldate;
 
     // IEC 61131-3 AND/OR/XOR are always bitwise. C++ bitwise & | ^ have
@@ -6138,11 +6139,11 @@ export class CodeGenerator {
   }
 
   /**
-   * `a - b` of two dates where one is LDATE gives an LTIME in nanoseconds, and
-   * an LDATE plus or minus a duration moves it by whole days; undefined for any
-   * other operation.
+   * `a - b` of two dates (DATE or LDATE) gives a duration in nanoseconds
+   * (Table 35: DATE - DATE is a TIME), and a date plus or minus a duration
+   * moves it by whole days; undefined for any other operation.
    */
-  private ldateArithmetic(
+  private dateArithmetic(
     expr: BinaryExpression,
     left: string,
     right: string,
@@ -6160,7 +6161,6 @@ export class CodeGenerator {
       k === "DATE" || k === "LDATE";
     const isDuration = (k: string | undefined): boolean =>
       k === "TIME" || k === "LTIME";
-    if (l !== "LDATE" && r !== "LDATE") return undefined;
     if (expr.operator === "-" && isDate(l) && isDate(r)) {
       return `(DATE_TO_NS(${left}) - DATE_TO_NS(${right}))`;
     }

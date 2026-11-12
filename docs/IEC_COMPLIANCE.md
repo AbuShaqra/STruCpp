@@ -12,7 +12,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | USINT, UINT, UDINT, ULINT | Supported | |
 | REAL, LREAL | Supported | |
 | TIME | Supported | Nanosecond precision, int64_t storage |
-| DATE | Supported | |
+| DATE | Supported | Stored as days since 1970-01-01. DATE - DATE is a TIME (Table 35; `D#2024-01-20 - D#2024-01-15` is T#5d), and a DATE plus or minus a TIME moves it by whole days. `DT_TO_DATE` and `DT_TO_TOD` (and their DATE_AND_TIME spellings and the overloaded `TO_DATE`/`TO_TOD` of a DT) take only the date or the time of day (Table 26). Before this change they copied the date-and-time's nanosecond count and DATE - DATE gave a day count, which changed the results of OSCAT's DCF77, SUN_POS, CALENDAR_CALC, DST, DT_TO_SDT, DT_TO_STRF and their callers RTC_2, LTIME_TO_UTC and UTC_TO_LTIME |
 | TIME_OF_DAY | Supported | |
 | DATE_AND_TIME | Supported | |
 | LTIME | Supported | Ed. 3 elementary type (Table 10): a signed 64-bit duration in nanoseconds, in every dialect, stored as TIME is. Literals `LTIME#` and `LT#` take every unit (d, h, m, s, ms, us, ns), a sign, a fraction and underscores (Table 8); one outside the 64-bit range is an error. TIME converts to LTIME implicitly and LTIME to TIME only explicitly (Figures 11 and 12); TIME and LTIME operands mix to an LTIME result. Conversions `TIME_TO_LTIME`, `LTIME_TO_TIME`, `TO_LTIME`, `LTIME_TO_<integer>` and `<integer>_TO_LTIME` (the integer counts nanoseconds), and the arithmetic functions `ADD_LTIME`, `SUB_LTIME`, `MUL_LTIME`, `DIV_LTIME`. The debugger reads an LTIME leaf as TIME (8 bytes, `duration-ns-i64` in `libs/iec-types.json`) |
