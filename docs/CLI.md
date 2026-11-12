@@ -211,7 +211,7 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 | `--build`             | Build interactive REPL binary after compilation               |
 | `--gpp <path>`        | Custom g++ path (default: `g++`)                              |
 | `--cc <path>`         | Custom C compiler path (default: `cc`)                        |
-| `--cxx-flags <flags>` | Extra flags passed to g++ (supports quoted paths)             |
+| `--cxx-flags <flags>` | Extra flags passed to g++ (supports quoted paths); `-DSTRUCPP_THREADED` here marks a `--build`/`--test` build as threaded (below) |
 | `-D NAME[=VALUE]`     | Define a conditional-pragma name (`--define`, `-DNAME`; repeatable; the name is case-sensitive in `defined()`, and `{undefine}` in a source cannot remove it); an integer VALUE also defines a global constant (emits `constexpr size_t`). A name that is not an identifier is a usage error. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
 | `--pragma-define NAME[=VALUE]` | Define a conditional-pragma name only (repeatable): whatever VALUE is, no global constant. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
 | `--file-define <file>=NAME[=VALUE]` | Define a conditional-pragma name for input `<file>` only, on top of the project defines (repeatable; not with `--compile-lib`): seen by `defined()` and `hasvalue()` in that file (over a project define of the same name), not by `project_defined()`. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
@@ -234,6 +234,11 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 
 A dialect feature can relax one of these checks: `end_semicolon_optional` accepts the missing `;`
 under `--strict`. See "Strict checks a feature relaxes" in [DIALECTS.md](DIALECTS.md).
+
+A VAR_IN_OUT bound to a shared CONFIGURATION global, or a REF/ADR of one, is warned about only where
+another task can use the global at the same time: when the CONFIGURATION runs more than one task, or when
+`--build` or `--test` builds threaded (`--cxx-flags` defines `STRUCPP_THREADED`). A single-task program
+compiled without threading gets no such warning. API callers pass `threaded: true` to `compile()` instead.
 
 ### Dialects
 

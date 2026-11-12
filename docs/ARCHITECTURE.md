@@ -189,6 +189,8 @@ Libraries use a single-file `.stlib` archive format (JSON):
 
 `compile()` is a pure function -- no auto-discovery or implicit library loading. All libraries must be explicitly provided via `libraryPaths` or `libraries` options. The CLI auto-adds a bundled `libs/` directory (like gcc system lib paths), which can be disabled with `--no-default-libs`.
 
+The option `threaded: true` tells `compile()` that the generated C++ will be built with `STRUCPP_THREADED`. The compiler cannot see that macro, so it uses the option for the warnings about a shared global reached by reference (a VAR_IN_OUT bound to it, or its REF/ADR/REF_LINK/REF=): they appear when the build is threaded or when a CONFIGURATION runs more than one task, and not for a single-task, unthreaded build.
+
 ### Bundled Libraries
 
 - **iec-standard-fb.stlib**: IEC 61131-3 standard function blocks (TON, TOF, TP, CTU, CTD, CTUD, R_TRIG, F_TRIG, SR, RS) compiled from ST source
