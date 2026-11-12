@@ -243,5 +243,42 @@ END_PROGRAM
         expect(r.cppCode).not.toContain(", X, X)");
       });
     });
+
+    it("refuses a STRING for a CHAR input in every FB and method call form", () => {
+      const source = `INTERFACE IC METHOD M : INT VAR_INPUT c : CHAR; END_VAR END_METHOD END_INTERFACE
+FUNCTION_BLOCK FB1 IMPLEMENTS IC
+VAR_INPUT x : CHAR; END_VAR VAR s0 : STRING; END_VAR
+METHOD M : INT VAR_INPUT c : CHAR; END_VAR M := CHAR_TO_INT(c); END_METHOD
+METHOD N : INT N := THIS.M(s0); END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB2 EXTENDS FB1
+METHOD K : INT K := SUPER.M(s0) + M(s0); END_METHOD
+END_FUNCTION_BLOCK
+TYPE SW : STRUCT f : FB1; END_STRUCT; END_TYPE
+PROGRAM Main
+VAR arr : ARRAY[1..2] OF FB1; sw : SW; pf : REF_TO FB1; i : IC; f1 : FB1; s : STRING; n : INT; END_VAR
+arr[1](x := s);
+sw.f(x := s);
+pf^(x := s);
+n := i.M(s);
+n := arr[1].M(s);
+n := sw.f.M('ab');
+f1(x := s);
+n := f1.M(s);
+END_PROGRAM
+`;
+      const r = compile(source, {
+        ...options,
+        headerFileName: "generated.hpp",
+      });
+      const messages = r.errors.map((e) => e.message);
+      expect(messages).toHaveLength(11);
+      expect(new Set(messages)).toEqual(
+        new Set([
+          "Cannot assign STRING to parameter 'X' of type CHAR",
+          "Cannot assign STRING to parameter 'C' of type CHAR",
+        ]),
+      );
+    });
   }
 });

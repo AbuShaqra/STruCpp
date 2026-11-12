@@ -1942,7 +1942,10 @@ export class TypeChecker {
     const inputs =
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope);
-    this.adaptCharArguments(inputs, expr.arguments);
+    this.adaptCharArguments(
+      inputs ?? this.anyCallInputs(expr, scope),
+      expr.arguments,
+    );
     this.validateInterfaceArguments(inputs, expr.arguments);
     this.markPointerZeroArguments(inputs, expr.arguments);
     this.validateStructArguments(inputs, expr.arguments);
@@ -2170,7 +2173,16 @@ export class TypeChecker {
     }
 
     const methodInputs = this.methodInputs(objType, expr, scope);
-    this.adaptCharArguments(methodInputs, expr.arguments);
+    this.adaptCharArguments(
+      methodInputs ??
+        (objType?.typeKind === "elementary"
+          ? this.interfaceMethodInputs(
+              (objType as ElementaryType).name,
+              expr.methodName,
+            )
+          : undefined),
+      expr.arguments,
+    );
     this.validateInterfaceArguments(methodInputs, expr.arguments);
     this.validateStructArguments(methodInputs, expr.arguments);
     this.validateEnumArguments(methodInputs, expr.arguments);
@@ -4679,7 +4691,20 @@ export class TypeChecker {
       const charType = this.charTypeOfName(input.type.name);
       if (charType === undefined) return;
       this.adaptCharLiteral(arg.value, charType);
-      const valueType = arg.value.resolvedType;
+      const value = arg.value;
+      // A member inherited from a base FB is not typed on the expression.
+      const inherited =
+        value.resolvedType === undefined &&
+        value.kind === "VariableExpression" &&
+        !this.hasMemberAccess(value)
+          ? this.inheritedMemberType(value.name)
+          : undefined;
+      const valueType =
+        inherited !== undefined &&
+        inherited.arrayDimensions === undefined &&
+        (inherited.referenceKind ?? "none") === "none"
+          ? this.resolveNamedType(inherited.name)
+          : value.resolvedType;
       if (
         valueType === undefined ||
         isGenericGroupType(valueType) ||
@@ -5129,7 +5154,26 @@ export class TypeChecker {
     if (sym?.kind !== "variable" || expr.instance) return undefined;
     const declared = sym.declaration as VarDeclaration | undefined;
     if (!declared) return undefined;
-    const typeName = declared.type.name.toUpperCase();
+    return this.fbInputsOf(declared.type.name);
+  }
+
+  /** The VAR_INPUT and VAR_IN_OUT of a function block type, its bases' first; a library's too. */
+  private fbInputsOf(fbTypeName: string): CallInput[] | undefined {
+    const fromBlocks = (blocks: readonly VarBlock[]): CallInput[] =>
+      blocks
+        .filter(
+          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
+        )
+        .flatMap((b) =>
+          b.declarations.flatMap((d) =>
+            d.names.map((name) => ({
+              name,
+              type: d.type,
+              inOut: b.blockType === "VAR_IN_OUT",
+            })),
+          ),
+        );
+    const typeName = this.aliasBase(fbTypeName).toUpperCase();
     const chain: FunctionBlockDeclaration[] = [];
     let current: string | undefined = typeName;
     while (current !== undefined && chain.length < 32) {
@@ -6199,6 +6243,112 @@ export class TypeChecker {
       }
     }
     return this.methodInputsOf(typeName, expr.methodName);
+  }
+
+  /**
+   * The inputs of any FB or method call form the other resolvers leave out:
+   * `arr[i](...)`, `p^(...)`, `s.f(...)`, `THIS.M(...)`, `SUPER.M(...)` and an
+   * interface's `i.M(...)`. Only the CHAR literal rule uses it.
+   */
+  private anyCallInputs(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): CallInput[] | undefined {
+    if (expr.instance !== undefined) {
+      let t = this.resolveExprType(expr.instance, scope);
+      if (t?.typeKind === "reference") {
+        t = (t as ReferenceType).referencedType;
+      }
+      if (t?.typeKind === "elementary") {
+        return this.fbInputsOf((t as ElementaryType).name);
+      }
+      // `p^(...)`: the type the pointer or reference is declared to
+      const inst = expr.instance;
+      const sym =
+        inst.kind === "VariableExpression"
+          ? scope.lookup(inst.name)
+          : undefined;
+      const declared =
+        sym?.kind === "variable"
+          ? (sym.declaration as VarDeclaration | undefined)?.type
+          : undefined;
+      return inst.kind === "VariableExpression" &&
+        inst.isDereference &&
+        inst.fieldAccess.length === 0 &&
+        inst.subscripts.length === 0 &&
+        declared !== undefined
+        ? this.fbInputsOf(declared.name)
+        : undefined;
+    }
+    const parts = expr.functionName.split(".");
+    if (parts.length !== 2) return undefined;
+    const [owner, member] = [parts[0]!, parts[1]!];
+    const ownerType = this.callOwnerType(owner, scope);
+    if (ownerType === undefined) return undefined;
+    return (
+      this.methodInputsOf(ownerType, member) ??
+      this.interfaceMethodInputs(ownerType, member) ??
+      this.memberFbInputs(ownerType, member)
+    );
+  }
+
+  /** The type `owner` names in `owner.member(...)`: THIS, SUPER or a variable's type. */
+  private callOwnerType(owner: string, scope: Scope): string | undefined {
+    const upper = owner.toUpperCase();
+    if (upper === "THIS") return this.currentFBName;
+    if (upper === "SUPER") {
+      return this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === this.currentFBName?.toUpperCase(),
+      )?.extends;
+    }
+    const sym = scope.lookup(owner);
+    if (sym?.kind !== "variable") return this.inheritedMemberType(owner)?.name;
+    return (sym.declaration as VarDeclaration | undefined)?.type.name;
+  }
+
+  /** The inputs of method `methodName` of an INTERFACE or one it extends. */
+  private interfaceMethodInputs(
+    typeName: string,
+    methodName: string,
+    depth = 0,
+  ): CallInput[] | undefined {
+    const itf = this.interfaceNamed(typeName);
+    if (!itf || depth > 32) return undefined;
+    const method = itf.methods.find(
+      (m) => m.name.toUpperCase() === methodName.toUpperCase(),
+    );
+    if (method) {
+      return method.varBlocks
+        .filter(
+          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
+        )
+        .flatMap((b) =>
+          b.declarations.flatMap((d) =>
+            d.names.map((n) => ({
+              name: n,
+              type: d.type,
+              inOut: b.blockType === "VAR_IN_OUT",
+            })),
+          ),
+        );
+    }
+    for (const base of itf.extends ?? []) {
+      const found = this.interfaceMethodInputs(base, methodName, depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  /** The inputs of an FB instance `member` of a STRUCT or FB type (`s.f(...)`). */
+  private memberFbInputs(
+    typeName: string,
+    member: string,
+  ): CallInput[] | undefined {
+    const fieldType = this.resolveFieldTypeAnywhere(
+      this.aliasBase(typeName),
+      member,
+    );
+    return fieldType === undefined ? undefined : this.fbInputsOf(fieldType);
   }
 
   /** Inputs of `instance.Method(...)`, written as one dotted call name. */

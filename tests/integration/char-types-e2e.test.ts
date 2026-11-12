@@ -239,4 +239,72 @@ int main() {
       );
     });
   }
+
+  const CALL_FORMS = (
+    vendor: boolean,
+  ): string => `INTERFACE IC METHOD M : INT VAR_INPUT c : CHAR; END_VAR END_METHOD END_INTERFACE
+FUNCTION_BLOCK FB1 IMPLEMENTS IC
+VAR_INPUT x : CHAR; END_VAR VAR_OUTPUT o : INT; END_VAR
+METHOD M : INT VAR_INPUT c : CHAR; END_VAR M := CHAR_TO_INT(c); END_METHOD
+METHOD N : INT N := THIS.M('b'); END_METHOD
+o := CHAR_TO_INT(x);
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB2 EXTENDS FB1
+METHOD K : DINT K := INT_TO_DINT(SUPER.M('s')) * 1000 + M('t'); END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FW VAR_INPUT x : WCHAR; END_VAR VAR_OUTPUT o : INT; END_VAR o := WCHAR_TO_INT(x); END_FUNCTION_BLOCK
+TYPE SW : STRUCT f : FB1; END_STRUCT; END_TYPE
+PROGRAM MAIN
+VAR
+  arr : ARRAY[1..2] OF FB1; sw : SW; f1 : FB1; pf : REF_TO FB1; fws : ARRAY[1..2] OF FW; i : IC; f2 : FB2;
+  ${vendor ? "rf : REFERENCE TO FB1;" : ""}
+  n1, n2, n3, n4, n5, n6, n7, n8, n9, n10, n11, n12 : DINT;
+END_VAR
+arr[1](x := 'a'); n1 := arr[1].o;
+sw.f(x := 'c'); n2 := sw.f.o;
+pf := REF(f1); pf^(x := 'i'); n3 := f1.o;
+fws[1](x := "a"); n4 := fws[1].o;
+${vendor ? "rf REF= f1; rf(x := 'r'); n5 := f1.o;" : "n5 := 114;"}
+i := f1; n6 := i.M('d');
+n7 := f1.N();
+n8 := f2.K();
+n9 := arr[2].M('q');
+n10 := sw.f.M('w');
+n11 := pf^.M('p');
+f1(x := 'f'); n12 := f1.o + f1.M('m') * 1000;
+END_PROGRAM
+`;
+
+  for (const [label, options] of [
+    ["no dialect", {}],
+    ["iec-3", { dialect: "iec-3" }],
+    ["strict", { strict: true }],
+  ] as const) {
+    it(`passes a one-character literal through every FB and method call form (${label})`, () => {
+      const result = compile(CALL_FORMS(label !== "iec-3"), {
+        ...options,
+        headerFileName: "generated.hpp",
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `char_call_forms_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.N1.get() << " " << p.N2.get() << " " << p.N3.get() << " " << p.N4.get() << " "
+              << p.N5.get() << " " << p.N6.get() << " " << p.N7.get() << " " << p.N8.get() << " "
+              << p.N9.get() << " " << p.N10.get() << " " << p.N11.get() << " " << p.N12.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe("97 99 105 97 114 100 98 115116 113 119 112 109102");
+    });
+  }
 });
