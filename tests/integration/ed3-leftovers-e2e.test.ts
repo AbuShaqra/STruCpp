@@ -22,7 +22,7 @@ PROGRAM Main
 VAR
   v : T; low : DINT;
   tl : TON_LTIME; tt : TP_TIME; t : TON; p : LTIME := LT#0s;
-  q1 : BOOL; q2 : BOOL; q3 : BOOL; et : LTIME;
+  q1 : BOOL; q2 : BOOL; q3 : BOOL; et : LTIME; ta : ARRAY[0..1] OF TON; q4 : BOOL;
 END_VAR
 v.a := 16#01020304;
 low := BYTE_TO_DINT(v.b[0]);
@@ -36,6 +36,10 @@ t(IN := TRUE);
 t(IN := TRUE);
 q3 := t.Q;
 et := t.ET;
+ta[1].PT := p;
+ta[1](IN := TRUE);
+ta[1](IN := TRUE);
+q4 := ta[1].Q;
 END_PROGRAM
 `;
 
@@ -72,12 +76,12 @@ int main() {
     static strucpp::Program_MAIN p;
     p.run();
     std::cout << p.LOW.get() << " " << p.Q1.get() << " " << p.Q2.get() << " "
-              << p.Q3.get() << " " << p.ET.get() << std::endl;
+              << p.Q3.get() << " " << p.ET.get() << " " << p.Q4.get() << std::endl;
     return 0;
 }
 `,
       });
-      expect(stdout).toBe("4 1 1 1 0");
+      expect(stdout).toBe("4 1 1 1 0 1");
     });
   }
 });

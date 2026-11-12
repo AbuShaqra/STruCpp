@@ -41,6 +41,14 @@ export type UnionExternalLookup = (
 ) => { instance: string } | { fields: VarDeclaration[] } | undefined;
 
 /** True when `def` is a UNION. */
+/** How a diagnostic names the type: Ed. 3 STRUCT OVERLAP or the UNION extension. */
+function unionWord(decl: TypeDeclaration): string {
+  const def = decl.definition;
+  return def.kind === "StructDefinition" && def.overlap === true
+    ? "STRUCT OVERLAP"
+    : "UNION";
+}
+
 export function isUnionDefinition(
   def: TypeDeclaration["definition"],
 ): def is StructDefinition & { isUnion: true } {
@@ -209,13 +217,13 @@ export function validateUnionTypes(
     const def = decl.definition as StructDefinition;
     if (decl.extends) {
       report(
-        `UNION '${decl.name}' cannot use EXTENDS: only a STRUCT may extend another type`,
+        `${unionWord(decl)} '${decl.name}' cannot use EXTENDS: only a STRUCT may extend another type`,
         decl.extendsKeywordSpan ?? decl.sourceSpan,
       );
     }
     if (def.fields.length === 0) {
       report(
-        `UNION '${decl.name}' declares no members: a UNION needs at least one`,
+        `${unionWord(decl)} '${decl.name}' declares no members: a UNION needs at least one`,
         def.sourceSpan,
       );
       continue;
@@ -226,7 +234,7 @@ export function validateUnionTypes(
         const upper = name.toUpperCase();
         if (names.has(upper)) {
           report(
-            `Duplicate member '${name}' in UNION '${decl.name}'`,
+            `Duplicate member '${name}' in ${unionWord(decl)} '${decl.name}'`,
             field.sourceSpan,
           );
         }
@@ -235,7 +243,7 @@ export function validateUnionTypes(
       const member = field.names[0] ?? "";
       if (field.initialValue) {
         report(
-          `Member '${member}' of UNION '${decl.name}' has an initial value: initial values in a UNION are not supported yet`,
+          `Member '${member}' of ${unionWord(decl)} '${decl.name}' has an initial value: ${unionWord(decl) === "UNION" ? "initial values in a UNION are not supported yet" : "an overlapped structure cannot be initialized explicitly"}`,
           field.initialValue.sourceSpan,
         );
       }
@@ -320,17 +328,26 @@ function collectNamedProblems(
   const decl = index.resolve(name);
   const def = decl?.definition;
   if (decl && def && isUnionDefinition(def)) {
+    // IEC 61131-3 Ed. 3 6.4.4.7.2: an overlapped structure has no explicit
+    // initial value.
+    if (def.overlap === true) {
+      out.push({
+        value,
+        message: `STRUCT OVERLAP '${decl.name}' cannot be initialized explicitly`,
+      });
+      return;
+    }
     if (value.kind !== "StructInitializerExpression") {
       out.push({
         value,
-        message: `An initial value for UNION '${decl.name}' is not supported yet: name one member, as in (${def.fields[0]?.names[0] ?? "member"} := value)`,
+        message: `An initial value for ${unionWord(decl)} '${decl.name}' is not supported yet: name one member, as in (${def.fields[0]?.names[0] ?? "member"} := value)`,
       });
       return;
     }
     if (value.elements.length !== 1) {
       out.push({
         value,
-        message: `The initial value for UNION '${decl.name}' names ${value.elements.length} members: a UNION initial value sets one member`,
+        message: `The initial value for ${unionWord(decl)} '${decl.name}' names ${value.elements.length} members: a UNION initial value sets one member`,
       });
       return;
     }
@@ -341,7 +358,7 @@ function collectNamedProblems(
     ) {
       out.push({
         value,
-        message: `UNION '${decl.name}' has no member '${named}'`,
+        message: `${unionWord(decl)} '${decl.name}' has no member '${named}'`,
       });
       return;
     }

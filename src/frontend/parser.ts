@@ -817,7 +817,7 @@ export class STParser extends CstParser {
     this.OPTION({
       GATE: (): boolean =>
         this.isWord(this.LA(1), "OVERLAP") &&
-        (this.LA(2).tokenType === tokens.Identifier ||
+        (this.isIdentifierOrKeywordToken(this.LA(2).tokenType) ||
           this.LA(2).tokenType === tokens.END_STRUCT),
       DEF: (): IToken => this.CONSUME(tokens.Identifier),
     });

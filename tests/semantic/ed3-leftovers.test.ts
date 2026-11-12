@@ -41,6 +41,36 @@ describe("Ed. 3 leftovers", () => {
         expect(overlap.cppCode).toBe(union.cppCode);
       });
 
+      it("refuses an initial value for STRUCT OVERLAP and its members", () => {
+        expect(
+          compile(
+            "TYPE U : STRUCT OVERLAP a : DINT; b : ARRAY[0..3] OF BYTE; END_STRUCT END_TYPE\nPROGRAM Main\nVAR u2 : U := (a := 1); END_VAR\nEND_PROGRAM\n",
+            options,
+          ).errors.map((e) => e.message),
+        ).toEqual(["STRUCT OVERLAP 'U' cannot be initialized explicitly"]);
+        expect(
+          compile(
+            "TYPE U : STRUCT OVERLAP a : DINT := 3; b : INT; END_STRUCT END_TYPE\nPROGRAM Main\nVAR u : U; END_VAR\nEND_PROGRAM\n",
+            options,
+          ).errors.map((e) => e.message),
+        ).toEqual([
+          "Member 'A' of STRUCT OVERLAP 'U' has an initial value: an overlapped structure cannot be initialized explicitly",
+        ]);
+      });
+
+      it("takes a first member named by a keyword allowed as a field name", () => {
+        // As a plain STRUCT does: strict mode refuses the reserved name in both.
+        const errs = (kind: string): string[] =>
+          compile(
+            `TYPE U : ${kind} ON : BOOL; d : INT; END_STRUCT END_TYPE\nPROGRAM Main\nVAR u : U; END_VAR\nu.d := 1;\nEND_PROGRAM\n`,
+            options,
+          ).errors.map((e) => e.message);
+        expect(errs("STRUCT OVERLAP")).toEqual(errs("STRUCT"));
+        expect(errs("STRUCT OVERLAP").some((m) => /Expected/.test(m))).toBe(
+          false,
+        );
+      });
+
       it("keeps a field named overlap", () => {
         expect(
           compile(
@@ -63,8 +93,10 @@ describe("Ed. 3 leftovers", () => {
         "takes the Table 46 timer names and an LTIME preset",
         () => {
           const r = compile(
-            `PROGRAM Main
+            `TYPE S : STRUCT tm : TON; END_STRUCT END_TYPE
+PROGRAM Main
 VAR
+  arr : ARRAY[0..2] OF TOF; s : S;
   a : TON_TIME; b : TON_LTIME; c : TOF_TIME; d : TOF_LTIME; e : TP_TIME; f : TP_LTIME;
   t : TON; p : LTIME := LT#1s; q : LTIME;
 END_VAR
@@ -75,6 +107,8 @@ d(IN := TRUE, PT := LT#1s);
 e(IN := TRUE, PT := T#1s);
 f(IN := TRUE, PT := LT#1s);
 t.PT := p;
+arr[1].PT := p;
+s.tm.PT := p;
 t(IN := TRUE, PT := p);
 q := t.ET;
 q := b.ET;
