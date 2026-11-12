@@ -3261,6 +3261,14 @@ export class TypeChecker {
           );
           continue;
         }
+        // `r : REFERENCE TO T := REF(x)` binds r to x, checked as `r REF= x`.
+        if (
+          outerKind === "reference_to" &&
+          decl.initialValue.kind === "RefExpression"
+        ) {
+          this.checkReferenceToInitializer(decl, decl.initialValue, scope);
+          continue;
+        }
         const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
         if (!targetType) continue; // Non-elementary types — handled elsewhere
         // A CHAR initial value refused already (checkCharInitialValue).
@@ -3283,6 +3291,49 @@ export class TypeChecker {
           decl.initialValue,
         );
       }
+    }
+  }
+
+  /** The variable `REF(x)` binds a REFERENCE TO initial value to, checked as a REF= source. */
+  private checkReferenceToInitializer(
+    decl: VarDeclaration,
+    value: Extract<Expression, { kind: "RefExpression" }>,
+    scope: Scope,
+  ): void {
+    this.resolveExprType(value, scope);
+    const source = value.operand;
+    if (source.kind !== "VariableExpression") {
+      this.addError(
+        `REFERENCE TO '${decl.names[0] ?? ""}' must be bound to a variable, not an expression`,
+        source.sourceSpan.startLine,
+        source.sourceSpan.startCol,
+        source.sourceSpan.file,
+      );
+      return;
+    }
+    delete source.aliasReferenceBinding;
+    const targetShape = referenceShapeOf(decl.type);
+    const sourceShape = this.declaredReferenceShape(source, scope);
+    if (
+      targetShape === undefined ||
+      targetShape.chain.length !== 1 ||
+      sourceShape === undefined
+    ) {
+      return;
+    }
+    this.markAliasReferenceBinding(targetShape, sourceShape, source);
+    const mismatch = this.referenceBindingMismatch(
+      targetShape,
+      sourceShape,
+      source,
+    );
+    if (mismatch !== undefined) {
+      this.addError(
+        mismatch,
+        source.sourceSpan.startLine,
+        source.sourceSpan.startCol,
+        source.sourceSpan.file,
+      );
     }
   }
 

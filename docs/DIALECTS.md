@@ -110,6 +110,12 @@ included, and `ADR` both in statements and in a declaration's initial value. IEC
 not refused under `iec-3`. The one exception is `conditional_pragmas`: `--test` resolves the dialect flags
 and `-D` for the test files too, so their conditional pragmas follow the same profile as the sources.
 
+A `REFERENCE TO` declared with an initial value `r : REFERENCE TO INT := REF(x);` is bound to `x` when it
+is created (a PROGRAM, FUNCTION_BLOCK, FUNCTION or METHOD variable, a global), and `x` is checked as the
+source of `r REF= x` (`REFERENCE TO INT cannot refer to a DINT variable`; an expression is `REFERENCE TO 'R'
+must be bound to a variable, not an expression`). Before, a PROGRAM dropped that initial value, leaving `r`
+unbound, and the other places did not build.
+
 A `REFERENCE TO` VAR_INPUT is bound to its argument at the call. Where `reference_to` is on, these
 arguments are errors: an expression (`REFERENCE TO input 'R' needs a variable to refer to, not an
 expression`), a constant (`... not a constant`), a variable of another type, a REF_TO or a subrange

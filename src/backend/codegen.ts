@@ -9454,6 +9454,16 @@ export class CodeGenerator {
           value?.kind === "FunctionCallExpression" &&
           value.functionName.toUpperCase() === "ADR") ||
         (decl.referenceKind === "ref_to" && value?.kind === "RefExpression");
+      if (
+        decl.referenceKind === "reference_to" &&
+        value?.kind === "RefExpression"
+      ) {
+        return this.generateInitializer(
+          value,
+          this.mapTypeRefToCpp(this.projectVarToTypeRef(decl)),
+          decl.typeName,
+        );
+      }
       return binds && value !== undefined
         ? this.generateExpression(value)
         : undefined;
@@ -9484,6 +9494,13 @@ export class CodeGenerator {
     cppType: string,
     stTypeName: string | undefined,
   ): string {
+    // `r : REFERENCE TO T := REF(x)` binds the reference to x.
+    if (
+      value.kind === "RefExpression" &&
+      cppType.startsWith("IEC_REFERENCE_TO<")
+    ) {
+      return `${cppType}(${this.generateExpression(value.operand)})`;
+    }
     if (!isStructInitializerValue(value)) {
       return this.generateExpression(value);
     }
