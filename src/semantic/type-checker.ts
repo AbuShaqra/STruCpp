@@ -47,6 +47,7 @@ import type {
   SymbolTables,
   Scope,
 } from "./symbol-table.js";
+import { Scope as SymbolScope } from "./symbol-table.js";
 import type { StdFunctionRegistry } from "./std-function-registry.js";
 import type { CompileError, SourceSpan } from "../types.js";
 import {
@@ -80,6 +81,12 @@ import { bindStdFunctionArguments } from "./std-function-args.js";
 import { STD_FUNCTIONS_LIBRARY } from "../library/library-manifest.js";
 import { libraryOverloadFor } from "./library-overload.js";
 import { charLiteralUnits } from "../literal-utils.js";
+import {
+  vendorOperatorArgumentError,
+  vendorOperatorFeature,
+  vendorOperatorNamed,
+  vendorOperatorResultType,
+} from "./vendor-operators.js";
 import {
   fbIndex,
   fbInitArgumentScope,
@@ -296,6 +303,11 @@ function isAddressOf(expr: Expression): expr is FunctionCallExpression {
     expr.functionName.toUpperCase() === "ADR" &&
     expr.instance === undefined
   );
+}
+
+/** An elementary integer or bit-string type name (not BOOL). */
+function isIntegerOrBitStringName(name: string): boolean {
+  return /^(U?S?INT|U?DINT|U?LINT|BYTE|WORD|DWORD|LWORD)$/i.test(name);
 }
 
 /** An untyped integer literal 0 (`0`, `16#0`), not `INT#0`. */
@@ -552,6 +564,7 @@ export class TypeChecker {
 
     this.checkGlobalInitialCycles(ast);
     this.checkStructReferenceDefaults(ast);
+    this.markGlobalVendorOperators(ast);
 
     // Init arguments of global FB instances (feature fb_init)
     if (this.features.has("fb_init")) {
@@ -2010,6 +2023,7 @@ export class TypeChecker {
     for (const arg of expr.arguments) {
       this.resolveExprType(arg.value, scope);
     }
+    this.refuseNarrowAddressArguments(expr, scope);
     this.checkCharStdArguments(expr);
     this.adaptCharConversionArgument(expr);
     this.validateReferenceArguments(expr, scope);
@@ -2127,6 +2141,10 @@ export class TypeChecker {
       expr.resolvedType = returnType;
       return returnType;
     }
+
+    // A built-in operator of a dialect feature (__ISVALIDREF, XSIZEOF).
+    const vendorType = this.vendorOperatorCallType(expr, nameUpper, scope);
+    if (vendorType !== undefined) return vendorType;
 
     // Validate standard function argument types (after resolving args)
     this.validateFunctionCallArgs(expr, scope);
@@ -2994,6 +3012,150 @@ export class TypeChecker {
   }
 
   /**
+   * `__ISVALIDREF` and `XSIZEOF` in a top-level or CONFIGURATION global's
+   * initial value; an initial value that is such a call is checked as an
+   * assignment to the global.
+   */
+  private markGlobalVendorOperators(ast: CompilationUnit): void {
+    const scopes: Array<{ blocks: VarBlock[]; scope: Scope }> = [
+      { blocks: ast.globalVarBlocks, scope: this.symbolTables.globalScope },
+      ...ast.configurations.map((c) => ({
+        blocks: c.varBlocks,
+        scope: this.configurationGlobalScope(c.varBlocks),
+      })),
+    ];
+    for (const { blocks, scope } of scopes) {
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          const value = decl.initialValue;
+          if (!value) continue;
+          walkAST(value, (node) => {
+            if (node.kind !== "FunctionCallExpression") return;
+            const call = node as FunctionCallExpression;
+            this.vendorOperatorCallType(
+              call,
+              call.functionName.toUpperCase(),
+              scope,
+            );
+          });
+          const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
+          if (
+            value.kind === "FunctionCallExpression" &&
+            value.vendorOperator !== undefined &&
+            value.resolvedType !== undefined &&
+            targetType !== undefined &&
+            (decl.type.referenceKind ?? "none") === "none"
+          ) {
+            this.validateAssignment(
+              targetType,
+              value.resolvedType,
+              {
+                kind: "VariableExpression",
+                sourceSpan: decl.sourceSpan,
+                name: decl.names[0] ?? "<unnamed>",
+                fieldAccess: [],
+                subscripts: [],
+                isDereference: false,
+              },
+              value,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  /** A scope holding a CONFIGURATION's globals, over the global scope. */
+  private configurationGlobalScope(blocks: readonly VarBlock[]): Scope {
+    const scope = new SymbolScope(
+      "configuration",
+      this.symbolTables.globalScope,
+    );
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          try {
+            scope.define({
+              name,
+              kind: "variable",
+              declaration: decl,
+              isInput: false,
+              isOutput: false,
+              isInOut: false,
+              isExternal: false,
+              isGlobal: true,
+              isRetain: block.isRetain,
+            });
+          } catch {
+            // A duplicate is reported by the analyzer.
+          }
+        }
+      }
+    }
+    return scope;
+  }
+
+  /**
+   * The result type of a call of a built-in operator whose feature is on and
+   * whose name nothing in scope declares; marks the call for codegen.
+   */
+  private vendorOperatorCallType(
+    expr: FunctionCallExpression,
+    nameUpper: string,
+    scope: Scope,
+  ): IECType | undefined {
+    const op = vendorOperatorNamed(nameUpper);
+    if (op === undefined || !this.features.has(vendorOperatorFeature(op))) {
+      return undefined;
+    }
+    if (expr.instance || scope.lookup(nameUpper) !== undefined) {
+      return undefined;
+    }
+    expr.vendorOperator = op;
+    const error = vendorOperatorArgumentError(expr, op, (arg) => {
+      const value = arg.value;
+      if (value.kind !== "VariableExpression")
+        return "an expression is not one";
+      const name = [value.name, ...value.fieldAccess].join(".").toUpperCase();
+      // `THIS.r` / `THIS^.r`: a member of the enclosing FB.
+      if (this.isSelfMember(value)) {
+        const type = resolveAccessType(
+          { name: this.currentFBName!, referenceKind: "none" },
+          value,
+          this.accessLookup,
+        );
+        if (
+          type?.referenceKind === "reference_to" &&
+          (type.referenceChain?.length ?? 1) === 1
+        ) {
+          return true;
+        }
+        return type === undefined
+          ? `'${name}' is not a variable here`
+          : `'${name}' is declared ${describeReferenceShape(referenceShapeOf(type as TypeReference) ?? { chain: [], base: type.name })}`;
+      }
+      const shape = this.declaredReferenceShape(value, scope);
+      if (shape?.chain.length === 1 && shape.chain[0] === "reference_to") {
+        return true;
+      }
+      return shape === undefined
+        ? `'${name}' is not a variable here`
+        : `'${name}' is declared ${describeReferenceShape(shape)}`;
+    });
+    if (error !== undefined) {
+      this.addError(
+        error,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+    }
+    const type = ELEMENTARY_TYPES[vendorOperatorResultType(op)]!;
+    expr.resolvedType = type;
+    return type;
+  }
+
+  /**
    * A bare `Name(...)` inside a PROGRAM or FUNCTION_BLOCK that names one of
    * its methods, inherited ones included. The method is called, as the C++
    * member shadows a FUNCTION or standard function of the same name.
@@ -3234,6 +3396,14 @@ export class TypeChecker {
           );
           continue;
         }
+        // An address does not fit an integer narrower than the address width.
+        if (
+          (outerKind ?? "none") === "none" &&
+          isAddressOf(decl.initialValue) &&
+          this.refuseNarrowAddress(decl.type.name, decl.initialValue)
+        ) {
+          continue;
+        }
         // `p : POINTER TO T := ADR(x);` takes an address of any target type.
         if (outerKind === "pointer_to" && isAddressOf(decl.initialValue)) {
           this.resolveExprType(decl.initialValue, scope);
@@ -3335,6 +3505,56 @@ export class TypeChecker {
         source.sourceSpan.file,
       );
     }
+  }
+
+  /**
+   * `ADR(x)` stored in an integer narrower than the 64-bit address width (an
+   * initial value, a FUNCTION or METHOD argument) would lose the address's
+   * high bits. True when it was refused.
+   */
+  private refuseNarrowAddress(
+    typeName: string,
+    value: FunctionCallExpression,
+  ): boolean {
+    const type = ELEMENTARY_TYPES[typeName.toUpperCase()];
+    if (
+      type === undefined ||
+      !("sizeBits" in type) ||
+      typeof type.sizeBits !== "number" ||
+      type.sizeBits >= 64 ||
+      !isIntegerOrBitStringName(typeName)
+    ) {
+      return false;
+    }
+    this.addError(
+      `ADR gives a 64-bit address, which ${typeName.toUpperCase()} cannot hold; use __XWORD, LWORD or ULINT`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /** `F(ADR(x))` and `fb.M(ADR(x))` into an input narrower than an address. */
+  private refuseNarrowAddressArguments(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (this.isFBInstanceCall(expr, scope)) return;
+    const inputs =
+      this.callInputs(expr, scope) ??
+      this.dottedMethodInputs(expr.functionName, scope);
+    if (!inputs) return;
+    stripEnEno(expr.arguments).forEach((arg, i) => {
+      if (arg.isOutput || !isAddressOf(arg.value)) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (input === undefined || input.type.referenceKind !== "none") return;
+      this.refuseNarrowAddress(input.type.name, arg.value);
+    });
   }
 
   /**
