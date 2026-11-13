@@ -29,6 +29,7 @@ import {
   formatIntegerLiteral,
   isComparison,
   isComparisonExpr,
+  literalStringComparison,
   literalTemporalType,
   translateIECString,
 } from "./codegen-utils.js";
@@ -766,7 +767,12 @@ export class TypeCodeGenerator {
       case "ParenthesizedExpression":
         return `(${this.expressionToCpp(expr.expression)})`;
       case "FunctionCallExpression":
-        return `${expr.functionName}()`;
+        // Positional arguments are kept (`LEN('abc')`)
+        return expr.arguments.some((a) => a.name !== undefined || a.isOutput)
+          ? `${expr.functionName}()`
+          : `${expr.functionName}(${expr.arguments
+              .map((a) => this.expressionToCpp(a.value))
+              .join(", ")})`;
       default:
         return "0";
     }
@@ -905,6 +911,8 @@ export class TypeCodeGenerator {
     const cppOp = opMap[expr.operator] ?? expr.operator;
     // Parenthesise a comparison nested in a comparison (a chain).
     if (isComparison(expr.operator)) {
+      const texts = literalStringComparison(expr.left, expr.right, left, right);
+      if (texts !== undefined) return `${texts[0]} ${cppOp} ${texts[1]}`;
       const l = isComparisonExpr(expr.left) ? `(${left})` : left;
       const r = isComparisonExpr(expr.right) ? `(${right})` : right;
       return `${l} ${cppOp} ${r}`;

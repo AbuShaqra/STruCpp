@@ -28,6 +28,32 @@ export function isComparisonExpr(expr: Expression): boolean {
 }
 
 /**
+ * A comparison of two STRING (or two WSTRING) literals: each emitted literal
+ * wrapped as a string value, so C++ compares the text, not two pointers.
+ * Undefined when the operands are not two such literals.
+ */
+export function literalStringComparison(
+  left: Expression,
+  right: Expression,
+  leftCpp: string,
+  rightCpp: string,
+): [string, string] | undefined {
+  if (left.kind !== "LiteralExpression" || right.kind !== "LiteralExpression") {
+    return undefined;
+  }
+  const kind = left.literalType;
+  if ((kind !== "STRING" && kind !== "WSTRING") || right.literalType !== kind) {
+    return undefined;
+  }
+  const len = Math.max(254, left.rawValue.length, right.rawValue.length);
+  const type = kind === "STRING" ? "IECString" : "IECWString";
+  return [
+    `strucpp::${type}<${len}>(${leftCpp})`,
+    `strucpp::${type}<${len}>(${rightCpp})`,
+  ];
+}
+
+/**
  * Convert an IEC 61131-3 based numeric string to a C++ literal string.
  * Handles 16#FF → 0xFF, 8#77 → 077, 2#1010 → 0b1010, and plain decimals.
  * Strips IEC underscore separators.
