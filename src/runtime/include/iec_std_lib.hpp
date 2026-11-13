@@ -726,6 +726,35 @@ inline void iec_reset_in_place(T& x, V&& init) {
 // Bit Shift Functions (ANY_BIT -> ANY_BIT)
 // =============================================================================
 
+/** Width in bits of the value a shift operates on (1 for BOOL). */
+template<typename T>
+constexpr int iec_bit_width() noexcept {
+    return std::is_same<iec_underlying_type_t<T>, bool>::value
+        ? 1
+        : static_cast<int>(sizeof(iec_underlying_type_t<T>) * 8);
+}
+
+namespace detail {
+template<typename V>
+constexpr bool iec_is_negative(V v, std::true_type /*signed*/) noexcept { return v < 0; }
+template<typename V>
+constexpr bool iec_is_negative(V, std::false_type) noexcept { return false; }
+}  // namespace detail
+
+/**
+ * A shift count as an int: -1 when negative, at most 1024, so a count wider
+ * than int is not truncated (2^32 stays at or above every width).
+ */
+template<typename N>
+constexpr int iec_shift_count(N n) noexcept {
+    return detail::iec_is_negative(iec_unwrap(n),
+               std::is_signed<decltype(iec_unwrap(n))>{})
+        ? -1
+        : (static_cast<unsigned long long>(iec_unwrap(n)) > 1024ULL
+               ? 1024
+               : static_cast<int>(iec_unwrap(n)));
+}
+
 /**
  * SHL - Shift left
  * Input: ANY_BIT, ANY_INT (shift count), Output: ANY_BIT
@@ -734,6 +763,7 @@ template<typename T, enable_if_any_bit<T> = 0>
 inline T SHL(T in, IEC_INT n) noexcept {
     auto shift = iec_unwrap(n);
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= iec_bit_width<T>()) return T(0);
     return T(iec_unwrap(in) << shift);
 }
 
@@ -742,8 +772,9 @@ template<typename T, typename N,
     enable_if_any_bit<T> = 0,
     std::enable_if_t<!std::is_same<std::decay_t<N>, IEC_INT>::value, int> = 0>
 inline T SHL(T in, N n) noexcept {
-    auto shift = static_cast<int>(iec_unwrap(n));
+    auto shift = iec_shift_count(n);
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= iec_bit_width<T>()) return T(0);
     return T(iec_unwrap(in) << shift);
 }
 
@@ -755,6 +786,7 @@ template<typename T, enable_if_any_bit<T> = 0>
 inline T SHR(T in, IEC_INT n) noexcept {
     auto shift = iec_unwrap(n);
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= iec_bit_width<T>()) return T(0);
     return T(iec_unwrap(in) >> shift);
 }
 
@@ -763,8 +795,9 @@ template<typename T, typename N,
     enable_if_any_bit<T> = 0,
     std::enable_if_t<!std::is_same<std::decay_t<N>, IEC_INT>::value, int> = 0>
 inline T SHR(T in, N n) noexcept {
-    auto shift = static_cast<int>(iec_unwrap(n));
+    auto shift = iec_shift_count(n);
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= iec_bit_width<T>()) return T(0);
     return T(iec_unwrap(in) >> shift);
 }
 
@@ -773,8 +806,9 @@ inline T SHR(T in, N n) noexcept {
 template<typename T, typename N,
     std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
 inline T SHL(T in, N n) noexcept {
-    auto shift = static_cast<int>(iec_unwrap(n));
+    auto shift = iec_shift_count(n);
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= iec_bit_width<T>()) return T(0);
     using UT = std::make_unsigned_t<iec_underlying_type_t<T>>;
     return T(static_cast<iec_underlying_type_t<T>>(
         static_cast<UT>(iec_unwrap(in)) << shift));
@@ -783,8 +817,9 @@ inline T SHL(T in, N n) noexcept {
 template<typename T, typename N,
     std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
 inline T SHR(T in, N n) noexcept {
-    auto shift = static_cast<int>(iec_unwrap(n));
+    auto shift = iec_shift_count(n);
     if (shift <= 0) return shift == 0 ? in : T(0);
+    if (shift >= iec_bit_width<T>()) shift = iec_bit_width<T>() - 1;
     return T(iec_unwrap(in) >> shift);
 }
 
@@ -1479,7 +1514,9 @@ inline T iec_mod_impl(T a, T b, std::true_type /*floating*/) noexcept {
 }
 template<typename T>
 inline T iec_mod_impl(T a, T b, std::false_type) noexcept {
-    return T(iec_unwrap(a) % iec_unwrap(b));
+    return iec_unwrap(b) == 0 || ::strucpp::iec_mod_minus_one(iec_unwrap(b))
+        ? T(0)
+        : T(iec_unwrap(a) % iec_unwrap(b));
 }
 }  // namespace detail
 
@@ -1489,6 +1526,15 @@ inline T MOD(T a, T b) noexcept {
         a, b,
         std::integral_constant<bool,
             std::is_floating_point<iec_underlying_type_t<T>>::value>{});
+}
+
+/**
+ * Binary MOD operator: OUT is 0 when IN2 is 0 (IEC 61131-3 Table 29, note e).
+ * The result type is the one the C++ % operator gives for the operands.
+ */
+template<typename A, typename B>
+constexpr auto iec_mod(const A& a, const B& b) -> decltype(a % b) {
+    return b == 0 || ::strucpp::iec_mod_minus_one(b + 0) ? decltype(a % b)(0) : a % b;
 }
 
 // =============================================================================
