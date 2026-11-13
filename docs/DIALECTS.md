@@ -80,6 +80,9 @@ the root. A profile without `extends` has only its own features.
 | `interface_zero`     | `itf := 0` stores NULL in an interface variable              |
 | `end_semicolon_optional` | under `--strict`, `END_IF` and the like need no `;`      |
 | `conditional_pragmas` | `{IF}`/`{ELSIF}`/`{ELSE}`/`{END_IF}` with `defined()`, `project_defined()`, `hasvalue()`, `AND`/`OR`/`NOT`; defines from `-D` and from `{define}`/`{undefine}` in the source ([below](#conditional-pragmas)) |
+| `vendor_operators`   | the operator `XSIZEOF(x)` ([below](#vendor-operators))       |
+| `type_colon_optional` | `TYPE ST_A STRUCT ... END_STRUCT` without the `:` ([below](#type_colon_optional-and-conditional_return)) |
+| `conditional_return` | `RETURN (cond);`, a RETURN taken when `cond` is TRUE      |
 | `platform_types`     | the types `__XINT`/`XINT`, `__UXINT`/`UXINT`, `XWORD` and `PVOID` ([below](#platform-types)) |
 
 ## Refusals
@@ -102,6 +105,10 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `TYPE U_A : UNION ... END_UNION`            | `union`              | `UNION type 'U_A' needs the feature union`                                           |
 | `fb : FB_A(p := 1);` (init arguments)       | `fb_init`            | `The init argument list of 'FB' needs the feature fb_init` (at `(`)                  |
 | `itf := 0` (interface variable)             | `interface_zero`     | `Assigning 0 to interface I_A needs the feature interface_zero` (at the `0`)         |
+| `__ISVALIDREF(r)`                           | `reference_to`       | `__ISVALIDREF needs the feature reference_to`                                         |
+| `XSIZEOF(x)`                                | `vendor_operators`   | `XSIZEOF needs the feature vendor_operators`                                          |
+| `TYPE ST_A STRUCT` (no `:`)                 | `type_colon_optional` | `TYPE ST_A without ':' before STRUCT needs the feature type_colon_optional` (at `STRUCT`) |
+| `RETURN (cond);`                            | `conditional_return` | `RETURN (condition) needs the feature conditional_return` (at `RETURN`)              |
 | `x : XINT;` (any platform type)            | `platform_types`     | `XINT needs the feature platform_types` (at the type)                                |
 | `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive). With the feature on, `{define}`/`{undefine}` are accepted ([below](#conditional-pragmas)) |
 
@@ -617,6 +624,57 @@ strucpp main.st -o main.cpp --feature +conditional_pragmas -D MODE=fast
   project define of the same name for `hasvalue`; a `hasvalue` text compared exactly, with no escapes.
 - **Follow-up.** The symbol operators above stay refused until a compile can answer them the same way in
   every entry point.
+
+## Vendor operators
+
+Common vendor toolchains add operators that IEC 61131-3 Ed. 3 does not have. Each is built in under its
+feature, with the feature off its name means what it meant before, and a FUNCTION, method, POU or variable
+of the same name always wins: a call reaches the operator only where nothing in scope declares the name.
+
+| Operator          | Feature            | Result  | Meaning                                                                   |
+| ----------------- | ------------------ | ------- | ------------------------------------------------------------------------- |
+| `__ISVALIDREF(r)` | `reference_to`     | `BOOL`  | TRUE when the REFERENCE TO `r` is bound (by `REF=`, or by the call that passes it as an input) |
+| `XSIZEOF(x)`      | `vendor_operators` | `ULINT` | the size of `x` in bytes, the value `SIZEOF(x)` gives                     |
+
+- `__ISVALIDREF` is on wherever `REFERENCE TO` is, so also with no dialect flag. Its one argument is a
+  variable, member (`s.r`, `THIS.r`, `THIS^.r`) or VAR_INPUT declared `REFERENCE TO`; anything else is
+  `__ISVALIDREF needs a REFERENCE TO variable; 'X' is declared INT`. Reading it never raises the null-reference fault. In C++ it is `!r.is_null()`.
+- `XSIZEOF` is the pointer-sized form of `SIZEOF`: its type is the unsigned integer of the target's address
+  width, which on the 64-bit target this compiler generates for is `ULINT`. So `n : UDINT := XSIZEOF(x)`
+  is a narrowing (an error under `--strict`), as on a 64-bit PLC.
+- Both work in a body and in an initial value, a top-level or CONFIGURATION `VAR_GLOBAL`'s included. Not
+  yet in a STRUCT member's default, where no call is supported.
+- Either operator takes exactly one positional argument: `XSIZEOF takes one argument, got 2`, `XSIZEOF
+  takes its argument without a name`.
+- Not implemented yet: `BITADR`, `INDEXOF`, `__POSITION` and `__POUNAME`. Their names stay ordinary names
+  (a call is `Undeclared function`), in every dialect.
+
+## type_colon_optional and conditional_return
+
+Two spellings of common vendor toolchains, each in neither the default set nor `iec-3`:
+
+```
+TYPE
+  ST_A STRUCT a : INT; END_STRUCT     (* type_colon_optional; IEC: ST_A : STRUCT *)
+END_TYPE
+FUNCTION F : INT
+VAR_INPUT x : INT; END_VAR
+F := 1;
+RETURN (x > 5);                       (* conditional_return; IEC: IF x > 5 THEN RETURN; END_IF; *)
+F := 2;
+END_FUNCTION
+```
+
+- `type_colon_optional` drops the `:` only before `STRUCT`; every other type form (`TYPE X : INT;`, an
+  enumeration, an ARRAY, a UNION) still needs it, and its absence is the parse error it was. The type is
+  the same as with the colon, and so is the generated C++.
+- `conditional_return` takes a parenthesised condition after `RETURN`, in any POU body, method, action
+  or property accessor. It means `IF cond THEN RETURN; END_IF;`: the condition is checked as an IF
+  condition (`Condition must be a boolean or bit type, got INT`), and the C++ is that of the IF form.
+  `RETURN x;` without parentheses stays a parse error, and so does an expression that only starts with a
+  parenthesis (`RETURN (a) OR b;`): the condition is the one parenthesised expression.
+- In a `--test` file, `RETURN (cond);` follows the dialect flags of the run, as conditional pragmas do: it is
+  refused without the feature, and with it a TEST ends there (passing) when `cond` holds.
 
 ## Platform types
 

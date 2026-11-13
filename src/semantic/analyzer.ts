@@ -119,6 +119,10 @@ import { cp1252Byte } from "../byte-utils.js";
 import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import { libraryOverloadFor } from "./library-overload.js";
 import {
+  vendorOperatorFeature,
+  vendorOperatorNamed,
+} from "./vendor-operators.js";
+import {
   platformTypeTarget,
   restoreDeclaredPlatformTypes,
 } from "./platform-types.js";
@@ -494,6 +498,7 @@ export class SemanticAnalyzer {
     // flattened, so its members resolve. Flattening precedes the symbol tables.
     const errorsBeforeStructFeature = this.errors.length;
     this.validateStructExtendsFeature(ast);
+    this.validateTypeColonFeature(ast);
     this.flattenStructTypes(ast);
     // UNION refusals and rules are located and gate nothing either.
     this.validateUnions(ast);
@@ -550,9 +555,14 @@ export class SemanticAnalyzer {
       this.warnings.push(...typeResult.warnings);
     }
 
-    // Pass 3: Semantic validation
+    // Pass 3: Semantic validation. After an error it does not run, except
+    // its literal checks, which need no resolved type.
     if (this.errors.length - typeReferenceErrors === 0) {
       this.validateSemantics(ast);
+    } else {
+      this.prepareLiteralFallback(ast);
+      this.validateLiteralRanges(ast);
+      this.literalsReported.clear();
     }
 
     this.displayGlobalListNames(this.errors);
@@ -785,6 +795,18 @@ export class SemanticAnalyzer {
       needFeature: (construct, span) =>
         this.requireFeature("fb_init", construct, span),
     });
+  }
+
+  /** `TYPE X STRUCT` without the colon needs the feature type_colon_optional. Reported at STRUCT. */
+  private validateTypeColonFeature(ast: CompilationUnit): void {
+    for (const typeDecl of ast.types) {
+      if (!typeDecl.colonOmittedSpan) continue;
+      this.requireFeature(
+        "type_colon_optional",
+        `TYPE ${typeDecl.name.toUpperCase()} without ':' before STRUCT`,
+        typeDecl.colonOmittedSpan,
+      );
+    }
   }
 
   /** `TYPE X EXTENDS Base : STRUCT` needs the feature struct_extends. Reported at EXTENDS. */
@@ -1911,15 +1933,109 @@ export class SemanticAnalyzer {
     this.validateEnumTypeDefaults(ast);
 
     // Validate that integer literals fit an IEC integer type
-    this.validateIntegerLiteralRange(ast);
-    this.validateStringLiteralCharset(ast);
-    this.validateLtimeLiteralRange(ast);
-    this.validateRealLiteralRange(ast);
+    this.validateLiteralRanges(ast);
 
     // TODO: Implement additional semantic validation
     // - Check CASE statement coverage
     // - Validate reference operations
     // - Check for unreachable code
+  }
+
+  /**
+   * Literals a type cannot hold (integer, typed, LTIME, REAL) and STRING
+   * characters outside Windows-1252. Needs no resolved type, so it also runs
+   * when an earlier error stops the type checks.
+   */
+  /** Literals an earlier error already reports, left out of the literal checks. */
+  private literalsReported = new Set<LiteralExpression>();
+
+  /**
+   * Before the literal checks run without the type checks: leave out a literal
+   * an earlier error starts at (`n := '☃'` refused as STRING into INT), and
+   * take a one-character literal assigned to a CHAR or WCHAR as that
+   * character, as the type checks would.
+   */
+  private prepareLiteralFallback(ast: CompilationUnit): void {
+    const at = new Set(
+      this.errors.map((e) => `${e.file ?? ""}:${e.line}:${e.column}`),
+    );
+    walkAST(ast, (node) => {
+      if (node.kind !== "LiteralExpression") return;
+      const literal = node as LiteralExpression;
+      const span = literal.sourceSpan;
+      if (at.has(`${span.file ?? ""}:${span.startLine}:${span.startCol}`)) {
+        this.literalsReported.add(literal);
+      }
+    });
+    const charKind = (typeName: string): "CHAR" | "WCHAR" | undefined => {
+      let upper = typeName.toUpperCase();
+      for (let i = 0; i < 32; i++) {
+        if (upper === "CHAR" || upper === "WCHAR") return upper;
+        const current = upper;
+        const def = ast.types.find(
+          (t) => t.name.toUpperCase() === current,
+        )?.definition;
+        if (def?.kind !== "TypeReference") return undefined;
+        upper = def.name.toUpperCase();
+      }
+      return undefined;
+    };
+    const adapt = (value: Expression, typeName: string | undefined): void => {
+      const kind = typeName === undefined ? undefined : charKind(typeName);
+      if (kind === undefined || value.kind !== "LiteralExpression") return;
+      const want = kind === "CHAR" ? "STRING" : "WSTRING";
+      if (value.literalType !== want || (value.typePrefix ?? "") !== "") return;
+      const raw = `${kind}#${value.rawValue}`;
+      if (charLiteralUnits(raw).units.length !== 1) return;
+      value.literalType = kind;
+      value.rawValue = raw;
+      value.value = raw;
+    };
+    const visitPou = (
+      blocks: readonly VarBlock[],
+      bodies: readonly Statement[][],
+    ): void => {
+      const types = new Map<string, string>();
+      for (const b of [...ast.globalVarBlocks, ...blocks]) {
+        for (const d of b.declarations) {
+          for (const n of d.names) types.set(n.toUpperCase(), d.type.name);
+          if (d.initialValue && d.type.arrayDimensions === undefined) {
+            adapt(d.initialValue, d.type.name);
+          }
+        }
+      }
+      for (const body of bodies) {
+        for (const stmt of body) {
+          walkAST(stmt as ASTNode, (n) => {
+            if (n.kind !== "AssignmentStatement") return;
+            const a = n as AssignmentStatement;
+            if (
+              a.target.kind === "VariableExpression" &&
+              a.target.fieldAccess.length === 0 &&
+              a.target.subscripts.length === 0 &&
+              !a.target.isDereference
+            ) {
+              adapt(a.value, types.get(a.target.name.toUpperCase()));
+            }
+          });
+        }
+      }
+    };
+    for (const p of ast.programs) visitPou(p.varBlocks, [p.body]);
+    for (const f of ast.functions) visitPou(f.varBlocks, [f.body]);
+    for (const fb of ast.functionBlocks) {
+      visitPou(fb.varBlocks, [fb.body]);
+      for (const m of fb.methods) {
+        visitPou([...fb.varBlocks, ...m.varBlocks], [m.body]);
+      }
+    }
+  }
+
+  private validateLiteralRanges(ast: CompilationUnit): void {
+    this.validateIntegerLiteralRange(ast);
+    this.validateStringLiteralCharset(ast);
+    this.validateLtimeLiteralRange(ast);
+    this.validateRealLiteralRange(ast);
   }
 
   /**
@@ -2325,6 +2441,7 @@ export class SemanticAnalyzer {
     walkAST(ast, (node) => {
       if (node.kind !== "LiteralExpression") return;
       const literal = node as LiteralExpression;
+      if (this.literalsReported.has(literal)) return;
       if (literal.literalType !== "INT") return;
       if ((literal.typePrefix ?? "") !== "") {
         this.validateTypedLiteralRange(literal);
@@ -2357,6 +2474,7 @@ export class SemanticAnalyzer {
     const visit = (node: ASTNode): void => {
       if (node.kind !== "LiteralExpression") return;
       const literal = node as LiteralExpression;
+      if (this.literalsReported.has(literal)) return;
       if (literal.literalType === "CHAR" || literal.literalType === "WCHAR") {
         this.validateCharLiteral(literal);
         return;
@@ -2424,6 +2542,7 @@ export class SemanticAnalyzer {
     walkAST(ast, (node) => {
       if (node.kind !== "LiteralExpression") return;
       const literal = node as LiteralExpression;
+      if (this.literalsReported.has(literal)) return;
       if (literal.literalType !== "REAL" || (literal.typePrefix ?? "") !== "") {
         return;
       }
@@ -2446,6 +2565,7 @@ export class SemanticAnalyzer {
     walkAST(ast, (node) => {
       if (node.kind !== "LiteralExpression") return;
       const literal = node as LiteralExpression;
+      if (this.literalsReported.has(literal)) return;
       if (literal.literalType !== "LTIME") return;
       const ns = exactTimeLiteralNanoseconds(literal.rawValue);
       if (ns >= -(2n ** 63n) && ns < 2n ** 63n) return;
@@ -3846,6 +3966,12 @@ export class SemanticAnalyzer {
       if (stmt.kind === "AssignmentStatement") {
         this.validateExpression(stmt.target, varTypeMap, ast);
         this.validateExpression(stmt.value, varTypeMap, ast);
+      } else if (stmt.kind === "IfStatement" && stmt.conditionalReturn) {
+        this.requireFeature(
+          "conditional_return",
+          "RETURN (condition)",
+          stmt.conditionalReturn,
+        );
       } else if (stmt.kind === "RefAssignStatement") {
         this.requireFeature("ref_assign", "REF=", stmt.sourceSpan);
         this.validateExpression(stmt.target, varTypeMap, ast);
@@ -5992,6 +6118,12 @@ export class SemanticAnalyzer {
     // Inline C++ may declare the name (a macro, a lambda)
     if (this.hasExternalCode) return;
     const span = call.sourceSpan;
+    // A built-in operator of a dialect feature: refused while it is off.
+    const op = vendorOperatorNamed(upper);
+    if (op !== undefined) {
+      this.requireFeature(vendorOperatorFeature(op), op, span);
+      return;
+    }
     this.addError(
       `Undeclared function '${upper}'`,
       span.startLine,

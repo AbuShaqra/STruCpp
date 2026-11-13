@@ -378,6 +378,8 @@ export interface TypeDeclaration extends ASTNode {
   extendsKeywordSpan?: SourceSpan;
   /** Set on a TYPE hoisted from an inline enumeration or subrange. */
   inline?: InlineTypeOrigin;
+  /** The STRUCT keyword of `TYPE X STRUCT`, written without the colon; needs the feature type_colon_optional. */
+  colonOmittedSpan?: SourceSpan;
 }
 
 /** Where a hoisted inline type was written. */
@@ -635,6 +637,8 @@ export interface IfStatement extends ASTNode {
   thenStatements: Statement[];
   elsifClauses: ElsifClause[];
   elseStatements: Statement[];
+  /** Set when written `RETURN (cond);`: the RETURN statement; needs the feature conditional_return. */
+  conditionalReturn?: SourceSpan;
 }
 
 /**
@@ -851,7 +855,12 @@ export interface FunctionCallExpression extends TypedNode {
   globalList?: string;
   /** Set by the type checker: the library whose FUNCTION of a standard function's name is called. */
   libraryFunction?: string;
+  /** Set by the type checker: the call is the built-in operator of this name (`__ISVALIDREF`, `XSIZEOF`). */
+  vendorOperator?: VendorOperator;
 }
+
+/** Built-in operators beyond IEC 61131-3, each enabled by a dialect feature. */
+export type VendorOperator = "__ISVALIDREF" | "XSIZEOF";
 
 /**
  * Method call on an expression (for method chaining / fluent interface).

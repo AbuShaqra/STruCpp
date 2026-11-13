@@ -27,6 +27,9 @@ export const KNOWN_FEATURES = [
   "interface_zero",
   "end_semicolon_optional",
   "conditional_pragmas",
+  "vendor_operators",
+  "type_colon_optional",
+  "conditional_return",
   "platform_types",
 ] as const;
 
