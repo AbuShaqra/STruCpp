@@ -1006,6 +1006,35 @@ export class CodeGenerator {
     return this.typeCodeGen.mapTypeToCpp(name);
   }
 
+  /**
+   * `SIZEOF(T)` / `XSIZEOF(T)` naming a type, not a variable: a value of
+   * that type to measure (`T{}`). Undefined for any other operand.
+   */
+  private sizeofTypeOperand(value: Expression): string | undefined {
+    if (
+      value.kind !== "VariableExpression" ||
+      value.fieldAccess.length > 0 ||
+      value.subscripts.length > 0 ||
+      value.isDereference
+    ) {
+      return undefined;
+    }
+    const upper = value.name.toUpperCase();
+    const isVariable =
+      this.currentScopeVarTypes.has(upper) ||
+      (this.ast?.globalVarBlocks.some((b) =>
+        b.declarations.some((d) =>
+          d.names.some((n) => n.toUpperCase() === upper),
+        ),
+      ) ??
+        false);
+    if (isVariable) return undefined;
+    if (!this.isUserDefinedType(value.name) && !isElementaryType(upper)) {
+      return undefined;
+    }
+    return `${this.mapTypeRefToCpp({ name: value.name })}{}`;
+  }
+
   protected mapTypeRefToCpp(typeRef: TypeShape): string {
     let baseType: string;
 
@@ -7299,7 +7328,11 @@ export class CodeGenerator {
         this.keepReferenceWrapper = expr.vendorOperator === "__ISVALIDREF";
         let arg: string;
         try {
-          arg = this.generateExpression(expr.arguments[0]!.value);
+          arg =
+            (expr.vendorOperator === "XSIZEOF"
+              ? this.sizeofTypeOperand(expr.arguments[0]!.value)
+              : undefined) ??
+            this.generateExpression(expr.arguments[0]!.value);
         } finally {
           this.keepReferenceWrapper = kept;
         }
@@ -7367,6 +7400,11 @@ export class CodeGenerator {
       const stdFunc = this.stdRegistry.lookup(nameUpper);
       if (stdFunc) {
         const args = expr.arguments.map((arg, idx) => {
+          const sizedType =
+            nameUpper === "SIZEOF" && idx === 0
+              ? this.sizeofTypeOperand(arg.value)
+              : undefined;
+          if (sizedType !== undefined) return sizedType;
           let generated = this.generateExpression(arg.value);
           // For the bare `TO_xxx(temporal_var)` spelling, `nameUpper` is
           // a registered std function (not a `*_TO_*` form) so the source
