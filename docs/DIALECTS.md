@@ -97,7 +97,7 @@ the root. A profile without `extends` has only its own features.
 | `interface_zero`     | `itf := 0` stores NULL in an interface variable              |
 | `end_semicolon_optional` | under `--strict`, `END_IF` and the like need no `;`      |
 | `conditional_pragmas` | `{IF}`/`{ELSIF}`/`{ELSE}`/`{END_IF}` with `defined()`, `project_defined()`, `hasvalue()`, `AND`/`OR`/`NOT`; defines from `-D` and from `{define}`/`{undefine}` in the source ([below](#conditional-pragmas)) |
-| `vendor_operators`   | the operator `XSIZEOF(x)` ([below](#vendor-operators))       |
+| `vendor_operators`   | the operators `XSIZEOF(x)` ([below](#vendor-operators)), `__POUNAME()`, `__POSITION()` and `BITADR(x)` ([below](#pou-name-position-and-bit-address-operators)) |
 | `type_colon_optional` | `TYPE ST_A STRUCT ... END_STRUCT` without the `:` ([below](#type_colon_optional-and-conditional_return)) |
 | `conditional_return` | `RETURN (cond);`, a RETURN taken when `cond` is TRUE      |
 | `platform_types`     | the types `__XINT`/`XINT`, `__UXINT`/`UXINT`, `XWORD` and `PVOID` ([below](#platform-types)) |
@@ -128,6 +128,9 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `TYPE ST_A STRUCT` (no `:`)                 | `type_colon_optional` | `TYPE ST_A without ':' before STRUCT needs the feature type_colon_optional` (at `STRUCT`) |
 | `RETURN (cond);`                            | `conditional_return` | `RETURN (condition) needs the feature conditional_return` (at `RETURN`)              |
 | `x : XINT;` (any platform type)            | `platform_types`     | `XINT needs the feature platform_types` (at the type)                                |
+| `__POUNAME()`                               | `vendor_operators`   | `__POUNAME needs the feature vendor_operators` (at the call)                          |
+| `__POSITION()`                              | `vendor_operators`   | `__POSITION needs the feature vendor_operators` (at the call)                         |
+| `BITADR(x)`                                 | `vendor_operators`   | `BITADR needs the feature vendor_operators` (at the call)                             |
 | `a : BIT;` in a STRUCT                      | `bit_type`           | `BIT as a STRUCT member needs the feature bit_type` (at the type)                    |
 | `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive). With the feature on, `{define}`/`{undefine}` are accepted ([below](#conditional-pragmas)) |
 
@@ -675,8 +678,8 @@ of the same name always wins: a call reaches the operator only where nothing in 
   yet in a STRUCT member's default, where no call is supported.
 - Either operator takes exactly one positional argument: `XSIZEOF takes one argument, got 2`, `XSIZEOF
   takes its argument without a name`.
-- Not implemented yet: `BITADR`, `INDEXOF`, `__POSITION` and `__POUNAME`. Their names stay ordinary names
-  (a call is `Undeclared function`), in every dialect.
+- `__POUNAME`, `__POSITION` and `BITADR` are also under `vendor_operators`, see
+  [below](#pou-name-position-and-bit-address-operators); `INDEXOF` is refused in every dialect.
 
 ## type_colon_optional and conditional_return
 
@@ -729,6 +732,53 @@ This compiler generates C++ for a 64-bit target, so under `platform_types` each 
   are lowered with the feature, and a TYPE, FUNCTION_BLOCK or PROGRAM of the same name in the sources wins.
 - Not supported: typed literals (`XINT#5`) and conversion functions named after these types
   (`XINT_TO_INT`, `TO_UXINT`). Use the 64-bit names (`LINT#5`, `LINT_TO_INT`).
+## POU name, position and bit address operators
+
+Under `vendor_operators` three operators of common vendor toolchains are constants, replaced by a literal
+before analysis. Their exact results are **this compiler's rules**:
+
+| Operator       | Result  | Value                                                                                   |
+| -------------- | ------- | --------------------------------------------------------------------------------------- |
+| `__POUNAME()`  | STRING  | the name of the enclosing POU, spelled as declared                                      |
+| `__POSITION()` | STRING  | `'Line N, Column C (Impl)'` in a body, `'Line N (Decl)'` in a declaration               |
+| `BITADR(x)`    | DWORD   | the area of the located variable `x` in the top nibble, then its bit address           |
+
+- `__POUNAME()` gives `Main` in PROGRAM Main and its declarations, `F` in FUNCTION F, `FB_A` in
+  FUNCTION_BLOCK FB_A, `FB_A.M` in its METHOD M, `FB_A.P` in either accessor of its PROPERTY P, and
+  `Main.A` in ACTION A of Main (written inside the POU or as `ACTION Main.A`). In a STRUCT member's
+  initial value it is the TYPE's name, in a top-level `VAR_GLOBAL` the name of its global variable
+  list (the file's stem unless one is given, see `named_global_lists`), in a CONFIGURATION's globals the
+  configuration's name. A call left anywhere else is `__POUNAME has no value here`.
+- `__POSITION()` numbers lines and columns from 1 in the `.st` file that holds the call, at the call's first
+  character. It is `(Decl)` with the line only in a declaration (an initial value), `(Impl)` with line and
+  column in a body. Conditional pragmas keep lines and columns, so the position is the one written; in an IL
+  body, whose transpilation does not keep lines, it is not.
+- `BITADR(x)` takes a variable declared `AT %I...`, `%Q...` or `%M...` (a local, a global or a
+  `VAR_EXTERNAL` of a located global), by name. The top nibble is `16#8` for I, `16#C` for Q and `16#4`
+  for M; the rest is the bit address `byte * 8 + bit`, with the address's number taken as a byte offset
+  for every size (byte addressing): `%IX2.3` gives `16#80000013`, `%QW4` gives `16#C0000020`, `%MB7`
+  gives `16#40000038`. The value only describes the address: this compiler's I/O image keeps one array
+  per size, so `%QW4` there is the fifth word, not bytes 4 and 5. Anything else is an error: `BITADR needs a
+  located variable (declared AT %I, %Q or %M); 'X' is not one` (or `write it by name` for a member or
+  element), `BITADR takes one argument, got 2`, `BITADR takes its argument without a name`, and an address with a bit above 7 or past `16#0FFFFFFF`.
+- `__POUNAME` and `__POSITION` take no argument: `__POUNAME takes no argument`.
+- An operator gives a value, so a call written as a statement is an error: `__POSITION gives a value: use
+  it in an expression, not as a statement`.
+- The spelling `__POUNAME()` gives is the name token as written in the source (comments, nested ones too,
+  and string literals are skipped).
+- With the feature off each call is refused naming the feature (in an ARRAY bound, as a bound that is not a
+  constant). A FUNCTION, POU, INTERFACE, TYPE or global variable of the operator's name, in the sources or a library, wins in every dialect and in every POU, and
+  the call reaches it. A local variable, method or action of that name wins only where it is in scope: in its
+  POU (an FB's variables, methods and actions, also an `ACTION FB_A.X` written outside it, in the FBs that
+  extend it, the base a library FB too), in its accessor (a GET's local only in that GET), or in its test
+  (SETUP's in every test). A STRUCT or enumeration member of that name does not shadow the operator.
+- In a `--test` file the operators follow the dialect flags of the run: `__POSITION()` is lowered there too
+  (its position in the test file), unless the sources or the test declare its name, while `__POUNAME()`
+  and `BITADR` have no value there (`__POUNAME is not supported in a test file`).
+- `INDEXOF` is refused in every dialect: `INDEXOF is not supported: use ADR(x) for the address of a
+  variable or instance`, unless something of that name is declared.
+- In a unit with inline C++ (`{external ...}`), a call left to an operator name is not refused, with the
+  feature off or for `INDEXOF`, as for any undeclared call: the inline code may declare the name.
 
 ## BIT members
 
