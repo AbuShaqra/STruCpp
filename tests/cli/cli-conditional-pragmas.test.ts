@@ -5,15 +5,16 @@
  * with it, defines from -D / --define, in compile, --check, --compile-lib
  * and --test.
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
-import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync, mkdtempSync } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
 import { hasGpp } from "../integration/test-helpers.js";
 
 const CLI_PATH = resolve(__dirname, "../../dist/node/cli.js");
-const TMP_BASE = join(tmpdir(), "strucpp-cli-cond-pragma-tests");
+// Per-run folder, so concurrent runs do not share files.
+const TMP_BASE = mkdtempSync(join(tmpdir(), "strucpp-cli-cond-pragma-tests-"));
 
 function run(args: string[]): { status: number; out: string; err: string } {
   try {
@@ -393,3 +394,5 @@ END_TEST
     expect(refused.status).toBe(1);
   });
 });
+
+afterAll(() => rmSync(TMP_BASE, { recursive: true, force: true }));
