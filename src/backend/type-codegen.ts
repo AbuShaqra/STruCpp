@@ -959,7 +959,7 @@ export class TypeCodeGenerator {
           case "/":
             return Math.floor(left / right);
           case "MOD":
-            return left % right;
+            return right === 0 ? 0 : left % right;
           default:
             return 0;
         }
