@@ -310,6 +310,15 @@ class Array3D;
 
 IEC arrays use 1-based (or arbitrary-based) indexing. The template parameters encode bounds for compile-time size calculation. Bounds checking is performed at runtime in debug builds.
 
+## Run-time faults with a site
+
+A fault the compiler can place names where it happened. Integer division by zero (`iec_div`) raises
+`strucpp::IecSiteFault` (a `std::runtime_error`) on a hosted target, with the message
+`Division by zero in <POU>, line <n>, task <task>`, and calls `iec_runtime_fault(IecFault::DivideByZero, ...)`
+on a target without exceptions. The POU and line come from the call site (`strucpp::iec_site{"MAIN", 12}`).
+The task is the one the runtime named on this thread with `strucpp_set_current_task(name)` before running
+it (thread-local under `STRUCPP_THREADED`); it is left out when none is set.
+
 ## Pointer and Reference Types
 
 ### POINTER TO (`iec_pointer.hpp`)

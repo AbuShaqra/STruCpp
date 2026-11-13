@@ -37,6 +37,7 @@
 
 #if STRUCPP_HAS_EXCEPTIONS
 #include <stdexcept>
+#include <string>
 #endif
 
 namespace strucpp {
@@ -50,7 +51,36 @@ enum class IecFault : uint8_t {
     NullReference = 0,  ///< Dereferenced a NULL IEC pointer/reference.
     ArrayBounds   = 1,  ///< IEC array index out of bounds.
     BadLocation   = 2,  ///< Invalid located-variable area/size character.
+    DivideByZero  = 3,  ///< Integer division by zero.
+    Subrange      = 4,  ///< A value stored outside its subrange.
 };
+
+/** Where a fault happened: the POU and the line of its source, as compiled. */
+struct iec_site {
+    const char* pou;
+    int line;
+};
+
+/**
+ * The task running on this thread, named in a fault; nullptr outside a task.
+ * A runtime that dispatches tasks sets it with strucpp_set_current_task().
+ */
+#ifdef STRUCPP_THREADED
+inline const char*& iec_current_task_slot() noexcept {
+    static thread_local const char* task = nullptr;
+    return task;
+}
+#else
+inline const char*& iec_current_task_slot() noexcept {
+    static const char* task = nullptr;
+    return task;
+}
+#endif
+
+/** Name the task now running on this thread (nullptr: none). */
+inline void strucpp_set_current_task(const char* name) noexcept {
+    iec_current_task_slot() = name;
+}
 
 /**
  * Unrecoverable-fault handler for targets compiled WITHOUT exceptions — the
@@ -67,6 +97,37 @@ enum class IecFault : uint8_t {
  * @param context optional human-readable context; may be nullptr
  */
 [[noreturn]] void iec_runtime_fault(IecFault reason, const char* context = nullptr) noexcept;
+
+#if STRUCPP_HAS_EXCEPTIONS
+/** A run-time fault at a known site: what happened, the POU, line and task. */
+class IecSiteFault : public std::runtime_error {
+public:
+    IecSiteFault(IecFault reason, const std::string& message)
+        : std::runtime_error(message), reason_(reason) {}
+    IecFault reason() const noexcept { return reason_; }
+private:
+    IecFault reason_;
+};
+#endif
+
+/** Raise `reason` at `site`, with `what` describing it ("Division by zero"). */
+[[noreturn]] inline void iec_site_fault(IecFault reason, const char* what, iec_site site) {
+#if STRUCPP_HAS_EXCEPTIONS
+    std::string message(what);
+    message += " in ";
+    message += site.pou != nullptr ? site.pou : "?";
+    message += ", line ";
+    message += std::to_string(site.line);
+    if (iec_current_task_slot() != nullptr) {
+        message += ", task ";
+        message += iec_current_task_slot();
+    }
+    throw IecSiteFault(reason, message);
+#else
+    (void)site;
+    iec_runtime_fault(reason, what);
+#endif
+}
 
 /** An Ed. 3 `s[i]` outside the string's current length (1..LEN). */
 [[noreturn]] inline void iec_string_index_fault() {

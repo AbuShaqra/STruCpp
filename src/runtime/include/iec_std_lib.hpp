@@ -1506,6 +1506,25 @@ inline T MOD(T a, T b) noexcept {
 }
 
 /**
+ * Integer `/` whose divisor may be 0: a division by zero is a run-time fault
+ * naming the POU, line and task; the minimum value / -1 wraps instead of trapping.
+ */
+template<typename A, typename B>
+inline auto iec_div(const A& a, const B& b, iec_site site) -> decltype(a / b) {
+    using Result = decltype(a / b);
+    const auto av = iec_unwrap(a) + 0;
+    const auto bv = iec_unwrap(b) + 0;
+    using C = decltype(av / bv);
+    if (bv == 0) iec_site_fault(IecFault::DivideByZero, "Division by zero", site);
+    if (::strucpp::iec_mod_minus_one(bv)) {
+        return Result(static_cast<C>(
+            static_cast<std::make_unsigned_t<C>>(0) -
+            static_cast<std::make_unsigned_t<C>>(av)));
+    }
+    return a / b;
+}
+
+/**
  * Binary MOD operator: OUT is 0 when IN2 is 0 (IEC 61131-3 Table 29, note e).
  * The result type is the one the C++ % operator gives for the operands.
  */

@@ -1023,6 +1023,41 @@ export class CodeGenerator {
     return this.typeCodeGen.mapTypeToCpp(name);
   }
 
+  /** True when the expression is of an integer type (an alias of one too). */
+  private isIntegerExpression(expr: Expression): boolean {
+    const t = expr.resolvedType;
+    const name =
+      t?.typeKind === "elementary" && "name" in t
+        ? String(t.name)
+        : this.inferExprType(expr);
+    if (name === undefined) return false;
+    let upper = name.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const current = upper;
+      const def = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === current,
+      )?.definition;
+      if (def?.kind === "TypeReference" && def.arrayDimensions === undefined) {
+        upper = def.name.toUpperCase();
+      } else if (def?.kind === "SubrangeDefinition") {
+        upper = def.baseType.name.toUpperCase();
+      } else {
+        break;
+      }
+    }
+    return /^U?(SINT|INT|DINT|LINT)$/.test(upper);
+  }
+
+  /** `strucpp::iec_site{"POU", line}` for a fault raised at `node`. */
+  protected faultSite(node: { sourceSpan: SourceSpan }): string {
+    const pou =
+      this.currentFunctionName ??
+      this.currentFBName ??
+      this.currentProgramName ??
+      "?";
+    return `strucpp::iec_site{"${pou}", ${node.sourceSpan.startLine}}`;
+  }
+
   protected mapTypeRefToCpp(typeRef: TypeShape): string {
     let baseType: string;
 
@@ -6293,6 +6328,15 @@ export class CodeGenerator {
       const l = isComparisonExpr(expr.left) ? `(${left})` : left;
       const r = isComparisonExpr(expr.right) ? `(${right})` : right;
       return `${l} ${cppOp} ${r}`;
+    }
+
+    // Integer `/` by a divisor that may be 0: a fault naming the POU and line
+    if (
+      expr.operator === "/" &&
+      !isNonZeroIntegerLiteral(expr.right) &&
+      this.isIntegerExpression(expr)
+    ) {
+      return `iec_div(${left}, ${right}, ${this.faultSite(expr)})`;
     }
 
     // MOD by a divisor that may be 0 gives 0 (Table 29, note e)
