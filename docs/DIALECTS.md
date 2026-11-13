@@ -93,6 +93,14 @@ takes that operand's type and is accepted, and so does an expression of untyped 
 (`w := 16#F0 OR 16#0F`, `CW : WORD := 16#F0 AND 16#0F`), which takes its type from where it is used. Only a
 typed integer operand (an INT variable, `INT#16#F0`) is refused.
 
+Because `i AND 1` with an INT `i` is an INT, not a BOOL, it is an error in every mode, with no dialect
+flag too, wherever a BOOL is required: as the condition of IF, ELSIF, WHILE or REPEAT ... UNTIL
+(`Condition must be a boolean or bit type, got INT`) and as the G argument of SEL (`Argument 'G' of 'SEL'
+expects BOOL, got INT`). Such code compiled before. Write the test as a comparison: `IF (i AND 1) <> 0
+THEN`. Assigned to a BOOL variable it gets the narrowing warning, as any INT does. Passed to a BOOL
+VAR_INPUT of a user FUNCTION or function block (`F(i AND 1)`, `fb(b := i AND 1)`) it is accepted with no
+diagnostic outside `--strict`, as an INT variable passed there is.
+
 ## Refusals
 
 When a feature is off the compile fails with an error at the construct's own line and column:

@@ -232,8 +232,11 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
   `DINT_TO_TIME(t)` with a TIME and `STRING_TO_INT(ws)` with a WSTRING are refused; a function, method
   or FB instance of the conversion's name is not checked as one);
 - a condition of IF, ELSIF, WHILE or REPEAT ... UNTIL that is not a BOOL (`IF w THEN` with a WORD);
-- arithmetic on BOOL or on BYTE/WORD/DWORD/LWORD, an integer used as TIME, and an integer operand of
-  AND, OR or XOR (Table 31: ANY_BIT only; also refused under `--dialect iec-3`, see DIALECTS.md);
+- arithmetic on BOOL or on BYTE/WORD/DWORD/LWORD, an integer used as TIME, and a typed integer operand of
+  AND, OR or XOR (Table 31: ANY_BIT only; also refused under `--dialect iec-3`, see DIALECTS.md). With
+  integer operands the result is the integer in every mode, so `IF i AND 1 THEN`, `WHILE i AND 8 DO`,
+  `UNTIL j AND 8` and `SEL(i AND 1, a, b)` are errors with or without `--strict`
+  ([DIALECTS.md](DIALECTS.md#bitwise-operators-on-integers));
 - the reserved names ON, STEP and MOVE for a variable, POU, method, type, field, enum value,
   configuration, resource, task or program instance (a FUNCTION may still be named MOVE);
 - a FOR loop with no statement in its body (an empty statement, `DO ; END_FOR`, is a
