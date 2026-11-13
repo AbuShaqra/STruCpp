@@ -1976,6 +1976,8 @@ export class SemanticAnalyzer {
       }
       const base = baseOf(typeName);
       if (base !== "CHAR" && base !== "WCHAR" && base !== "WSTRING") return;
+      // The call check takes a STRING literal into a WSTRING input.
+      if (param !== undefined && base === "WSTRING") return;
       if (base === "CHAR") {
         const raw = `CHAR#${value.rawValue}`;
         if (charLiteralUnits(raw).units.length === 1) {
@@ -2000,16 +2002,13 @@ export class SemanticAnalyzer {
         span.file,
       );
     };
-    // A callable's VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT in declaration order,
-    // which positional arguments bind to, as in the call check.
+    // A callable's VAR_INPUT and VAR_IN_OUT in declaration order: the call
+    // check binds the i-th argument to the i-th of them.
     type Param = { name: string; type: string; input: boolean };
     const paramsOf = (blocks: readonly VarBlock[]): Param[] =>
       blocks
         .filter(
-          (b) =>
-            b.blockType === "VAR_INPUT" ||
-            b.blockType === "VAR_IN_OUT" ||
-            b.blockType === "VAR_OUTPUT",
+          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
         )
         .flatMap((b) =>
           b.declarations.flatMap((d) =>
@@ -2071,26 +2070,17 @@ export class SemanticAnalyzer {
               if (call.instance !== undefined || types.has(upper)) return;
               const params = methods.get(upper) ?? functionParams.get(upper);
               if (params === undefined) return;
-              const claimed = new Set(
-                call.arguments.flatMap((a) =>
-                  a.name === undefined ? [] : [a.name.toUpperCase()],
-                ),
-              );
-              const free = params.filter(
-                (p) => !claimed.has(p.name.toUpperCase()),
-              );
-              let position = 0;
-              for (const arg of call.arguments) {
+              stripEnEno(call.arguments).forEach((arg, i) => {
                 const param =
                   arg.name === undefined
-                    ? free[position++]
+                    ? params[i]
                     : params.find(
                         (p) => p.name.toUpperCase() === arg.name!.toUpperCase(),
                       );
                 if (param?.input === true && !arg.isOutput) {
                   adapt(arg.value, param.type, param.name);
                 }
-              }
+              });
               return;
             }
             if (n.kind !== "AssignmentStatement") return;
