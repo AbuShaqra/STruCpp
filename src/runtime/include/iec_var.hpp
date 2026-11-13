@@ -51,7 +51,7 @@ namespace strucpp {
 
 namespace detail {
 template<typename V>
-constexpr bool iec_mod_minus_one(V v, std::true_type /*signed*/) noexcept { return v == V(-1); }
+constexpr bool iec_mod_minus_one(V v, std::true_type /*signed*/) noexcept { return v == static_cast<V>(-1); }
 template<typename V>
 constexpr bool iec_mod_minus_one(V, std::false_type) noexcept { return false; }
 }  // namespace detail
