@@ -672,6 +672,7 @@ export class TypeChecker {
         // Property getter/setter bodies
         for (const prop of fb.properties) {
           this.currentPropertyName = prop.name.toUpperCase();
+          this.currentPropertyType = prop.type;
           if (prop.getter) this.checkStatements(prop.getter, scope);
           if (prop.setter) this.checkStatements(prop.setter, scope);
           this.currentPropertyName = undefined;
@@ -1395,6 +1396,9 @@ export class TypeChecker {
       case "RefExpression": {
         const operandType = this.resolveExprType(expr.operand, scope);
         if (this.refuseStringElement(expr.operand, "REF() cannot take")) {
+          return undefined;
+        }
+        if (this.refuseBitMember(expr.operand, "REF() cannot take", scope)) {
           return undefined;
         }
         if (operandType) {
@@ -2163,6 +2167,7 @@ export class TypeChecker {
       this.resolveExprType(arg.value, scope);
     }
     this.refuseNarrowAddressArguments(expr, scope);
+    this.refuseBitMemberArguments(expr, scope);
     this.checkCharStdArguments(expr);
     this.adaptCharConversionArgument(expr);
     this.validateReferenceArguments(expr, scope);
@@ -3778,6 +3783,7 @@ export class TypeChecker {
       case "RefAssignStatement": {
         this.resolveExprType(stmt.target, scope);
         this.resolveExprType(stmt.source, scope);
+        this.refuseBitMember(stmt.source, "REF= cannot bind to", scope);
         // REF= rebinds a reference, so the target must be declared
         // REF_TO / REFERENCE TO. Catch `plainVar REF= x` here with a clear
         // message rather than letting it fall through to a confusing C++
@@ -4744,6 +4750,15 @@ export class TypeChecker {
       ) {
         return;
       }
+      if (
+        this.refuseBitMember(
+          arg.value,
+          `VAR_IN_OUT '${input.name}' cannot be bound to`,
+          scope,
+        )
+      ) {
+        return;
+      }
       this.validateInOutArgument(input, arg, scope);
     });
     for (const input of inputs) {
@@ -5068,6 +5083,141 @@ export class TypeChecker {
       this.symbolTables.lookupFunctionBlock(typeName)?.libraryName ===
       "iec-standard-fb"
     );
+  }
+
+  /**
+   * A BIT member of a STRUCT (feature bit_type) has no address of its own: it
+   * cannot be referenced or bound to an in/out. True when it was refused.
+   */
+  private refuseBitMember(
+    expr: Expression,
+    what: string,
+    scope: Scope,
+  ): boolean {
+    let e = expr;
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    if (e.kind !== "VariableExpression" || !this.hasMemberAccess(e)) {
+      return false;
+    }
+    let base: AccessType | undefined;
+    if (this.isSelfMember(e)) {
+      base = { name: this.currentFBName!, referenceKind: "none" };
+    } else {
+      const sym = scope.lookup(e.name);
+      base =
+        sym?.kind === "variable"
+          ? (sym.declaration as VarDeclaration | undefined)?.type
+          : undefined;
+      base ??= this.resultVariableType(e.name);
+    }
+    const type =
+      base === undefined
+        ? undefined
+        : resolveAccessType(this.bitAliasTarget(base), e, this.bitAccessLookup);
+    if ((type as TypeReference | undefined)?.bit !== true) return false;
+    const path = bitAccessPath(e);
+    this.addError(
+      `${what} the BIT member ${path}: a BIT has no address of its own; copy it to a BOOL variable first`,
+      e.sourceSpan.startLine,
+      e.sourceSpan.startCol,
+      e.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /** The type of the FUNCTION or METHOD result, or the PROPERTY value, `name` is here. */
+  private resultVariableType(name: string): TypeReference | undefined {
+    const upper = name.toUpperCase();
+    if (this.currentReturn?.name.toUpperCase() === upper) {
+      return this.currentReturn.type;
+    }
+    return this.currentPropertyName === upper
+      ? this.currentPropertyType
+      : undefined;
+  }
+
+  /** A type with its TYPE aliases (`T : ST_B`, `T : POINTER TO ST_B`) expanded. */
+  private bitAliasTarget<T extends AccessType>(type: T): AccessType {
+    let current: AccessType = type;
+    for (let depth = 0; depth < 16 && this.ast; depth++) {
+      if (
+        (current.referenceKind ?? "none") !== "none" ||
+        current.arrayDimensions !== undefined
+      ) {
+        return current;
+      }
+      const upper = current.name.toUpperCase();
+      const def = this.ast.types.find(
+        (t) => t.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference") return current;
+      current = def;
+    }
+    return current;
+  }
+
+  /** Member lookup through TYPE aliases, to find a BIT member behind one. */
+  private readonly bitAccessLookup: AccessLookup = {
+    field: (typeName, fieldName) => {
+      const owner = this.bitAliasTarget({
+        name: typeName,
+        referenceKind: "none",
+      }).name;
+      const decl = this.accessLookup.field(owner, fieldName);
+      return decl && { ...decl, type: this.bitAliasTarget(decl.type) };
+    },
+    arrayElement: (typeName) => {
+      const element = this.accessLookup.arrayElement(
+        this.bitAliasTarget({ name: typeName, referenceKind: "none" }).name,
+      );
+      return element && this.bitAliasTarget(element);
+    },
+  };
+
+  /** `ADR(s.bit)`, `REF_LINK(s.bit)` and a BIT member bound to a REFERENCE TO input. */
+  private refuseBitMemberArguments(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    const name = expr.functionName.toUpperCase();
+    const args = stripEnEno(expr.arguments);
+    if (
+      (name === "ADR" || name === "REF_LINK") &&
+      !this.findUserFunction(name) &&
+      args.length > 0
+    ) {
+      this.refuseBitMember(args[0]!.value, `${name}() cannot take`, scope);
+      return;
+    }
+    const inputs =
+      this.callInputs(expr, scope) ??
+      this.dottedMethodInputs(expr.functionName, scope);
+    // A FUNCTION or METHOD output is passed by reference; an FB call assigns it.
+    if (!this.isFBInstanceCall(expr, scope)) {
+      for (const arg of args) {
+        if (!arg.isOutput) continue;
+        this.refuseBitMember(
+          arg.value,
+          `VAR_OUTPUT '${(arg.name ?? "").toUpperCase()}' cannot be bound to`,
+          scope,
+        );
+      }
+    }
+    if (!inputs) return;
+    args.forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (input?.type.referenceKind !== "reference_to") return;
+      this.refuseBitMember(
+        arg.value,
+        `REFERENCE TO input '${input.name}' cannot be bound to`,
+        scope,
+      );
+    });
   }
 
   /**
@@ -6701,6 +6851,8 @@ export class TypeChecker {
   private typeDefaults: ReadonlySet<Expression> = new Set();
   /** The property whose GET or SET body is being checked, upper-cased. */
   private currentPropertyName: string | undefined;
+  /** The declared type of that property. */
+  private currentPropertyType: TypeReference | undefined;
 
   /** The PROGRAM whose body or method is being checked (bare method calls). */
   private currentProgram: ProgramDeclaration | undefined;
@@ -7506,4 +7658,31 @@ export class TypeChecker {
       ...(file ? { file } : {}),
     });
   }
+}
+
+/** The access as written, upper-case: `GVL_A.O.ARR[2].A`, `P^.A`. */
+function bitAccessPath(e: VariableExpression): string {
+  const steps: AccessStep[] = e.accessChain ?? [
+    ...(e.subscripts.length > 0
+      ? [{ kind: "subscript" as const, indices: e.subscripts }]
+      : []),
+    ...e.fieldAccess.map((name) => ({ kind: "field" as const, name })),
+    ...(e.isDereference ? [{ kind: "dereference" as const }] : []),
+  ];
+  const index = (x: Expression): string =>
+    x.kind === "LiteralExpression"
+      ? x.rawValue
+      : x.kind === "VariableExpression" &&
+          x.fieldAccess.length === 0 &&
+          x.subscripts.length === 0 &&
+          !x.isDereference
+        ? x.name
+        : "...";
+  let path = e.globalList === undefined ? e.name : `${e.globalList}.${e.name}`;
+  for (const step of steps) {
+    if (step.kind === "field") path += `.${step.name}`;
+    else if (step.kind === "dereference") path += "^";
+    else path += `[${step.indices.map(index).join(", ")}]`;
+  }
+  return path.toUpperCase();
 }

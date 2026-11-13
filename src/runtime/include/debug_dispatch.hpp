@@ -387,6 +387,41 @@ inline const void* ptr_wstring(const void* p, uint16_t* len) noexcept {
 }
 #endif
 
+// BIT member (feature bit_type): bit `bit` of the byte at `p`, one byte 0/1
+// on the wire. A forced bit reads its forced value; a soft write to it is
+// ignored, as for any forced leaf.
+inline uint8_t force_bit(void* p, uint8_t bit, const uint8_t* bytes, uint8_t flags,
+                         void* lock) noexcept {
+    return force_status(force::set_bit(p, bit, bytes[0] != 0, flags, lock));
+}
+inline void read_bit(const void* p, uint8_t bit, uint8_t* dest) noexcept {
+    bool forced = false;
+    if (force::read_bit(p, bit, &forced)) {
+        dest[0] = forced ? 1 : 0;
+        return;
+    }
+    dest[0] = static_cast<uint8_t>((*static_cast<const uint8_t*>(p) >> bit) & 1u);
+}
+inline void write_bit(void* p, uint8_t bit, const uint8_t* bytes) noexcept {
+    bool forced = false;
+    if (force::read_bit(p, bit, &forced)) return;
+    uint8_t* b = static_cast<uint8_t*>(p);
+    const uint8_t mask = static_cast<uint8_t>(1u << bit);
+    *b = static_cast<uint8_t>(bytes[0] != 0 ? (*b | mask) : (*b & ~mask));
+}
+inline uint8_t force_bit0(void* p, const uint8_t* bytes, uint8_t flags, void* lock) noexcept {
+    return force_bit(p, 0, bytes, flags, lock);
+}
+inline void unforce_bit0(void* p) noexcept { force::clear_bit(p, 0); }
+inline void read_bit0(const void* p, uint8_t* dest) noexcept { read_bit(p, 0, dest); }
+inline void write_bit0(void* p, const uint8_t* bytes) noexcept { write_bit(p, 0, bytes); }
+
+/** Pointer op of a leaf with no address of its own (a BIT member). */
+inline const void* ptr_none(const void*, uint16_t* len) noexcept {
+    *len = 0;
+    return nullptr;
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch table entry. The `size` field is the byte width consumed/produced
 // by force/read (for strings: reserved, handled specially).
@@ -447,6 +482,8 @@ constexpr TypeOps type_ops[TAG__COUNT] = {
     /*DT      */ { &force_impl<DT_t>,    &unforce_impl, &read_impl<DT_t>,    &write_impl<DT_t>,    sizeof(DT_t)        },
     /*STRING  */ { &force_string,        &unforce_impl, &read_string,        &write_string,        DEBUG_STRING_WIDTH  },
     /*WSTRING */ { &force_wstring,       &unforce_impl, &read_wstring,       &write_wstring,       DEBUG_WSTRING_WIDTH },
+    // BIT: the handlers below take the bit number from the entry; this row gives its width.
+    /*BIT     */ { &force_bit0,          &unforce_bit0, &read_bit0,          &write_bit0,          1                   },
 };
 
 // ---------------------------------------------------------------------------
@@ -491,6 +528,7 @@ constexpr PtrOps ptr_ops[TAG__COUNT] = {
     /*DT      */ { &ptr_impl<DT_t> },
     /*STRING  */ { &ptr_string },
     /*WSTRING */ { &ptr_wstring },
+    /*BIT     */ { &ptr_none },  // never called: handle_ptr refuses a BIT leaf first
 };
 
 // ---------------------------------------------------------------------------
@@ -688,7 +726,14 @@ inline uint8_t handle_set(uint8_t arr, uint16_t elem, bool forcing,
         if (bad != STATUS_OK) return bad;
         const uint8_t flags =
             read_array_kind(arr) == DEBUG_ARRAY_GLOBAL ? force::FLAG_GLOBAL : 0;
+        if (e.tag == TAG_BIT) {
+            return force_bit(e.ptr, leaf_bit(e.flags), bytes, flags, leaf_lock(arr, elem));
+        }
         return type_ops[e.tag].force(e.ptr, bytes, flags, leaf_lock(arr, elem));
+    }
+    if (e.tag == TAG_BIT) {
+        force::clear_bit(e.ptr, leaf_bit(e.flags));
+        return STATUS_OK;
     }
     type_ops[e.tag].unforce(e.ptr);
     return STATUS_OK;
@@ -702,6 +747,10 @@ inline uint16_t handle_read(uint8_t arr, uint16_t elem, uint8_t* dest) noexcept 
     uint8_t n = type_ops[e.tag].size;
     if (n == 0) return 0;  // string stub
     LeafGuard guard(leaf_lock(arr, elem));
+    if (e.tag == TAG_BIT) {
+        read_bit(e.ptr, leaf_bit(e.flags), dest);
+        return n;
+    }
     type_ops[e.tag].read(e.ptr, dest);
     return n;
 }
@@ -724,6 +773,10 @@ inline uint8_t handle_write(uint8_t arr, uint16_t elem,
     const uint8_t bad = validate_payload(e.tag, bytes, len);
     if (bad != STATUS_OK) return bad;
     LeafGuard guard(leaf_lock(arr, elem));
+    if (e.tag == TAG_BIT) {
+        write_bit(e.ptr, leaf_bit(e.flags), bytes);
+        return STATUS_OK;
+    }
     type_ops[e.tag].write(e.ptr, bytes);
     return STATUS_OK;
 }
@@ -749,6 +802,11 @@ inline uint16_t handle_size(uint8_t arr, uint16_t elem) noexcept {
 inline const void* handle_ptr(uint8_t arr, uint16_t elem, uint16_t* out_len) noexcept {
     Entry e = read_entry(arr, elem);
     if (!e.ptr || e.tag >= TAG__COUNT) {
+        if (out_len) *out_len = 0;
+        return nullptr;
+    }
+    // A BIT member has no address of its own.
+    if (e.tag == TAG_BIT) {
         if (out_len) *out_len = 0;
         return nullptr;
     }
