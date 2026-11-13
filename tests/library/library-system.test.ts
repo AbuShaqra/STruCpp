@@ -5,12 +5,13 @@
  * Covers Phase 4.5: Library System and the .stlib archive format.
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   mkdirSync,
   writeFileSync,
   existsSync,
   rmSync,
+  mkdtempSync,
 } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -35,7 +36,8 @@ import { SymbolTables } from "../../src/semantic/symbol-table.js";
 import { StdFunctionRegistry } from "../../src/semantic/std-function-registry.js";
 import { compile } from "../../src/index.js";
 
-const TMP_BASE = join(tmpdir(), "strucpp-lib-unit-tests");
+// Per-run folder, so concurrent runs do not share files.
+const TMP_BASE = mkdtempSync(join(tmpdir(), "strucpp-lib-unit-tests-"));
 
 function freshDir(name: string): string {
   const dir = join(TMP_BASE, name);
@@ -1459,3 +1461,5 @@ describe("Library System", () => {
     });
   });
 });
+
+afterAll(() => rmSync(TMP_BASE, { recursive: true, force: true }));

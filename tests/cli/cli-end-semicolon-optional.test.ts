@@ -3,15 +3,16 @@
  * END_FOR, END_WHILE, END_CASE and END_REPEAT end with a `;`. It is off by
  * default and under iec-3, and changes nothing without --strict.
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
-import { mkdirSync, writeFileSync, existsSync, rmSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync, mkdtempSync } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
 import { compile } from "../../src/index.js";
 
 const CLI_PATH = resolve(__dirname, "../../dist/node/cli.js");
-const TMP = join(tmpdir(), "strucpp-cli-end-semicolon-tests");
+// Per-run folder, so concurrent runs do not share files.
+const TMP = mkdtempSync(join(tmpdir(), "strucpp-cli-end-semicolon-tests-"));
 
 const SOURCE = `FUNCTION_BLOCK FB
 VAR n, i : INT; END_VAR
@@ -171,3 +172,5 @@ describe("end_semicolon_optional on the CLI", () => {
     expect(run(["--help"]).out).toContain("end_semicolon_optional");
   });
 });
+
+afterAll(() => rmSync(TMP, { recursive: true, force: true }));

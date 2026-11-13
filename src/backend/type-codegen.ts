@@ -30,6 +30,7 @@ import {
   isComparison,
   isComparisonExpr,
   literalStringComparison,
+  isNonZeroIntegerLiteral,
   literalTemporalType,
   translateIECString,
 } from "./codegen-utils.js";
@@ -46,6 +47,7 @@ import {
   implicitEnumBaseName,
   type EnumMemberEntry,
   enumBehindAlias,
+  getTypeCategory,
 } from "../semantic/type-utils.js";
 import {
   generateInitializerValue,
@@ -203,6 +205,12 @@ function typedDecimalPayload(expr: LiteralExpression): string | undefined {
   return /^[+-]?[0-9][0-9_]*$/.test(payload) ? payload : undefined;
 }
 
+/** BYTE, WORD, DWORD or LWORD: a bit string other than BOOL. */
+function isBitStringName(name: string): boolean {
+  const upper = name.toUpperCase();
+  return getTypeCategory(upper) === "BIT" && upper !== "BOOL";
+}
+
 /**
  * Type Code Generator for user-defined types
  */
@@ -225,6 +233,9 @@ export class TypeCodeGenerator {
    * member-name collision mangle. Nested levels take their type from
    * `decltype(...)` of the member being assigned, which needs no metadata.
    */
+  /** Each alias of the unit (upper case) to the type it names, for NOT. */
+  private aliasTargets: Map<string, string> = new Map();
+
   private structInitEmitter: StructInitEmitter = {
     emitValue: (value: Expression): string => this.expressionToCpp(value),
     memberName: (fieldName: string): string => fieldName,
@@ -280,6 +291,26 @@ export class TypeCodeGenerator {
         })),
     );
     this.unionStored = unionStoredTypes(types);
+    this.aliasTargets = new Map(
+      types.flatMap((t) =>
+        t.definition.kind === "TypeReference" &&
+        t.definition.arrayDimensions === undefined
+          ? [[t.name.toUpperCase(), t.definition.name.toUpperCase()]]
+          : [],
+      ),
+    );
+  }
+
+  /** BYTE, WORD, DWORD or LWORD a type name is, through aliases. */
+  private bitStringBase(name: string): string | undefined {
+    let upper = name.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      if (isBitStringName(upper)) return upper;
+      const next = this.aliasTargets.get(upper);
+      if (next === undefined) return undefined;
+      upper = next;
+    }
+    return undefined;
   }
 
   /**
@@ -767,6 +798,15 @@ export class TypeCodeGenerator {
       case "ParenthesizedExpression":
         return `(${this.expressionToCpp(expr.expression)})`;
       case "FunctionCallExpression":
+        // `NOT (x)` is parsed as a call: it is the operator NOT on x
+        if (
+          expr.functionName.toUpperCase() === "NOT" &&
+          expr.arguments.length === 1 &&
+          expr.arguments[0]!.name === undefined
+        ) {
+          const arg = expr.arguments[0]!.value;
+          return this.notToCpp(arg, `(${this.expressionToCpp(arg)})`);
+        }
         // Positional arguments are kept (`LEN('abc')`)
         return expr.arguments.some((a) => a.name !== undefined || a.isOutput)
           ? `${expr.functionName}()`
@@ -897,8 +937,8 @@ export class TypeCodeGenerator {
       "/": "/",
       MOD: "%",
       "**": "/* pow */",
-      AND: "&&",
-      OR: "||",
+      AND: "&",
+      OR: "|",
       XOR: "^",
       "=": "==",
       "<>": "!=",
@@ -909,6 +949,10 @@ export class TypeCodeGenerator {
     };
 
     const cppOp = opMap[expr.operator] ?? expr.operator;
+    // AND/OR/XOR are bitwise, as in a POU body (BOOL operands included).
+    if (["AND", "OR", "XOR"].includes(expr.operator)) {
+      return `(${left}) ${cppOp} (${right})`;
+    }
     // Parenthesise a comparison nested in a comparison (a chain).
     if (isComparison(expr.operator)) {
       const texts = literalStringComparison(expr.left, expr.right, left, right);
@@ -917,11 +961,42 @@ export class TypeCodeGenerator {
       const r = isComparisonExpr(expr.right) ? `(${right})` : right;
       return `${l} ${cppOp} ${r}`;
     }
+    // MOD by a divisor that may be 0 gives 0 (Table 29, note e)
+    if (expr.operator === "MOD" && !isNonZeroIntegerLiteral(expr.right)) {
+      return `iec_mod(${left}, ${right})`;
+    }
     return `${left} ${cppOp} ${right}`;
+  }
+
+  /**
+   * NOT of a typed bit string other than BOOL (an alias included) is its
+   * complement in that width, as in a body; any other operand keeps `!`.
+   */
+  private notToCpp(operandExpr: Expression, operand: string): string {
+    const base = this.operandBitString(operandExpr);
+    return base === undefined
+      ? `!${operand}`
+      : `static_cast<${base}_t>(~${operand})`;
+  }
+
+  /** The bit string type an operand is known to have: its type, or a typed literal's prefix. */
+  private operandBitString(expr: Expression): string | undefined {
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.operandBitString(expr.expression);
+    }
+    const t = expr.resolvedType;
+    if (t?.typeKind === "elementary") {
+      return this.bitStringBase((t as ElementaryType).name);
+    }
+    if (expr.kind === "LiteralExpression" && (expr.typePrefix ?? "") !== "") {
+      return this.bitStringBase(expr.typePrefix!);
+    }
+    return undefined;
   }
 
   private unaryExprToCpp(expr: UnaryExpression): string {
     const operand = this.expressionToCpp(expr.operand);
+    if (expr.operator === "NOT") return this.notToCpp(expr.operand, operand);
 
     const opMap: Record<string, string> = {
       NOT: "!",
@@ -962,7 +1037,7 @@ export class TypeCodeGenerator {
           case "/":
             return Math.floor(left / right);
           case "MOD":
-            return left % right;
+            return right === 0 ? 0 : left % right;
           default:
             return 0;
         }

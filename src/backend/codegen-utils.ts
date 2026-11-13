@@ -27,6 +27,18 @@ export function isComparisonExpr(expr: Expression): boolean {
   return expr.kind === "BinaryExpression" && isComparison(expr.operator);
 }
 
+/** True for an integer literal other than 0 and -1, such as the `7` of `x MOD 7`. */
+export function isNonZeroIntegerLiteral(expr: Expression): boolean {
+  return (
+    expr.kind === "LiteralExpression" &&
+    expr.literalType === "INT" &&
+    typeof expr.value === "number" &&
+    Number.isInteger(expr.value) &&
+    expr.value !== 0 &&
+    expr.value !== -1
+  );
+}
+
 /**
  * A comparison of two STRING (or two WSTRING) literals: each emitted literal
  * wrapped as a string value, so C++ compares the text, not two pointers.
