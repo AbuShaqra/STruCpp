@@ -2,10 +2,11 @@
  * Tests for CODESYS library import functionality.
  */
 
-import { describe, it, expect } from "vitest";
-import { readFileSync, existsSync, writeFileSync, unlinkSync } from "fs";
+import { describe, it, expect, afterAll } from "vitest";
+import { readFileSync, existsSync, writeFileSync, unlinkSync, mkdtempSync, rmSync } from "fs";
 import { execFileSync } from "child_process";
-import { resolve } from "path";
+import { resolve, join } from "path";
+import { tmpdir } from "os";
 import {
   importCodesysLibraryFromBytes,
   detectFormat,
@@ -23,6 +24,10 @@ import type {
 } from "../../src/library/codesys-import/index.js";
 import { compileStlib } from "../../src/library/library-compiler.js";
 import type { LibraryManifest } from "../../src/library/library-manifest.js";
+
+// Per-run folder, so concurrent runs do not share files.
+const TMP_ROOT = mkdtempSync(join(tmpdir(), "strucpp-codesys-import-"));
+afterAll(() => rmSync(TMP_ROOT, { recursive: true, force: true }));
 
 // Tests previously called `await importCodesysLibrary(path)`; the public
 // API is now bytes-first so the file read sits in the test harness.
@@ -253,7 +258,7 @@ describe("importCodesysLibrary", () => {
   });
 
   it("returns error for unrecognized format", async () => {
-    const tmpPath = "/tmp/test_garbage.lib";
+    const tmpPath = join(TMP_ROOT, "test_garbage.lib");
     writeFileSync(tmpPath, "GARBAGE_DATA_NOT_CODESYS");
     try {
       const result = await importCodesysLibrary(tmpPath);
@@ -711,7 +716,7 @@ describe("CLI --import-lib", () => {
           "--import-lib",
           OSCAT_V23_PATH,
           "-o",
-          "/tmp/stlib_cli_test/",
+          join(TMP_ROOT, "stlib_cli_test") + "/",
           "--lib-name",
           "oscat-cli-test",
           "-L",

@@ -29,6 +29,7 @@ import {
   formatIntegerLiteral,
   isComparison,
   isComparisonExpr,
+  isNonZeroIntegerLiteral,
   literalTemporalType,
   translateIECString,
 } from "./codegen-utils.js";
@@ -952,6 +953,10 @@ export class TypeCodeGenerator {
       const r = isComparisonExpr(expr.right) ? `(${right})` : right;
       return `${l} ${cppOp} ${r}`;
     }
+    // MOD by a divisor that may be 0 gives 0 (Table 29, note e)
+    if (expr.operator === "MOD" && !isNonZeroIntegerLiteral(expr.right)) {
+      return `iec_mod(${left}, ${right})`;
+    }
     return `${left} ${cppOp} ${right}`;
   }
 
@@ -1024,7 +1029,7 @@ export class TypeCodeGenerator {
           case "/":
             return Math.floor(left / right);
           case "MOD":
-            return left % right;
+            return right === 0 ? 0 : left % right;
           default:
             return 0;
         }

@@ -201,6 +201,11 @@ export class TestCodeGenerator extends CodeGenerator {
     this.generateStatement(stmt, indent);
   }
 
+  /** Make a RETURN in the statements emitted next return `value` (undefined: as in a POU). */
+  setReturnValue(value: string | undefined): void {
+    this.returnValueOverride = value;
+  }
+
   /** Get the accumulated output lines. */
   getOutput(): string[] {
     return this.output;
