@@ -119,7 +119,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | FOR / TO / BY / DO / END_FOR | Supported | With optional BY (step) |
 | WHILE / DO / END_WHILE | Supported | |
 | REPEAT / UNTIL / END_REPEAT | Supported | |
-| CASE / OF / END_CASE | Supported | Integer, bit, and enum selectors, also of an alias of an integer or bit type (`TYPE MYINT : INT`) |
+| CASE / OF / END_CASE | Supported | Integer, bit, and enum selectors, also of an alias of an integer or bit type (`TYPE MYINT : INT`) or of a subrange (`TYPE SR : INT (0..10)`) |
 | EXIT | Supported | Break from loop |
 | CONTINUE | Supported | Next loop iteration; contextual, so `Continue` stays usable as a name |
 | RETURN | Supported | Early return from POU. `RETURN (cond);`, returning when `cond` is TRUE, is a vendor extension: the feature `conditional_return` (refused with no dialect flag and under `--dialect iec-3`), see [DIALECTS.md](DIALECTS.md) |

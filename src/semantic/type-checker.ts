@@ -1829,15 +1829,39 @@ export class TypeChecker {
     else if (["AND", "OR", "XOR"].includes(expr.operator)) {
       this.refuseIntegerBitwise(expr, leftType, rightType);
       // Untyped constants only: typed by context, as before (BOOL here)
-      // An untyped constant takes the type of the other, typed operand
+      // An untyped constant takes the type of the other operand when that is
+      // an integer or a bit string (BOOL included); otherwise as before
+      const ordinal = (t: IECType): boolean =>
+        this.isIntegerType(t) ||
+        (t.typeKind === "elementary" &&
+          (STRICT_BIT_STRINGS.has(this.aliasBase((t as ElementaryType).name)) ||
+            this.aliasBase((t as ElementaryType).name) === "BOOL"));
       type = this.isUntypedBitConstant(expr)
         ? ELEMENTARY_TYPES["BOOL"]
-        : this.isUntypedBitConstant(expr.left)
+        : this.isUntypedBitConstant(expr.left) && ordinal(rightType)
           ? rightType
-          : this.isUntypedBitConstant(expr.right)
+          : this.isUntypedBitConstant(expr.right) && ordinal(leftType)
             ? leftType
             : (this.bitwiseResultType(leftType, rightType) ??
               ELEMENTARY_TYPES["BOOL"]);
+      const names = [leftType, rightType].map((t) =>
+        t.typeKind === "elementary"
+          ? this.aliasBase((t as ElementaryType).name)
+          : "",
+      );
+      if (
+        names.includes("LINT") &&
+        names.includes("ULINT") &&
+        !this.strict &&
+        !this.inOutErrors
+      ) {
+        this.addWarning(
+          `LINT and ULINT have no common integer type: ${expr.operator} of them is a LINT`,
+          expr.sourceSpan.startLine,
+          expr.sourceSpan.startCol,
+          expr.sourceSpan.file,
+        );
+      }
     }
     // IEC 61131-3 date/time arithmetic (table 30 of the standard).
     // Date types are int64_t aliases at the C++ level so the operator-
@@ -1955,11 +1979,42 @@ export class TypeChecker {
     if (bits.length > 0) {
       return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
     }
-    // Two integers (a vendor extension): their common integer type.
+    // Two integers (a vendor extension): their common integer type; a signed
+    // and an unsigned one take the smallest signed type holding both (Figure 11)
     if (this.isIntegerType(leftType) && this.isIntegerType(rightType)) {
-      return getCommonType(leftType, rightType) ?? leftType;
+      return (
+        this.mixedSignCommonType(leftType, rightType) ??
+        getCommonType(leftType, rightType) ??
+        leftType
+      );
     }
     return undefined;
+  }
+
+  /**
+   * A signed and an unsigned integer: the smallest signed type wider than the
+   * unsigned one and at least as wide as the signed one (SINT and USINT give
+   * INT). LINT and ULINT have none: LINT. Undefined for the same signedness.
+   */
+  private mixedSignCommonType(a: IECType, b: IECType): IECType | undefined {
+    const name = (t: IECType): string =>
+      this.aliasBase((t as ElementaryType).name).toUpperCase();
+    const [an, bn] = [name(a), name(b)];
+    const aUnsigned = an.startsWith("U");
+    if (aUnsigned === bn.startsWith("U")) return undefined;
+    const bitsOf: Record<string, number> = {
+      SINT: 8,
+      INT: 16,
+      DINT: 32,
+      LINT: 64,
+    };
+    const [signedName, unsignedName] = aUnsigned ? [bn, an] : [an, bn];
+    const need = Math.max(
+      bitsOf[signedName]!,
+      bitsOf[unsignedName.slice(1)]! * 2,
+    );
+    const fit = ["SINT", "INT", "DINT", "LINT"].find((n) => bitsOf[n]! >= need);
+    return ELEMENTARY_TYPES[fit ?? "LINT"];
   }
 
   private isIntegerType(t: IECType): boolean {
@@ -1986,8 +2041,16 @@ export class TypeChecker {
       [expr.left, leftType],
       [expr.right, rightType],
     ] as const) {
-      // An untyped constant adapts; only a typed integer operand is refused
-      if (!this.isIntegerType(type) || this.isUntypedBitConstant(operand)) {
+      // An untyped constant adapts; only a typed integer operand is refused,
+      // and an inner AND/OR/XOR was refused at its own operand already
+      let inner: Expression = operand;
+      while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
+      if (
+        !this.isIntegerType(type) ||
+        this.isUntypedBitConstant(operand) ||
+        (inner.kind === "BinaryExpression" &&
+          ["AND", "OR", "XOR"].includes(inner.operator))
+      ) {
         continue;
       }
       const base = this.aliasBase(typeNameUtil(type));
@@ -5767,6 +5830,20 @@ export class TypeChecker {
     return `${base === name.toUpperCase() ? "iec" : "raw"}:${storage}`;
   }
 
+  /** A type name through aliases and subranges (`TYPE SR : INT (0..10)` is INT). */
+  private ordinalBase(name: string): string {
+    let upper = this.aliasBase(name);
+    for (let i = 0; i < 32; i++) {
+      const current = upper;
+      const def = this.ast?.types.find(
+        (td) => td.name.toUpperCase() === current,
+      )?.definition;
+      if (def?.kind !== "SubrangeDefinition") return upper;
+      upper = this.aliasBase(def.baseType.name);
+    }
+    return upper;
+  }
+
   private aliasBase(name: string): string {
     let upper = name.toUpperCase();
     for (let i = 0; i < 32; i++) {
@@ -6658,7 +6735,7 @@ export class TypeChecker {
     const base =
       selectorType.typeKind === "elementary"
         ? (ELEMENTARY_TYPES[
-            this.aliasBase((selectorType as ElementaryType).name)
+            this.ordinalBase((selectorType as ElementaryType).name)
           ] ?? selectorType)
         : selectorType;
     if (

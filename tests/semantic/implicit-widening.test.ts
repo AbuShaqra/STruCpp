@@ -386,6 +386,52 @@ describe("implicit widening (Figures 11 and 12)", () => {
       );
     });
 
+    it(`types mixed signedness by Figure 11, keeps non-ordinal operands as before, refuses once (${label})`, () => {
+      const r = compile(
+        "PROGRAM P\nVAR si: SINT; usi: USINT; i: INT; ui: UINT; di: DINT; udi: UDINT; li: LINT; uli: ULINT; x : BOOL; t : TIME; n : INT; c : DINT; d : LINT; END_VAR\nn := si OR usi;\nn := usi OR si;\nc := i AND ui;\nc := ui AND i;\nd := di XOR udi;\nd := udi XOR di;\nx := t AND 1;\nsi := si AND 1 AND 2;\nsi := (si AND 1) OR 2;\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.warnings).toEqual([]);
+      const t31 = (op: string, t: string): string =>
+        `${op} takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${t}; convert it with ${t}_TO_WORD or the like`;
+      expect(r.errors.map((e) => `${e.line}:${e.column} ${e.message}`)).toEqual(
+        label === "no dialect"
+          ? []
+          : [
+              `3:6 ${t31("OR", "SINT")}`,
+              `4:6 ${t31("OR", "USINT")}`,
+              `5:6 ${t31("AND", "INT")}`,
+              `6:6 ${t31("AND", "UINT")}`,
+              `7:6 ${t31("XOR", "DINT")}`,
+              `8:6 ${t31("XOR", "UDINT")}`,
+              `10:7 ${t31("AND", "SINT")}`,
+              `11:8 ${t31("AND", "SINT")}`,
+            ],
+      );
+    });
+
+    it(`warns that LINT and ULINT have no common type, with no dialect flag (${label})`, () => {
+      const r = compile(
+        "PROGRAM P\nVAR li: LINT; uli: ULINT; d : LINT; END_VAR\nd := li AND uli;\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.warnings.map((w) => w.message)).toEqual(
+        label === "no dialect"
+          ? [
+              "LINT and ULINT have no common integer type: AND of them is a LINT",
+            ]
+          : [],
+      );
+    });
+
+    it(`accepts a CASE selector of a subrange (${label})`, () => {
+      const r = compile(
+        "TYPE SR : INT (0..10); END_TYPE\nTYPE SR2 : SR; END_TYPE\nPROGRAM P VAR n : INT; sr : SR; sr2 : SR2; END_VAR\nCASE sr OF 1: n := 1; END_CASE;\nCASE sr2 OF 1: n := 1; END_CASE;\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.errors).toEqual([]);
+    });
+
     it(`takes TOD and DT as their long forms in a conversion argument (${label})`, () => {
       const r = compile(
         "PROGRAM Main\nVAR tod : TOD; td : TIME_OF_DAY; dt : DT; dat : DATE_AND_TIME; ltod : LTOD; ldt : LDT; u : ULINT; END_VAR\nu := LTOD_TO_ULINT(tod);\nu := LTIME_OF_DAY_TO_ULINT(td);\nu := LDT_TO_ULINT(dt);\nu := LDATE_AND_TIME_TO_ULINT(dat);\nu := TOD_TO_ULINT(ltod);\nu := DT_TO_ULINT(ldt);\nEND_PROGRAM\n",
