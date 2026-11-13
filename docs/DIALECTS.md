@@ -113,7 +113,9 @@ the usual narrowing warning. An untyped constant beside a typed integer takes th
 neither an integer nor ANY_BIT (TIME, REAL, STRING) it is typed as before. A signed and an unsigned integer
 take the smallest signed type that holds both, as Figure 11 widens them, whatever their order (`si OR usi`
 is an INT, `i AND ui` a DINT, `di XOR udi` a LINT); LINT and ULINT have none, so their result is a LINT with
-the warning `LINT and ULINT have no common integer type: AND of them is a LINT`. A refusal is reported once,
+the warning `LINT and ULINT have no common integer type: AND of them is a LINT`. With no dialect flag this adds narrowing
+warnings that development did not give, where the wider result is stored back into a narrower variable:
+`udi := di OR udi` (DINT and UDINT) now warns `Implicit narrowing conversion from LINT to UDINT`. A refusal is reported once,
 at the typed operand, also in a chain (`s AND 1 AND 2`). Under `--dialect iec-3`,
 and under `--strict` in any dialect, a typed integer operand is refused, at that operand and naming its
 type (an alias by its base type): `AND takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not
