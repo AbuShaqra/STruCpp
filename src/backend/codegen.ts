@@ -393,6 +393,16 @@ interface TemporalUnitInfo {
   fromUnit: string | undefined;
 }
 
+/** Selections whose value is one of their operands: leading selector arguments to skip. */
+const BIT_SELECTOR_SKIP: ReadonlyMap<string, number> = new Map([
+  ["SEL", 1],
+  ["MUX", 1],
+  ["MAX", 0],
+  ["MIN", 0],
+  ["LIMIT", 0],
+  ["MOVE", 0],
+]);
+
 const TEMPORAL_CONVERSION_UNITS = new Map<string, TemporalUnitInfo>([
   // milliseconds
   ["TIME", { toUnit: "TIME_TO_MS", fromUnit: "TIME_FROM_MS" }],
@@ -639,6 +649,8 @@ export class CodeGenerator {
   private currentFunctionName: string | undefined;
   /** The declared result type of the current FUNCTION, METHOD or PROPERTY. */
   private currentFunctionResultType: string | undefined;
+  /** The declared type of the property whose SET accessor is being generated. */
+  private currentSetterPropertyType: string | undefined;
 
   /** Standard function registry for name mapping and conversion resolution */
   private stdRegistry: StdFunctionRegistry;
@@ -2887,6 +2899,7 @@ export class CodeGenerator {
       this.emit(`void ${className}::set_${prop.name}(${type} ${prop.name}) {`);
       // In setter, prop.name refers to the input parameter (no redirection)
       this.currentSetterProperty = prop.name.toUpperCase();
+      this.currentSetterPropertyType = prop.type.name;
       if (prop.setterMethod !== undefined) {
         this.emit(`    ${prop.setterMethod}(${prop.name});`);
       }
@@ -9475,18 +9488,65 @@ export class CodeGenerator {
         t.definition.kind === "StructDefinition" &&
         t.definition.fields.some((f) => f.type.bit === true),
     );
-    return hasBits === true &&
-      value.kind === "VariableExpression" &&
-      /\.bits_\d+_\.[A-Za-z_]\w*\)?$/.test(generated)
+    if (hasBits !== true || !/\.bits_\d+_\./.test(generated)) {
+      return generated;
+    }
+    // A bare member, or a selection (SEL, MUX, MAX, MOVE, ...) whose BOOL value comes from one.
+    return this.bitBoolValue(value) === "bit" ||
+      (value.kind === "FunctionCallExpression" &&
+        this.inferExprType(value)?.toUpperCase() === "BOOL")
       ? `IEC_BOOL(${generated})`
       : generated;
   }
 
+  /**
+   * "bit" for a BIT member read or a selection over BOOL values with one among
+   * them, "bool" for another BOOL value, undefined otherwise.
+   */
+  private bitBoolValue(value: Expression): "bit" | "bool" | undefined {
+    if (value.kind === "ParenthesizedExpression") {
+      return this.bitBoolValue(value.expression);
+    }
+    if (value.kind === "LiteralExpression") {
+      return value.literalType === "BOOL" ? "bool" : undefined;
+    }
+    if (value.kind === "VariableExpression") {
+      if (
+        /\.bits_\d+_\.[A-Za-z_]\w*\)?$/.test(this.generateExpression(value))
+      ) {
+        return "bit";
+      }
+      return this.inferExprType(value)?.toUpperCase() === "BOOL"
+        ? "bool"
+        : undefined;
+    }
+    if (
+      value.kind !== "FunctionCallExpression" ||
+      value.instance !== undefined
+    ) {
+      return undefined;
+    }
+    const skip = BIT_SELECTOR_SKIP.get(value.functionName.toUpperCase());
+    if (skip === undefined) return undefined;
+    const kinds = value.arguments
+      .slice(skip)
+      .map((a) => this.bitBoolValue(a.value));
+    if (kinds.length === 0 || kinds.some((k) => k === undefined)) {
+      return undefined;
+    }
+    return kinds.includes("bit") ? "bit" : "bool";
+  }
+
   /** The type of a function result or global an access starts at, for BIT members. */
   private bitRootType(nameUpper: string): string | undefined {
-    return this.isCurrentFunctionResult(nameUpper)
-      ? this.currentFunctionResultType
-      : this.bitGlobalType(nameUpper);
+    if (this.isCurrentFunctionResult(nameUpper)) {
+      return this.currentFunctionResultType;
+    }
+    // In a SET accessor the property's name is its value parameter.
+    if (this.currentSetterProperty === nameUpper) {
+      return this.currentSetterPropertyType;
+    }
+    return this.bitGlobalType(nameUpper);
   }
 
   /** The declared type of a top-level or CONFIGURATION global, for BIT members. */

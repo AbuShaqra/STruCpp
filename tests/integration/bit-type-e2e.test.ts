@@ -249,6 +249,67 @@ END_PROGRAM
     ]);
   });
 
+  it("reads a BIT member of a SET value and converts selections over BIT members", () => {
+    const src = `TYPE ST_Status : STRUCT
+  ready : BIT;
+  fault : BIT := TRUE;
+  busy  : BIT;
+  code  : INT;
+  done  : BIT;
+END_STRUCT END_TYPE
+TYPE ST_I : STRUCT x : BIT; y : BIT; END_STRUCT END_TYPE
+FUNCTION_BLOCK FB
+VAR st : ST_I; END_VAR
+PROPERTY P : ST_I
+GET
+P := st;
+END_GET
+SET
+st.x := P.y;
+END_SET
+END_PROPERTY
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR
+  f : FB; w, a : ST_I; r : BOOL;
+  s : ST_Status; n : UDINT;
+  s1, s2, s3, s4, s5, s6 : STRING;
+END_VAR
+w.y := TRUE; f.P := w; a := f.P; r := a.x;
+n := SIZEOF(s);
+s1 := TO_STRING(MOVE(s.fault));
+s2 := TO_STRING(MUX(0, s.fault, s.ready));
+s3 := TO_STRING(MAX(s.fault, s.ready));
+s4 := TO_STRING(LIMIT(FALSE, s.fault, TRUE));
+s5 := BOOL_TO_STRING(MIN(s.fault, s.ready));
+s6 := TO_STRING(SEL(TRUE, s.ready, s.fault));
+END_PROGRAM
+`;
+    const result = compile(src, {
+      headerFileName: "generated.hpp",
+      features: ["+bit_type", "+property"],
+    });
+    expect(result.errors.map((e) => `${e.line}: ${e.message}`)).toEqual([]);
+    const out = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "bittype_set_select",
+      mainCode: `#include <iostream>\nint main() {\n using namespace strucpp;\n Program_MAIN p; p.run();\n std::cout << (unsigned)p.R.get() << " " << p.N.get() << " "${["S1", "S2", "S3", "S4", "S5", "S6"].map((v) => ` << p.${v}.get().c_str() << " "`).join("")};\n return 0;\n}\n`,
+    });
+    expect(out.trim().split(/\s+/)).toEqual([
+      "1",
+      "6",
+      "TRUE",
+      "TRUE",
+      "TRUE",
+      "TRUE",
+      "FALSE",
+      "TRUE",
+    ]);
+  });
+
   it("is refused without the feature", () => {
     const r = compile(SOURCE, { features: ["+union"] });
     expect(r.errors.map((e) => e.message)).toContain(

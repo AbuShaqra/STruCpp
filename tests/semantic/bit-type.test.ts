@@ -396,3 +396,46 @@ END_PROGRAM
     expect(r.cpp).toContain("R = S.bits_0_.ST_I_;");
   });
 });
+
+describe("bit_type — recheck regressions", () => {
+  it("refuses the address of a BIT member of a result or property value", () => {
+    const tail =
+      "a BIT has no address of its own; copy it to a BOOL variable first";
+    const src = `TYPE ST_B : STRUCT a : BIT; b : BIT := TRUE; n : INT; END_STRUCT; END_TYPE
+TYPE ST_A : ST_B; END_TYPE
+FUNCTION G : BOOL
+VAR_IN_OUT x : BOOL; END_VAR
+G := x;
+END_FUNCTION
+FUNCTION MkI : ST_A
+VAR q : POINTER TO BOOL; END_VAR
+q := ADR(MkI.a);
+G(MkI.b);
+END_FUNCTION
+FUNCTION_BLOCK FB
+METHOD M : ST_B
+VAR q : POINTER TO BOOL; END_VAR
+q := ADR(M.a);
+END_METHOD
+PROPERTY P : ST_B
+GET
+VAR q : POINTER TO BOOL; END_VAR
+q := ADR(P.a);
+END_GET
+END_PROPERTY
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR s : ST_A; END_VAR
+s := MkI();
+END_PROGRAM
+`;
+    expect(
+      diag(src, { features: ["+bit_type", "+pointer_to", "+property"] }).errors,
+    ).toEqual([
+      `10:3: VAR_IN_OUT 'X' cannot be bound to the BIT member MKI.B: ${tail}`,
+      `15:10: ADR() cannot take the BIT member M.A: ${tail}`,
+      `20:10: ADR() cannot take the BIT member P.A: ${tail}`,
+      `9:10: ADR() cannot take the BIT member MKI.A: ${tail}`,
+    ]);
+  });
+});

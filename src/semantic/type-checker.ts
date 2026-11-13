@@ -652,6 +652,7 @@ export class TypeChecker {
         // Property getter/setter bodies
         for (const prop of fb.properties) {
           this.currentPropertyName = prop.name.toUpperCase();
+          this.currentPropertyType = prop.type;
           if (prop.getter) this.checkStatements(prop.getter, scope);
           if (prop.setter) this.checkStatements(prop.setter, scope);
           this.currentPropertyName = undefined;
@@ -4939,6 +4940,7 @@ export class TypeChecker {
         sym?.kind === "variable"
           ? (sym.declaration as VarDeclaration | undefined)?.type
           : undefined;
+      base ??= this.resultVariableType(e.name);
     }
     const type =
       base === undefined
@@ -4953,6 +4955,17 @@ export class TypeChecker {
       e.sourceSpan.file,
     );
     return true;
+  }
+
+  /** The type of the FUNCTION or METHOD result, or the PROPERTY value, `name` is here. */
+  private resultVariableType(name: string): TypeReference | undefined {
+    const upper = name.toUpperCase();
+    if (this.currentReturn?.name.toUpperCase() === upper) {
+      return this.currentReturn.type;
+    }
+    return this.currentPropertyName === upper
+      ? this.currentPropertyType
+      : undefined;
   }
 
   /** A type with its TYPE aliases (`T : ST_B`, `T : POINTER TO ST_B`) expanded. */
@@ -6491,6 +6504,8 @@ export class TypeChecker {
   private typeDefaults: ReadonlySet<Expression> = new Set();
   /** The property whose GET or SET body is being checked, upper-cased. */
   private currentPropertyName: string | undefined;
+  /** The declared type of that property. */
+  private currentPropertyType: TypeReference | undefined;
 
   /** The PROGRAM whose body or method is being checked (bare method calls). */
   private currentProgram: ProgramDeclaration | undefined;
