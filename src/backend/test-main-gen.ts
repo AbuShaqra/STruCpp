@@ -395,6 +395,8 @@ class TestFunctionGenerator {
   private astFunctionMap: Map<string, FunctionDeclaration>;
   private fileName: string;
   private indent = "    ";
+  /** What a top-level RETURN returns: `" true"` in a TEST body, nothing in SETUP or TEARDOWN. */
+  private returnValueCpp = " true";
   /** Names of variables from SETUP block (need s. prefix for mock paths) */
   private setupVarNames: Set<string> | undefined;
 
@@ -449,7 +451,8 @@ class TestFunctionGenerator {
     }
     lines.push("");
 
-    // setup() method
+    // setup() method; a RETURN in SETUP or TEARDOWN ends that block (void).
+    this.returnValueCpp = "";
     lines.push("    void setup() {");
     const savedIndent = this.indent;
     this.indent = "        ";
@@ -470,6 +473,7 @@ class TestFunctionGenerator {
       this.indent = savedIndent;
     }
     lines.push("    }");
+    this.returnValueCpp = " true";
 
     lines.push("};");
     return lines.join("\n");
@@ -543,6 +547,8 @@ class TestFunctionGenerator {
     for (const varBlock of tc.varBlocks) {
       this.generateVarBlock(lines, varBlock);
     }
+    // A RETURN nested in the body (in an IF, a loop) ends the TEST, passing.
+    this.testCodegen.setReturnValue("true");
 
     if (setupStructName) {
       // Wrap body in a lambda so assert failures (return false) don't skip teardown
@@ -564,6 +570,7 @@ class TestFunctionGenerator {
       }
       lines.push(`${this.indent}return true;`);
     }
+    this.testCodegen.setReturnValue(undefined);
 
     lines.push("}");
     return lines.join("\n");
@@ -621,14 +628,14 @@ class TestFunctionGenerator {
         this.generateMockVerifyCallCount(lines, stmt);
         break;
       case "ReturnStatement":
-        lines.push(`${this.indent}return true;`);
+        lines.push(`${this.indent}return${this.returnValueCpp};`);
         break;
       // `RETURN (cond);` (feature conditional_return) ends the test when cond holds.
       case "IfStatement":
         if (stmt.conditionalReturn) {
           const cond = this.testCodegen.emitExpression(stmt.condition);
           lines.push(`${this.indent}if (${cond}) {`);
-          lines.push(`${this.indent}    return true;`);
+          lines.push(`${this.indent}    return${this.returnValueCpp};`);
           lines.push(`${this.indent}}`);
           break;
         }

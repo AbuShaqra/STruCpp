@@ -5381,7 +5381,14 @@ export class CodeGenerator {
    * In functions: return functionName_result;
    * In programs/FBs: return;
    */
+  /** When set, a RETURN returns this C++ value: `true` in a TEST body, which passes. */
+  protected returnValueOverride: string | undefined;
+
   private generateReturnStatement(indent: string): void {
+    if (this.returnValueOverride !== undefined) {
+      this.emit(`${indent}return ${this.returnValueOverride};`);
+      return;
+    }
     if (this.interfaceReturnMethod) {
       // Interface-returning methods: the assignment-based return path (methodName := expr)
       // directly emits `return expr;`. A bare `RETURN;` has no value to return, so we

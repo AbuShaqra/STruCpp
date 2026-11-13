@@ -6,7 +6,7 @@
  * These tests invoke the CLI via the compiled dist/node/cli.js.
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
 import {
   mkdirSync,
@@ -14,12 +14,14 @@ import {
   readFileSync,
   existsSync,
   rmSync,
+  mkdtempSync,
 } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
 
 const CLI_PATH = resolve(__dirname, "../../dist/node/cli.js");
-const TMP_BASE = join(tmpdir(), "strucpp-cli-tests");
+// Per-run folder, so concurrent runs do not share files.
+const TMP_BASE = mkdtempSync(join(tmpdir(), "strucpp-cli-tests-"));
 
 /** Run the CLI and return stdout. Throws on non-zero exit. */
 function runCLI(args: string[]): string {
@@ -690,3 +692,5 @@ describe("CLI Library Features", () => {
     });
   });
 });
+
+afterAll(() => rmSync(TMP_BASE, { recursive: true, force: true }));
