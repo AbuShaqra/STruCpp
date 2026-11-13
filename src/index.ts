@@ -594,6 +594,8 @@ function runPipeline(
       dialectRequestFromOptions(mergedOptions),
       mergedOptions.dialectIO?.readFile,
       mergedOptions.dialectIO?.listDir,
+      mergedOptions.dialectIO?.realPath,
+      mergedOptions.dialectIO?.foldCase,
     );
   } catch (e) {
     if (!(e instanceof DialectError)) throw e;
@@ -608,6 +610,15 @@ function runPipeline(
       mergedOptions,
       fbInit,
     };
+  }
+  for (const message of dialect.warnings) {
+    warnings.push({
+      message,
+      line: 0,
+      column: 0,
+      severity: "warning",
+      code: "dialect",
+    });
   }
   fbInit = dialect.features.has("fb_init");
 
