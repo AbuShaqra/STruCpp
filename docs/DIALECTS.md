@@ -101,6 +101,7 @@ the root. A profile without `extends` has only its own features.
 | `type_colon_optional` | `TYPE ST_A STRUCT ... END_STRUCT` without the `:` ([below](#type_colon_optional-and-conditional_return)) |
 | `conditional_return` | `RETURN (cond);`, a RETURN taken when `cond` is TRUE      |
 | `platform_types`     | the types `__XINT`/`XINT`, `__UXINT`/`UXINT`, `XWORD` and `PVOID` ([below](#platform-types)) |
+| `bit_type`           | `BIT` as the type of a STRUCT member, packed into shared bytes ([below](#bit-members)) |
 
 ## Refusals
 
@@ -130,6 +131,7 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `__POUNAME()`                               | `vendor_operators`   | `__POUNAME needs the feature vendor_operators` (at the call)                          |
 | `__POSITION()`                              | `vendor_operators`   | `__POSITION needs the feature vendor_operators` (at the call)                         |
 | `BITADR(x)`                                 | `vendor_operators`   | `BITADR needs the feature vendor_operators` (at the call)                             |
+| `a : BIT;` in a STRUCT                      | `bit_type`           | `BIT as a STRUCT member needs the feature bit_type` (at the type)                    |
 | `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive). With the feature on, `{define}`/`{undefine}` are accepted ([below](#conditional-pragmas)) |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
@@ -777,6 +779,56 @@ before analysis. Their exact results are **this compiler's rules**:
   variable or instance`, unless something of that name is declared.
 - In a unit with inline C++ (`{external ...}`), a call left to an operator name is not refused, with the
   feature off or for `INDEXOF`, as for any undeclared call: the inline code may declare the name.
+
+## BIT members
+
+Under `bit_type` a STRUCT member may be of type `BIT`: a BOOL value stored in one bit.
+
+```
+TYPE ST_Status : STRUCT
+  ready : BIT;
+  fault : BIT := TRUE;
+  busy  : BIT;
+  code  : INT;
+  done  : BIT;
+END_STRUCT END_TYPE
+```
+
+- **Packing (this compiler's rule).** Consecutive BIT members fill bytes from the least significant bit, 8
+  per byte, then the next byte; a member of another type ends the run and is placed at its normal
+  alignment; the bytes holding BIT members have alignment 1, and a run's unused bits are 0. Above,
+  `ready`, `fault` and `busy` are bits 0..2 of byte 0, `code` is at offset 2 and `done` is bit 0 of byte
+  4, so `SIZEOF(s)` of a variable `s : ST_Status` is 6. The documentation of common vendor toolchains
+  states that a BIT takes one bit and that consecutive BIT members are grouped into bytes; it does not
+  state the bit order, where a non-BIT member starts or the alignment, so those parts are inferred, not
+  verified.
+- A BIT member reads and writes as a BOOL: assignment, comparison (also of two such STRUCTs, member by
+  member), structure initializers and initial values, copy of the STRUCT, and passing it as a VAR_INPUT
+  or capturing an FB output into it (`fb(q => s.b)`), also through a TYPE alias of the STRUCT, a
+  FUNCTION or METHOD result, or an element of an ARRAY OF FB. Reads and writes touch only that bit, and a
+  conversion such as `BOOL_TO_STRING(s.b)` gives `'TRUE'` or `'FALSE'`, also over `SEL`, `MUX`, `MAX`, `MIN`,
+  `LIMIT` or `MOVE` of BIT members.
+- SIZEOF, member offsets, `POINTER TO` overlays, byte access through a pointer and a UNION or `STRUCT
+  OVERLAP` holding the STRUCT all see the packed bytes: in `UNION f : ST_F; w : WORD; END_UNION`, `u.f.b`
+  is bit 1 of the low byte of `u.w`.
+- A BIT has no address of its own, so these are refused at the member: `ADR`, `REF()` and `REF_LINK`
+  (`ADR() cannot take the BIT member S.A: a BIT has no address of its own; copy it to a BOOL variable
+  first`, naming the member as written, such as `O.ARR[2].A`, `P^.A` or `GVL_A.G.A`; also when the
+  STRUCT is reached through a TYPE alias or is a FUNCTION or METHOD result or a PROPERTY value), `REF=`
+  binding to it, binding it to a `REFERENCE TO` input or a `VAR_IN_OUT`, and binding it to
+  a FUNCTION or METHOD `VAR_OUTPUT` (`=>`), which is passed by reference.
+- BIT is accepted only as the type of a STRUCT member: a variable, an FB member, an ARRAY OF BIT, a
+  `POINTER TO BIT`, a UNION member or a `STRUCT OVERLAP` member (whose members share one storage, as a
+  UNION's) is `BIT is allowed only as the type of a STRUCT member`. With the feature off a BIT member is
+  `BIT as a STRUCT member needs the feature bit_type`; BIT elsewhere, a UNION or `STRUCT OVERLAP` member
+  included, stays an undefined type (`Undefined type 'BIT' in PROGRAM 'MAIN'`, `... in FUNCTION_BLOCK
+  'FB_A'`, `... in UNION 'ST_O'`). A TYPE or POU named `BIT` wins in every dialect.
+- The debugger and forcing address one bit: a BIT leaf of the debug map has `"type": "BIT"` and `"bit": n`
+  and forcing it writes only that bit (see [RUNTIME.md](RUNTIME.md#bit-leaves-feature-bit_type)).
+  Under `STRUCPP_THREADED` a BIT of a CONFIGURATION global is written under the global's lock, as its
+  other members are.
+- Not supported yet: a library (`--compile-lib`) that declares a STRUCT with BIT members (`STRUCT 'ST_B' has
+  BIT members: a library cannot export BIT members yet`).
 
 ## Strict checks a feature relaxes
 

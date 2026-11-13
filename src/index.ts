@@ -54,6 +54,7 @@ import {
   markImplicitParameters,
 } from "./semantic/implicit-parameters.js";
 import { lowerPouOperators } from "./semantic/vendor-pou-operators.js";
+import { lowerBitType } from "./semantic/bit-type.js";
 import { unionLoweringErrors } from "./semantic/union.js";
 import { fbInitLoweringErrors } from "./semantic/fb-init.js";
 import { walkAST } from "./ast-utils.js";
@@ -63,6 +64,7 @@ import type { LibraryChunk, StlibArchive } from "./library/library-manifest.js";
 import { annotateErrorsWithPouContext } from "./diagnostic-pou-context.js";
 import {
   DialectError,
+  profilesWithFeature,
   resolveDialect,
   type DialectRequest,
   type ResolvedDialect,
@@ -888,6 +890,19 @@ function runPipeline(
       }
       lowerPlatformTypes(ast, (name) => libraryTypes.has(name));
     }
+    loweringErrors.push(
+      ...lowerBitType(
+        ast,
+        dialect.features.has("bit_type"),
+        (name) =>
+          (mergedOptions.libraries ?? []).some((a) =>
+            [...a.manifest.types, ...a.manifest.functionBlocks].some(
+              (d) => d.name.toUpperCase() === name,
+            ),
+          ),
+        profilesWithFeature(dialect, "bit_type"),
+      ),
+    );
     errors.push(...loweringErrors);
     if (!continueOnError && loweringErrors.length > 0) {
       return {
