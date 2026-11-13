@@ -3,10 +3,13 @@
 /**
  * File-system access for dialect profiles (`--dialect-file`, `--dialect-path`).
  */
-import { readFileSync, readdirSync } from "fs";
+import { readFileSync, readdirSync, realpathSync } from "fs";
+import { resolve } from "path";
 import type { DialectIO } from "../dialect.js";
 
 export const nodeDialectIO: DialectIO = {
   readFile: (path) => readFileSync(path, "utf-8"),
   listDir: (dir) => readdirSync(dir),
+  realPath: (path) => realpathSync.native(resolve(path)),
+  foldCase: process.platform === "win32",
 };
