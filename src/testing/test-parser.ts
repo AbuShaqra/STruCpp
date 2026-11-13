@@ -14,7 +14,7 @@ import { buildTestAST } from "../frontend/ast-builder.js";
 import { lowerTestInlineTypes } from "../frontend/lower-inline-types.js";
 import { lowerTestPlatformTypes } from "../semantic/platform-types.js";
 import type { TestFile } from "./test-model.js";
-import type { CompileError, CompileOptions } from "../types.js";
+import type { CompileError, CompileOptions, SourceSpan } from "../types.js";
 import { tokenizeTest } from "../frontend/lexer.js";
 import {
   DialectError,
@@ -132,6 +132,7 @@ export function parseTestFile(
     const testFile = buildTestAST(parseResult.cst, fileName);
     errors.push(...lowerTestInlineTypes(testFile));
     errors.push(...conditionalReturnErrors(testFile, dialect, fileName));
+    errors.push(...pointerFeatureErrors(testFile, dialect, fileName));
     if (dialect.features.has("platform_types")) {
       lowerTestPlatformTypes(testFile);
     }
@@ -172,6 +173,62 @@ function conditionalReturnErrors(
         severity: "error",
         file: fileName,
       });
+    }
+    for (const value of Object.values(node)) visit(value);
+  };
+  visit(testFile);
+  return errors;
+}
+
+/** `POINTER TO` and `ADR` in a test file need the feature pointer_to, as in a source. */
+function pointerFeatureErrors(
+  testFile: TestFile,
+  dialect: ResolvedDialect,
+  fileName: string,
+): CompileError[] {
+  if (dialect.features.has("pointer_to")) return [];
+  const profiles = profilesWithFeature(dialect, "pointer_to");
+  const hint = profiles.length > 0 ? ` (profiles: ${profiles.join(", ")})` : "";
+  const errors: CompileError[] = [];
+  const refuse = (construct: string, span: SourceSpan): void => {
+    errors.push({
+      message: `${construct} needs the feature pointer_to${hint}`,
+      line: span.startLine,
+      column: span.startCol,
+      severity: "error",
+      file: fileName,
+    });
+  };
+  const seen = new Set<object>();
+  const visit = (node: unknown): void => {
+    if (typeof node !== "object" || node === null || seen.has(node)) return;
+    seen.add(node);
+    if (node === testFile.dialect) return;
+    const n = node as {
+      kind?: unknown;
+      referenceKind?: unknown;
+      referenceChain?: unknown;
+      elementReferenceChain?: unknown;
+      functionName?: unknown;
+      sourceSpan?: SourceSpan;
+    };
+    if (n.kind === "TypeReference" && n.sourceSpan !== undefined) {
+      const chain = (v: unknown): unknown[] =>
+        Array.isArray(v) ? (v as unknown[]) : [];
+      const levels: unknown[] = [
+        n.referenceKind,
+        ...chain(n.referenceChain),
+        ...chain(n.elementReferenceChain),
+      ];
+      if (levels.includes("pointer_to")) refuse("POINTER TO", n.sourceSpan);
+    }
+    if (
+      n.kind === "FunctionCallExpression" &&
+      typeof n.functionName === "string" &&
+      n.functionName.toUpperCase() === "ADR" &&
+      n.sourceSpan !== undefined
+    ) {
+      refuse("ADR", n.sourceSpan);
     }
     for (const value of Object.values(node)) visit(value);
   };

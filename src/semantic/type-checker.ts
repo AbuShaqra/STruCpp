@@ -563,6 +563,7 @@ export class TypeChecker {
     this.checkAllInitializerElements(ast);
 
     this.checkGlobalInitialCycles(ast);
+    this.refuseNarrowAddressInGlobals(ast);
     this.checkStructReferenceDefaults(ast);
     this.markGlobalVendorOperators(ast);
 
@@ -3404,6 +3405,14 @@ export class TypeChecker {
         ) {
           continue;
         }
+        // The same for ADR inside an array literal or structure initializer.
+        if (
+          (outerKind ?? "none") === "none" &&
+          (decl.initialValue.kind === "ArrayLiteralExpression" ||
+            decl.initialValue.kind === "StructInitializerExpression")
+        ) {
+          this.refuseNarrowAddressNested(decl.type, decl.initialValue);
+        }
         // `p : POINTER TO T := ADR(x);` takes an address of any target type.
         if (outerKind === "pointer_to" && isAddressOf(decl.initialValue)) {
           this.resolveExprType(decl.initialValue, scope);
@@ -3482,6 +3491,70 @@ export class TypeChecker {
       value.sourceSpan.file,
     );
     return true;
+  }
+
+  /**
+   * `ADR(x)` for an integer narrower than an address anywhere in an initial
+   * value: the value itself, an array literal element, a structure
+   * initializer element, nested.
+   */
+  private refuseNarrowAddressNested(
+    type: Pick<TypeReference, "name" | "arrayDimensions" | "elementTypeName">,
+    value: Expression,
+  ): void {
+    if (value.kind === "ArrayLiteralExpression") {
+      const element =
+        type.arrayDimensions !== undefined && type.elementTypeName !== undefined
+          ? { name: type.elementTypeName }
+          : this.namedArrayElementType(type.name);
+      if (element === undefined) return;
+      for (const e of value.elements)
+        this.refuseNarrowAddressNested(element, e);
+    } else if (value.kind === "StructInitializerExpression") {
+      for (const el of value.elements) {
+        const field = this.lookupMember(type.name, el.name);
+        if (field) this.refuseNarrowAddressNested(field.type, el.value);
+      }
+    } else if (isAddressOf(value)) {
+      this.refuseNarrowAddress(type.name, value);
+    }
+  }
+
+  /** The element type of a named ARRAY type, through aliases. */
+  private namedArrayElementType(
+    name: string,
+  ):
+    | Pick<TypeReference, "name" | "arrayDimensions" | "elementTypeName">
+    | undefined {
+    let current = name.toUpperCase();
+    for (let depth = 0; depth < 16 && this.ast; depth++) {
+      const decl = this.ast.types.find((t) => t.name.toUpperCase() === current);
+      const def = decl?.definition;
+      if (def?.kind === "ArrayDefinition") return def.elementType;
+      if (def?.kind !== "TypeReference") return undefined;
+      if (def.arrayDimensions !== undefined) {
+        return def.elementTypeName === undefined
+          ? undefined
+          : { name: def.elementTypeName };
+      }
+      current = def.name.toUpperCase();
+    }
+    return undefined;
+  }
+
+  /** ADR into a narrower integer in a top-level or CONFIGURATION global's initial value. */
+  private refuseNarrowAddressInGlobals(ast: CompilationUnit): void {
+    const blocks = [
+      ...ast.globalVarBlocks,
+      ...ast.configurations.flatMap((c) => c.varBlocks),
+    ];
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (!decl.initialValue) continue;
+        if ((decl.type.referenceKind ?? "none") !== "none") continue;
+        this.refuseNarrowAddressNested(decl.type, decl.initialValue);
+      }
+    }
   }
 
   /** `F(ADR(x))` and `fb.M(ADR(x))` into an input narrower than an address. */

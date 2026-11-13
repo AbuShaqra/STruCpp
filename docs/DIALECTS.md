@@ -115,9 +115,10 @@ When a feature is off the compile fails with an error at the construct's own lin
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
 included, and `ADR` both in statements and in a declaration's initial value. IEC
-`REF_TO`, `REF()` and `^` need no feature. `--test` files are analysed with the default set, so they are
-not refused under `iec-3`. The one exception is `conditional_pragmas`: `--test` resolves the dialect flags
-and `-D` for the test files too, so their conditional pragmas follow the same profile as the sources.
+`REF_TO`, `REF()` and `^` need no feature. `--test` files are analysed with the default set, so most
+constructs are not refused there under `iec-3`. The exceptions follow the dialect flags of the run, which
+`--test` resolves for the test files too (and `-D`): conditional pragmas, `POINTER TO` and `ADR`
+(`pointer_to`), `RETURN (cond);` and the platform types.
 
 A `REFERENCE TO` VAR_INPUT is bound to its argument at the call. Where `reference_to` is on, these
 arguments are errors: an expression (`REFERENCE TO input 'R' needs a variable to refer to, not an
