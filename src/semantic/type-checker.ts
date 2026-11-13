@@ -1797,6 +1797,7 @@ export class TypeChecker {
     }
     // The result of arithmetic on an enumeration has no type to check further.
     if (this.checkEnumOperands(expr, leftType, rightType)) return undefined;
+    if (expr.operator === "MOD") this.refuseRealMod(expr, leftType, rightType);
 
     let type: IECType | undefined;
 
@@ -1924,6 +1925,32 @@ export class TypeChecker {
     });
     if (bits.length === 0) return undefined;
     return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
+  }
+
+  /**
+   * MOD takes integers (ANY_INT, IEC 61131-3 Table 29): a REAL or LREAL
+   * operand is refused, in every mode, as the C++ build would fail.
+   */
+  private refuseRealMod(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): void {
+    for (const [operand, type] of [
+      [expr.left, leftType],
+      [expr.right, rightType],
+    ] as const) {
+      if (type.typeKind !== "elementary") continue;
+      const name = this.aliasBase((type as ElementaryType).name);
+      if (name !== "REAL" && name !== "LREAL") continue;
+      this.addError(
+        `MOD takes integers (ANY_INT, IEC 61131-3 Table 29), not ${name}`,
+        operand.sourceSpan.startLine,
+        operand.sourceSpan.startCol,
+        operand.sourceSpan.file,
+      );
+      return;
+    }
   }
 
   /**

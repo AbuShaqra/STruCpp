@@ -386,6 +386,8 @@ Template implementations of all IEC 61131-3 standard functions:
 
 Variadic functions (ADD, MUL, MIN, MAX) accept 2+ arguments via template parameter packs.
 
+Integer `MOD` returns 0 for a divisor of 0 (Table 29, note e), and for a signed divisor of -1 without dividing (the minimum value MOD -1 would trap): the `MOD` function, the `%` operators of `IECVar` and subrange values, and `iec_mod(a, b)`, which the code generator emits for the `MOD` operator unless the divisor is a nonzero integer literal. `SHL` and `SHR` return 0 for a shift count at or above the bit width of IN (1 for BOOL; a count wider than `int` is not truncated), and a signed `SHR` returns the sign (0 or -1), so no shift reaches the undefined C++ case.
+
 ## REPL Runtime (`runtime/repl/`)
 
 The interactive REPL binary uses [isocline](https://github.com/daanx/isocline) (MIT licensed) for line editing with syntax highlighting, tab completion, and command history. `iec_repl.hpp` provides the STruC++ REPL harness that wraps compiled programs with an interactive shell for variable inspection, function invocation, and time advancement for FB testing.

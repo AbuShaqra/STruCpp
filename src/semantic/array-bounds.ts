@@ -147,7 +147,8 @@ class BoundResolver {
           case "/":
             return r === 0 ? { unknown: "/ 0" } : { value: Math.trunc(l / r) };
           case "MOD":
-            return r === 0 ? { unknown: "MOD 0" } : { value: l % r };
+            // Table 29 note e: MOD by 0 is 0
+            return { value: r === 0 ? 0 : l % r };
           default:
             return { unknown: expr.operator };
         }
