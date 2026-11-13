@@ -6313,7 +6313,14 @@ export class SemanticAnalyzer {
     scope: Scope,
     sourceAst: CompilationUnit | undefined,
   ): void {
-    const checker = new TypeChecker(this.symbolTables, this.stdRegistry);
+    // The run's features apply in test files too (XSIZEOF, __ISVALIDREF)
+    const checker = new TypeChecker(
+      this.symbolTables,
+      this.stdRegistry,
+      false,
+      this.features,
+      (feature, construct) => this.featureMessage(feature, construct),
+    );
     const found = checker.checkTestOutputBindings(
       stmts as readonly ASTNode[],
       scope,
@@ -6655,8 +6662,12 @@ export function analyzeTestFile(
   testFile: TestFile,
   sourceSymbolTables: SymbolTables,
   sourceAst?: CompilationUnit,
+  /** The run's dialect: its features apply in the test file too. */
+  dialect?: ResolvedDialect,
 ): { errors: CompileError[]; warnings: CompileError[] } {
-  const analyzer = new SemanticAnalyzer();
+  const analyzer = new SemanticAnalyzer(
+    dialect !== undefined ? { dialect } : {},
+  );
   return analyzer.analyzeTestFile(testFile, sourceSymbolTables, sourceAst);
 }
 

@@ -6528,6 +6528,11 @@ export class CodeGenerator {
    * or for a variable reached through `^` or a REFERENCE TO, by its
    * declaration. Undefined for anything else.
    */
+  /** The STRUCT type an operand of `=` / `<>` is compared as, if any. */
+  protected structOperandName(expr: Expression): string | undefined {
+    return this.comparedStructName(expr);
+  }
+
   private comparedStructName(expr: Expression): string | undefined {
     const rt = expr.resolvedType;
     if (rt !== undefined && "name" in rt && typeof rt.name === "string") {

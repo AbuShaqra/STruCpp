@@ -30,6 +30,7 @@ import type {
   CompilationUnit,
   FunctionDeclaration,
   VarBlock,
+  TypeReference,
   VarDeclaration,
   Statement,
   Expression,
@@ -427,25 +428,36 @@ class TestFunctionGenerator {
     this.testCodegen.clearSetupVars();
     // Build scope from setup vars so codegen can detect FB/program invocations
     const varTypes = new Map<string, string>();
+    const varTypeRefs = new Map<string, TypeReference>();
     for (const varBlock of setupVarBlocks) {
       for (const decl of varBlock.declarations) {
         for (const name of decl.names) {
           varTypes.set(name, decl.type.name);
+          varTypeRefs.set(name, decl.type);
         }
       }
     }
-    this.testCodegen.setScopeFromVarTypes(varTypes);
+    this.testCodegen.setScopeFromVarTypes(varTypes, varTypeRefs);
 
     // Member variables from SETUP VAR blocks
     for (const varBlock of setupVarBlocks) {
       for (const decl of varBlock.declarations) {
         const cppType = this.testCodegen.resolveType(decl.type);
         const shared = this.testCodegen.sharedInstanceOfType(decl.type.name);
+        // A SETUP variable starts from its initial value, as a TEST local does
+        const init =
+          decl.initialValue !== undefined
+            ? ` = ${this.testCodegen.emitInitializer(
+                decl.initialValue,
+                cppType,
+                decl.type.name,
+              )}`
+            : "";
         for (const name of decl.names) {
           lines.push(
             shared !== undefined
               ? `    ${cppType}& ${name} = ${shared};`
-              : `    ${cppType} ${name};`,
+              : `    ${cppType} ${name}${init};`,
           );
         }
       }
@@ -501,6 +513,7 @@ class TestFunctionGenerator {
 
     // Build variable-to-type map for codegen scope (POU invocation detection)
     const varTypes = new Map<string, string>();
+    const varTypeRefs = new Map<string, TypeReference>();
 
     // Include SETUP variables in the type map
     if (setup) {
@@ -508,6 +521,7 @@ class TestFunctionGenerator {
         for (const decl of varBlock.declarations) {
           for (const name of decl.names) {
             varTypes.set(name, decl.type.name);
+          varTypeRefs.set(name, decl.type);
           }
         }
       }
@@ -517,11 +531,12 @@ class TestFunctionGenerator {
       for (const decl of varBlock.declarations) {
         for (const name of decl.names) {
           varTypes.set(name, decl.type.name);
+          varTypeRefs.set(name, decl.type);
         }
       }
     }
 
-    this.testCodegen.setScopeFromVarTypes(varTypes);
+    this.testCodegen.setScopeFromVarTypes(varTypes, varTypeRefs);
 
     // If there's a SETUP, create the struct instance and call setup()
     if (setupStructName) {
@@ -766,10 +781,23 @@ class TestFunctionGenerator {
             `${assert.assertType} requires 2 arguments at ${this.fileName}:${line}`,
           );
         }
-        const actualExpr = this.testCodegen.emitExpression(assert.args[0]!);
-        const expectedExpr = this.testCodegen.emitExpression(assert.args[1]!);
         const actualStr = this.expressionToString(assert.args[0]!);
         const expectedStr = this.expressionToString(assert.args[1]!);
+        // Two STRUCTs: compared memberwise, as `a = b` is (no C++ operator==)
+        const structEq = this.testCodegen.emitStructComparison(
+          assert.assertType === "ASSERT_EQ" ? "=" : "<>",
+          assert.args[0]!,
+          assert.args[1]!,
+        );
+        if (structEq !== undefined) {
+          const op = assert.assertType === "ASSERT_EQ" ? "=" : "<>";
+          lines.push(
+            `${this.indent}if (!ctx.assert_true(${structEq}, "${escapeString(`${actualStr} ${op} ${expectedStr}`)}", ${line}${msgArg})) return false;`,
+          );
+          break;
+        }
+        const actualExpr = this.testCodegen.emitExpression(assert.args[0]!);
+        const expectedExpr = this.testCodegen.emitExpression(assert.args[1]!);
         const method =
           assert.assertType === "ASSERT_EQ" ? "assert_eq" : "assert_neq";
         lines.push(

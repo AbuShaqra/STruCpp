@@ -1061,11 +1061,20 @@ function runTestMode(options: CLIOptions): void {
   // 3b. Semantic analysis of test files
   if (result.symbolTables) {
     let hasTestErrors = false;
+    // Checked already by checkDialect: the run's features reach the test files
+    const testDialect = resolveDialect(
+      dialectCompileOptions(options),
+      nodeDialectIO.readFile,
+      nodeDialectIO.listDir,
+      nodeDialectIO.realPath,
+      nodeDialectIO.foldCase,
+    );
     for (const tf of testFiles) {
       const analysisResult = analyzeTestFile(
         tf,
         result.symbolTables,
         result.ast,
+        testDialect,
       );
       if (analysisResult.errors.length > 0) {
         hasTestErrors = true;
