@@ -72,6 +72,36 @@ describe.skipIf(!hasGpp)("RETURN nested in a TEST body", () => {
     expect(r.status).toBe(0);
   });
 
+  it("ends SETUP and TEARDOWN at a RETURN, and RETURN (cond) nested in a TEST", () => {
+    writeFileSync(
+      join(DIR, "blocks.st"),
+      `SETUP
+VAR f : FB; k : INT; END_VAR
+  k := 1;
+  RETURN (k > 0);
+  k := 99;
+END_SETUP
+TEARDOWN
+  RETURN;
+END_TEARDOWN
+TEST 'r'
+  ASSERT_EQ(k, 1);
+  IF k = 1 THEN RETURN (TRUE); END_IF;
+  ASSERT_EQ(k, 99);
+END_TEST
+`,
+    );
+    const r = run([
+      join(DIR, "src.st"),
+      "--test",
+      join(DIR, "blocks.st"),
+      "--feature",
+      "+conditional_return",
+    ]);
+    expect(r.out).toContain("1 test, 1 passed, 0 failed");
+    expect(r.status).toBe(0);
+  });
+
   it("ends the TEST, without SETUP", () => {
     const r = run([join(DIR, "src.st"), "--test", join(DIR, "plain.st")]);
     expect(r.out).toContain("3 tests, 3 passed, 0 failed");
