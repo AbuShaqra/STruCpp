@@ -139,6 +139,13 @@ interface CLIOptions {
 const enableColor =
   process.env.NO_COLOR === undefined && process.stderr.isTTY === true;
 
+/** `--cxx-flags` defines STRUCPP_THREADED: the C++ is built threaded. */
+function definesThreaded(cxxFlags: string): boolean {
+  return splitCxxFlags(cxxFlags).some((f) =>
+    /^-DSTRUCPP_THREADED(=|$)/.test(f),
+  );
+}
+
 function printDiagnostics(
   errors: ReadonlyArray<CompileError>,
   sources: DiagnosticSource[],
@@ -971,6 +978,7 @@ function runTestMode(options: CLIOptions): void {
     headerFileName: "generated.hpp",
     fileName: basename(inputPath),
     isTestBuild: true,
+    ...(definesThreaded(options.cxxFlags) ? { threaded: true } : {}),
     strict: options.strict,
     ...dialectCompileOptions(options),
     ...withGlobalListName(options, primaryInput, {}, true),
@@ -1578,6 +1586,9 @@ async function main(): Promise<void> {
     headerFileName,
     cppFileName: basename(outputPath),
     fileName: basename(inputPath),
+    ...(options.build && definesThreaded(options.cxxFlags)
+      ? { threaded: true }
+      : {}),
     ...withGlobalListName(options, primaryInput, {}, true),
   };
   if (additionalSources.length > 0) {

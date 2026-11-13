@@ -8,6 +8,7 @@
  */
 
 import type { SourceSpan } from "../types.js";
+import type { ResolvedDialect } from "../dialect.js";
 
 // =============================================================================
 // Base Types
@@ -379,6 +380,8 @@ export interface TypeDeclaration extends ASTNode {
   extendsKeywordSpan?: SourceSpan;
   /** Set on a TYPE hoisted from an inline enumeration or subrange. */
   inline?: InlineTypeOrigin;
+  /** The STRUCT keyword of `TYPE X STRUCT`, written without the colon; needs the feature type_colon_optional. */
+  colonOmittedSpan?: SourceSpan;
 }
 
 /** Where a hoisted inline type was written. */
@@ -507,6 +510,10 @@ export interface TypeReference extends ASTNode {
   maxLength?: number | string; // For STRING(n) / WSTRING(n) parameterized length; string for constant names
   arrayDimensions?: Array<{ start: number; end: number }>; // For __INLINE_ARRAY_* types
   elementTypeName?: string; // Element type for inline arrays (e.g. "BYTE" for ARRAY[0..7] OF BYTE)
+  /** In a test file: the platform type written (`XINT`) where `name` is its lowered type. */
+  platformTypeName?: string;
+  /** In a test file: the platform type written for the element where `elementTypeName` is lowered. */
+  platformElementTypeName?: string;
   /** STRING / WSTRING length of an inline array's element (`ARRAY[0..1] OF STRING(10)`). */
   elementMaxLength?: number | string;
   /**
@@ -632,6 +639,8 @@ export interface IfStatement extends ASTNode {
   thenStatements: Statement[];
   elsifClauses: ElsifClause[];
   elseStatements: Statement[];
+  /** Set when written `RETURN (cond);`: the RETURN statement; needs the feature conditional_return. */
+  conditionalReturn?: SourceSpan;
 }
 
 /**
@@ -848,7 +857,12 @@ export interface FunctionCallExpression extends TypedNode {
   globalList?: string;
   /** Set by the type checker: the library whose FUNCTION of a standard function's name is called. */
   libraryFunction?: string;
+  /** Set by the type checker: the call is the built-in operator of this name (`__ISVALIDREF`, `XSIZEOF`). */
+  vendorOperator?: VendorOperator;
 }
+
+/** Built-in operators beyond IEC 61131-3, each enabled by a dialect feature. */
+export type VendorOperator = "__ISVALIDREF" | "XSIZEOF";
 
 /**
  * Method call on an expression (for method chaining / fluent interface).
@@ -1034,6 +1048,8 @@ export interface TestFile {
   testCases: TestCase[];
   /** TYPEs hoisted from inline enumerations and subranges in its VAR blocks. */
   inlineTypes?: TypeDeclaration[];
+  /** The dialect the file was parsed under: its profiles name a refused feature's. */
+  dialect?: ResolvedDialect;
 }
 
 /**
