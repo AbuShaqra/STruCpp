@@ -122,6 +122,10 @@ import {
   vendorOperatorFeature,
   vendorOperatorNamed,
 } from "./vendor-operators.js";
+import {
+  platformTypeTarget,
+  restoreDeclaredPlatformTypes,
+} from "./platform-types.js";
 
 // =============================================================================
 // Located Variable Address Parsing
@@ -3081,7 +3085,7 @@ export class SemanticAnalyzer {
   /** `<construct> needs the feature <id>`, plus the loaded profiles that have it. */
   private featureMessage(feature: FeatureId, construct: string): string {
     const message = `${construct} needs the feature ${feature}`;
-    const dialect = this.options.dialect;
+    const dialect = this.options.dialect ?? this.testFileDialect;
     const profiles = dialect ? profilesWithFeature(dialect, feature) : [];
     return profiles.length > 0
       ? `${message} (profiles: ${profiles.join(", ")})`
@@ -5009,6 +5013,18 @@ export class SemanticAnalyzer {
     // For inline arrays, validate the element type instead
     const nameToCheck = typeRef.elementTypeName ?? typeRef.name;
 
+    // A platform type is lowered where its feature is on.
+    if (
+      !this.isKnownType(nameToCheck) &&
+      platformTypeTarget(nameToCheck) !== undefined
+    ) {
+      this.requireFeature(
+        "platform_types",
+        nameToCheck.toUpperCase(),
+        typeRef.sourceSpan,
+      );
+      return;
+    }
     if (!this.isKnownType(nameToCheck)) {
       this.addError(
         `Undefined type '${nameToCheck}'${context ? " in " + context : ""}`,
@@ -6180,6 +6196,9 @@ export class SemanticAnalyzer {
    * Validates type references in var blocks and undeclared variable usage
    * in SETUP, TEARDOWN, and TEST bodies.
    */
+  /** The dialect a test file was parsed under, for the profiles a refusal names. */
+  private testFileDialect: ResolvedDialect | undefined;
+
   analyzeTestFile(
     testFile: TestFile,
     sourceSymbolTables: SymbolTables,
@@ -6187,6 +6206,7 @@ export class SemanticAnalyzer {
   ): { errors: CompileError[]; warnings: CompileError[] } {
     this.errors = [];
     this.warnings = [];
+    this.testFileDialect = testFile.dialect;
     this.symbolTables = sourceSymbolTables;
 
     // Build enum member map from source symbol tables for bare enum resolution
@@ -6204,6 +6224,11 @@ export class SemanticAnalyzer {
     }
     this.enumMemberMap = buildEnumMemberMap(enumDescriptors);
 
+    // A platform type lowered by the test parser that the sources declare.
+    restoreDeclaredPlatformTypes(testFile, (name) => {
+      const kind = sourceSymbolTables.globalScope.lookup(name)?.kind;
+      return kind === "type" || kind === "functionBlock" || kind === "program";
+    });
     const typeScope = this.buildTestTypeScope(testFile);
 
     // Validate type references in SETUP and TEST var blocks

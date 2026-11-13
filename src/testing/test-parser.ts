@@ -12,6 +12,7 @@ import { parseTestSource } from "../frontend/parser.js";
 import { toCompileErrors } from "../frontend/parse-errors.js";
 import { buildTestAST } from "../frontend/ast-builder.js";
 import { lowerTestInlineTypes } from "../frontend/lower-inline-types.js";
+import { lowerTestPlatformTypes } from "../semantic/platform-types.js";
 import type { TestFile } from "./test-model.js";
 import type { CompileError, CompileOptions } from "../types.js";
 import { tokenizeTest } from "../frontend/lexer.js";
@@ -131,6 +132,10 @@ export function parseTestFile(
     const testFile = buildTestAST(parseResult.cst, fileName);
     errors.push(...lowerTestInlineTypes(testFile));
     errors.push(...conditionalReturnErrors(testFile, dialect, fileName));
+    if (dialect.features.has("platform_types")) {
+      lowerTestPlatformTypes(testFile);
+    }
+    testFile.dialect = dialect;
     return { testFile, errors };
   } catch (e) {
     errors.push({

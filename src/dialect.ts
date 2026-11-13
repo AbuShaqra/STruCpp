@@ -30,6 +30,7 @@ export const KNOWN_FEATURES = [
   "vendor_operators",
   "type_colon_optional",
   "conditional_return",
+  "platform_types",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];

@@ -83,6 +83,7 @@ the root. A profile without `extends` has only its own features.
 | `vendor_operators`   | the operator `XSIZEOF(x)` ([below](#vendor-operators))       |
 | `type_colon_optional` | `TYPE ST_A STRUCT ... END_STRUCT` without the `:` ([below](#type_colon_optional-and-conditional_return)) |
 | `conditional_return` | `RETURN (cond);`, a RETURN taken when `cond` is TRUE      |
+| `platform_types`     | the types `__XINT`/`XINT`, `__UXINT`/`UXINT`, `XWORD` and `PVOID` ([below](#platform-types)) |
 
 ## Refusals
 
@@ -108,6 +109,7 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `XSIZEOF(x)`                                | `vendor_operators`   | `XSIZEOF needs the feature vendor_operators`                                          |
 | `TYPE ST_A STRUCT` (no `:`)                 | `type_colon_optional` | `TYPE ST_A without ':' before STRUCT needs the feature type_colon_optional` (at `STRUCT`) |
 | `RETURN (cond);`                            | `conditional_return` | `RETURN (condition) needs the feature conditional_return` (at `RETURN`)              |
+| `x : XINT;` (any platform type)            | `platform_types`     | `XINT needs the feature platform_types` (at the type)                                |
 | `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive). With the feature on, `{define}`/`{undefine}` are accepted ([below](#conditional-pragmas)) |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
@@ -673,6 +675,31 @@ END_FUNCTION
   parenthesis (`RETURN (a) OR b;`): the condition is the one parenthesised expression.
 - In a `--test` file, `RETURN (cond);` follows the dialect flags of the run, as conditional pragmas do: it is
   refused without the feature, and with it a TEST ends there (passing) when `cond` holds.
+
+## Platform types
+
+Common vendor toolchains have integer types whose width is the target's address width, 32 or 64 bits.
+This compiler generates C++ for a 64-bit target, so under `platform_types` each is its 64-bit type:
+
+| Type                | Is        | Notes                                                                       |
+| ------------------- | --------- | --------------------------------------------------------------------------- |
+| `__XINT`, `XINT`    | `LINT`    |                                                                             |
+| `__UXINT`, `UXINT`  | `ULINT`   |                                                                             |
+| `XWORD`             | `__XWORD` | the address-width bit string `ADR` returns; 64 bits on the 64-bit target    |
+| `PVOID`             | `__XWORD` | an untyped address: `pv := ADR(x)` and `pd := pv` (a `POINTER TO`) work     |
+
+- The name is replaced by its type wherever a type is written (a variable, a STRUCT field, an ARRAY
+  element, a POINTER TO target, an alias, a FUNCTION result, an input), before analysis. So messages, hover
+  and the generated C++ show the 64-bit type (`Implicit narrowing conversion from LINT to DINT`), and the
+  C++ is that of the 64-bit spelling. A 32-bit target is not supported: there these types would be
+  `DINT`, `UDINT` and `DWORD`.
+- A TYPE, FUNCTION_BLOCK, PROGRAM or INTERFACE of the same name, in the sources or in a library, wins and
+  the name means that declaration in every dialect. A variable named `xint` is unaffected.
+- With the feature off, each use is refused at the type, instead of `Undefined type`.
+- In a `--test` file the platform types follow the dialect flags of the run (as conditional pragmas do): they
+  are lowered with the feature, and a TYPE, FUNCTION_BLOCK or PROGRAM of the same name in the sources wins.
+- Not supported: typed literals (`XINT#5`) and conversion functions named after these types
+  (`XINT_TO_INT`, `TO_UXINT`). Use the 64-bit names (`LINT#5`, `LINT_TO_INT`).
 
 ## Strict checks a feature relaxes
 

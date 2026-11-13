@@ -8,6 +8,7 @@
  */
 
 import type { SourceSpan } from "../types.js";
+import type { ResolvedDialect } from "../dialect.js";
 
 // =============================================================================
 // Base Types
@@ -507,6 +508,10 @@ export interface TypeReference extends ASTNode {
   maxLength?: number | string; // For STRING(n) / WSTRING(n) parameterized length; string for constant names
   arrayDimensions?: Array<{ start: number; end: number }>; // For __INLINE_ARRAY_* types
   elementTypeName?: string; // Element type for inline arrays (e.g. "BYTE" for ARRAY[0..7] OF BYTE)
+  /** In a test file: the platform type written (`XINT`) where `name` is its lowered type. */
+  platformTypeName?: string;
+  /** In a test file: the platform type written for the element where `elementTypeName` is lowered. */
+  platformElementTypeName?: string;
   /** STRING / WSTRING length of an inline array's element (`ARRAY[0..1] OF STRING(10)`). */
   elementMaxLength?: number | string;
   /**
@@ -1041,6 +1046,8 @@ export interface TestFile {
   testCases: TestCase[];
   /** TYPEs hoisted from inline enumerations and subranges in its VAR blocks. */
   inlineTypes?: TypeDeclaration[];
+  /** The dialect the file was parsed under: its profiles name a refused feature's. */
+  dialect?: ResolvedDialect;
 }
 
 /**
