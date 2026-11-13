@@ -158,7 +158,7 @@ public:
     }
     
     constexpr BaseType operator%(const IEC_SUBRANGE_Value& other) const noexcept {
-        return value_ % other.value_;
+        return other.value_ == 0 ? BaseType(0) : BaseType(value_ % other.value_);
     }
     
     // Arithmetic with base type
