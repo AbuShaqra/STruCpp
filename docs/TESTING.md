@@ -77,7 +77,7 @@ TEARDOWN
 END_TEARDOWN
 ```
 
-SETUP runs before each test case. TEARDOWN runs after each test case. Variables declared in SETUP are accessible in all TEST blocks within the same file.
+SETUP runs before each test case. TEARDOWN runs after each test case, also in a file with no SETUP, and also when the test failed or ended with `RETURN`. Variables declared in SETUP are accessible in all TEST blocks within the same file.
 
 ### TEST Blocks
 
@@ -94,7 +94,7 @@ END_TEST
 Each TEST block is an isolated test case. Tests can declare local variables in a VAR block. Any ST statement is valid inside a test (assignments, function calls, FB invocations, control flow).
 
 `RETURN` ends a TEST there, and the test passes unless an assertion before it failed; this holds at the top
-level of the body and nested in an `IF`, `CASE` or loop. TEARDOWN still runs. In SETUP or TEARDOWN a
+level of the body and nested in an `IF`, `CASE` or loop. TEARDOWN still runs, with or without a SETUP. In SETUP or TEARDOWN a
 `RETURN` (or `RETURN (cond);` under the feature `conditional_return`) ends that block.
 
 All TEST blocks of a run share one process, and nothing is reset between them: global variables keep the values the previous test left. So does a PROGRAM reached by name from another POU (feature `program_methods`, see [DIALECTS.md](DIALECTS.md)): it has one instance, a test's variable of its type (`p : PRG_A`) names that instance, and its state carries from one test to the next. Reset what a test depends on in SETUP or at the start of the test. A program nobody reaches by name is still a fresh instance per test variable.
@@ -121,7 +121,7 @@ With custom message:
 ASSERT_EQ(result, expected, "calculation should match");
 ```
 
-A failed assertion stops the current test immediately (remaining statements are skipped) and reports the failure with source location.
+A failed assertion stops the current test immediately (remaining statements are skipped) and reports the failure with source location. This holds for an assertion nested in `IF`, `CASE`, `FOR`, `WHILE` or `REPEAT` as well.
 
 ## Time Advancement
 

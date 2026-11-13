@@ -17,6 +17,7 @@ import type {
   CompilationUnit,
   FunctionDeclaration,
   TypeReference,
+  AssertCall,
 } from "../frontend/ast.js";
 import type { POUInfo } from "./test-main-gen.js";
 import { CodeGenerator } from "./codegen.js";
@@ -199,6 +200,13 @@ export class TestCodeGenerator extends CodeGenerator {
   /** Generate C++ statement(s) and append to output buffer. */
   emitStatement(stmt: Statement, indent: string): void {
     this.generateStatement(stmt, indent);
+  }
+
+  /** Emit a nested ASSERT_* through `emitter` (undefined: drop it, as in a POU). */
+  setAssertEmitter(
+    emitter: ((stmt: AssertCall, indent: string) => string[]) | undefined,
+  ): void {
+    this.assertEmitter = emitter;
   }
 
   /** Make a RETURN in the statements emitted next return `value` (undefined: as in a POU). */

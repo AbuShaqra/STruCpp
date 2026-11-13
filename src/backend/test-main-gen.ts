@@ -272,9 +272,9 @@ export function generateTestMain(
   }
 
   for (const testFile of testFiles) {
-    // Generate SETUP/TEARDOWN struct if present
+    // Generate SETUP/TEARDOWN struct if either is present
     let setupStructName: string | undefined;
-    if (testFile.setup) {
+    if (testFile.setup || testFile.teardown) {
       setupIndex++;
       setupStructName = `TestSetup_${setupIndex}`;
       const gen = new TestFunctionGenerator(
@@ -416,9 +416,10 @@ class TestFunctionGenerator {
    */
   generateSetupStruct(
     structName: string,
-    setup: SetupBlock,
+    setup: SetupBlock | undefined,
     teardown?: TeardownBlock,
   ): string {
+    const setupVarBlocks = setup?.varBlocks ?? [];
     const lines: string[] = [];
     lines.push(`struct ${structName} {`);
 
@@ -426,7 +427,7 @@ class TestFunctionGenerator {
     this.testCodegen.clearSetupVars();
     // Build scope from setup vars so codegen can detect FB/program invocations
     const varTypes = new Map<string, string>();
-    for (const varBlock of setup.varBlocks) {
+    for (const varBlock of setupVarBlocks) {
       for (const decl of varBlock.declarations) {
         for (const name of decl.names) {
           varTypes.set(name, decl.type.name);
@@ -436,7 +437,7 @@ class TestFunctionGenerator {
     this.testCodegen.setScopeFromVarTypes(varTypes);
 
     // Member variables from SETUP VAR blocks
-    for (const varBlock of setup.varBlocks) {
+    for (const varBlock of setupVarBlocks) {
       for (const decl of varBlock.declarations) {
         const cppType = this.testCodegen.resolveType(decl.type);
         const shared = this.testCodegen.sharedInstanceOfType(decl.type.name);
@@ -456,7 +457,7 @@ class TestFunctionGenerator {
     lines.push("    void setup() {");
     const savedIndent = this.indent;
     this.indent = "        ";
-    for (const stmt of setup.body) {
+    for (const stmt of setup?.body ?? []) {
       this.generateTestStatement(lines, stmt);
     }
     this.indent = savedIndent;
@@ -608,6 +609,18 @@ class TestFunctionGenerator {
   }
 
   private generateTestStatement(lines: string[], stmt: TestStatement): void {
+    // An ASSERT_* nested in IF, a loop or CASE is checked as a top-level one.
+    this.testCodegen.setAssertEmitter((nested, indent) => {
+      const out: string[] = [];
+      const saved = this.indent;
+      this.indent = indent;
+      try {
+        this.generateAssertCall(out, nested);
+      } finally {
+        this.indent = saved;
+      }
+      return out;
+    });
     switch (stmt.kind) {
       case "AssertCall":
         this.generateAssertCall(lines, stmt);
