@@ -91,7 +91,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | Arithmetic | `+`, `-`, `*`, `/`, `MOD`, `**` | Supported |
 | Comparison | `=`, `<>`, `<`, `>`, `<=`, `>=` | Supported. `=` and `<>` on two STRUCT values compare field by field (a nested STRUCT field by field, an ARRAY member element by element), also a STRUCT reached through `^` (`r1^ = r2^`, `p^ = s`) or a REFERENCE TO (`rr = s`); IEC 61131-3 Ed. 3 types the comparison functions on elementary values only, so this is not Ed. 3. It is accepted in every dialect, `--dialect iec-3` included, as it was before it compiled; whether iec-3 should refuse it is left to the iec-3 audit, see [DIALECTS.md](DIALECTS.md) |
 | Logical | `AND`, `OR`, `XOR`, `NOT` | Supported |
-| Bitwise | `AND`, `OR`, `XOR`, `NOT` (on bit types) | Supported |
+| Bitwise | `AND`, `OR`, `XOR`, `NOT` (on bit types) | Supported, in a body, a variable's initial value and a STRUCT element's default alike (`a : WORD := 16#F0 AND 16#3C` is 16#30); in a STRUCT default, NOT of an operand with no known type follows the element's type: the complement for BYTE, WORD, DWORD and LWORD |
 | Bit shift | `SHL`, `SHR`, `ROL`, `ROR` | Supported |
 | Assignment | `:=` | Supported |
 | Reference assign | `REF=` | Supported; a vendor spelling: the feature `ref_assign`, refused under `--dialect iec-3`. The variable bound must be of the target's referenced type, and a STRING of its length, as for `r := REF(x)`: another type or length is an error. An alias of STRING(n) counts as STRING(n) here, for REF_TO assignment and for a REFERENCE TO input |

@@ -45,6 +45,7 @@ import {
   implicitEnumBaseName,
   type EnumMemberEntry,
   enumBehindAlias,
+  getTypeCategory,
 } from "../semantic/type-utils.js";
 import {
   generateInitializerValue,
@@ -202,6 +203,12 @@ function typedDecimalPayload(expr: LiteralExpression): string | undefined {
   return /^[+-]?[0-9][0-9_]*$/.test(payload) ? payload : undefined;
 }
 
+/** BYTE, WORD, DWORD or LWORD: a bit string other than BOOL. */
+function isBitStringName(name: string): boolean {
+  const upper = name.toUpperCase();
+  return getTypeCategory(upper) === "BIT" && upper !== "BOOL";
+}
+
 /**
  * Type Code Generator for user-defined types
  */
@@ -224,6 +231,9 @@ export class TypeCodeGenerator {
    * member-name collision mangle. Nested levels take their type from
    * `decltype(...)` of the member being assigned, which needs no metadata.
    */
+  /** Set while a STRUCT element of a bit string type other than BOOL is emitted. */
+  private bitStringField = false;
+
   private structInitEmitter: StructInitEmitter = {
     emitValue: (value: Expression): string => this.expressionToCpp(value),
     memberName: (fieldName: string): string => fieldName,
@@ -485,12 +495,14 @@ export class TypeCodeGenerator {
           // STRUCT element fell through to expressionToCpp's `0` fallback and
           // the `isArrayType` guard below turned it into `{}` — the declared
           // values were dropped with no diagnostic.
+          this.bitStringField = isBitStringName(field.type.name);
           const initVal = generateInitializerValue(
             field.initialValue,
             cppType,
             field.type.name,
             this.structInitEmitter,
           );
+          this.bitStringField = false;
           // Array types can't be initialized with = 0; use {} instead
           const isArrayType = /^Array[123]D</.test(cppType);
           if (isArrayType && initVal === "0") {
@@ -891,8 +903,8 @@ export class TypeCodeGenerator {
       "/": "/",
       MOD: "%",
       "**": "/* pow */",
-      AND: "&&",
-      OR: "||",
+      AND: "&",
+      OR: "|",
       XOR: "^",
       "=": "==",
       "<>": "!=",
@@ -903,6 +915,10 @@ export class TypeCodeGenerator {
     };
 
     const cppOp = opMap[expr.operator] ?? expr.operator;
+    // AND/OR/XOR are bitwise, as in a POU body (BOOL operands included).
+    if (["AND", "OR", "XOR"].includes(expr.operator)) {
+      return `(${left}) ${cppOp} (${right})`;
+    }
     // Parenthesise a comparison nested in a comparison (a chain).
     if (isComparison(expr.operator)) {
       const l = isComparisonExpr(expr.left) ? `(${left})` : left;
@@ -914,6 +930,18 @@ export class TypeCodeGenerator {
 
   private unaryExprToCpp(expr: UnaryExpression): string {
     const operand = this.expressionToCpp(expr.operand);
+    // NOT of a bit string other than BOOL is the bitwise complement; with
+    // no type on the operand, the STRUCT element's type decides.
+    const t = expr.operand.resolvedType;
+    if (
+      expr.operator === "NOT" &&
+      (t === undefined
+        ? this.bitStringField
+        : t.typeKind === "elementary" &&
+          isBitStringName((t as ElementaryType).name))
+    ) {
+      return `~${operand}`;
+    }
 
     const opMap: Record<string, string> = {
       NOT: "!",
