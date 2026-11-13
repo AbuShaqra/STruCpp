@@ -440,11 +440,13 @@ function strictKind(name: string): StrictKind | undefined {
 
 /** `to` is the Ed. 3 long form of `from` (TIME into LTIME and the like). */
 function isLongFormOf(to: string, from: string): boolean {
+  const f = canonicalElementaryName(from);
+  const t = canonicalElementaryName(to);
   return (
-    (from === "TIME" && to === "LTIME") ||
-    (from === "DATE" && to === "LDATE") ||
-    (from === "DATE_AND_TIME" && to === "LDATE_AND_TIME") ||
-    (from === "TIME_OF_DAY" && to === "LTIME_OF_DAY")
+    (f === "TIME" && t === "LTIME") ||
+    (f === "DATE" && t === "LDATE") ||
+    (f === "DT" && t === "LDT") ||
+    (f === "TOD" && t === "LTOD")
   );
 }
 
@@ -1954,9 +1956,11 @@ export class TypeChecker {
       [expr.right, rightType, leftType],
     ] as const) {
       if (!this.isIntegerType(type)) continue;
+      const otherOperand = operand === expr.left ? expr.right : expr.left;
       if (
         this.untypedConstantKind(operand) === "INT" &&
-        !this.isIntegerType(other)
+        (this.untypedConstantKind(otherOperand) === "INT" ||
+          !this.isIntegerType(other))
       ) {
         continue;
       }
@@ -6589,9 +6593,13 @@ export class TypeChecker {
         return k === "BOOL" ? undefined : k;
       }
       case "BinaryExpression": {
-        if (!STRICT_ARITHMETIC_OPS.has(expr.operator)) return undefined;
         const l = this.untypedConstantKind(expr.left);
         const r = this.untypedConstantKind(expr.right);
+        // AND/OR/XOR of untyped integers or of untyped BOOLs stay untyped
+        if (["AND", "OR", "XOR"].includes(expr.operator)) {
+          return l === r && l !== "REAL" ? l : undefined;
+        }
+        if (!STRICT_ARITHMETIC_OPS.has(expr.operator)) return undefined;
         return l === r && l !== "BOOL" ? l : undefined;
       }
       case "FunctionCallExpression": {

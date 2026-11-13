@@ -324,5 +324,34 @@ describe("implicit widening (Figures 11 and 12)", () => {
           : [],
       );
     });
+
+    it(`accepts AND, OR and XOR of untyped constants as a bit string (${label})`, () => {
+      const r = compile(
+        "PROGRAM Main\nVAR CONSTANT CW : WORD := 16#F0 AND 16#0F; CX : WORD := (16#F0 OR 16#0F) AND NOT 16#3; END_VAR\nVAR w : WORD; i : INT; END_VAR\nw := 16#F0 OR 16#0F;\nw := (16#F0 XOR 16#0F) OR w;\nw := CW OR CX;\ni := INT#16#F0 OR 16#0F;\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.errors.map((e) => e.message)).toEqual(
+        label === "no dialect"
+          ? []
+          : [
+              "OR takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not INT; convert it with INT_TO_WORD or the like",
+            ],
+      );
+    });
+
+    it(`takes TOD and DT as their long forms in a conversion argument (${label})`, () => {
+      const r = compile(
+        "PROGRAM Main\nVAR tod : TOD; td : TIME_OF_DAY; dt : DT; dat : DATE_AND_TIME; ltod : LTOD; ldt : LDT; u : ULINT; END_VAR\nu := LTOD_TO_ULINT(tod);\nu := LTIME_OF_DAY_TO_ULINT(td);\nu := LDT_TO_ULINT(dt);\nu := LDATE_AND_TIME_TO_ULINT(dat);\nu := TOD_TO_ULINT(ltod);\nu := DT_TO_ULINT(ldt);\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.errors.map((e) => e.message)).toEqual(
+        label === "strict"
+          ? [
+              "Implicit conversion from LTOD to TOD is not allowed; use LTOD_TO_TOD",
+              "Implicit conversion from LDT to DT is not allowed; use LDT_TO_DT",
+            ]
+          : [],
+      );
+    });
   }
 });
