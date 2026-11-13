@@ -2169,6 +2169,12 @@ export class CodeGenerator {
     this.emitHeader("");
     this.emitHeader("    // Execute function block");
     this.emitHeader("    void operator()();");
+    if (this.fbChainHasTemps(fb)) {
+      this.emitHeader(
+        "    // The body without the VAR_TEMP reset (SUPER^() runs it)",
+      );
+      this.emitHeader("    void __body();");
+    }
 
     // Generate method declarations (grouped by visibility)
     if (fb.methods.length > 0) {
@@ -3073,14 +3079,25 @@ export class CodeGenerator {
     this.emit("");
 
     // Operator()
+    const withTemps = this.fbChainHasTemps(fb);
+    if (withTemps) {
+      // VAR_TEMP, inherited ones included, starts from its initial value at
+      // each call; SUPER^() runs the base's __body() and keeps them.
+      this.emit(`void ${fb.name}::operator()() {`);
+      this.enterScope(fb.varBlocks);
+      this.emitTempResets(this.fbChainVarBlocks(fb));
+      this.exitScope();
+      this.emit("    __body();");
+      this.emit("}");
+      this.emit("");
+    }
     this.emitLineDirective(fb.sourceSpan.startLine);
     const fbImplLine = this.currentLine;
-    this.emit(`void ${fb.name}::operator()() {`);
+    this.emit(`void ${fb.name}::${withTemps ? "__body" : "operator()"}() {`);
     if (this.options.isTestBuild) {
       this.emit("    if (__mocked_) { __mock_state_.call_count++; return; }");
     }
     this.enterScope(fb.varBlocks);
-    this.emitTempResets(fb.varBlocks);
     if (fb.body.length > 0) {
       this.generateStatements(fb.body);
     } else if (this.options.sourceComments) {
@@ -3144,17 +3161,47 @@ export class CodeGenerator {
     this.compositeExternals = new Set();
   }
 
+  /** The var blocks of an FB and of each base it extends, base first. */
+  private fbChainVarBlocks(fb: {
+    varBlocks: VarBlock[];
+    extends?: string;
+  }): VarBlock[] {
+    const chain: VarBlock[][] = [fb.varBlocks];
+    const seen = new Set<string>();
+    let base = fb.extends?.toUpperCase();
+    while (base !== undefined && !seen.has(base)) {
+      seen.add(base);
+      const current = base;
+      const def = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === current,
+      );
+      if (def === undefined) break;
+      chain.unshift(def.varBlocks);
+      base = def.extends?.toUpperCase();
+    }
+    return chain.flat();
+  }
+
+  /** True when an FB or a base it extends declares a VAR_TEMP. */
+  private fbChainHasTemps(fb: {
+    varBlocks: VarBlock[];
+    extends?: string;
+  }): boolean {
+    return this.fbChainVarBlocks(fb).some(
+      (b) => b.blockType === "VAR_TEMP" && b.declarations.length > 0,
+    );
+  }
+
   /**
    * VAR_TEMP of a PROGRAM or FUNCTION_BLOCK body: stored as a member, so set
-   * back to its initial value at the start of every call (a FUNCTION's and a
-   * METHOD's are C++ locals already). A function block instance is left alone.
+   * back to its initial value at the start of every call, as a FUNCTION's and
+   * a METHOD's C++ locals are. A function block instance in it starts afresh
+   * too: VAR_TEMP does not persist between calls (IEC 61131-3 Ed. 3).
    */
   private emitTempResets(blocks: readonly VarBlock[]): void {
     for (const block of blocks) {
       if (block.blockType !== "VAR_TEMP") continue;
       for (const decl of block.declarations) {
-        const element = decl.type.elementTypeName ?? decl.type.name;
-        if (this.isFBType(element) || this.isFBType(decl.type.name)) continue;
         const cppType = this.mapTypeRefToCpp(decl.type);
         const init = decl.initialValue
           ? ` = ${this.generateInitializer(decl.initialValue, cppType, decl.type.name)}`
@@ -7315,7 +7362,14 @@ export class CodeGenerator {
       const args = expr.arguments.map((arg) =>
         this.generateExpression(arg.value),
       );
-      return `${this.currentFBExtends}::operator()(${args.join(", ")})`;
+      const base = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === this.currentFBExtends?.toUpperCase(),
+      );
+      const entry =
+        base !== undefined && this.fbChainHasTemps(base)
+          ? "__body"
+          : "operator()";
+      return `${this.currentFBExtends}::${entry}(${args.join(", ")})`;
     }
 
     // A method of the enclosing block wins, as the C++ member does.
@@ -8982,7 +9036,8 @@ export class CodeGenerator {
               ? `${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName}.target()`
               : this.scopeInOutRefs.has(rawName.toUpperCase())
                 ? `(*${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName})`
-                : (this.memberMangledNames.get(rawName.toUpperCase()) ??
+                : (this.varInstMangledNames.get(rawName.toUpperCase()) ??
+                  this.memberMangledNames.get(rawName.toUpperCase()) ??
                   rawName);
 
     // Extract implicit EN/ENO parameters

@@ -12,6 +12,45 @@ import * as path from "path";
 import { compile } from "../../src/index.js";
 import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 
+const SOURCE2 = `FUNCTION_BLOCK Cnt
+VAR_INPUT start : INT; END_VAR
+VAR_OUTPUT n : INT; END_VAR
+n := n + 1 + start;
+END_FUNCTION_BLOCK
+TYPE S : STRUCT a : INT; c : Cnt; END_STRUCT; END_TYPE
+FUNCTION_BLOCK FB
+VAR_TEMP c : Cnt := (start := 5); ts : S; arr : ARRAY[0..1] OF Cnt; END_VAR
+VAR_OUTPUT o, o1, o2 : INT; END_VAR
+METHOD M : INT
+VAR_TEMP mc : Cnt; END_VAR
+mc(); M := mc.n;
+END_METHOD
+METHOD K : INT
+VAR_INST kc : Cnt; END_VAR
+kc(start := 0); K := kc.n;
+END_METHOD
+c(); o := c.n; ts.c(); o1 := ts.c.n; arr[1](); o2 := arr[1].n;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK Base
+VAR_TEMP bt : INT := 1; END_VAR
+VAR_OUTPUT bo : INT; END_VAR
+bt := bt + 1; bo := bt;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK D3 EXTENDS Base
+VAR_OUTPUT o3 : INT; END_VAR
+bt := bt + 10; o3 := bt;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK D4 EXTENDS Base
+VAR_OUTPUT o4 : INT; END_VAR
+bt := bt + 10; SUPER^(); o4 := bt;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR fb : FB; a, a1, a2, m, k, e, f, g : INT; d3 : D3; d4 : D4; b : Base; END_VAR
+fb(); fb(); a := fb.o; a1 := fb.o1; a2 := fb.o2; m := fb.M(); m := fb.M(); k := fb.K(); k := fb.K();
+d3(); d3(); e := d3.o3; d4(); d4(); f := d4.o4; b(); b(); g := b.bo;
+END_PROGRAM
+`;
+
 const SOURCE = `PROGRAM Sub
 VAR_TEMP t : INT; END_VAR
 VAR_OUTPUT o : INT; END_VAR
@@ -74,6 +113,32 @@ int main() {
 `,
       });
       expect(stdout).toBe("61 1 4108 4208 xy");
+    });
+
+    it(`starts FB instances and inherited VAR_TEMP afresh; calls a VAR_INST instance (${label})`, () => {
+      const result = compile(SOURCE2, {
+        ...options,
+        headerFileName: "generated.hpp",
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `pouvars2_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.A.get() << " " << p.A1.get() << " " << p.A2.get() << " " << p.M.get() << " "
+              << p.K.get() << " " << p.E.get() << " " << p.F.get() << " " << p.G.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe("6 1 1 1 2 11 12 2");
     });
   }
 });
