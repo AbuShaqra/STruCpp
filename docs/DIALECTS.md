@@ -391,6 +391,10 @@ END_PROGRAM
 - With the feature off, init arguments are refused at `(` (see Refusals), and every FB_init of a
   FUNCTION_BLOCK gets the warning `FB_init is not run unless the feature fb_init is on` at its name. The
   method is still compiled as an ordinary method; only the warning is new.
+- A METHOD named FB_exit is never called: this compiler does not tear an instance down (no online change,
+  no program stop). With the feature on, each gets the warning `FB_exit of 'FB' is never called: an
+  instance is not torn down` at its name; it is still compiled as an ordinary method and may be called
+  explicitly.
 - FB_init's inputs are the two BOOL flags `bInitRetains` and `bInCopyCode` plus the VAR_INPUTs it
   declares. A flag it does not declare is declared for it (a BOOL VAR_INPUT before its own); a declared
   flag must be a BOOL VAR_INPUT: `'BINITRETAINS' of FB_init must be a BOOL VAR_INPUT`. Both flags are
