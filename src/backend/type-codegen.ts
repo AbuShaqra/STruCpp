@@ -35,6 +35,7 @@ import {
 import { wrapReferenceChain } from "./reference-types.js";
 import { mangledMemberName } from "./member-mangling.js";
 import {
+  bitPlaceOf,
   bitRunMemberName,
   bitRunTypeName,
   bitRuns,
@@ -232,10 +233,15 @@ export class TypeCodeGenerator {
    */
   private structInitEmitter: StructInitEmitter = {
     emitValue: (value: Expression): string => this.expressionToCpp(value),
-    memberName: (fieldName: string): string => fieldName,
-    fieldTypeName: (): undefined => undefined,
-    arrayElementTypeName: (): undefined => undefined,
+    memberName: (fieldName: string, owner: string | undefined): string =>
+      this.bitInitMember(fieldName, owner) ?? fieldName,
+    fieldTypeName: (fieldName: string, owner: string | undefined) =>
+      this.bitInitFieldType(fieldName, owner),
+    arrayElementTypeName: (typeName: string | undefined) =>
+      this.bitInitElementType(typeName),
   };
+  /** Every type of the unit by upper-case name, for BIT members in initializers. */
+  private typesByName: Map<string, TypeDeclaration> = new Map();
 
   constructor(options: Partial<TypeCodeGenOptions> = {}) {
     this.options = { ...defaultTypeCodeGenOptions, ...options };
@@ -285,6 +291,67 @@ export class TypeCodeGenerator {
         })),
     );
     this.unionStored = unionStoredTypes(types);
+    this.typesByName = new Map(types.map((t) => [t.name.toUpperCase(), t]));
+  }
+
+  /** The STRUCT a type name stands for, through aliases. */
+  private bitInitStruct(
+    typeName: string | undefined,
+  ): StructDefinition | undefined {
+    let name = typeName;
+    for (let depth = 0; depth < 16 && name !== undefined; depth++) {
+      const def = this.typesByName.get(name.toUpperCase())?.definition;
+      if (def?.kind === "StructDefinition") {
+        return def.isUnion === true ? undefined : def;
+      }
+      if (def?.kind !== "TypeReference") return undefined;
+      name = def.name;
+    }
+    return undefined;
+  }
+
+  /** `bits_<n>_.NAME` for a BIT member of `owner` in an initializer. */
+  private bitInitMember(
+    fieldName: string,
+    owner: string | undefined,
+  ): string | undefined {
+    const def = this.bitInitStruct(owner);
+    if (def === undefined) return undefined;
+    const place = bitPlaceOf(def.fields, fieldName.toUpperCase());
+    if (place === undefined) return undefined;
+    const decl = def.fields.find((f) =>
+      f.names.some((n) => n.toUpperCase() === fieldName.toUpperCase()),
+    )!;
+    return `${bitRunMemberName(place.run)}.${this.structFieldEmitName(fieldName, decl.type)}`;
+  }
+
+  /** The type of member `fieldName` of `owner`, to find BIT members below it. */
+  private bitInitFieldType(
+    fieldName: string,
+    owner: string | undefined,
+  ): string | undefined {
+    const decl = this.bitInitStruct(owner)?.fields.find((f) =>
+      f.names.some((n) => n.toUpperCase() === fieldName.toUpperCase()),
+    );
+    if (decl === undefined) return undefined;
+    return decl.type.arrayDimensions && decl.type.elementTypeName !== undefined
+      ? `__INLINE_ARRAY_${decl.type.elementTypeName}`
+      : decl.type.name;
+  }
+
+  /** The element type of an ARRAY type name, through aliases. */
+  private bitInitElementType(typeName: string | undefined): string | undefined {
+    let name = typeName;
+    for (let depth = 0; depth < 16 && name !== undefined; depth++) {
+      if (name.toUpperCase().startsWith("__INLINE_ARRAY_")) {
+        return name.slice("__INLINE_ARRAY_".length);
+      }
+      const def = this.typesByName.get(name.toUpperCase())?.definition;
+      if (def?.kind === "ArrayDefinition") return def.elementType.name;
+      if (def?.kind !== "TypeReference") return undefined;
+      name = def.name;
+    }
+    return undefined;
   }
 
   /**

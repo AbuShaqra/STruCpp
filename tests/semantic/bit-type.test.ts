@@ -256,3 +256,143 @@ describe("bit_type — libraries", () => {
     );
   });
 });
+
+describe("bit_type — review regressions", () => {
+  const tail =
+    "a BIT has no address of its own; copy it to a BOOL variable first";
+  const HEAD = `TYPE ST_B : STRUCT a : BIT; b : BIT := TRUE; n : INT; END_STRUCT; END_TYPE
+TYPE ST_A : ST_B; END_TYPE
+TYPE PST : POINTER TO ST_B; END_TYPE
+TYPE ST_O : STRUCT inner : ST_A; arr : ARRAY[0..2] OF ST_B; END_STRUCT; END_TYPE
+FUNCTION G : BOOL
+VAR_IN_OUT x : BOOL; END_VAR
+G := x;
+END_FUNCTION
+`;
+
+  it("refuses the address of a BIT member reached through a TYPE alias", () => {
+    const src = `${HEAD}PROGRAM MAIN
+VAR s : ST_A; p : PST; o : ST_O; q : POINTER TO BOOL; r : REFERENCE TO BOOL; rt : REF_TO BOOL; y : BOOL; END_VAR
+q := ADR(s.a);
+y := G(s.a);
+r REF= s.b;
+rt := REF(s.a);
+q := ADR(p^.a);
+q := ADR(o.inner.a);
+END_PROGRAM
+`;
+    expect(diag(src, { dialect: PROFILE }).errors).toEqual([
+      `11:10: ADR() cannot take the BIT member S.A: ${tail}`,
+      `12:8: VAR_IN_OUT 'X' cannot be bound to the BIT member S.A: ${tail}`,
+      `13:8: REF= cannot bind to the BIT member S.B: ${tail}`,
+      `14:11: REF() cannot take the BIT member S.A: ${tail}`,
+      `15:10: ADR() cannot take the BIT member P^.A: ${tail}`,
+      `16:10: ADR() cannot take the BIT member O.INNER.A: ${tail}`,
+    ]);
+  });
+
+  it("names the member as written: indices, dereference and list", () => {
+    const src = `${HEAD}PROGRAM MAIN
+VAR s : ARRAY[0..1] OF ST_B; o : ST_O; i : INT; q : POINTER TO BOOL; END_VAR
+q := ADR(s[1].a);
+q := ADR(o.arr[i].b);
+END_PROGRAM
+`;
+    expect(diag(src, { dialect: PROFILE }).errors).toEqual([
+      `11:10: ADR() cannot take the BIT member S[1].A: ${tail}`,
+      `12:10: ADR() cannot take the BIT member O.ARR[I].B: ${tail}`,
+    ]);
+    const listed = compile(
+      [
+        {
+          source: `PROGRAM MAIN
+VAR q : POINTER TO BOOL; END_VAR
+q := ADR(GVL_A.gv.a);
+END_PROGRAM
+`,
+          fileName: "main.st",
+        },
+      ].map((f) => f.source)[0]!,
+      {
+        dialect: PROFILE,
+        features: ["+named_global_lists"],
+        additionalSources: [
+          { source: `${HEAD}`, fileName: "types.st" },
+          { source: "VAR_GLOBAL gv : ST_B; END_VAR\n", fileName: "GVL_A.st" },
+        ],
+      },
+    );
+    expect(listed.errors.map((e) => e.message)).toEqual([
+      `ADR() cannot take the BIT member GVL_A.GV.A: ${tail}`,
+    ]);
+  });
+
+  it("refuses REF_LINK and a METHOD VAR_OUTPUT binding", () => {
+    const src = `${HEAD}FUNCTION_BLOCK FB_M
+METHOD M : BOOL
+VAR_OUTPUT o : BOOL; END_VAR
+o := TRUE;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR s : ST_B; fb : FB_M; x : BOOL; r : REFERENCE TO BOOL; END_VAR
+r := REF_LINK(s.a);
+x := fb.M(o => s.b);
+END_PROGRAM
+`;
+    expect(diag(src, { dialect: PROFILE }).errors).toEqual([
+      `17:15: REF_LINK() cannot take the BIT member S.A: ${tail}`,
+      `18:16: VAR_OUTPUT 'O' cannot be bound to the BIT member S.B: ${tail}`,
+    ]);
+  });
+
+  it("names the profiles that have the feature when it is off", () => {
+    const profile: DialectProfile = {
+      id: "vendor-b",
+      name: "vendor-b",
+      extends: "iec-3",
+      features: ["bit_type"],
+      semantics: {},
+    };
+    const r = compile(
+      "TYPE ST_B : STRUCT a : BIT; END_STRUCT; END_TYPE\nPROGRAM MAIN\nVAR s : ST_B; END_VAR\nEND_PROGRAM\n",
+      {
+        dialect: "iec-3",
+        dialectFiles: ["vendor-b.json"],
+        dialectIO: {
+          readFile: () => JSON.stringify(profile),
+          listDir: () => [],
+        },
+      },
+    );
+    expect(r.errors.map((e) => e.message)).toEqual([
+      "BIT as a STRUCT member needs the feature bit_type (profiles: vendor-b)",
+    ]);
+  });
+
+  it("refuses a BIT member of a STRUCT OVERLAP", () => {
+    expect(
+      diag(
+        "TYPE ST_O : STRUCT OVERLAP a : BIT; w : WORD; END_STRUCT; END_TYPE\nPROGRAM MAIN\nVAR s : ST_O; END_VAR\nEND_PROGRAM\n",
+        { features: ["+bit_type", "+union"] },
+      ).errors,
+    ).toEqual(["1:32: BIT is allowed only as the type of a STRUCT member"]);
+  });
+
+  it("reaches a BIT member named like a type by its mangled name", () => {
+    const r = diag(
+      `TYPE ST_I : STRUCT x : BIT; END_STRUCT END_TYPE
+TYPE ST_M : STRUCT ST_I : BIT; inner : ST_I; END_STRUCT END_TYPE
+PROGRAM MAIN
+VAR s : ST_M; r : BOOL; END_VAR
+s.ST_I := TRUE; r := s.ST_I;
+END_PROGRAM
+`,
+      ON,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.hpp).toContain("bool ST_I_ : 1;");
+    expect(r.cpp).toContain("S.bits_0_.ST_I_ = true;");
+    expect(r.cpp).toContain("R = S.bits_0_.ST_I_;");
+  });
+});

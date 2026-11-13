@@ -4943,9 +4943,9 @@ export class TypeChecker {
     const type =
       base === undefined
         ? undefined
-        : resolveAccessType(base, e, this.accessLookup);
+        : resolveAccessType(this.bitAliasTarget(base), e, this.bitAccessLookup);
     if ((type as TypeReference | undefined)?.bit !== true) return false;
-    const path = [e.name, ...e.fieldAccess].join(".").toUpperCase();
+    const path = bitAccessPath(e);
     this.addError(
       `${what} the BIT member ${path}: a BIT has no address of its own; copy it to a BOOL variable first`,
       e.sourceSpan.startLine,
@@ -4954,6 +4954,44 @@ export class TypeChecker {
     );
     return true;
   }
+
+  /** A type with its TYPE aliases (`T : ST_B`, `T : POINTER TO ST_B`) expanded. */
+  private bitAliasTarget<T extends AccessType>(type: T): AccessType {
+    let current: AccessType = type;
+    for (let depth = 0; depth < 16 && this.ast; depth++) {
+      if (
+        (current.referenceKind ?? "none") !== "none" ||
+        current.arrayDimensions !== undefined
+      ) {
+        return current;
+      }
+      const upper = current.name.toUpperCase();
+      const def = this.ast.types.find(
+        (t) => t.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference") return current;
+      current = def;
+    }
+    return current;
+  }
+
+  /** Member lookup through TYPE aliases, to find a BIT member behind one. */
+  private readonly bitAccessLookup: AccessLookup = {
+    field: (typeName, fieldName) => {
+      const owner = this.bitAliasTarget({
+        name: typeName,
+        referenceKind: "none",
+      }).name;
+      const decl = this.accessLookup.field(owner, fieldName);
+      return decl && { ...decl, type: this.bitAliasTarget(decl.type) };
+    },
+    arrayElement: (typeName) => {
+      const element = this.accessLookup.arrayElement(
+        this.bitAliasTarget({ name: typeName, referenceKind: "none" }).name,
+      );
+      return element && this.bitAliasTarget(element);
+    },
+  };
 
   /** `ADR(s.bit)`, `REF_LINK(s.bit)` and a BIT member bound to a REFERENCE TO input. */
   private refuseBitMemberArguments(
@@ -7216,4 +7254,31 @@ export class TypeChecker {
       ...(file ? { file } : {}),
     });
   }
+}
+
+/** The access as written, upper-case: `GVL_A.O.ARR[2].A`, `P^.A`. */
+function bitAccessPath(e: VariableExpression): string {
+  const steps: AccessStep[] = e.accessChain ?? [
+    ...(e.subscripts.length > 0
+      ? [{ kind: "subscript" as const, indices: e.subscripts }]
+      : []),
+    ...e.fieldAccess.map((name) => ({ kind: "field" as const, name })),
+    ...(e.isDereference ? [{ kind: "dereference" as const }] : []),
+  ];
+  const index = (x: Expression): string =>
+    x.kind === "LiteralExpression"
+      ? x.rawValue
+      : x.kind === "VariableExpression" &&
+          x.fieldAccess.length === 0 &&
+          x.subscripts.length === 0 &&
+          !x.isDereference
+        ? x.name
+        : "...";
+  let path = e.globalList === undefined ? e.name : `${e.globalList}.${e.name}`;
+  for (const step of steps) {
+    if (step.kind === "field") path += `.${step.name}`;
+    else if (step.kind === "dereference") path += "^";
+    else path += `[${step.indices.map(index).join(", ")}]`;
+  }
+  return path.toUpperCase();
 }

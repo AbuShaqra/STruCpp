@@ -63,6 +63,7 @@ import type { LibraryChunk, StlibArchive } from "./library/library-manifest.js";
 import { annotateErrorsWithPouContext } from "./diagnostic-pou-context.js";
 import {
   DialectError,
+  profilesWithFeature,
   resolveDialect,
   type DialectRequest,
   type ResolvedDialect,
@@ -839,12 +840,16 @@ function runPipeline(
       lowerPlatformTypes(ast, (name) => libraryTypes.has(name));
     }
     loweringErrors.push(
-      ...lowerBitType(ast, dialect.features.has("bit_type"), (name) =>
-        (mergedOptions.libraries ?? []).some((a) =>
-          [...a.manifest.types, ...a.manifest.functionBlocks].some(
-            (d) => d.name.toUpperCase() === name,
+      ...lowerBitType(
+        ast,
+        dialect.features.has("bit_type"),
+        (name) =>
+          (mergedOptions.libraries ?? []).some((a) =>
+            [...a.manifest.types, ...a.manifest.functionBlocks].some(
+              (d) => d.name.toUpperCase() === name,
+            ),
           ),
-        ),
+        profilesWithFeature(dialect, "bit_type"),
       ),
     );
     errors.push(...loweringErrors);

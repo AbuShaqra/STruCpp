@@ -156,6 +156,99 @@ describeIfGpp("bit_type — generated C++", () => {
     expect(run({ dialect: PROFILE }, "bittype_profile")).toEqual(EXPECTED);
   });
 
+  it("reaches BIT members through results, FB arrays, defaults and conversions", () => {
+    const src = `TYPE ST_I : STRUCT x : BIT; y : BIT; n : INT; END_STRUCT; END_TYPE
+TYPE AL_I : ST_I; END_TYPE
+TYPE ST_D : STRUCT
+  i : ST_I := (x := TRUE);
+  al : AL_I := (y := TRUE);
+  arr : ARRAY[0..1] OF ST_I := [(x := TRUE), (y := TRUE)];
+END_STRUCT; END_TYPE
+TYPE ST_M : STRUCT ST_I : BIT; inner : ST_I; END_STRUCT; END_TYPE
+FUNCTION MkI : ST_I
+VAR_INPUT v : BOOL; END_VAR
+MkI.y := v;
+END_FUNCTION
+FUNCTION_BLOCK FB
+VAR_OUTPUT o : ST_I; w : AL_I; END_VAR
+o.y := TRUE;
+w.x := TRUE;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_M
+METHOD M : ST_I
+M.x := TRUE;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR
+  fbs : ARRAY[0..1] OF FB;
+  fm : FB_M;
+  d : ST_D;
+  m : ST_M;
+  ri : ST_I;
+  fromFn, fromM, fromArr, fromAl, d1, d2, d3, d4, mm : BOOL;
+  str, cat : STRING;
+END_VAR
+ri := MkI(TRUE);
+fromFn := ri.y;
+ri := fm.M();
+fromM := ri.x;
+fbs[1]();
+fromArr := fbs[1].o.y;
+fromAl := fbs[1].w.x;
+d1 := d.i.x;
+d2 := d.al.y;
+d3 := d.arr[0].x;
+d4 := d.arr[1].y;
+m.ST_I := TRUE;
+mm := m.ST_I;
+str := BOOL_TO_STRING(d.i.x);
+cat := CONCAT('v=', TO_STRING(d.i.y));
+END_PROGRAM
+`;
+    const result = compile(src, {
+      headerFileName: "generated.hpp",
+      features: ["+bit_type"],
+    });
+    expect(result.errors.map((e) => `${e.line}: ${e.message}`)).toEqual([]);
+    const v = (e: string): string => `std::cout << (${e}) << " ";`;
+    const out = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "bittype_paths",
+      mainCode: `#include <iostream>\nint main() {\n using namespace strucpp;\n Program_MAIN p; p.run();\n ${[
+        "FROMFN",
+        "FROMM",
+        "FROMARR",
+        "FROMAL",
+        "D1",
+        "D2",
+        "D3",
+        "D4",
+        "MM",
+      ]
+        .map((n) => v(`(unsigned)p.${n}.get()`))
+        .join(
+          " ",
+        )} ${v("p.STR.get().c_str()")} ${v("p.CAT.get().c_str()")}\n return 0;\n}\n`,
+    });
+    expect(out.trim().split(/\s+/)).toEqual([
+      "1",
+      "1",
+      "1",
+      "1",
+      "1",
+      "1",
+      "1",
+      "1",
+      "1",
+      "TRUE",
+      "v=FALSE",
+    ]);
+  });
+
   it("is refused without the feature", () => {
     const r = compile(SOURCE, { features: ["+union"] });
     expect(r.errors.map((e) => e.message)).toContain(

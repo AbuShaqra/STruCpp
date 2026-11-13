@@ -712,6 +712,7 @@ This compiler generates C++ for a 64-bit target, so under `platform_types` each 
   are lowered with the feature, and a TYPE, FUNCTION_BLOCK or PROGRAM of the same name in the sources wins.
 - Not supported: typed literals (`XINT#5`) and conversion functions named after these types
   (`XINT_TO_INT`, `TO_UXINT`). Use the 64-bit names (`LINT#5`, `LINT_TO_INT`).
+
 ## BIT members
 
 Under `bit_type` a STRUCT member may be of type `BIT`: a BOOL value stored in one bit.
@@ -735,18 +736,23 @@ END_STRUCT END_TYPE
   non-BIT member starts or the alignment, so those parts are inferred, not verified.
 - A BIT member reads and writes as a BOOL: assignment, comparison (also of two such STRUCTs, member by
   member), structure initializers and initial values, copy of the STRUCT, and passing it as a VAR_INPUT
-  or capturing an FB output into it (`fb(q => s.b)`). Reads and writes touch only that bit.
+  or capturing an FB output into it (`fb(q => s.b)`), also through a TYPE alias of the STRUCT, a
+  FUNCTION or METHOD result, or an element of an ARRAY OF FB. Reads and writes touch only that bit, and a
+  conversion such as `BOOL_TO_STRING(s.b)` gives `'TRUE'` or `'FALSE'`.
 - SIZEOF, member offsets, `POINTER TO` overlays, byte access through a pointer and a UNION or `STRUCT
   OVERLAP` holding the STRUCT all see the packed bytes: in `UNION f : ST_F; w : WORD; END_UNION`, `u.f.b`
   is bit 1 of the low byte of `u.w`.
 - A BIT has no address of its own, so these are refused at the member: `ADR`, `REF()` and `REF_LINK`
   (`ADR() cannot take the BIT member S.A: a BIT has no address of its own; copy it to a BOOL variable
-  first`), `REF=` binding to it, binding it to a `REFERENCE TO` input or a `VAR_IN_OUT`, and binding it to
+  first`, naming the member as written, such as `O.ARR[2].A`, `P^.A` or `GVL_A.G.A`; also when the
+  STRUCT is reached through a TYPE alias), `REF=` binding to it, binding it to a `REFERENCE TO` input or a `VAR_IN_OUT`, and binding it to
   a FUNCTION or METHOD `VAR_OUTPUT` (`=>`), which is passed by reference.
 - BIT is accepted only as the type of a STRUCT member: a variable, an FB member, an ARRAY OF BIT, a
-  `POINTER TO BIT` or a UNION member is `BIT is allowed only as the type of a STRUCT member`. With the
-  feature off a BIT member is `BIT as a STRUCT member needs the feature bit_type`; BIT elsewhere stays
-  `Undefined type 'BIT'`. A TYPE or POU named `BIT` wins in every dialect.
+  `POINTER TO BIT`, a UNION member or a `STRUCT OVERLAP` member (whose members share one storage, as a
+  UNION's) is `BIT is allowed only as the type of a STRUCT member`. With the feature off a BIT member is
+  `BIT as a STRUCT member needs the feature bit_type`; BIT elsewhere, a UNION or `STRUCT OVERLAP` member
+  included, stays an undefined type (`Undefined type 'BIT' in PROGRAM 'MAIN'`, `... in FUNCTION_BLOCK
+  'FB_A'`, `... in UNION 'ST_O'`). A TYPE or POU named `BIT` wins in every dialect.
 - The debugger and forcing address one bit: a BIT leaf of the debug map has `"type": "BIT"` and `"bit": n`
   and forcing it writes only that bit (see [RUNTIME.md](RUNTIME.md#bit-leaves-feature-bit_type)).
   Under `STRUCPP_THREADED` a BIT of a CONFIGURATION global is written under the global's lock, as its

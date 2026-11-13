@@ -60,7 +60,9 @@ export function lowerBitType(
   ast: CompilationUnit,
   enabled: boolean,
   declaredElsewhere: (nameUpper: string) => boolean,
+  profiles: readonly string[] = [],
 ): CompileError[] {
+  const hint = profiles.length > 0 ? ` (profiles: ${profiles.join(", ")})` : "";
   const declared = [
     ...ast.types,
     ...ast.functionBlocks,
@@ -78,7 +80,7 @@ export function lowerBitType(
         errors.push(
           error(
             field.type,
-            "BIT as a STRUCT member needs the feature bit_type",
+            `BIT as a STRUCT member needs the feature bit_type${hint}`,
           ),
         );
       }

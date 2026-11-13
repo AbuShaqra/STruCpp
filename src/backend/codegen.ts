@@ -637,6 +637,8 @@ export class CodeGenerator {
 
   /** Current function name (for redirecting function name := to result variable) */
   private currentFunctionName: string | undefined;
+  /** The declared result type of the current FUNCTION, METHOD or PROPERTY. */
+  private currentFunctionResultType: string | undefined;
 
   /** Standard function registry for name mapping and conversion resolution */
   private stdRegistry: StdFunctionRegistry;
@@ -2781,6 +2783,7 @@ export class CodeGenerator {
         );
       }
       this.currentFunctionName = method.name;
+      this.currentFunctionResultType = method.returnType?.name;
     }
 
     // Set up VAR_INST name mangling
@@ -2860,6 +2863,7 @@ export class CodeGenerator {
       this.emit(`${type} ${className}::get_${prop.name}() const {`);
       this.emit(`    ${type} ${prop.name}_result;`);
       this.currentFunctionName = prop.name;
+      this.currentFunctionResultType = prop.type.name;
       if (prop.getterMethod !== undefined) {
         // The body declares locals, so it is a method: the getter is const
         // to be readable through a const instance, the method is not.
@@ -3147,6 +3151,7 @@ export class CodeGenerator {
     const emitFunctionBody = (funcName: string) => {
       this.emit(`    ${retType} ${funcName}_result;`);
       this.currentFunctionName = func.name;
+      this.currentFunctionResultType = func.returnType.name;
       this.enterScope(func.varBlocks, func.varBlocks);
 
       // Declare local variables (VAR, VAR_TEMP) — same pattern as method locals
@@ -6025,7 +6030,7 @@ export class CodeGenerator {
     // Field access (struct members) — detect property reads and bit access on last field
     if (expr.fieldAccess.length > 0) {
       let currentType = baseType ?? this.rootVariableType(nameUpper);
-      let bitOwner = currentType ?? this.bitGlobalType(nameUpper);
+      let bitOwner = currentType ?? this.bitRootType(nameUpper);
       for (let i = 0; i < expr.fieldAccess.length; i++) {
         const field = expr.fieldAccess[i]!;
         const isLast = i === expr.fieldAccess.length - 1;
@@ -6124,7 +6129,7 @@ export class CodeGenerator {
   ): string {
     let result = base;
     let currentType = baseType ?? this.rootVariableType(baseNameUpper);
-    let bitOwner = currentType ?? this.bitGlobalType(baseNameUpper);
+    let bitOwner = currentType ?? this.bitRootType(baseNameUpper);
 
     for (let i = 0; i < chain.length; i++) {
       const step = chain[i]!;
@@ -7340,7 +7345,10 @@ export class CodeGenerator {
       const conversion = this.stdRegistry.resolveConversion(nameUpper);
       if (conversion) {
         const args = expr.arguments.map((arg, idx) => {
-          const generated = this.generateExpression(arg.value);
+          const generated = this.bitConversionArg(
+            arg.value,
+            this.generateExpression(arg.value),
+          );
           if (idx !== 0) return generated;
           // Type-aware unit scaling, in whichever direction applies — a
           // temporal source going to an integer, or an integer going into a
@@ -7368,6 +7376,9 @@ export class CodeGenerator {
       if (stdFunc) {
         const args = expr.arguments.map((arg, idx) => {
           let generated = this.generateExpression(arg.value);
+          if (stdFunc.isConversion) {
+            generated = this.bitConversionArg(arg.value, generated);
+          }
           // For the bare `TO_xxx(temporal_var)` spelling, `nameUpper` is
           // a registered std function (not a `*_TO_*` form) so the source
           // type isn't in the name — infer it from the argument's IEC
@@ -9386,10 +9397,15 @@ export class CodeGenerator {
     const upper = field.toUpperCase();
     const place = bitPlaceOf(def.fields, upper);
     if (place === undefined) return undefined;
-    const name = def.fields
-      .flatMap((f) => f.names)
-      .find((n) => n.toUpperCase() === upper);
-    return `${bitRunMemberName(place.run)}.${name ?? field}`;
+    const decl = def.fields.find((f) =>
+      f.names.some((n) => n.toUpperCase() === upper),
+    );
+    const name = decl?.names.find((n) => n.toUpperCase() === upper) ?? field;
+    // Mangled as the bitfield is declared (a member named like a type).
+    const member = this.needsFieldMangling(name, decl?.type.name)
+      ? `${name}_`
+      : name;
+    return `${bitRunMemberName(place.run)}.${member}`;
   }
 
   /** The STRUCT a type name stands for, through aliases and array element types. */
@@ -9413,6 +9429,24 @@ export class CodeGenerator {
     return undefined;
   }
 
+  /** A type name with its ARRAY element types and ARRAY aliases unwrapped. */
+  private bitElementType(typeName: string | undefined): string | undefined {
+    let name = typeName;
+    for (let depth = 0; depth < 16 && name !== undefined && this.ast; depth++) {
+      const upper = name.toUpperCase();
+      if (upper.startsWith("__INLINE_ARRAY_")) {
+        name = name.slice("__INLINE_ARRAY_".length);
+        continue;
+      }
+      const def = this.ast.types.find(
+        (t) => t.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "ArrayDefinition") return name;
+      name = def.elementType.name;
+    }
+    return name;
+  }
+
   /** The type of member `field` of `ownerType`, for following BIT members. */
   private bitFieldType(
     ownerType: string | undefined,
@@ -9423,10 +9457,36 @@ export class CodeGenerator {
     const decl = def?.fields.find((f) =>
       f.names.some((n) => n.toUpperCase() === upper),
     );
-    if (decl === undefined) return this.resolveMemberType(ownerType, field);
+    if (decl === undefined) {
+      return this.resolveMemberType(this.bitElementType(ownerType), field);
+    }
     return decl.type.arrayDimensions && decl.type.elementTypeName !== undefined
       ? `__INLINE_ARRAY_${decl.type.elementTypeName}`
       : decl.type.name;
+  }
+
+  /**
+   * A BIT member read passed to a conversion, as a BOOL: a raw bitfield
+   * would pick the integer overload (`TO_STRING` gives '1', not 'TRUE').
+   */
+  private bitConversionArg(value: Expression, generated: string): string {
+    const hasBits = this.ast?.types.some(
+      (t) =>
+        t.definition.kind === "StructDefinition" &&
+        t.definition.fields.some((f) => f.type.bit === true),
+    );
+    return hasBits === true &&
+      value.kind === "VariableExpression" &&
+      /\.bits_\d+_\.[A-Za-z_]\w*\)?$/.test(generated)
+      ? `IEC_BOOL(${generated})`
+      : generated;
+  }
+
+  /** The type of a function result or global an access starts at, for BIT members. */
+  private bitRootType(nameUpper: string): string | undefined {
+    return this.isCurrentFunctionResult(nameUpper)
+      ? this.currentFunctionResultType
+      : this.bitGlobalType(nameUpper);
   }
 
   /** The declared type of a top-level or CONFIGURATION global, for BIT members. */
