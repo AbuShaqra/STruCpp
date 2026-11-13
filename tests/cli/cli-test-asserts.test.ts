@@ -26,6 +26,20 @@ function run(args: string[]): { status: number; out: string } {
   }
 }
 
+function runErr(args: string[]): { status: number; err: string } {
+  try {
+    execFileSync("node", [CLI_PATH, ...args], {
+      encoding: "utf-8",
+      timeout: 120000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { status: 0, err: "" };
+  } catch (err: unknown) {
+    const e = err as { status?: number; stderr?: string };
+    return { status: e.status ?? -1, err: e.stderr ?? "" };
+  }
+}
+
 const SOURCE = `VAR_GLOBAL g : INT; END_VAR
 FUNCTION_BLOCK FB
 VAR_OUTPUT n : INT; END_VAR
@@ -137,5 +151,22 @@ END_TEST
     expect(r.out).toContain("[FAIL] fails");
     expect(r.out).toContain("[PASS] returns");
     expect(r.out).toContain("[PASS] check");
+  });
+
+  it("reports a bad nested assertion as a diagnostic in the test file", () => {
+    writeFileSync(
+      join(DIR, "badnested.st"),
+      `TEST 'bad'
+  IF TRUE THEN ASSERT_EQ(1); END_IF;
+  CASE g OF 0: ASSERT_TRUE(zz); END_CASE;
+END_TEST
+`,
+    );
+    const r = runErr([join(DIR, "src.st"), "--test", join(DIR, "badnested.st"), "-o", join(DIR, "out-badnested")]);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain("badnested.st:2:16: error: ASSERT_EQ expects 2 arguments, got 1");
+    expect(r.err).toContain("badnested.st:3:28: error: Undeclared variable 'ZZ'");
+    expect(r.err).not.toContain("<input>");
+    expect(r.err).not.toMatch(/^\s+at /m);
   });
 });

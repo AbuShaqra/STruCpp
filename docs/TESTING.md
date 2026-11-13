@@ -101,7 +101,8 @@ All TEST blocks of a run share one process, and nothing is reset between them: g
 
 ## Assertions
 
-All assertions accept an optional trailing message argument for custom failure output.
+All assertions accept an optional trailing message argument for custom failure output: a STRING literal,
+in single quotes. A double-quoted (WSTRING) literal there is an argument too many and is refused.
 
 | Assertion | Description | Example |
 |-----------|-------------|---------|
@@ -118,12 +119,12 @@ All assertions accept an optional trailing message argument for custom failure o
 With custom message:
 
 ```
-ASSERT_EQ(result, expected, "calculation should match");
+ASSERT_EQ(result, expected, 'calculation should match');
 ```
 
 `ASSERT_EQ` and `ASSERT_NEQ` of two STRUCT values compare them field by field, as `a = b` does in a test body. The dialect flags of the run (`--dialect`, `--feature`) apply to the test files too, so `XSIZEOF` works there under `vendor_operators`.
 
-A failed assertion stops the current test immediately (remaining statements are skipped) and reports the failure with source location. This holds for an assertion nested in `IF`, `CASE`, `FOR`, `WHILE` or `REPEAT` as well. An assertion in SETUP or TEARDOWN that fails fails the test it runs for: a failed SETUP assertion skips the test body, and TEARDOWN still runs.
+A failed assertion stops the current test immediately (remaining statements are skipped) and reports the failure with source location. This holds for an assertion nested in `IF`, `CASE`, `FOR`, `WHILE` or `REPEAT` as well, and a nested assertion is checked like any other: its argument count and the names it reads. An assertion in SETUP or TEARDOWN that fails fails the test it runs for: a failed SETUP assertion skips the test body, and TEARDOWN still runs.
 
 ## Time Advancement
 
