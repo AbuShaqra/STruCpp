@@ -8,7 +8,14 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { compile, type CompileOptions } from "../../src/index.js";
-import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
+import { execSync } from "child_process";
+import {
+  hasGpp,
+  createPCH,
+  compileAndRunStandalone,
+  CXX_STD,
+  RUNTIME_INCLUDE_PATH,
+} from "./test-helpers.js";
 
 const SOURCE = `VAR_GLOBAL g : INT := 7; gw : __XWORD := ADR(g); END_VAR
 FUNCTION F : INT
@@ -71,6 +78,46 @@ END_PROGRAM
         `14:9: ADR gives a 64-bit address, which UDINT cannot hold; ${tail}`,
         `15:16: ADR gives a 64-bit address, which DWORD cannot hold; ${tail}`,
       ]);
+    }
+  });
+});
+
+describe.skipIf(!hasGpp)("IECVar from a raw pointer (C++)", () => {
+  it("takes only an object address, into an address-wide integer", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-xword-ctor-"));
+    const src = path.join(dir, "ctor.cpp");
+    fs.writeFileSync(
+      src,
+      `#include "iec_types.hpp"
+#include "iec_var.hpp"
+#include <string>
+#include <type_traits>
+using namespace strucpp;
+static_assert(std::is_constructible<IEC_ULINT, IEC_INT*>::value, "object address");
+static_assert(std::is_constructible<IEC_LWORD, IEC_REAL*>::value, "object address");
+static_assert(!std::is_constructible<IEC_ULINT, const char*>::value, "char");
+static_assert(!std::is_constructible<IEC_ULINT, const char16_t*>::value, "char16_t");
+static_assert(!std::is_constructible<IEC_ULINT, const char32_t*>::value, "char32_t");
+static_assert(!std::is_constructible<IEC_ULINT, const wchar_t*>::value, "wchar_t");
+static_assert(!std::is_constructible<IEC_ULINT, signed char*>::value, "signed char");
+static_assert(!std::is_constructible<IEC_ULINT, unsigned char*>::value, "unsigned char");
+static_assert(!std::is_constructible<IEC_ULINT, void (*)()>::value, "function");
+static_assert(!std::is_constructible<IEC_UDINT, IEC_INT*>::value, "narrower than an address");
+int g(IEC_ULINT) { return 1; }
+int g(std::u16string) { return 2; }
+int h(IEC_ULINT) { return 1; }
+int h(std::string) { return 2; }
+static_assert(sizeof(g(u"abc")) > 0, "u16 literal picks the string overload");
+static_assert(sizeof(h("abc")) > 0, "literal picks the string overload");
+`,
+    );
+    try {
+      execSync(
+        `g++ -std=${CXX_STD} -fsyntax-only -I"${RUNTIME_INCLUDE_PATH}" "${src}" 2>&1`,
+        { encoding: "utf-8" },
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

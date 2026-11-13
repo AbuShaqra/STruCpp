@@ -52,6 +52,19 @@ namespace strucpp {
 // Forward declaration for pointer-to-integer assignment
 template<typename T> class IEC_Ptr;
 
+namespace detail {
+/** A character type: a pointer to one may be a string literal. */
+template<typename C> struct is_char_like : std::integral_constant<bool,
+    std::is_same<C, char>::value || std::is_same<C, signed char>::value ||
+    std::is_same<C, unsigned char>::value || std::is_same<C, wchar_t>::value ||
+    std::is_same<C, char16_t>::value || std::is_same<C, char32_t>::value> {};
+
+/** The pointee whose address an integer may take: an object, not a character or function. */
+template<typename U> struct is_addressable_object : std::integral_constant<bool,
+    std::is_object<U>::value &&
+    !is_char_like<typename std::remove_cv<U>::type>::value> {};
+}  // namespace detail
+
 // =============================================================================
 // IEC Variable Wrapper
 // =============================================================================
@@ -97,11 +110,11 @@ public:
 
     /** Construct from a raw pointer, storing the address as an integer: the
      *  initial value `w : __XWORD := ADR(x)`. Only an integer as wide as an
-     *  address (no truncation) and not from a character pointer, so a string
-     *  literal does not convert. */
+     *  address (no truncation), and only from a pointer to an object that is
+     *  not a character, so no string literal or function converts. */
     template<typename U, typename V = T, std::enable_if_t<
         std::is_integral<V>::value && sizeof(V) == sizeof(void*) &&
-        !std::is_same<typename std::remove_cv<U>::type, char>::value, int> = 0>
+        detail::is_addressable_object<U>::value, int> = 0>
     IECVar(U* p) noexcept
         : value_{static_cast<T>(reinterpret_cast<std::uintptr_t>(p))} {}
 
