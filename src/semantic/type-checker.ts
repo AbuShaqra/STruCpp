@@ -94,6 +94,10 @@ import {
   fbInitInput,
   storedInstance,
 } from "./fb-init.js";
+import {
+  exactIntegerLiteralValue,
+  integerTypeRange,
+} from "../literal-utils.js";
 
 // Re-export from type-utils for backward compatibility
 export { ELEMENTARY_TYPES, TYPE_CATEGORIES } from "./type-utils.js";
@@ -1950,6 +1954,75 @@ export class TypeChecker {
         operand.sourceSpan.file,
       );
       return;
+    }
+  }
+
+  /**
+   * `--strict`: an integer constant expression (`200 * 200`) whose value is
+   * outside the integer type it is stored in wraps at run time; warn.
+   */
+  private warnConstantOverflow(
+    targetType: IECType | undefined,
+    value: Expression,
+  ): void {
+    if (targetType?.typeKind !== "elementary") return;
+    if (value.kind === "LiteralExpression") return; // a plain literal has its own range check
+    const name = this.aliasBase(
+      (targetType as ElementaryType).name,
+    ).toUpperCase();
+    const range = integerTypeRange(name);
+    if (range === undefined) return;
+    const v = this.constantIntegerValue(value);
+    if (v === undefined || (v >= range.min && v <= range.max)) return;
+    this.addWarning(
+      `The constant expression is ${v}, outside ${name} (${range.min}..${range.max}): it wraps`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
+  }
+
+  /** The exact value of an integer constant expression of literals, if it is one. */
+  private constantIntegerValue(expr: Expression): bigint | undefined {
+    switch (expr.kind) {
+      case "LiteralExpression": {
+        if (expr.literalType !== "INT") return undefined;
+        const raw =
+          (expr.typePrefix ?? "") !== ""
+            ? expr.rawValue.slice(expr.rawValue.indexOf("#") + 1)
+            : expr.rawValue;
+        return exactIntegerLiteralValue(raw);
+      }
+      case "ParenthesizedExpression":
+        return this.constantIntegerValue(expr.expression);
+      case "UnaryExpression": {
+        const v = this.constantIntegerValue(expr.operand);
+        if (v === undefined) return undefined;
+        return expr.operator === "-"
+          ? -v
+          : expr.operator === "+"
+            ? v
+            : undefined;
+      }
+      case "BinaryExpression": {
+        const l = this.constantIntegerValue(expr.left);
+        const r = this.constantIntegerValue(expr.right);
+        if (l === undefined || r === undefined) return undefined;
+        switch (expr.operator) {
+          case "+":
+            return l + r;
+          case "-":
+            return l - r;
+          case "*":
+            return l * r;
+          case "/":
+            return r === 0n ? undefined : l / r;
+          default:
+            return undefined;
+        }
+      }
+      default:
+        return undefined;
     }
   }
 
@@ -3942,6 +4015,7 @@ export class TypeChecker {
     if (this.adaptCharLiteral(value, this.charTypeOf(targetType))) {
       valueType = value.resolvedType;
     }
+    if (this.strict) this.warnConstantOverflow(targetType, value);
     const targetInterface = this.interfaceTypeOf(targetType);
     if (targetInterface !== undefined) {
       this.checkInterfaceValue(targetInterface, valueType, value);
