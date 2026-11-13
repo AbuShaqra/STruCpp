@@ -191,7 +191,8 @@ The `--test` mode:
 3. Validates test files against the source's symbol tables
 4. Generates a C++ test runner (`test_main.cpp`) with:
    - A setup struct per test file (if SETUP exists)
-   - A test function per TEST block
+   - A test function per TEST block, which names itself as the running task (`TEST '<name>'`) so a
+     run-time fault such as a division by zero reports the test that raised it
    - Test registration in `main()`
 5. Compiles the test binary with g++ (C++17)
 6. Runs the binary and reports results

@@ -76,7 +76,9 @@ inline void cyclic_run(ProgramDescriptor* programs, size_t program_count,
         for (size_t i = 0; i < program_count; ++i) {
             int64_t divisor = programs[i].interval_ns / common_ticktime;
             if (divisor <= 0 || (cycle_count % static_cast<unsigned long long>(divisor)) == 0) {
+                strucpp_set_current_task(programs[i].task);
                 programs[i].instance->run();
+                strucpp_set_current_task(nullptr);
             }
         }
 
