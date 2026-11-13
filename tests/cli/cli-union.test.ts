@@ -9,16 +9,17 @@
  * Runs `dist/node/cli.js` by default; set STRUCPP_CLI to run another entry
  * point, e.g. `STRUCPP_CLI=dist/strucpp-bundle.cjs`.
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync, mkdtempSync } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
 
 const CLI_PATH = resolve(
   process.env.STRUCPP_CLI ?? resolve(__dirname, "../../dist/node/cli.js"),
 );
-const DIR = join(tmpdir(), "strucpp-cli-union-tests");
+// Per-run folder, so concurrent runs do not share files.
+const DIR = mkdtempSync(join(tmpdir(), "strucpp-cli-union-tests-"));
 
 const UNION_SOURCE = `TYPE
   U_A : UNION f : REAL; d : DWORD; arr : ARRAY[0..3] OF BYTE; END_UNION;
@@ -174,3 +175,5 @@ describe("UNION and END_UNION as names", () => {
     });
   }
 });
+
+afterAll(() => rmSync(DIR, { recursive: true, force: true }));
