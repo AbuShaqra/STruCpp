@@ -231,8 +231,8 @@ export class TypeCodeGenerator {
    * member-name collision mangle. Nested levels take their type from
    * `decltype(...)` of the member being assigned, which needs no metadata.
    */
-  /** Set while a STRUCT element of a bit string type other than BOOL is emitted. */
-  private bitStringField = false;
+  /** Each alias of the unit (upper case) to the type it names, for NOT. */
+  private aliasTargets: Map<string, string> = new Map();
 
   private structInitEmitter: StructInitEmitter = {
     emitValue: (value: Expression): string => this.expressionToCpp(value),
@@ -289,6 +289,26 @@ export class TypeCodeGenerator {
         })),
     );
     this.unionStored = unionStoredTypes(types);
+    this.aliasTargets = new Map(
+      types.flatMap((t) =>
+        t.definition.kind === "TypeReference" &&
+        t.definition.arrayDimensions === undefined
+          ? [[t.name.toUpperCase(), t.definition.name.toUpperCase()]]
+          : [],
+      ),
+    );
+  }
+
+  /** BYTE, WORD, DWORD or LWORD a type name is, through aliases. */
+  private bitStringBase(name: string): string | undefined {
+    let upper = name.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      if (isBitStringName(upper)) return upper;
+      const next = this.aliasTargets.get(upper);
+      if (next === undefined) return undefined;
+      upper = next;
+    }
+    return undefined;
   }
 
   /**
@@ -495,14 +515,12 @@ export class TypeCodeGenerator {
           // STRUCT element fell through to expressionToCpp's `0` fallback and
           // the `isArrayType` guard below turned it into `{}` — the declared
           // values were dropped with no diagnostic.
-          this.bitStringField = isBitStringName(field.type.name);
           const initVal = generateInitializerValue(
             field.initialValue,
             cppType,
             field.type.name,
             this.structInitEmitter,
           );
-          this.bitStringField = false;
           // Array types can't be initialized with = 0; use {} instead
           const isArrayType = /^Array[123]D</.test(cppType);
           if (isArrayType && initVal === "0") {
@@ -778,6 +796,15 @@ export class TypeCodeGenerator {
       case "ParenthesizedExpression":
         return `(${this.expressionToCpp(expr.expression)})`;
       case "FunctionCallExpression":
+        // `NOT (x)` is parsed as a call: it is the operator NOT on x
+        if (
+          expr.functionName.toUpperCase() === "NOT" &&
+          expr.arguments.length === 1 &&
+          expr.arguments[0]!.name === undefined
+        ) {
+          const arg = expr.arguments[0]!.value;
+          return this.notToCpp(arg, `(${this.expressionToCpp(arg)})`);
+        }
         return `${expr.functionName}()`;
       default:
         return "0";
@@ -928,20 +955,35 @@ export class TypeCodeGenerator {
     return `${left} ${cppOp} ${right}`;
   }
 
+  /**
+   * NOT of a typed bit string other than BOOL (an alias included) is its
+   * complement in that width, as in a body; any other operand keeps `!`.
+   */
+  private notToCpp(operandExpr: Expression, operand: string): string {
+    const base = this.operandBitString(operandExpr);
+    return base === undefined
+      ? `!${operand}`
+      : `static_cast<${base}_t>(~${operand})`;
+  }
+
+  /** The bit string type an operand is known to have: its type, or a typed literal's prefix. */
+  private operandBitString(expr: Expression): string | undefined {
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.operandBitString(expr.expression);
+    }
+    const t = expr.resolvedType;
+    if (t?.typeKind === "elementary") {
+      return this.bitStringBase((t as ElementaryType).name);
+    }
+    if (expr.kind === "LiteralExpression" && (expr.typePrefix ?? "") !== "") {
+      return this.bitStringBase(expr.typePrefix!);
+    }
+    return undefined;
+  }
+
   private unaryExprToCpp(expr: UnaryExpression): string {
     const operand = this.expressionToCpp(expr.operand);
-    // NOT of a bit string other than BOOL is the bitwise complement; with
-    // no type on the operand, the STRUCT element's type decides.
-    const t = expr.operand.resolvedType;
-    if (
-      expr.operator === "NOT" &&
-      (t === undefined
-        ? this.bitStringField
-        : t.typeKind === "elementary" &&
-          isBitStringName((t as ElementaryType).name))
-    ) {
-      return `~${operand}`;
-    }
+    if (expr.operator === "NOT") return this.notToCpp(expr.operand, operand);
 
     const opMap: Record<string, string> = {
       NOT: "!",
