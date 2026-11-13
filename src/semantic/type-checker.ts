@@ -2077,7 +2077,7 @@ export class TypeChecker {
       this.isFBInstanceCall(expr, scope),
       expr,
     );
-    if (this.strict) {
+    {
       this.checkStrictArguments(
         this.callInputs(expr, scope) ??
           this.dottedMethodInputs(expr.functionName, scope),
@@ -2283,7 +2283,7 @@ export class TypeChecker {
         false,
         expr,
       );
-      if (this.strict) {
+      {
         this.checkStrictArguments(
           this.methodInputsOf(owner?.name, expr.methodName),
           expr.arguments,
@@ -2317,7 +2317,7 @@ export class TypeChecker {
       false,
       expr,
     );
-    if (this.strict) {
+    {
       this.checkStrictArguments(
         this.methodInputs(objType, expr, scope),
         expr.arguments,
@@ -6871,7 +6871,7 @@ export class TypeChecker {
     }
   }
 
-  /** Strict conversion check for each input argument of a call. */
+  /** Strict conversion check for each input argument of a call (the BOOL narrowing warning outside `--strict`). */
   private checkStrictArguments(
     inputs: Array<{ name: string; type: AccessType }> | undefined,
     args: readonly Argument[],
@@ -6890,8 +6890,34 @@ export class TypeChecker {
       if (refKind !== undefined && refKind !== "none") return;
       if (input.type.arrayDimensions !== undefined) return;
       const declared = ELEMENTARY_TYPES[input.type.name.toUpperCase()];
-      if (declared) this.checkStrictConversion(declared, arg.value);
+      if (this.strict) {
+        if (declared) this.checkStrictConversion(declared, arg.value);
+        return;
+      }
+      this.warnBoolInputNarrowing(input.type.name, arg.value);
     });
+  }
+
+  /**
+   * Outside `--strict`: a non-BOOL value bound to a BOOL input gets the
+   * narrowing warning its assignment `b := i` gets (an untyped constant adapts).
+   */
+  private warnBoolInputNarrowing(inputType: string, value: Expression): void {
+    if (this.aliasBase(inputType).toUpperCase() !== "BOOL") return;
+    if (this.untypedConstantKind(value) !== undefined) return;
+    const valueType = value.resolvedType;
+    if (valueType?.typeKind !== "elementary") return;
+    const vName = this.aliasBase(
+      (valueType as ElementaryType).name,
+    ).toUpperCase();
+    if (vName === "BOOL" || ELEMENTARY_TYPES[vName] === undefined) return;
+    if (!isNarrowingConversion("BOOL", vName)) return;
+    this.addWarning(
+      `Implicit narrowing conversion from ${vName} to BOOL`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
   }
 
   /** The input parameters of the method a method-call expression names. */
