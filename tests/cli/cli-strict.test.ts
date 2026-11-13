@@ -3,16 +3,17 @@
  * (--test) and library compilation (--compile-lib), not only plain builds.
  * Each case also pins the non-strict result.
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
-import { mkdirSync, writeFileSync, existsSync, rmSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync, mkdtempSync } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
 import { compileStlib } from "../../src/library/library-compiler.js";
 import { hasGpp } from "../integration/test-helpers.js";
 
 const CLI_PATH = resolve(__dirname, "../../dist/node/cli.js");
-const TMP_BASE = join(tmpdir(), "strucpp-cli-strict-tests");
+// Per-run folder, so concurrent runs do not share files.
+const TMP_BASE = mkdtempSync(join(tmpdir(), "strucpp-cli-strict-tests-"));
 
 /** Run the CLI; returns exit status and both streams. */
 function run(args: string[]): { status: number; out: string } {
@@ -125,3 +126,5 @@ END_TEST
     expect(lax.status).toBe(0);
   });
 });
+
+afterAll(() => rmSync(TMP_BASE, { recursive: true, force: true }));

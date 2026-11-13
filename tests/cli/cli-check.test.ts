@@ -8,11 +8,14 @@
  * Runs `dist/node/cli.js` by default; set STRUCPP_CLI to run another entry
  * point, e.g. `STRUCPP_CLI=dist/strucpp-bundle.cjs`.
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
-import { existsSync, mkdirSync, readdirSync, copyFileSync, rmSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, copyFileSync, rmSync, mkdtempSync } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
+
+// Per-run folder, so concurrent runs do not share files.
+const TMP_ROOT = mkdtempSync(join(tmpdir(), "strucpp-cli-check-"));
 
 const CLI_PATH = resolve(
   process.env.STRUCPP_CLI ?? resolve(__dirname, "../../dist/node/cli.js"),
@@ -159,7 +162,7 @@ describe("--check --json", () => {
   });
 
   it("writes no files", () => {
-    const dir = join(tmpdir(), "strucpp-cli-check-nowrite");
+    const dir = join(TMP_ROOT, "nowrite");
     if (existsSync(dir)) rmSync(dir, { recursive: true });
     mkdirSync(dir, { recursive: true });
     copyFileSync(join(FIX, "clean.st"), join(dir, "clean.st"));
@@ -272,7 +275,7 @@ describe("--check exit code 2", () => {
 
   it("combined with --build", () => {
     // Runs in a scratch dir: if the combination were accepted it would build there, not in fixtures.
-    const dir = join(tmpdir(), "strucpp-cli-check-build");
+    const dir = join(TMP_ROOT, "build");
     if (existsSync(dir)) rmSync(dir, { recursive: true });
     mkdirSync(dir, { recursive: true });
     copyFileSync(join(FIX, "clean.st"), join(dir, "clean.st"));
@@ -302,7 +305,7 @@ describe("--check human output", () => {
 
 describe("warnings on failure in compile mode", () => {
   it("a failed compile still prints its warnings", () => {
-    const dir = join(tmpdir(), "strucpp-cli-check-compile");
+    const dir = join(TMP_ROOT, "compile");
     if (existsSync(dir)) rmSync(dir, { recursive: true });
     mkdirSync(dir, { recursive: true });
     copyFileSync(join(FIX, "warn-and-error.st"), join(dir, "w.st"));
@@ -312,3 +315,5 @@ describe("warnings on failure in compile mode", () => {
     expect(r.err).toMatch(/w\.st:6:6: warning: /);
   });
 });
+
+afterAll(() => rmSync(TMP_ROOT, { recursive: true, force: true }));

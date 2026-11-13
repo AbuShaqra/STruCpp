@@ -5,14 +5,15 @@
  * constant) and `--file-define <file>=NAME[=VALUE]` (a define of one input
  * file) on the CLI.
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
-import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync, mkdtempSync } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
 
 const CLI_PATH = resolve(__dirname, "../../dist/node/cli.js");
-const TMP = join(tmpdir(), "strucpp-cli-file-defines-tests");
+// Per-run folder, so concurrent runs do not share files.
+const TMP = mkdtempSync(join(tmpdir(), "strucpp-cli-file-defines-tests-"));
 
 function run(args: string[]): { status: number; err: string } {
   try {
@@ -104,3 +105,5 @@ describe("--pragma-define and --file-define", () => {
     ).toContain("cannot be used with --compile-lib");
   });
 });
+
+afterAll(() => rmSync(TMP, { recursive: true, force: true }));
