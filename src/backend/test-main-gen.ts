@@ -626,6 +626,19 @@ class TestFunctionGenerator {
       case "ReturnStatement":
         lines.push(`${this.indent}return true;`);
         break;
+      // `RETURN (cond);` (feature conditional_return) ends the test when cond holds.
+      case "IfStatement":
+        if (stmt.conditionalReturn) {
+          const cond = this.testCodegen.emitExpression(stmt.condition);
+          lines.push(`${this.indent}if (${cond}) {`);
+          lines.push(`${this.indent}    return true;`);
+          lines.push(`${this.indent}}`);
+          break;
+        }
+        this.testCodegen.clearOutput();
+        this.testCodegen.emitStatement(stmt, this.indent);
+        lines.push(...this.testCodegen.getOutput());
+        break;
       default:
         // Delegate all other statements to production codegen
         this.testCodegen.clearOutput();

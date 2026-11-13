@@ -48,6 +48,11 @@ import { foldStructFieldDefaults } from "./semantic/struct-defaults.js";
 import { lowerActions } from "./semantic/lower-actions.js";
 import { lowerAccessorLocals } from "./semantic/lower-accessor-locals.js";
 import { lowerProgramSelfMembers } from "./semantic/program-access.js";
+import { lowerPlatformTypes } from "./semantic/platform-types.js";
+import {
+  implicitParameterPragmas,
+  markImplicitParameters,
+} from "./semantic/implicit-parameters.js";
 import { unionLoweringErrors } from "./semantic/union.js";
 import { fbInitLoweringErrors } from "./semantic/fb-init.js";
 import { walkAST } from "./ast-utils.js";
@@ -644,6 +649,11 @@ function runPipeline(
   // Phase 1: Parse ST source to CST. Lexer errors do not stop the parse,
   // so analyze mode still sees the rest of the file.
   const parseResult = parseSource(effectiveSource);
+  const implicitPragmas = implicitParameterPragmas(
+    parseResult.pragmas,
+    effectiveSource,
+    mergedOptions.fileName ?? "main.st",
+  );
   warnings.push(
     ...pragmaWarnings(
       parseResult.pragmas,
@@ -736,6 +746,13 @@ function runPipeline(
         }
 
         const addlParseResult = parseSource(effectiveAddlSource);
+        implicitPragmas.push(
+          ...implicitParameterPragmas(
+            addlParseResult.pragmas,
+            effectiveAddlSource,
+            addlSource.fileName,
+          ),
+        );
         warnings.push(
           ...pragmaWarnings(
             addlParseResult.pragmas,
@@ -796,6 +813,7 @@ function runPipeline(
     }
 
     ast = mergeCompilationUnits(units);
+    markImplicitParameters(ast, implicitPragmas);
     // Actions first, so lowerInlineTypes qualifies inline enum members in
     // action bodies as it does in the owner's methods.
     const loweringErrors = [
@@ -807,6 +825,18 @@ function runPipeline(
     ];
     // After the actions, so `PRG_A.x` in an action of PRG_A is lowered too.
     if (dialect.features.has("program_methods")) lowerProgramSelfMembers(ast);
+    if (dialect.features.has("platform_types")) {
+      const libraryTypes = new Set<string>();
+      for (const archive of mergedOptions.libraries ?? []) {
+        for (const t of archive.manifest.types) {
+          libraryTypes.add(t.name.toUpperCase());
+        }
+        for (const fb of archive.manifest.functionBlocks) {
+          libraryTypes.add(fb.name.toUpperCase());
+        }
+      }
+      lowerPlatformTypes(ast, (name) => libraryTypes.has(name));
+    }
     errors.push(...loweringErrors);
     if (!continueOnError && loweringErrors.length > 0) {
       return {
