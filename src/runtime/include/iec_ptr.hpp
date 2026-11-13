@@ -140,41 +140,46 @@ public:
 
     // Raw access
     T* get() const noexcept { return static_cast<T*>(ptr_); }
+
+    /** The address `n` bytes after this one (before it when `n` is negative). */
+    T* bytes(std::ptrdiff_t n) const noexcept {
+        return reinterpret_cast<T*>(static_cast<char*>(ptr_) + n);
+    }
     void* get_void() const noexcept { return ptr_; }
 
-    // Pointer arithmetic (in units of sizeof(T))
-    // Use templates to directly match any arithmetic type, avoiding
-    // ambiguity with the integral conversion operator.
+    // Pointer arithmetic counts bytes, as on a PLC (`p + 2` moves 2 bytes,
+    // whatever T is). Use templates to directly match any arithmetic type,
+    // avoiding ambiguity with the integral conversion operator.
     template<typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
     IEC_Ptr operator+(N n) const noexcept {
-        return IEC_Ptr(static_cast<T*>(ptr_) + static_cast<std::ptrdiff_t>(n));
+        return IEC_Ptr(bytes(static_cast<std::ptrdiff_t>(n)));
     }
 
     template<typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
     IEC_Ptr operator-(N n) const noexcept {
-        return IEC_Ptr(static_cast<T*>(ptr_) - static_cast<std::ptrdiff_t>(n));
+        return IEC_Ptr(bytes(-static_cast<std::ptrdiff_t>(n)));
     }
 
     // Arithmetic with IECVar-wrapped types (unwrap the value)
     template<typename U>
     IEC_Ptr operator+(const IECVar<U>& n) const noexcept {
-        return IEC_Ptr(static_cast<T*>(ptr_) + static_cast<std::ptrdiff_t>(n.get()));
+        return IEC_Ptr(bytes(static_cast<std::ptrdiff_t>(n.get())));
     }
 
     template<typename U>
     IEC_Ptr operator-(const IECVar<U>& n) const noexcept {
-        return IEC_Ptr(static_cast<T*>(ptr_) - static_cast<std::ptrdiff_t>(n.get()));
+        return IEC_Ptr(bytes(-static_cast<std::ptrdiff_t>(n.get())));
     }
 
     template<typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
     IEC_Ptr& operator+=(N n) noexcept {
-        ptr_ = static_cast<T*>(ptr_) + static_cast<std::ptrdiff_t>(n);
+        ptr_ = bytes(static_cast<std::ptrdiff_t>(n));
         return *this;
     }
 
     template<typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
     IEC_Ptr& operator-=(N n) noexcept {
-        ptr_ = static_cast<T*>(ptr_) - static_cast<std::ptrdiff_t>(n);
+        ptr_ = bytes(-static_cast<std::ptrdiff_t>(n));
         return *this;
     }
 
@@ -274,5 +279,13 @@ bool operator!=(std::nullptr_t, IEC_Ptr<T> p) noexcept { return p != nullptr; }
 // Arithmetic: n + ptr (reverse order)
 template<typename T>
 IEC_Ptr<T> operator+(std::ptrdiff_t n, IEC_Ptr<T> p) noexcept { return p + n; }
+
+/** `ADR(x) + n`: the address `n` bytes after `p`, as a PLC adds to an address. */
+template<typename T, typename N>
+inline T* iec_addr_offset(T* p, N n) noexcept {
+    return reinterpret_cast<T*>(
+        reinterpret_cast<char*>(const_cast<std::remove_const_t<T>*>(p)) +
+        static_cast<std::ptrdiff_t>(n));
+}
 
 } // namespace strucpp

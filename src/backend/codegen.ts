@@ -6295,6 +6295,21 @@ export class CodeGenerator {
       return `${l} ${cppOp} ${r}`;
     }
 
+    // `ADR(x) + n`: an address moves by bytes, as on a PLC
+    const isAdr = (e: Expression): boolean =>
+      e.kind === "FunctionCallExpression" &&
+      e.functionName.toUpperCase() === "ADR" &&
+      e.libraryFunction === undefined &&
+      this.ast?.functions.some((f) => f.name.toUpperCase() === "ADR") !== true;
+    if (expr.operator === "+" || expr.operator === "-") {
+      if (isAdr(expr.left)) {
+        return `strucpp::iec_addr_offset(${left}, ${expr.operator === "-" ? "-" : ""}(${right}))`;
+      }
+      if (expr.operator === "+" && isAdr(expr.right)) {
+        return `strucpp::iec_addr_offset(${right}, (${left}))`;
+      }
+    }
+
     // MOD by a divisor that may be 0 gives 0 (Table 29, note e)
     if (expr.operator === "MOD" && !isNonZeroIntegerLiteral(expr.right)) {
       return `iec_mod(${left}, ${right})`;

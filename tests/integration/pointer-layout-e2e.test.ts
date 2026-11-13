@@ -95,7 +95,7 @@ PROGRAM Main
   END_FOR;
   pw := ADR(warr);
   w0 := pw^;
-  pw := pw + 1;
+  pw := pw + 1;            (* one byte on: pointer arithmetic counts bytes *)
   w1 := pw^;
   dw := DwordBytes(16#11223344);
   rb := RealBits(1.0);
@@ -132,7 +132,7 @@ int main() {
 const EXPECTED = [
   // little-endian bytes of 16#11223344; POINTER TO BYTE reads and writes arr[1];
   // a POINTER TO BYTE walks the array in order; POINTER TO WORD reads two bytes.
-  "r0=44 r3=11 b1=2 b2=127 walk=17f0304 w0=2211 w1=4433",
+  "r0=44 r3=11 b1=2 b2=127 walk=17f0304 w0=2211 w1=3322",
   // byte write into a DWORD; REAL 1.0 bits; DWORD write into a REAL array;
   // byte write into a STRUCT; STRUCT read from bytes, then written through.
   "dw=55223344 rb=3f800000 rab=3f800002 sb=22222299 sfb=12345755",

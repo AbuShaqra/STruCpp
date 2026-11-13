@@ -328,6 +328,10 @@ public:
 
 Supports CODESYS-style `POINTER TO` declarations with dereference via `^` operator.
 
+Pointer arithmetic counts bytes, as on a PLC: `p + n` and `p - n` move the address by `n` bytes
+whatever the pointer's target type is (`p + 2` on a `POINTER TO INT` is the next INT, not the third),
+and so does `ADR(x) + n` (emitted as `strucpp::iec_addr_offset(&(x), n)`).
+
 ### REF_TO and REFERENCE_TO (`iec_ptr.hpp`)
 
 ```cpp
