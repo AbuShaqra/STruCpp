@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-only WITH STruCpp-runtime-exception
+// Copyright (c) 2026 Autonomy®
+// This file is part of the STruC++ Runtime Library and is covered by the
+// STruC++ Runtime Library Exception. See COPYING.RUNTIME for details.
 /**
  * iec_fault.hpp — unrecoverable-fault handling for the STruC++ runtime.
  *

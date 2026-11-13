@@ -99,10 +99,11 @@ END_CONFIGURATION
 `;
 }
 
-function compileOk(source: string) {
+function compileOk(source: string, threaded = false) {
   const result = compile(source, {
     headerFileName: "generated.hpp",
     features: ["+program_methods"],
+    ...(threaded ? { threaded: true } : {}),
   });
   expect(result.errors.map((e) => `${e.line}: ${e.message}`)).toEqual([]);
   return result;
@@ -328,6 +329,7 @@ m.Swap(a := gAx, b := gAx2);
 F_Inc(v := gArr[i].cnt);
 IF m.Drive(Ax := gAx) > 2 THEN r := 0; END_IF;
 END_PROGRAM`),
+        true,
       );
       const code = result.cppCode;
       expect(code).toContain("M.DRIVE(GAX->value)");

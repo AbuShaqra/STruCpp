@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-only WITH STruCpp-runtime-exception
+// Copyright (c) 2026 Autonomy®
+// This file is part of the STruC++ Runtime Library and is covered by the
+// STruC++ Runtime Library Exception. See COPYING.RUNTIME for details.
 // ============================================================================
 // WARNING: KEEP THIS HEADER C++14-CLEAN (see iec_var.hpp for the full rationale).
 // ----------------------------------------------------------------------------

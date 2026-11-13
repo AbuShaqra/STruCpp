@@ -82,6 +82,7 @@ the root. A profile without `extends` has only its own features.
 | `conditional_pragmas` | `{IF}`/`{ELSIF}`/`{ELSE}`/`{END_IF}` with `defined()`, `project_defined()`, `hasvalue()`, `AND`/`OR`/`NOT`; defines from `-D` and from `{define}`/`{undefine}` in the source ([below](#conditional-pragmas)) |
 | `type_colon_optional` | `TYPE ST_A STRUCT ... END_STRUCT` without the `:` ([below](#type_colon_optional-and-conditional_return)) |
 | `conditional_return` | `RETURN (cond);`, a RETURN taken when `cond` is TRUE      |
+| `vendor_operators`   | the operator `XSIZEOF(x)` ([below](#vendor-operators))       |
 
 ## Refusals
 
@@ -105,6 +106,8 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `itf := 0` (interface variable)             | `interface_zero`     | `Assigning 0 to interface I_A needs the feature interface_zero` (at the `0`)         |
 | `TYPE ST_A STRUCT` (no `:`)                 | `type_colon_optional` | `TYPE ST_A without ':' before STRUCT needs the feature type_colon_optional` (at `STRUCT`) |
 | `RETURN (cond);`                            | `conditional_return` | `RETURN (condition) needs the feature conditional_return` (at `RETURN`)              |
+| `__ISVALIDREF(r)`                           | `reference_to`       | `__ISVALIDREF needs the feature reference_to`                                         |
+| `XSIZEOF(x)`                                | `vendor_operators`   | `XSIZEOF needs the feature vendor_operators`                                          |
 | `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive). With the feature on, `{define}`/`{undefine}` are accepted ([below](#conditional-pragmas)) |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
@@ -646,6 +649,30 @@ END_FUNCTION
   parenthesis (`RETURN (a) OR b;`): the condition is the one parenthesised expression.
 - In a `--test` file, `RETURN (cond);` follows the dialect flags of the run, as conditional pragmas do: it is
   refused without the feature, and with it a TEST ends there (passing) when `cond` holds.
+
+## Vendor operators
+
+Common vendor toolchains add operators that IEC 61131-3 Ed. 3 does not have. Each is built in under its
+feature, with the feature off its name means what it meant before, and a FUNCTION, method, POU or variable
+of the same name always wins: a call reaches the operator only where nothing in scope declares the name.
+
+| Operator          | Feature            | Result  | Meaning                                                                   |
+| ----------------- | ------------------ | ------- | ------------------------------------------------------------------------- |
+| `__ISVALIDREF(r)` | `reference_to`     | `BOOL`  | TRUE when the REFERENCE TO `r` is bound (by `REF=`, or by the call that passes it as an input) |
+| `XSIZEOF(x)`      | `vendor_operators` | `ULINT` | the size of `x` in bytes, the value `SIZEOF(x)` gives                     |
+
+- `__ISVALIDREF` is on wherever `REFERENCE TO` is, so also with no dialect flag. Its one argument is a
+  variable, member (`s.r`, `THIS.r`, `THIS^.r`) or VAR_INPUT declared `REFERENCE TO`; anything else is
+  `__ISVALIDREF needs a REFERENCE TO variable; 'X' is declared INT`. Reading it never raises the null-reference fault. In C++ it is `!r.is_null()`.
+- `XSIZEOF` is the pointer-sized form of `SIZEOF`: its type is the unsigned integer of the target's address
+  width, which on the 64-bit target this compiler generates for is `ULINT`. So `n : UDINT := XSIZEOF(x)`
+  is a narrowing (an error under `--strict`), as on a 64-bit PLC.
+- Both work in a body and in an initial value, a top-level or CONFIGURATION `VAR_GLOBAL`'s included. Not
+  yet in a STRUCT member's default, where no call is supported.
+- Either operator takes exactly one positional argument: `XSIZEOF takes one argument, got 2`, `XSIZEOF
+  takes its argument without a name`.
+- Not implemented yet: `BITADR`, `INDEXOF`, `__POSITION` and `__POUNAME`. Their names stay ordinary names
+  (a call is `Undeclared function`), in every dialect.
 
 ## Strict checks a feature relaxes
 
