@@ -242,6 +242,8 @@ interface ProgramInfo {
   vars: Array<{ name: string; typeName: string }>;
   /** Task interval in nanoseconds (0 = REPL applies 20ms default) */
   intervalNs: number;
+  /** The task that runs the program, named in a run-time fault */
+  task?: string;
 }
 
 /**
@@ -292,7 +294,7 @@ function emitProgramDescriptorsAndMain(
   lines.push(`static ProgramDescriptor programs[] = {`);
   for (const prog of programs) {
     lines.push(
-      `    {"${prog.displayName}", &${prog.instanceExpr}, ${prog.varsDescName}, ${prog.vars.length}, ${prog.intervalNs}LL},`,
+      `    {"${prog.displayName}", &${prog.instanceExpr}, ${prog.varsDescName}, ${prog.vars.length}, ${prog.intervalNs}LL${prog.task !== undefined ? `, "${prog.task}"` : ""}},`,
     );
   }
   lines.push("};");
@@ -389,6 +391,7 @@ function generateWithConfiguration(
           varsDescName: `vars_${inst.instanceName}`,
           vars: astProg ? collectVarsFromBlocks(astProg.varBlocks) : [],
           intervalNs,
+          task: task.name,
         });
       }
     }

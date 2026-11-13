@@ -71,6 +71,7 @@ struct ProgramDescriptor {
     VarDescriptor* vars;
     size_t var_count;
     int64_t interval_ns;  // Task interval in nanoseconds (0 = default 20ms)
+    const char* task = nullptr;  // The task that runs it, named in a run-time fault
 };
 
 struct STLineMap {
@@ -836,7 +837,9 @@ inline void repl_run(ProgramDescriptor* programs, size_t program_count,
                 for (size_t i = 0; i < program_count; ++i) {
                     int64_t divisor = programs[i].interval_ns / common_ticktime;
                     if (divisor <= 0 || (cycle_count % static_cast<unsigned long long>(divisor)) == 0) {
+                        strucpp_set_current_task(programs[i].task);
                         programs[i].instance->run();
+                        strucpp_set_current_task(nullptr);
                     }
                 }
                 cycle_count++;
