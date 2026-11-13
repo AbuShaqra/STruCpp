@@ -3067,11 +3067,6 @@ export class TypeChecker {
   }
 
   /**
-   * A bare `Name(...)` inside a PROGRAM or FUNCTION_BLOCK that names one of
-   * its methods, inherited ones included. The method is called, as the C++
-   * member shadows a FUNCTION or standard function of the same name.
-   */
-  /**
    * The result type of a call of a built-in operator whose feature is on and
    * whose name nothing in scope declares; marks the call for codegen.
    */
@@ -3131,6 +3126,11 @@ export class TypeChecker {
     return type;
   }
 
+  /**
+   * A bare `Name(...)` inside a PROGRAM or FUNCTION_BLOCK that names one of
+   * its methods, inherited ones included. The method is called, as the C++
+   * member shadows a FUNCTION or standard function of the same name.
+   */
   private ownMethod(name: string): MethodDeclaration | undefined {
     if (name.includes(".")) return undefined;
     const upper = name.toUpperCase();
