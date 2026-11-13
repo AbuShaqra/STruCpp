@@ -249,8 +249,8 @@ compiled without threading gets no such warning. API callers pass `threaded: tru
 | Flag                    | Description                                                                             |
 | ----------------------- | --------------------------------------------------------------------------------------- |
 | `--dialect <id>`        | Compile under a profile: built-in `iec-3`, a `--dialect-file`/`--dialect-path` profile  |
-| `--dialect-file <path>` | Load a profile file (repeatable); one file and no `--dialect` selects it                |
-| `--dialect-path <dir>`  | Load and check every `*.json` profile in a folder (repeatable)                          |
+| `--dialect-file <path>` | Load a profile file (repeatable); one file and no `--dialect` selects it; several and no `--dialect` warn and select none |
+| `--dialect-path <dir>`  | Load and check every `*.json` profile in a folder (repeatable); one that is not selected and is invalid gives a warning |
 | `--feature <+id\|-id>`  | Enable (`+id` or `id`) or disable (`-id`) a feature after the profile (repeatable)      |
 | `--global-list <f>=<n>` | Name the global variable list of input file `<f>` (default: its stem; repeatable)      |
 | `--print-dialect`       | Print the resolved dialect as JSON (`{"id":...,"features":[...]}`) and exit             |
@@ -259,7 +259,9 @@ With no `--dialect` and no `--dialect-file` the compiler runs with the default f
 `pointer_to`, `reference_to` and `ref_assign` (its behaviour before profiles). `--dialect iec-3`
 enables no feature; `--dialect iec` is refused with an error naming `iec-3`. The flags apply in every mode that compiles ST (compile, build, `--test`,
 `--compile-lib`, `--import-lib`, `--check`); a bad profile prints one `error:` line and exits 1
-(2 with `--check`). The
+(2 with `--check`). A profile may not take the id `iec-3` unless it is the built-in profile itself, a profile id
+loaded from two different files is an error naming both (one file reached twice is one source), and a broken `--dialect-path` profile that is not selected is only warned about (see
+[DIALECTS.md](DIALECTS.md#selecting-a-dialect)). The
 profile format and the features are in [DIALECTS.md](DIALECTS.md).
 
 `--global-list <file>=<name>` names the global variable list formed by the top-level `VAR_GLOBAL` blocks of
