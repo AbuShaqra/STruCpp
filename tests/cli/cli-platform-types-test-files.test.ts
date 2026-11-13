@@ -3,9 +3,9 @@
  * feature platform_types, refused without it, and a TYPE of the same name
  * declared in the sources wins (g++).
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
-import { mkdirSync, writeFileSync, existsSync, rmSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync, mkdtempSync } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
 import { hasGpp } from "../integration/test-helpers.js";
@@ -13,7 +13,8 @@ import { parseTestFile } from "../../src/testing/test-parser.js";
 import { analyzeTestFile, compile } from "../../src/index.js";
 
 const CLI_PATH = resolve(__dirname, "../../dist/node/cli.js");
-const DIR = join(tmpdir(), "strucpp-cli-platform-types-tests");
+// Per-run folder, so concurrent runs do not share files.
+const DIR = mkdtempSync(join(tmpdir(), "strucpp-cli-platform-types-tests-"));
 
 function run(args: string[]): { status: number; out: string; err: string } {
   try {
@@ -116,3 +117,5 @@ describe("platform types in a test file", () => {
     });
   });
 });
+
+afterAll(() => rmSync(DIR, { recursive: true, force: true }));

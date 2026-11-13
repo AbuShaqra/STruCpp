@@ -140,6 +140,20 @@ describe('Phase 3.1 - Expression and Assignment Code Generation', () => {
       expect(result.cppCode).toContain('Y = X % 3;');
     });
 
+    it('guards MOD by a divisor that may be 0', () => {
+      const source = `
+        PROGRAM Test
+          VAR x : INT; z : INT; y : INT; w : INT; END_VAR
+          y := x MOD z;
+          w := (x + 1) MOD 0;
+        END_PROGRAM
+      `;
+      const result = compile(source);
+      expect(result.success).toBe(true);
+      expect(result.cppCode).toContain('Y = iec_mod(X, Z);');
+      expect(result.cppCode).toContain('W = iec_mod((X + 1), 0);');
+    });
+
     it('should generate complex arithmetic expression', () => {
       const source = `
         PROGRAM Test
