@@ -1818,8 +1818,12 @@ export class TypeChecker {
     // Logical operators return BOOL
     else if (["AND", "OR", "XOR"].includes(expr.operator)) {
       this.refuseIntegerBitwise(expr, leftType, rightType);
+      // Untyped constants only: typed by context, as before (BOOL here)
       type =
-        this.bitwiseResultType(leftType, rightType) ?? ELEMENTARY_TYPES["BOOL"];
+        (this.isUntypedBitConstant(expr)
+          ? undefined
+          : this.bitwiseResultType(leftType, rightType)) ??
+        ELEMENTARY_TYPES["BOOL"];
     }
     // IEC 61131-3 date/time arithmetic (table 30 of the standard).
     // Date types are int64_t aliases at the C++ level so the operator-
@@ -1971,9 +1975,8 @@ export class TypeChecker {
       if (!this.isIntegerType(type)) continue;
       const otherOperand = operand === expr.left ? expr.right : expr.left;
       if (
-        this.untypedConstantKind(operand) === "INT" &&
-        (this.untypedConstantKind(otherOperand) === "INT" ||
-          !this.isIntegerType(other))
+        this.isUntypedBitConstant(operand) &&
+        (this.isUntypedBitConstant(otherOperand) || !this.isIntegerType(other))
       ) {
         continue;
       }
@@ -1984,6 +1987,30 @@ export class TypeChecker {
         operand.sourceSpan.file,
       );
       return;
+    }
+  }
+
+  /**
+   * An untyped integer constant, or AND/OR/XOR/NOT of such constants only
+   * (`16#F0 OR 16#0F`, `1 AND 0`): its type comes from where it is used.
+   */
+  private isUntypedBitConstant(expr: Expression): boolean {
+    if (this.untypedConstantKind(expr) === "INT") return true;
+    switch (expr.kind) {
+      case "ParenthesizedExpression":
+        return this.isUntypedBitConstant(expr.expression);
+      case "UnaryExpression":
+        return (
+          expr.operator === "NOT" && this.isUntypedBitConstant(expr.operand)
+        );
+      case "BinaryExpression":
+        return (
+          ["AND", "OR", "XOR"].includes(expr.operator) &&
+          this.isUntypedBitConstant(expr.left) &&
+          this.isUntypedBitConstant(expr.right)
+        );
+      default:
+        return false;
     }
   }
 
@@ -6873,13 +6900,9 @@ export class TypeChecker {
         return k === "BOOL" ? undefined : k;
       }
       case "BinaryExpression": {
+        if (!STRICT_ARITHMETIC_OPS.has(expr.operator)) return undefined;
         const l = this.untypedConstantKind(expr.left);
         const r = this.untypedConstantKind(expr.right);
-        // AND/OR/XOR of untyped integers or of untyped BOOLs stay untyped
-        if (["AND", "OR", "XOR"].includes(expr.operator)) {
-          return l === r && l !== "REAL" ? l : undefined;
-        }
-        if (!STRICT_ARITHMETIC_OPS.has(expr.operator)) return undefined;
         return l === r && l !== "BOOL" ? l : undefined;
       }
       case "FunctionCallExpression": {

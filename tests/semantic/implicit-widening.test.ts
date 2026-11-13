@@ -339,6 +339,15 @@ describe("implicit widening (Figures 11 and 12)", () => {
       );
     });
 
+    it(`types AND, OR and XOR of untyped constants from context, as before (${label})`, () => {
+      const r = compile(
+        "PROGRAM Main\nVAR n : INT; x : BOOL; y : BOOL := 1 AND 0; b : BYTE; w : WORD; END_VAR\nVAR CONSTANT CB : BOOL := 1 OR 0; END_VAR\nIF 1 AND 0 THEN n := 1; END_IF;\nWHILE 1 OR 0 DO n := 2; END_WHILE;\nx := (1) OR (0);\nx := 1 XOR 0;\nb := 16#F0 AND 16#0F;\nw := (16#F0 OR 16#0F) AND NOT 16#3;\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.errors).toEqual([]);
+      expect(r.warnings).toEqual([]);
+    });
+
     it(`takes TOD and DT as their long forms in a conversion argument (${label})`, () => {
       const r = compile(
         "PROGRAM Main\nVAR tod : TOD; td : TIME_OF_DAY; dt : DT; dat : DATE_AND_TIME; ltod : LTOD; ldt : LDT; u : ULINT; END_VAR\nu := LTOD_TO_ULINT(tod);\nu := LTIME_OF_DAY_TO_ULINT(td);\nu := LDT_TO_ULINT(dt);\nu := LDATE_AND_TIME_TO_ULINT(dat);\nu := TOD_TO_ULINT(ltod);\nu := DT_TO_ULINT(ldt);\nEND_PROGRAM\n",
