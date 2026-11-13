@@ -3512,12 +3512,23 @@ export class TypeChecker {
       return false;
     }
     this.addError(
-      `ADR gives a 64-bit address, which ${typeName.toUpperCase()} cannot hold; use __XWORD, LWORD or ULINT`,
+      `ADR gives a 64-bit address, which ${typeName.toUpperCase()} cannot hold; use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT`,
       value.sourceSpan.startLine,
       value.sourceSpan.startCol,
       value.sourceSpan.file,
     );
     return true;
+  }
+
+  /** The declared result type name when `target` is the bare FUNCTION or METHOD result. */
+  private resultTargetType(target: Expression): string | undefined {
+    return this.currentReturn !== undefined &&
+      target.kind === "VariableExpression" &&
+      target.fieldAccess.length === 0 &&
+      target.subscripts.length === 0 &&
+      target.name.toUpperCase() === this.currentReturn.name.toUpperCase()
+      ? this.currentReturn.type.name
+      : undefined;
   }
 
   /**
@@ -3584,12 +3595,11 @@ export class TypeChecker {
     }
   }
 
-  /** `F(ADR(x))` and `fb.M(ADR(x))` into an input narrower than an address. */
+  /** `F(ADR(x))`, `fb.M(ADR(x))` and `fb(d := ADR(x))` into an input narrower than an address. */
   private refuseNarrowAddressArguments(
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
-    if (this.isFBInstanceCall(expr, scope)) return;
     const inputs =
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope);
@@ -3700,6 +3710,18 @@ export class TypeChecker {
         this.validateInOutMemberWrite(stmt.target, scope);
         if (this.isAddressIntoPointer(stmt.target, valueType, scope)) break;
         if (this.isZeroIntoPointer(stmt.target, stmt.value, scope)) break;
+        // `v := ADR(x)` into an integer narrower than an address.
+        if (
+          isAddressOf(stmt.value) &&
+          this.refuseNarrowAddress(
+            targetType?.typeKind === "elementary"
+              ? (targetType as ElementaryType).name
+              : (this.resultTargetType(stmt.target) ?? ""),
+            stmt.value,
+          )
+        ) {
+          break;
+        }
         if (this.checkArrayScalarAssignment(stmt.target, stmt.value, scope)) {
           break;
         }

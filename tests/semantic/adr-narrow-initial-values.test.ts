@@ -8,7 +8,7 @@ import { describe, it, expect } from "vitest";
 import { compile, type CompileOptions } from "../../src/index.js";
 import { parseTestFile } from "../../src/testing/test-parser.js";
 
-const TAIL = "use __XWORD, LWORD or ULINT";
+const TAIL = "use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT";
 
 describe("ADR into a narrower integer in an initial value", () => {
   it("is refused in globals, array literals and structure initializers", () => {
@@ -90,5 +90,52 @@ END_TEST
         features: ["+pointer_to"],
       }).errors,
     ).toEqual([]);
+  });
+});
+
+describe("ADR into a narrower integer in a body or an FB input", () => {
+  it("is refused in an assignment, a FUNCTION result and an FB input", () => {
+    const src = `FUNCTION_BLOCK FB_D
+VAR_INPUT d : UDINT; w : LWORD; END_VAR
+END_FUNCTION_BLOCK
+FUNCTION F : DWORD
+VAR x : INT; END_VAR
+F := ADR(x);
+END_FUNCTION
+PROGRAM MAIN
+VAR
+  x : INT; fb : FB_D;
+  u : UDINT; dw : DWORD; di : DINT; i : INT; ui : UINT; wd : WORD; b : BYTE; si : SINT; us : USINT;
+  lw : LWORD; ul : ULINT; p : POINTER TO INT;
+END_VAR
+u := ADR(x); dw := ADR(x); di := ADR(x); i := ADR(x); ui := ADR(x);
+wd := ADR(x); b := ADR(x); si := ADR(x); us := ADR(x);
+lw := ADR(x); ul := ADR(x); p := ADR(x);
+fb(d := ADR(x), w := ADR(x));
+END_PROGRAM
+`;
+    const narrow = (line: number, col: number, t: string): string =>
+      `${line}:${col}: ADR gives a 64-bit address, which ${t} cannot hold; ${TAIL}`;
+    for (const opts of [{}, { strict: true }]) {
+      expect(
+        compile(src, opts as Partial<CompileOptions>)
+          .errors.map((e) => `${e.line}:${e.column}: ${e.message}`)
+          .sort(),
+      ).toEqual(
+        [
+          narrow(6, 6, "DWORD"),
+          narrow(14, 6, "UDINT"),
+          narrow(14, 20, "DWORD"),
+          narrow(14, 34, "DINT"),
+          narrow(14, 47, "INT"),
+          narrow(14, 61, "UINT"),
+          narrow(15, 7, "WORD"),
+          narrow(15, 20, "BYTE"),
+          narrow(15, 34, "SINT"),
+          narrow(15, 48, "USINT"),
+          narrow(17, 9, "UDINT"),
+        ].sort(),
+      );
+    }
   });
 });
