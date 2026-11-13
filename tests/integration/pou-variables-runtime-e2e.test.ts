@@ -12,6 +12,36 @@ import * as path from "path";
 import { compile } from "../../src/index.js";
 import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 
+const SOURCE3 = `FUNCTION_BLOCK FB
+METHOD M : INT
+VAR_INST c : Cnt; s : S; END_VAR
+c(start := 0); s.k(); M := c.n * 10 + s.k.n;
+END_METHOD
+END_FUNCTION_BLOCK
+TYPE S : STRUCT a : INT; k : Cnt; END_STRUCT; END_TYPE
+FUNCTION_BLOCK Cnt
+VAR_INPUT start : INT; END_VAR
+VAR_OUTPUT n : INT; END_VAR
+n := n + 1 + start;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK Inner
+VAR x : INT; p : POINTER TO INT := ADR(x); END_VAR
+VAR_OUTPUT n : INT; END_VAR
+p^ := p^ + 1; n := x;
+END_FUNCTION_BLOCK
+TYPE SI : STRUCT a : INT; c : Inner; END_STRUCT; END_TYPE
+FUNCTION_BLOCK Holder
+VAR_TEMP c : Inner; ts : SI; arr : ARRAY[0..1] OF Inner; END_VAR
+VAR_OUTPUT o, o1, o2 : INT; END_VAR
+c(); o := c.n; ts.c(); o1 := ts.c.n; arr[1](); o2 := arr[1].n;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR f : FB; h : Holder; r1, r2, h1, h2, h3, h4 : INT; END_VAR
+r1 := f.M(); r2 := f.M();
+h(); h1 := h.o; h(); h2 := h.o; h3 := h.o1; h4 := h.o2;
+END_PROGRAM
+`;
+
 const SOURCE2 = `FUNCTION_BLOCK Cnt
 VAR_INPUT start : INT; END_VAR
 VAR_OUTPUT n : INT; END_VAR
@@ -139,6 +169,33 @@ int main() {
 `,
       });
       expect(stdout).toBe("6 1 1 1 2 11 12 2");
+    });
+
+    it(`rebuilds a VAR_TEMP FB instance in place; orders a later VAR_INST type first (${label})`, () => {
+      const result = compile(SOURCE3, {
+        ...options,
+        headerFileName: "generated.hpp",
+        features: ["+pointer_to"],
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `pouvars3_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.R1.get() << " " << p.R2.get() << " " << p.H1.get() << p.H2.get() << p.H3.get()
+              << p.H4.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe("11 22 1111");
     });
   }
 });

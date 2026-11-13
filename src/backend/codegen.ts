@@ -3203,9 +3203,19 @@ export class CodeGenerator {
       if (block.blockType !== "VAR_TEMP") continue;
       for (const decl of block.declarations) {
         const cppType = this.mapTypeRefToCpp(decl.type);
-        const init = decl.initialValue
-          ? ` = ${this.generateInitializer(decl.initialValue, cppType, decl.type.name)}`
-          : this.scalarTypeInit(decl.type);
+        const initValue = decl.initialValue
+          ? this.generateInitializer(decl.initialValue, cppType, decl.type.name)
+          : undefined;
+        const init =
+          initValue !== undefined
+            ? ` = ${initValue}`
+            : this.scalarTypeInit(decl.type);
+        // A function block instance, or a STRUCT or ARRAY that may hold one, is
+        // rebuilt in place: a copy would keep pointers into the temporary.
+        const inPlace =
+          decl.type.arrayDimensions !== undefined ||
+          this.isFBType(decl.type.name) ||
+          this.structFieldsOf(decl.type.name) !== undefined;
         for (const name of decl.names) {
           const target = this.generateLvalue({
             kind: "VariableExpression",
@@ -3215,7 +3225,11 @@ export class CodeGenerator {
             isDereference: false,
             sourceSpan: decl.sourceSpan,
           });
-          this.emit(`    { ${cppType} __temp${init}; ${target} = __temp; }`);
+          this.emit(
+            inPlace
+              ? `    iec_reset_in_place(${target}${initValue !== undefined ? `, ${initValue}` : ""});`
+              : `    { ${cppType} __temp${init}; ${target} = __temp; }`,
+          );
         }
       }
     }
@@ -8645,7 +8659,11 @@ export class CodeGenerator {
         }
       };
       if (n.kind === "functionBlock") {
-        for (const block of n.fb.varBlocks) {
+        // A METHOD's VAR_INST is a member of the class too.
+        const instBlocks = n.fb.methods.flatMap((m) =>
+          m.varBlocks.filter((b) => b.blockType === "VAR_INST"),
+        );
+        for (const block of [...n.fb.varBlocks, ...instBlocks]) {
           for (const decl of block.declarations) {
             addDep(decl.type.name);
             // An inline ARRAY OF a late type or an FB holds its elements.
