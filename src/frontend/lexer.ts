@@ -10,6 +10,7 @@
 import {
   createToken,
   Lexer,
+  type ILexingError,
   type ILexingResult,
   type IToken,
 } from "chevrotain";
@@ -1436,6 +1437,22 @@ export function shortPragmaText(image: string): string {
 }
 
 /**
+ * A letter outside A–Z skipped by the lexer is named in its error: an
+ * identifier allows A–Z, digits and _ only.
+ */
+function nameLetterErrors(
+  result: { errors: ILexingError[] },
+  source: string,
+): void {
+  for (const error of result.errors) {
+    const ch = source.charAt(error.offset);
+    if (/^\p{L}$/u.test(ch) && !/^[A-Za-z]$/.test(ch)) {
+      error.message = `'${ch}' is not allowed in a name: identifiers use A–Z, digits and _`;
+    }
+  }
+}
+
+/**
  * Tokenize ST source code.
  *
  * @param source - The ST source code to tokenize
@@ -1461,6 +1478,7 @@ export function tokenize(source: string): ReturnType<typeof STLexer.tokenize> {
   }
 
   checkPragmas(result, source, upperSource);
+  nameLetterErrors(result, source);
   return result;
 }
 
@@ -1492,5 +1510,6 @@ export function tokenizeTest(
   }
 
   checkPragmas(result, source, upperSource);
+  nameLetterErrors(result, source);
   return result;
 }

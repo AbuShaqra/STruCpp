@@ -43,8 +43,13 @@ describe("length-preserving upper-casing", () => {
     expect(
       errors("PROGRAM P\nVAR ﬁx : INT; END_VAR\nﬁx := 1;\nEND_PROGRAM\n"),
     ).toEqual([
-      "2:5: unexpected character: ->ﬁ<- at offset: 14, skipped 1 characters.",
-      "3:1: unexpected character: ->ﬁ<- at offset: 32, skipped 1 characters.",
+      "2:5: 'ﬁ' is not allowed in a name: identifiers use A–Z, digits and _",
+      "3:1: 'ﬁ' is not allowed in a name: identifiers use A–Z, digits and _",
     ]);
+    expect(
+      errors("PROGRAM P\nVAR straße : INT; END_VAR\nEND_PROGRAM\n")[0],
+    ).toBe(
+      "2:9: 'ß' is not allowed in a name: identifiers use A–Z, digits and _",
+    );
   });
 });
