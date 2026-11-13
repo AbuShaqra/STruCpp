@@ -53,3 +53,38 @@ describe("length-preserving upper-casing", () => {
     );
   });
 });
+
+describe("names hold A–Z, digits and _ only", () => {
+  const msg = (at: string, ch: string): string =>
+    `${at}: '${ch}' is not allowed in a name: identifiers use A–Z, digits and _`;
+
+  it("never turns a non-ASCII character into ASCII", () => {
+    expect(uppercaseSource("ınt ſ x")).toBe("ıNT ſ X");
+    expect(
+      errors(
+        "PROGRAM P\nVAR x : ınt; ıx : INT; ix : INT; END_VAR\nEND_PROGRAM\n",
+      ),
+    ).toEqual([msg("2:9", "ı"), msg("2:14", "ı")]);
+  });
+
+  it("refuses each such letter once, the word staying one name", () => {
+    expect(
+      errors(
+        "PROGRAM P\nVAR straße : INT; aßäb : INT; bär : INT; END_VAR\nEND_PROGRAM\n",
+      ),
+    ).toEqual([
+      msg("2:9", "ß"),
+      msg("2:20", "ß"),
+      msg("2:21", "ä"),
+      msg("2:32", "ä"),
+    ]);
+  });
+
+  it("quotes an astral letter and a combining mark whole", () => {
+    expect(
+      errors(
+        "PROGRAM P\nVAR a\u{1D465} : INT; café : INT; END_VAR\nEND_PROGRAM\n",
+      ),
+    ).toEqual([msg("2:6", "\u{1D465}"), msg("2:20", "é")]);
+  });
+});

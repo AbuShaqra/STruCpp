@@ -730,9 +730,18 @@ export const DirectAddress = createToken({
 // Identifier (must be last to avoid matching keywords)
 // =============================================================================
 
+/**
+ * Non-ASCII ranges a word may hold so that it lexes as one Identifier; each
+ * such character is then refused by name (see nameLetterErrors).
+ */
+const FOREIGN_NAME_CHARS =
+  "\u00C0-\u1FFF\u2C00-\u2FFF\u3040-\uD7FF\uD800-\uDFFF\uF900-\uFDCF\uFE70-\uFEFE";
+
 export const Identifier = createToken({
   name: "Identifier",
-  pattern: /[a-zA-Z_][a-zA-Z0-9_]*/,
+  pattern: new RegExp(
+    `[a-zA-Z_${FOREIGN_NAME_CHARS}][a-zA-Z0-9_${FOREIGN_NAME_CHARS}]*`,
+  ),
 });
 
 // =============================================================================
@@ -1359,8 +1368,12 @@ export function uppercaseSource(source: string): string {
 
     // Everything else: uppercase, unless that lengthens the character
     // ('ß' gives 'SS'), so offsets and columns stay those of the source.
+    // A non-ASCII character never becomes ASCII ('ı' is not I).
     const upper = ch.toUpperCase();
-    out[i] = upper.length === ch.length ? upper : ch;
+    out[i] =
+      upper.length === ch.length && (ch < "\u0080" || upper >= "\u0080")
+        ? upper
+        : ch;
     i++;
   }
 
@@ -1436,20 +1449,53 @@ export function shortPragmaText(image: string): string {
     : `${flat.substring(0, PRAGMA_TEXT_MAX - 4)}...}`;
 }
 
+/** A character a name cannot hold, quoted whole: an astral one, or a combining mark with its base. */
+function quotedCharacter(text: string, index: number): string {
+  const cp = text.codePointAt(index) ?? 0;
+  const ch = String.fromCodePoint(cp);
+  if (/^\p{M}$/u.test(ch) && index > 0) return text.charAt(index - 1) + ch;
+  return ch;
+}
+
+function nameLetterMessage(quoted: string): string {
+  return `'${quoted}' is not allowed in a name: identifiers use A–Z, digits and _`;
+}
+
 /**
- * A letter outside A–Z skipped by the lexer is named in its error: an
- * identifier allows A–Z, digits and _ only.
+ * A name allows A–Z, digits and _ only: each other character of an
+ * Identifier is refused by name, the word staying one token; a letter or mark
+ * the lexer skipped is named in its error too.
  */
 function nameLetterErrors(
-  result: { errors: ILexingError[] },
+  result: { tokens: IToken[]; errors: ILexingError[] },
   source: string,
 ): void {
   for (const error of result.errors) {
-    const ch = source.charAt(error.offset);
-    if (/^\p{L}$/u.test(ch) && !/^[A-Za-z]$/.test(ch)) {
-      error.message = `'${ch}' is not allowed in a name: identifiers use A–Z, digits and _`;
+    const ch = String.fromCodePoint(source.codePointAt(error.offset) ?? 0);
+    if (/^[\p{L}\p{M}]$/u.test(ch) && !/^[A-Za-z]$/.test(ch)) {
+      error.message = nameLetterMessage(quotedCharacter(source, error.offset));
     }
   }
+  for (const token of result.tokens) {
+    if (token.tokenType !== Identifier || /^[\w]*$/.test(token.image)) {
+      continue;
+    }
+    for (let k = 0; k < token.image.length; k++) {
+      const code = token.image.charCodeAt(k);
+      if (code < 0x80) continue;
+      const offset = token.startOffset + k;
+      result.errors.push({
+        offset,
+        line: token.startLine,
+        column: (token.startColumn ?? 0) + k,
+        length: 1,
+        message: nameLetterMessage(quotedCharacter(source, offset)),
+      });
+      // Skip the low surrogate of an astral character.
+      if (code >= 0xd800 && code <= 0xdbff) k++;
+    }
+  }
+  result.errors.sort((a, b) => a.offset - b.offset);
 }
 
 /**
