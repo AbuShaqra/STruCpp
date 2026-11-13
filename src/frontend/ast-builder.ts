@@ -995,6 +995,12 @@ export class ASTBuilder {
     const [nameToken, baseToken] = getAllTokens(children.Identifier);
     const name = nameToken?.image ?? "";
     const extendsToken = getFirstToken(children.EXTENDS);
+    // `TYPE X STRUCT` without the colon (feature type_colon_optional).
+    const colonlessStruct = children.Colon
+      ? undefined
+      : getFirstToken(
+          (getFirstNode(children.structType)?.children as CstChildren)?.STRUCT,
+        );
 
     const definition = this.buildTypeDefinition(node);
 
@@ -1012,6 +1018,9 @@ export class ASTBuilder {
       name,
       definition,
       ...(defaultValue !== undefined ? { defaultValue } : {}),
+      ...(colonlessStruct
+        ? { colonOmittedSpan: tokenToSourceSpan(colonlessStruct) }
+        : {}),
       ...(extendsToken && baseToken
         ? {
             extends: {
@@ -2460,10 +2469,32 @@ export class ASTBuilder {
   /**
    * Build a ReturnStatement from a CST node.
    */
-  buildReturnStatement(node: CstNode): ReturnStatement {
-    return {
+  buildReturnStatement(node: CstNode): ReturnStatement | IfStatement {
+    const ret: ReturnStatement = {
       kind: "ReturnStatement",
       sourceSpan: nodeToSourceSpan(node),
+    };
+    // `RETURN (cond);` is `IF cond THEN RETURN; END_IF;` (feature conditional_return).
+    const children = node.children as CstChildren;
+    const conditionNode = getFirstNode(children.expression);
+    const inner = conditionNode && this.buildExpression(conditionNode);
+    const open = getFirstToken(children.LParen);
+    const close = getFirstToken(children.RParen);
+    if (!inner || !open || !close) return ret;
+    const start = tokenToSourceSpan(open);
+    const end = tokenToSourceSpan(close);
+    return {
+      kind: "IfStatement",
+      sourceSpan: ret.sourceSpan,
+      condition: {
+        kind: "ParenthesizedExpression",
+        sourceSpan: { ...start, endLine: end.endLine, endCol: end.endCol },
+        expression: inner,
+      },
+      thenStatements: [ret],
+      elsifClauses: [],
+      elseStatements: [],
+      conditionalReturn: ret.sourceSpan,
     };
   }
 
