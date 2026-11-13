@@ -2527,8 +2527,8 @@ export class STParser extends CstParser {
       { ALT: () => this.CONSUME(tokens.TypedLiteral) },
       { ALT: () => this.CONSUME(tokens.IntegerLiteral) },
       { ALT: () => this.CONSUME(tokens.RealLiteral) },
-      { ALT: (): IToken => this.CONSUME(tokens.StringLiteral) },
-      { ALT: (): IToken => this.CONSUME(tokens.WideStringLiteral) },
+      { ALT: () => this.CONSUME(tokens.StringLiteral) },
+      { ALT: () => this.CONSUME(tokens.WideStringLiteral) },
       { ALT: (): IToken => this.CONSUME(tokens.CharLiteral) },
       { ALT: () => this.CONSUME(tokens.TimeLiteral) },
       { ALT: () => this.CONSUME(tokens.DateLiteral) },
@@ -2585,8 +2585,8 @@ export class STParser extends CstParser {
     this.CONSUME(tokens.TEST);
     // Test name, in single or double quotes
     this.OR([
-      { ALT: () => this.CONSUME(tokens.StringLiteral) },
-      { ALT: () => this.CONSUME(tokens.WideStringLiteral) },
+      { ALT: (): IToken => this.CONSUME(tokens.StringLiteral) },
+      { ALT: (): IToken => this.CONSUME(tokens.WideStringLiteral) },
     ]);
     this.MANY(() => {
       this.SUBRULE(this.varBlock);
