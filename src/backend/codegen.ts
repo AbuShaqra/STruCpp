@@ -1023,6 +1023,36 @@ export class CodeGenerator {
     return this.typeCodeGen.mapTypeToCpp(name);
   }
 
+  /**
+   * `TIME_TO_STRING(t)` and every other date/time conversion to STRING or
+   * WSTRING: the value's canonical IEC literal text. Undefined otherwise.
+   */
+  private temporalText(
+    from: string,
+    to: string,
+    value: Expression,
+  ): string | undefined {
+    if (to !== "STRING" && to !== "WSTRING") return undefined;
+    const forms: Record<string, [string, string]> = {
+      TIME: ["iec_duration_text", "T#"],
+      LTIME: ["iec_duration_text", "LTIME#"],
+      DATE: ["iec_date_text", "D#"],
+      LDATE: ["iec_date_text", "LDATE#"],
+      TOD: ["iec_tod_text", "TOD#"],
+      TIME_OF_DAY: ["iec_tod_text", "TOD#"],
+      LTOD: ["iec_tod_text", "LTOD#"],
+      LTIME_OF_DAY: ["iec_tod_text", "LTOD#"],
+      DT: ["iec_dt_text", "DT#"],
+      DATE_AND_TIME: ["iec_dt_text", "DT#"],
+      LDT: ["iec_dt_text", "LDT#"],
+      LDATE_AND_TIME: ["iec_dt_text", "LDT#"],
+    };
+    const form = forms[from];
+    if (form === undefined) return undefined;
+    const text = `strucpp::${form[0]}(static_cast<int64_t>(iec_unwrap(${this.generateExpression(value)})), "${form[1]}")`;
+    return to === "WSTRING" ? `STRING_TO_WSTRING(${text})` : text;
+  }
+
   protected mapTypeRefToCpp(typeRef: TypeShape): string {
     let baseType: string;
 
@@ -7369,6 +7399,15 @@ export class CodeGenerator {
 
       // 1. Check for *_TO_* conversion pattern (e.g., INT_TO_REAL -> TO_REAL)
       const conversion = this.stdRegistry.resolveConversion(nameUpper);
+      if (conversion && expr.arguments.length >= 1) {
+        // TIME_TO_STRING and the like: the canonical IEC literal (T#1h2m3s4ms)
+        const text = this.temporalText(
+          conversion.fromType.toUpperCase(),
+          conversion.toType.toUpperCase(),
+          expr.arguments[0]!.value,
+        );
+        if (text !== undefined) return text;
+      }
       if (conversion) {
         const args = expr.arguments.map((arg, idx) => {
           const generated = this.bitConversionArg(
@@ -7395,6 +7434,23 @@ export class CodeGenerator {
           );
         });
         return `${conversion.cppName}(${args.join(", ")})`;
+      }
+
+      // `TO_STRING(t)` of a date/time value: its canonical IEC literal text
+      if (
+        (nameUpper === "TO_STRING" || nameUpper === "TO_WSTRING") &&
+        expr.arguments.length === 1
+      ) {
+        const from = this.temporalBase(expr.arguments[0]!.value);
+        const text =
+          from === undefined
+            ? undefined
+            : this.temporalText(
+                from.toUpperCase(),
+                nameUpper.slice(3),
+                expr.arguments[0]!.value,
+              );
+        if (text !== undefined) return text;
       }
 
       // 2. Check for standard function (may have different cppName)

@@ -1185,6 +1185,128 @@ inline IECString<SrcLen> WSTRING_TO_STRING(const IECWStringVar<SrcLen>& src) noe
     return WSTRING_TO_STRING(src.get());
 }
 
+// The canonical IEC literal of a duration or a date/time value, as the
+// *_TO_STRING conversions give it: T#1h2m3s4ms, D#2024-03-05,
+// TOD#12:34:56.789, DT#2024-03-05-12:34:56 (with the L prefixes for the long
+// types). A unit or fraction that is zero is left out; zero is T#0ms.
+namespace iec_literal_text {
+
+inline void append_int(IECString<254>& out, int64_t v) noexcept {
+    char buf[24];
+    int n = 0;
+    uint64_t u = static_cast<uint64_t>(v);
+    do { buf[n++] = static_cast<char>('0' + u % 10); u /= 10; } while (u != 0);
+    while (n > 0) out.append(buf[--n]);
+}
+
+inline void append_padded(IECString<254>& out, int64_t v, int width) noexcept {
+    char buf[24];
+    int n = 0;
+    uint64_t u = static_cast<uint64_t>(v);
+    do { buf[n++] = static_cast<char>('0' + u % 10); u /= 10; } while (u != 0);
+    while (n < width) buf[n++] = '0';
+    while (n > 0) out.append(buf[--n]);
+}
+
+inline void append_text(IECString<254>& out, const char* t) noexcept {
+    while (*t) out.append(*t++);
+}
+
+/** `.fff` of a nanosecond fraction, trailing zeros left out; nothing for 0. */
+inline void append_fraction(IECString<254>& out, int64_t ns) noexcept {
+    if (ns == 0) return;
+    int digits = 9;
+    while (ns % 10 == 0) { ns /= 10; --digits; }
+    out.append('.');
+    append_padded(out, ns, digits);
+}
+
+/** Days since 1970-01-01 to year, month, day (proleptic Gregorian). */
+inline void civil_from_days(int64_t z, int64_t& y, int64_t& m, int64_t& d) noexcept {
+    z += 719468;
+    const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const int64_t doe = z - era * 146097;
+    const int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const int64_t mp = (5 * doy + 2) / 153;
+    d = doy - (153 * mp + 2) / 5 + 1;
+    m = mp < 10 ? mp + 3 : mp - 9;
+    y = yoe + era * 400 + (m <= 2 ? 1 : 0);
+}
+
+inline void append_date(IECString<254>& out, int64_t days) noexcept {
+    int64_t y, m, d;
+    civil_from_days(days, y, m, d);
+    append_padded(out, y, 4);
+    out.append('-');
+    append_padded(out, m, 2);
+    out.append('-');
+    append_padded(out, d, 2);
+}
+
+inline void append_clock(IECString<254>& out, int64_t ns_of_day) noexcept {
+    const int64_t s = ns_of_day / 1000000000LL;
+    append_padded(out, s / 3600, 2);
+    out.append(':');
+    append_padded(out, (s / 60) % 60, 2);
+    out.append(':');
+    append_padded(out, s % 60, 2);
+    append_fraction(out, ns_of_day % 1000000000LL);
+}
+
+}  // namespace iec_literal_text
+
+/** TIME / LTIME as `T#1h2m3s4ms` / `LTIME#...`. */
+inline IECString<254> iec_duration_text(int64_t ns, const char* prefix) noexcept {
+    using namespace iec_literal_text;
+    IECString<254> out;
+    append_text(out, prefix);
+    uint64_t u = ns < 0 ? static_cast<uint64_t>(-(ns + 1)) + 1 : static_cast<uint64_t>(ns);
+    if (ns < 0) out.append('-');
+    if (u == 0) { append_text(out, "0ms"); return out; }
+    const struct { uint64_t size; const char* unit; } parts[] = {
+        {86400000000000ULL, "d"}, {3600000000000ULL, "h"}, {60000000000ULL, "m"},
+        {1000000000ULL, "s"}, {1000000ULL, "ms"}, {1000ULL, "us"}, {1ULL, "ns"}};
+    for (const auto& part : parts) {
+        const uint64_t n = u / part.size;
+        u %= part.size;
+        if (n == 0) continue;
+        append_int(out, static_cast<int64_t>(n));
+        append_text(out, part.unit);
+    }
+    return out;
+}
+
+/** DATE or LDATE, days since 1970-01-01, as `D#2024-03-05` or `LDATE#...`. */
+inline IECString<254> iec_date_text(int64_t days, const char* prefix) noexcept {
+    IECString<254> out;
+    iec_literal_text::append_text(out, prefix);
+    iec_literal_text::append_date(out, days);
+    return out;
+}
+
+/** TOD or LTOD, ns since midnight, as `TOD#12:34:56.789` or `LTOD#...`. */
+inline IECString<254> iec_tod_text(int64_t ns, const char* prefix) noexcept {
+    IECString<254> out;
+    iec_literal_text::append_text(out, prefix);
+    iec_literal_text::append_clock(out, ns);
+    return out;
+}
+
+/** DT or LDT, ns since 1970-01-01, as `DT#2024-03-05-12:34:56` or `LDT#...`. */
+inline IECString<254> iec_dt_text(int64_t ns, const char* prefix) noexcept {
+    const int64_t day = 86400000000000LL;
+    int64_t days = ns / day;
+    int64_t rest = ns % day;
+    if (rest < 0) { rest += day; --days; }
+    IECString<254> out;
+    iec_literal_text::append_text(out, prefix);
+    iec_literal_text::append_date(out, days);
+    out.append('-');
+    iec_literal_text::append_clock(out, rest);
+    return out;
+}
+
 // `*_TO_*` resolution in the frontend collapses STRING_TO_WSTRING /
 // WSTRING_TO_STRING to plain TO_WSTRING / TO_STRING calls (cppName is
 // `TO_${toType}`), so provide the matching aliases. Templated on the
