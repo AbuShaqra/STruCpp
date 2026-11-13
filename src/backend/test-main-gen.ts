@@ -521,7 +521,7 @@ class TestFunctionGenerator {
         for (const decl of varBlock.declarations) {
           for (const name of decl.names) {
             varTypes.set(name, decl.type.name);
-          varTypeRefs.set(name, decl.type);
+            varTypeRefs.set(name, decl.type);
           }
         }
       }
