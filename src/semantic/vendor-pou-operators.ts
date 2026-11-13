@@ -374,7 +374,8 @@ export function lowerPouOperators(
       for (const m of current.methods) out.add(m.name.toUpperCase());
       for (const a of current.actions) out.add(a.name.toUpperCase());
       current =
-        current.kind === "FunctionBlockDeclaration" && current.extends
+        current.kind === "FunctionBlockDeclaration" &&
+        current.extends !== undefined
           ? fbByName.get(current.extends.toUpperCase())
           : undefined;
     }

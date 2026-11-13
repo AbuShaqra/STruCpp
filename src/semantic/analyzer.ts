@@ -6283,7 +6283,7 @@ export class SemanticAnalyzer {
       return kind === "type" || kind === "functionBlock" || kind === "program";
     });
     // Operators lower here, where the source declarations that shadow them are known.
-    if (testFile.dialect?.features.has("vendor_operators")) {
+    if (testFile.dialect?.features.has("vendor_operators") === true) {
       this.errors.push(
         ...lowerTestPouOperators(
           testFile,
