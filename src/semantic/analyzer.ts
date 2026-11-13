@@ -5707,6 +5707,9 @@ export class SemanticAnalyzer {
         case "DeleteStatement":
           this.checkExpressionForUndeclaredVars(stmt.pointer, scope, ctx);
           break;
+        case "AssertCall":
+          this.checkAssertCall(stmt, scope, ctx);
+          break;
         case "ForStatement":
           this.checkNameDeclared(
             stmt.controlVariable,
@@ -6563,10 +6566,7 @@ export class SemanticAnalyzer {
     for (const stmt of stmts) {
       switch (stmt.kind) {
         case "AssertCall":
-          this.validateAssertArgCount(stmt);
-          for (const arg of stmt.args) {
-            this.checkExpressionForUndeclaredVars(arg, scope, ctx);
-          }
+          this.checkAssertCall(stmt, scope, ctx);
           break;
         case "AdvanceTimeStatement":
           this.checkExpressionForUndeclaredVars(stmt.duration, scope, ctx);
@@ -6606,6 +6606,21 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * Check an assert wherever it stands, at the top of a test block or nested
+   * in a statement: its argument count, then its arguments for undeclared names.
+   */
+  private checkAssertCall(
+    assert: AssertCall,
+    scope: Scope,
+    ctx: UndeclaredVarContext,
+  ): void {
+    this.validateAssertArgCount(assert);
+    for (const arg of assert.args) {
+      this.checkExpressionForUndeclaredVars(arg, scope, ctx);
+    }
+  }
+
+  /**
    * Validate assert call argument count matches the expected count for each assert type.
    */
   private validateAssertArgCount(assert: AssertCall): void {
@@ -6622,10 +6637,19 @@ export class SemanticAnalyzer {
     };
     const expected = expectedArgCounts[assert.assertType];
     if (expected !== undefined && assert.args.length !== expected) {
+      const last = assert.args[assert.args.length - 1];
+      const quotedMessage =
+        assert.args.length === expected + 1 &&
+        last?.kind === "LiteralExpression" &&
+        last.literalType === "WSTRING";
       this.addError(
-        `${assert.assertType} expects ${expected} argument${expected !== 1 ? "s" : ""}, got ${assert.args.length}`,
+        `${assert.assertType} expects ${expected} argument${expected !== 1 ? "s" : ""}, got ${assert.args.length}` +
+          (quotedMessage
+            ? ": the message is a STRING literal in single quotes"
+            : ""),
         assert.sourceSpan.startLine,
         assert.sourceSpan.startCol,
+        assert.sourceSpan.file,
       );
     }
   }
