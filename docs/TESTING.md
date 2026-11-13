@@ -121,7 +121,7 @@ With custom message:
 ASSERT_EQ(result, expected, "calculation should match");
 ```
 
-A failed assertion stops the current test immediately (remaining statements are skipped) and reports the failure with source location. This holds for an assertion nested in `IF`, `CASE`, `FOR`, `WHILE` or `REPEAT` as well.
+A failed assertion stops the current test immediately (remaining statements are skipped) and reports the failure with source location. This holds for an assertion nested in `IF`, `CASE`, `FOR`, `WHILE` or `REPEAT` as well. An assertion in SETUP or TEARDOWN that fails fails the test it runs for: a failed SETUP assertion skips the test body, and TEARDOWN still runs.
 
 ## Time Advancement
 

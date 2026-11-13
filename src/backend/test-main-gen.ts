@@ -452,20 +452,25 @@ class TestFunctionGenerator {
     }
     lines.push("");
 
-    // setup() method; a RETURN in SETUP or TEARDOWN ends that block (void).
-    this.returnValueCpp = "";
-    lines.push("    void setup() {");
+    // setup() and teardown() return false when an assertion in them fails;
+    // a RETURN ends that block, passing.
+    this.returnValueCpp = " true";
+    this.testCodegen.setReturnValue("true");
+    lines.push("    bool setup(strucpp::TestContext& ctx) {");
+    lines.push("        (void)ctx;");
     const savedIndent = this.indent;
     this.indent = "        ";
     for (const stmt of setup?.body ?? []) {
       this.generateTestStatement(lines, stmt);
     }
+    lines.push("        return true;");
     this.indent = savedIndent;
     lines.push("    }");
     lines.push("");
 
     // teardown() method
-    lines.push("    void teardown() {");
+    lines.push("    bool teardown(strucpp::TestContext& ctx) {");
+    lines.push("        (void)ctx;");
     if (teardown) {
       this.indent = "        ";
       for (const stmt of teardown.body) {
@@ -473,8 +478,9 @@ class TestFunctionGenerator {
       }
       this.indent = savedIndent;
     }
+    lines.push("        return true;");
     lines.push("    }");
-    this.returnValueCpp = " true";
+    this.testCodegen.setReturnValue(undefined);
 
     lines.push("};");
     return lines.join("\n");
@@ -526,7 +532,10 @@ class TestFunctionGenerator {
     // If there's a SETUP, create the struct instance and call setup()
     if (setupStructName) {
       lines.push(`${this.indent}${setupStructName} s;`);
-      lines.push(`${this.indent}s.setup();`);
+      // A failed assertion in SETUP fails the test; TEARDOWN still runs.
+      lines.push(
+        `${this.indent}if (!s.setup(ctx)) { s.teardown(ctx); return false; }`,
+      );
       // Track setup var names so we prefix accesses with s.
       this.setupVarNames = new Set<string>();
       if (setup) {
@@ -562,8 +571,8 @@ class TestFunctionGenerator {
       lines.push(`${this.indent}return true;`);
       this.indent = savedIndent;
       lines.push(`${this.indent}}();`);
-      lines.push(`${this.indent}s.teardown();`);
-      lines.push(`${this.indent}return __passed;`);
+      lines.push(`${this.indent}const bool __torn_down = s.teardown(ctx);`);
+      lines.push(`${this.indent}return __passed && __torn_down;`);
     } else {
       // No teardown: generate body directly with early returns
       for (const stmt of tc.body) {
