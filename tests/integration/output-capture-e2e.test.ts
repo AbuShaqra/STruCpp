@@ -106,6 +106,30 @@ int main() {
       ]);
     });
 
+    it(`checks an FB output captured through an element, member or pointer (${label})`, () => {
+      const r = compile(
+        "FUNCTION_BLOCK Inner VAR_OUTPUT o : DINT; lt : LTIME; END_VAR o := 200; END_FUNCTION_BLOCK\nFUNCTION_BLOCK Mid VAR_OUTPUT inn : Inner; END_VAR END_FUNCTION_BLOCK\nTYPE SM : STRUCT m : Mid; END_STRUCT; END_TYPE\nPROGRAM Main\nVAR CONSTANT K : DINT := 1; END_VAR\nVAR ma : ARRAY[0..1] OF Mid; sm : SM; x : Inner; pf : POINTER TO Inner; t : TIME; a : SINT; d : DINT; END_VAR\nma[0].inn(o => K);\nsm.m.inn(lt => t);\npf := ADR(x);\npf^(o => K);\nma[1].inn(o => a);\nsm.m.inn(o => d);\npf^(o => d);\nEND_PROGRAM\n",
+        options,
+      );
+      // POINTER TO is refused under iec-3; the captures are checked anyway
+      const errors = r.errors
+        .map((e) => e.message)
+        .filter((m) => !m.startsWith("POINTER TO needs the feature"));
+      expect(errors).toEqual([
+        "Cannot assign to CONSTANT variable 'K'",
+        "Cannot assign LTIME to TIME",
+        "Cannot assign to CONSTANT variable 'K'",
+        ...(strict
+          ? ["Implicit conversion from DINT to SINT is not allowed; use DINT_TO_SINT"]
+          : []),
+      ]);
+      if (!strict) {
+        expect(r.warnings.map((w) => w.message)).toContain(
+          "Implicit narrowing conversion from DINT to SINT",
+        );
+      }
+    });
+
     it(`copies a method output out as the assignment would (${label})`, () => {
       const result = compile(METHOD_SOURCE(!strict), {
         ...options,

@@ -2299,6 +2299,7 @@ export class TypeChecker {
           scope,
         );
       }
+      this.checkMemberFbOutputBindings(expr, owner?.name, scope);
       this.adaptCharArguments(chainInputs, expr.arguments);
       this.validateInterfaceArguments(chainInputs, expr.arguments);
       this.validateStructArguments(chainInputs, expr.arguments);
@@ -2325,6 +2326,13 @@ export class TypeChecker {
 
     const methodInputs = this.methodInputs(objType, expr, scope);
     this.checkMethodOutputBindings(expr, objType, scope);
+    if (objType?.typeKind === "elementary") {
+      this.checkMemberFbOutputBindings(
+        expr,
+        (objType as ElementaryType).name,
+        scope,
+      );
+    }
     this.adaptCharArguments(
       methodInputs ??
         (objType?.typeKind === "elementary"
@@ -5629,8 +5637,48 @@ export class TypeChecker {
     if (!expr.arguments.some((a) => a.isOutput)) return;
     const fbType = this.calledFbType(expr, scope);
     if (fbType === undefined) return;
+    this.checkFbOutputs(fbType, expr.arguments, scope);
+  }
+
+  /**
+   * `a.b.inst(o => v)`, `arr[i].inst(o => v)`: a call of an FB instance that
+   * is a member of `ownerType`, checked as `checkFbOutputBindings` does.
+   */
+  private checkMemberFbOutputBindings(
+    expr: MethodCallExpression,
+    ownerType: string | undefined,
+    scope: Scope,
+  ): void {
+    if (ownerType === undefined) return;
+    if (!expr.arguments.some((a) => a.isOutput)) return;
+    if (this.methodParametersOf(ownerType, expr.methodName) !== undefined) {
+      return;
+    }
+    const fbType = this.resolveFieldTypeAnywhere(
+      this.aliasBase(ownerType),
+      expr.methodName,
+    );
+    if (fbType === undefined || !this.isFunctionBlockName(fbType)) return;
+    this.checkFbOutputs(fbType, expr.arguments, scope);
+  }
+
+  /** True when `name` (through aliases) is a FUNCTION_BLOCK this unit declares. */
+  private isFunctionBlockName(name: string): boolean {
+    const upper = this.aliasBase(name).toUpperCase();
+    return (
+      this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper) ===
+      true
+    );
+  }
+
+  /** Each `o => v` of a call of FB type `fbType`, checked as `v := o`. */
+  private checkFbOutputs(
+    fbType: string,
+    args: readonly Argument[],
+    scope: Scope,
+  ): void {
     const outputs = this.fbOutputsOf(fbType);
-    for (const arg of expr.arguments) {
+    for (const arg of args) {
       if (!arg.isOutput || arg.name === undefined) continue;
       if (arg.value.kind !== "VariableExpression") continue;
       const upper = arg.name.toUpperCase();
@@ -5678,8 +5726,20 @@ export class TypeChecker {
   ): string | undefined {
     if (expr.instance !== undefined) {
       const t = this.resolveExprType(expr.instance, scope);
-      return t?.typeKind === "elementary"
-        ? (t as ElementaryType).name
+      if (t?.typeKind === "elementary") return (t as ElementaryType).name;
+      // `p^(...)`: the type the pointer is declared to
+      const inst = expr.instance;
+      if (
+        inst.kind !== "VariableExpression" ||
+        !inst.isDereference ||
+        inst.fieldAccess.length > 0 ||
+        inst.subscripts.length > 0
+      ) {
+        return undefined;
+      }
+      const sym = scope.lookup(inst.name);
+      return sym?.kind === "variable"
+        ? (sym.declaration as VarDeclaration | undefined)?.type.name
         : undefined;
     }
     const parts = expr.functionName.split(".");
