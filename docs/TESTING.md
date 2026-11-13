@@ -123,7 +123,7 @@ ASSERT_EQ(result, expected, "calculation should match");
 
 `ASSERT_EQ` and `ASSERT_NEQ` of two STRUCT values compare them field by field, as `a = b` does in a test body. The dialect flags of the run (`--dialect`, `--feature`) apply to the test files too, so `XSIZEOF` works there under `vendor_operators`.
 
-A failed assertion stops the current test immediately (remaining statements are skipped) and reports the failure with source location. This holds for an assertion nested in `IF`, `CASE`, `FOR`, `WHILE` or `REPEAT` as well.
+A failed assertion stops the current test immediately (remaining statements are skipped) and reports the failure with source location. This holds for an assertion nested in `IF`, `CASE`, `FOR`, `WHILE` or `REPEAT` as well. An assertion in SETUP or TEARDOWN that fails fails the test it runs for: a failed SETUP assertion skips the test body, and TEARDOWN still runs.
 
 ## Time Advancement
 

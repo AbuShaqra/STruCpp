@@ -79,6 +79,38 @@ describe.skipIf(!hasGpp)("ASSERT nested in a TEST, TEARDOWN without SETUP", () =
     expect(r.status).not.toBe(0);
   });
 
+  it("fails a TEST whose SETUP or TEARDOWN assertion fails, nested or not", () => {
+    writeFileSync(
+      join(DIR, "blocks.st"),
+      `SETUP
+VAR x : INT; END_VAR
+  x := 1;
+  IF x = 1 THEN ASSERT_EQ(x, 1); END_IF;
+  ASSERT_TRUE(g < 2);
+  IF x = 1 THEN RETURN; END_IF;
+END_SETUP
+TEARDOWN
+  g := g + 1;
+  IF g = 2 THEN ASSERT_EQ(g, 99); END_IF;
+END_TEARDOWN
+TEST 'a'
+  ASSERT_EQ(x, 1);
+END_TEST
+TEST 'teardown fails'
+  ASSERT_EQ(x, 1);
+END_TEST
+TEST 'setup fails'
+  ASSERT_EQ(x, 1);
+END_TEST
+`,
+    );
+    const r = run([join(DIR, "src.st"), "--test", join(DIR, "blocks.st")]);
+    expect(r.out).toContain("[PASS] a");
+    expect(r.out).toContain("[FAIL] teardown fails");
+    expect(r.out).toContain("[FAIL] setup fails");
+    expect(r.out).toContain("3 tests, 1 passed, 2 failed");
+  });
+
   it("runs TEARDOWN after each TEST with no SETUP, also after a failure or a RETURN", () => {
     writeFileSync(
       join(DIR, "teardown.st"),
