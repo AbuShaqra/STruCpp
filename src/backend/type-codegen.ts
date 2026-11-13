@@ -36,6 +36,13 @@ import {
 import { wrapReferenceChain } from "./reference-types.js";
 import { mangledMemberName } from "./member-mangling.js";
 import {
+  bitPlaceOf,
+  bitRunMemberName,
+  bitRunTypeName,
+  bitRuns,
+  type BitRun,
+} from "./bit-runs.js";
+import {
   parseDateLiteralToDays,
   parseDtLiteralToNs,
   parseTimeLiteral,
@@ -239,10 +246,15 @@ export class TypeCodeGenerator {
 
   private structInitEmitter: StructInitEmitter = {
     emitValue: (value: Expression): string => this.expressionToCpp(value),
-    memberName: (fieldName: string): string => fieldName,
-    fieldTypeName: (): undefined => undefined,
-    arrayElementTypeName: (): undefined => undefined,
+    memberName: (fieldName: string, owner: string | undefined): string =>
+      this.bitInitMember(fieldName, owner) ?? fieldName,
+    fieldTypeName: (fieldName: string, owner: string | undefined) =>
+      this.bitInitFieldType(fieldName, owner),
+    arrayElementTypeName: (typeName: string | undefined) =>
+      this.bitInitElementType(typeName),
   };
+  /** Every type of the unit by upper-case name, for BIT members in initializers. */
+  private typesByName: Map<string, TypeDeclaration> = new Map();
 
   constructor(options: Partial<TypeCodeGenOptions> = {}) {
     this.options = { ...defaultTypeCodeGenOptions, ...options };
@@ -293,6 +305,7 @@ export class TypeCodeGenerator {
     );
     this.unionStored = unionStoredTypes(types);
     this.declaredTypeNames = new Set(types.map((t) => t.name.toUpperCase()));
+    this.typesByName = new Map(types.map((t) => [t.name.toUpperCase(), t]));
     this.aliasTargets = new Map(
       types.flatMap((t) =>
         t.definition.kind === "TypeReference" &&
@@ -301,6 +314,66 @@ export class TypeCodeGenerator {
           : [],
       ),
     );
+  }
+
+  /** The STRUCT a type name stands for, through aliases. */
+  private bitInitStruct(
+    typeName: string | undefined,
+  ): StructDefinition | undefined {
+    let name = typeName;
+    for (let depth = 0; depth < 16 && name !== undefined; depth++) {
+      const def = this.typesByName.get(name.toUpperCase())?.definition;
+      if (def?.kind === "StructDefinition") {
+        return def.isUnion === true ? undefined : def;
+      }
+      if (def?.kind !== "TypeReference") return undefined;
+      name = def.name;
+    }
+    return undefined;
+  }
+
+  /** `bits_<n>_.NAME` for a BIT member of `owner` in an initializer. */
+  private bitInitMember(
+    fieldName: string,
+    owner: string | undefined,
+  ): string | undefined {
+    const def = this.bitInitStruct(owner);
+    if (def === undefined) return undefined;
+    const place = bitPlaceOf(def.fields, fieldName.toUpperCase());
+    if (place === undefined) return undefined;
+    const decl = def.fields.find((f) =>
+      f.names.some((n) => n.toUpperCase() === fieldName.toUpperCase()),
+    )!;
+    return `${bitRunMemberName(place.run)}.${this.structFieldEmitName(fieldName, decl.type)}`;
+  }
+
+  /** The type of member `fieldName` of `owner`, to find BIT members below it. */
+  private bitInitFieldType(
+    fieldName: string,
+    owner: string | undefined,
+  ): string | undefined {
+    const decl = this.bitInitStruct(owner)?.fields.find((f) =>
+      f.names.some((n) => n.toUpperCase() === fieldName.toUpperCase()),
+    );
+    if (decl === undefined) return undefined;
+    return decl.type.arrayDimensions && decl.type.elementTypeName !== undefined
+      ? `__INLINE_ARRAY_${decl.type.elementTypeName}`
+      : decl.type.name;
+  }
+
+  /** The element type of an ARRAY type name, through aliases. */
+  private bitInitElementType(typeName: string | undefined): string | undefined {
+    let name = typeName;
+    for (let depth = 0; depth < 16 && name !== undefined; depth++) {
+      if (name.toUpperCase().startsWith("__INLINE_ARRAY_")) {
+        return name.slice("__INLINE_ARRAY_".length);
+      }
+      const def = this.typesByName.get(name.toUpperCase())?.definition;
+      if (def?.kind === "ArrayDefinition") return def.elementType.name;
+      if (def?.kind !== "TypeReference") return undefined;
+      name = def.name;
+    }
+    return undefined;
   }
 
   /** BYTE, WORD, DWORD or LWORD a type name is, through aliases. */
@@ -506,9 +579,20 @@ export class TypeCodeGenerator {
    * struct's bytes without alias analysis reordering the accesses.
    */
   private generateStructType(name: string, def: StructDefinition): void {
+    const runs = bitRuns(def.fields);
+    for (const run of runs) this.emitBitRun(name, run);
     this.emit(`struct STRUCPP_MAY_ALIAS ${name} {`);
 
     for (const field of def.fields) {
+      // A run of BIT members: one member holding their bitfields (feature bit_type).
+      if (field.type.bit) {
+        for (const run of runs.filter((r) => r.first === field)) {
+          this.emit(
+            `${this.options.indent}${bitRunTypeName(name, run.index)} ${bitRunMemberName(run.index)}{};`,
+          );
+        }
+        continue;
+      }
       const cppType = this.structFieldCppType(field.type);
       for (const fieldName of field.names) {
         const emitName = this.structFieldEmitName(fieldName, field.type);
@@ -546,6 +630,31 @@ export class TypeCodeGenerator {
       }
     }
 
+    this.emit("};");
+    this.emit("");
+  }
+
+  /**
+   * The struct holding one byte of BIT members as `bool` bitfields, packed
+   * from the least significant bit; its constructor zeroes the byte and sets
+   * their initial values.
+   */
+  private emitBitRun(owner: string, run: BitRun): void {
+    const type = bitRunTypeName(owner, run.index);
+    const inits: string[] = [];
+    this.emit(`struct STRUCPP_MAY_ALIAS ${type} {`);
+    for (const { field, name: fieldName } of run.members) {
+      const value = field.initialValue
+        ? `static_cast<bool>(${this.expressionToCpp(field.initialValue)})`
+        : "false";
+      const member = this.structFieldEmitName(fieldName, field.type);
+      this.emit(`${this.options.indent}bool ${member} : 1;`);
+      inits.push(`${member} = ${value};`);
+    }
+    // The unused bits of the byte are zero too.
+    this.emit(
+      `${this.options.indent}${type}() noexcept { std::memset(static_cast<void*>(this), 0, sizeof(*this)); ${inits.join(" ")} }`,
+    );
     this.emit("};");
     this.emit("");
   }

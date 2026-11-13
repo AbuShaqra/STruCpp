@@ -53,6 +53,8 @@ import {
   implicitParameterPragmas,
   markImplicitParameters,
 } from "./semantic/implicit-parameters.js";
+import { lowerPouOperators } from "./semantic/vendor-pou-operators.js";
+import { lowerBitType } from "./semantic/bit-type.js";
 import { unionLoweringErrors } from "./semantic/union.js";
 import { fbInitLoweringErrors } from "./semantic/fb-init.js";
 import { walkAST } from "./ast-utils.js";
@@ -62,6 +64,7 @@ import type { LibraryChunk, StlibArchive } from "./library/library-manifest.js";
 import { annotateErrorsWithPouContext } from "./diagnostic-pou-context.js";
 import {
   DialectError,
+  profilesWithFeature,
   resolveDialect,
   type DialectRequest,
   type ResolvedDialect,
@@ -665,6 +668,10 @@ function runPipeline(
     effectiveSource,
     mergedOptions.fileName ?? "main.st",
   );
+  /** File name → the text the parser read, for spellings the AST upper-cases. */
+  const sourcesByFile = new Map<string, string>([
+    [mergedOptions.fileName ?? "main.st", effectiveSource],
+  ]);
   warnings.push(
     ...pragmaWarnings(
       parseResult.pragmas,
@@ -764,6 +771,7 @@ function runPipeline(
             addlSource.fileName,
           ),
         );
+        sourcesByFile.set(addlSource.fileName, effectiveAddlSource);
         warnings.push(
           ...pragmaWarnings(
             addlParseResult.pragmas,
@@ -828,6 +836,40 @@ function runPipeline(
     // Actions first, so lowerInlineTypes qualifies inline enum members in
     // action bodies as it does in the owner's methods.
     const loweringErrors = [
+      ...(dialect.features.has("vendor_operators")
+        ? lowerPouOperators(ast, {
+            sources: sourcesByFile,
+            declaredByLibrary: (name) =>
+              (mergedOptions.libraries ?? []).some((a) =>
+                [
+                  ...a.manifest.functions,
+                  ...a.manifest.functionBlocks,
+                  ...a.manifest.types,
+                  ...(a.manifest.globals ?? []),
+                ].some((d) => d.name.toUpperCase() === name),
+              ),
+            libraryFB: (name) => {
+              for (const a of mergedOptions.libraries ?? []) {
+                const fb = a.manifest.functionBlocks.find(
+                  (f) => f.name.toUpperCase() === name,
+                );
+                if (fb === undefined) continue;
+                const members = [
+                  ...fb.inputs,
+                  ...fb.outputs,
+                  ...fb.inouts,
+                  ...(fb.locals ?? []),
+                  ...(fb.temps ?? []),
+                  ...(fb.methods ?? []),
+                ].map((m) => m.name.toUpperCase());
+                return fb.extends === undefined
+                  ? { members }
+                  : { members, extends: fb.extends };
+              }
+              return undefined;
+            },
+          })
+        : []),
       ...resolveArrayBounds(ast, mergedOptions.globalConstants ?? {}),
       ...foldStructFieldDefaults(ast, mergedOptions.globalConstants ?? {}),
       ...lowerActions(ast),
@@ -848,6 +890,19 @@ function runPipeline(
       }
       lowerPlatformTypes(ast, (name) => libraryTypes.has(name));
     }
+    loweringErrors.push(
+      ...lowerBitType(
+        ast,
+        dialect.features.has("bit_type"),
+        (name) =>
+          (mergedOptions.libraries ?? []).some((a) =>
+            [...a.manifest.types, ...a.manifest.functionBlocks].some(
+              (d) => d.name.toUpperCase() === name,
+            ),
+          ),
+        profilesWithFeature(dialect, "bit_type"),
+      ),
+    );
     errors.push(...loweringErrors);
     if (!continueOnError && loweringErrors.length > 0) {
       return {
