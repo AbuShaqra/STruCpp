@@ -1,0 +1,143 @@
+/**
+ * The "missing required input" error names {attribute 'implicit-parameter'}
+ * for a FUNCTION input that carries it, in every dialect.
+ */
+import { describe, it, expect } from "vitest";
+import { compile, type CompileOptions } from "../../src/index.js";
+
+const LOGGER = `FUNCTION LOG : BOOL
+VAR_INPUT
+  msg : STRING;
+  {attribute 'implicit-parameter' := 'pouname'}
+  pouName : STRING;
+  {attribute 'implicit-parameter':='position'}
+  position : STRING := '';
+  {attribute 'implicit-parameter' := 'instance-path'} path : STRING;
+  {attribute 'other'}
+  level : INT;
+END_VAR
+LOG := TRUE;
+END_FUNCTION
+`;
+
+function errors(body: string, opts: Partial<CompileOptions> = {}): string[] {
+  const src = `${LOGGER}PROGRAM MAIN
+VAR b : BOOL; END_VAR
+${body}
+END_PROGRAM
+`;
+  return compile(src, opts).errors.map((e) => `${e.line}: ${e.message}`);
+}
+
+const MODES: Partial<CompileOptions>[] = [
+  {},
+  { strict: true },
+  { dialect: "iec-3" },
+  {
+    dialect: {
+      id: "codesys3",
+      name: "codesys3",
+      extends: "iec-3",
+      features: ["conditional_pragmas"],
+      semantics: {},
+    },
+  },
+];
+
+describe("implicit-parameter hint", () => {
+  it("names the attribute for the inputs that carry it", () => {
+    for (const opts of MODES) {
+      expect(errors("b := LOG('x', level := 1);", opts)).toEqual([
+        "16: 'LOG' is missing required inputs: POUNAME, PATH; this compiler does not fill {attribute 'implicit-parameter'} inputs (POUNAME, PATH): pass them or give them an initial value",
+      ]);
+    }
+  });
+
+  it("names only the missing inputs that carry it", () => {
+    expect(errors("b := LOG(pouName := 'M', path := 'p');")).toEqual([
+      "16: 'LOG' is missing required inputs: MSG, LEVEL",
+    ]);
+    expect(errors("b := LOG(msg := 'x', path := 'p');")).toEqual([
+      "16: 'LOG' is missing required inputs: POUNAME, LEVEL; this compiler does not fill {attribute 'implicit-parameter'} inputs (POUNAME): pass it or give it an initial value",
+    ]);
+  });
+
+  it("is not given for an attribute away from the input", () => {
+    const src = `FUNCTION F : BOOL
+{attribute 'implicit-parameter' := 'pouname'}
+VAR_INPUT
+
+  a : STRING;
+END_VAR
+F := TRUE;
+END_FUNCTION
+PROGRAM MAIN
+VAR b : BOOL; END_VAR
+b := F();
+END_PROGRAM
+`;
+    expect(compile(src).errors.map((e) => e.message)).toEqual([
+      "'F' is missing required input: A",
+    ]);
+  });
+
+  it("tags only the declaration the attribute precedes", () => {
+    const src = `FUNCTION Log : INT
+VAR_INPUT
+  msg : STRING;
+  {attribute 'implicit-parameter' := 'position'} nPos : DINT;
+  plain : INT;
+END_VAR
+Log := 1;
+END_FUNCTION
+FUNCTION Log2 : INT
+VAR_INPUT
+  {attribute 'implicit-parameter' := 'position'}
+  {attribute 'hide'}
+  // a comment
+  (* another *)
+  nPos : DINT;
+  {attribute 'implicit-parameter' := 'pouname'} a : STRING; b : INT;
+END_VAR
+Log2 := 1;
+END_FUNCTION
+PROGRAM Main
+VAR r : INT; END_VAR
+r := Log(msg := 'x', nPos := 1);
+r := Log2();
+END_PROGRAM
+`;
+    expect(compile(src).errors.map((e) => `${e.line}: ${e.message}`)).toEqual([
+      "22: 'LOG' is missing required input: PLAIN",
+      "23: 'LOG2' is missing required inputs: NPOS, A, B; this compiler does not fill {attribute 'implicit-parameter'} inputs (NPOS, A): pass them or give them an initial value",
+    ]);
+  });
+
+  it("gives an attribute that trails a declaration on its line to neither", () => {
+    const src = `FUNCTION Log : INT
+VAR_INPUT
+  a : INT; {attribute 'implicit-parameter' := 'pouname'}
+  b : INT;
+  {attribute 'implicit-parameter' := 'pouname'} c : STRING;
+  d : INT; {attribute 'implicit-parameter' := 'pouname'} e : STRING;
+  {attribute 'implicit-parameter' := 'position'}
+  f : STRING;
+END_VAR
+Log := 1;
+END_FUNCTION
+PROGRAM Main
+VAR r : INT; END_VAR
+r := Log();
+END_PROGRAM
+`;
+    expect(compile(src).errors.map((e) => e.message)).toEqual([
+      "'LOG' is missing required inputs: A, B, C, D, E, F; this compiler does not fill {attribute 'implicit-parameter'} inputs (C, F): pass them or give them an initial value",
+    ]);
+  });
+
+  it("changes nothing when every input is passed", () => {
+    for (const opts of MODES) {
+      expect(errors("b := LOG('x', 'P', '', 'Q', 1);", opts)).toEqual([]);
+    }
+  });
+});
