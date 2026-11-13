@@ -514,6 +514,8 @@ export interface TypeReference extends ASTNode {
   platformTypeName?: string;
   /** In a test file: the platform type written for the element where `elementTypeName` is lowered. */
   platformElementTypeName?: string;
+  /** A STRUCT member written `BIT` (feature bit_type): `name` is BOOL, stored as one packed bit. */
+  bit?: true;
   /** STRING / WSTRING length of an inline array's element (`ARRAY[0..1] OF STRING(10)`). */
   elementMaxLength?: number | string;
   /**
