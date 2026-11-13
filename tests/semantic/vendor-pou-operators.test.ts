@@ -494,3 +494,36 @@ END_PROGRAM
     expect(nested.cpp).toContain('S = "MainProg"');
   });
 });
+
+describe("__POUNAME spelling after a character upper-casing lengthens", () => {
+  it("keeps the declared spelling after 'ß' in a pragma before and inside a POU", () => {
+    const before = diag(
+      `{region Maße}
+PROGRAM MainProg
+VAR s : STRING; END_VAR
+s := __POUNAME();
+END_PROGRAM
+{endregion}
+`,
+      ON,
+    );
+    expect(before.errors).toEqual([]);
+    expect(before.cpp).toContain('S = "MainProg"');
+    const inside = diag(
+      `PROGRAM MainProg
+VAR s : STRING; END_VAR
+{info straße}
+s := __POUNAME();
+END_PROGRAM
+FUNCTION_BLOCK FbLower
+VAR_OUTPUT s : STRING; END_VAR
+s := __POUNAME();
+END_FUNCTION_BLOCK
+`,
+      ON,
+    );
+    expect(inside.errors).toEqual([]);
+    expect(inside.cpp).toContain('S = "MainProg"');
+    expect(inside.cpp).toContain('S = "FbLower"');
+  });
+});
