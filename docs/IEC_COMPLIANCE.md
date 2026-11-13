@@ -149,7 +149,7 @@ All IEC 61131-3 standard functions are implemented in the C++ runtime:
 |----------|-----------|
 | Numeric | ABS, SQRT, LN, LOG, EXP, EXPT |
 | Trigonometric | SIN, COS, TAN, ASIN, ACOS, ATAN, ATAN2 |
-| Selection | SEL, MIN, MAX, LIMIT, MUX |
+| Selection | SEL, MIN, MAX, LIMIT, MUX. As for every function, all inputs are evaluated before the call: `SEL(G, IN0, IN1)` and `MUX(K, ...)` evaluate each input, the one not selected too, so a function call or a division there runs whatever G or K is. To evaluate one branch only, use IF |
 | Comparison | GT, GE, EQ, LE, LT, NE |
 | Bitwise | AND, OR, XOR, NOT, MOVE |
 | Bit Shift | SHL, SHR, ROL, ROR |
