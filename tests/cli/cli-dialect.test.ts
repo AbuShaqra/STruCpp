@@ -2,9 +2,9 @@
  * Dialect flags on the CLI: --print-dialect, --dialect, --dialect-path,
  * --dialect-file, --feature, and one plain error line for a bad profile.
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
-import { mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync, readdirSync, mkdtempSync } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
 import { compile } from "../../src/index.js";
@@ -13,7 +13,8 @@ import { nodeDialectIO } from "../../src/node/dialect-io.js";
 import { DEFAULT_FEATURES, KNOWN_FEATURES } from "../../src/dialect.js";
 
 const CLI_PATH = resolve(__dirname, "../../dist/node/cli.js");
-const TMP_BASE = join(tmpdir(), "strucpp-cli-dialect-tests");
+// Per-run folder, so concurrent runs do not share files.
+const TMP_BASE = mkdtempSync(join(tmpdir(), "strucpp-cli-dialect-tests-"));
 const GOOD = resolve(__dirname, "../fixtures/dialects/good");
 const BAD = resolve(__dirname, "../fixtures/dialects/bad");
 
@@ -321,3 +322,5 @@ END_PROGRAM
     ]);
   });
 });
+
+afterAll(() => rmSync(TMP_BASE, { recursive: true, force: true }));
