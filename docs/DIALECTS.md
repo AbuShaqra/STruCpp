@@ -30,10 +30,11 @@ enabling other features: a profile derived from it names its own id and `"extend
 Each profile id is loaded once: the same id from two different files (`--dialect-file`, `--dialect-path`
 folders, or a profile object) is an error naming both. A file or folder reached more than once (given twice,
 spelled `./d/` and `d`, absolute and relative, through a symbolic link, or a `--dialect-file` inside a
-`--dialect-path` folder) is one source, compared by its real path.
+`--dialect-path` folder) is one source, compared by its real path. On Windows paths that differ only in
+letter case (`C:\w\d\foo.json` and `c:\w\d\foo.json`) are the same file.
 
 A profile from a `--dialect-path` folder stops the compile only when it is the selected one, by `--dialect`
-or as the single `--dialect-file` (or the selected one extends it). Any other that cannot be read, is invalid or does not resolve is skipped with a
+or as the single `--dialect-file`, or passed as the `dialect` object (or the selected one extends it). Any other that cannot be read, is invalid or does not resolve is skipped with a
 warning naming the file, and the compile goes on. A `--dialect-file` is named explicitly, so its errors
 always stop the compile.
 
@@ -684,7 +685,8 @@ through the API):
 an identifier or a value that is not a string throws a `TypeError`; `validatePragmaDefines()` and
 `isPragmaDefineName()` are exported with that one rule). `compile()` and `analyze()` also take `globalListName` (and the same key on each
 `additionalSources` entry) for `named_global_lists`; a name that is not an identifier throws a `TypeError`. The core never reads files: pass `nodeDialectIO` from `strucpp/node` (or your
-own `{readFile, listDir}`) with `dialectFiles` or `dialectPath`. A bad profile is a compile error
+own `{readFile, listDir, realPath?, foldCase?}`, where `foldCase: true` treats paths differing only in
+case as one file) with `dialectFiles` or `dialectPath`. A bad profile is a compile error
 (line 0). `resolveDialect()` and `profilesWithFeature()` are exported for callers that resolve themselves.
 
 ## Language server

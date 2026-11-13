@@ -104,6 +104,8 @@ export interface DialectIO {
   listDir: (dir: string) => string[];
   /** The canonical path of a file or folder, so one reached twice is loaded once. */
   realPath?: (path: string) => string;
+  /** Paths differing only in letter case name one file (true on Windows). */
+  foldCase?: boolean;
 }
 
 const KNOWN_FEATURE_SET: ReadonlySet<string> = new Set(KNOWN_FEATURES);
@@ -327,9 +329,10 @@ export function resolveDialect(
   readFile?: (p: string) => string,
   listDir?: (d: string) => string[],
   realPath?: (p: string) => string,
+  foldCase?: boolean,
 ): ResolvedDialect {
   /** One spelling per file or folder: its real path when known, else a normalised one. */
-  const key = (p: string): string => {
+  const spelling = (p: string): string => {
     try {
       if (realPath) return realPath(p);
     } catch {
@@ -337,6 +340,8 @@ export function resolveDialect(
     }
     return normalisePath(p);
   };
+  const key = (p: string): string =>
+    foldCase === true ? spelling(p).toLowerCase() : spelling(p);
   const files = uniqueBy(req.dialectFiles ?? [], key);
   const dirs = uniqueBy(req.dialectPath ?? [], key);
   if ((files.length > 0 || dirs.length > 0) && !readFile) {
@@ -380,6 +385,7 @@ export function resolveDialect(
     const where = `dialect '${String((req.dialect as { id?: unknown }).id)}'`;
     selected = validateProfile(req.dialect, where);
     add(selected, "the dialect option");
+    selectedId = selected.id;
   }
   /** The profile read from each --dialect-file, in order. */
   const fromFiles: Array<{ path: string; profile: DialectProfile }> = [];

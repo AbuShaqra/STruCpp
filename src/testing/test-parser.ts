@@ -69,6 +69,7 @@ export function parseTestFile(
       opts.dialectIO?.readFile,
       opts.dialectIO?.listDir,
       opts.dialectIO?.realPath,
+      opts.dialectIO?.foldCase,
     );
   } catch (e) {
     if (!(e instanceof DialectError)) throw e;

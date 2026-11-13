@@ -572,6 +572,63 @@ describe("resolveDialect", () => {
     ).toMatch(/^dialect file e\/va\.json: /);
   });
 
+  it("folds the case of paths when told to, as on Windows", () => {
+    const files: Record<string, string> = { "c:/w/d/foo.json": '{"id":"foo"}' };
+    const lower = (p: string): string => p.replace(/\\/g, "/").toLowerCase();
+    const readFile = (p: string): string => {
+      const v = files[lower(p)];
+      if (v === undefined) throw new Error(`ENOENT ${p}`);
+      return v;
+    };
+    const listDir = (d: string): string[] =>
+      lower(d).replace(/\/$/, "") === "c:/w/d" ? ["foo.json"] : [];
+    const keepCase = (p: string): string => p.replace(/\//g, "\\");
+    for (const [req, real] of [
+      [
+        { dialectFiles: ["C:\\w\\d\\foo.json", "c:\\w\\d\\foo.json"] },
+        undefined,
+      ],
+      [
+        { dialectFiles: ["C:\\W\\D\\foo.json"], dialectPath: ["c:\\w\\d"] },
+        undefined,
+      ],
+      [
+        { dialectFiles: ["C:\\w\\d\\foo.json"], dialectPath: ["c:\\w\\d"] },
+        keepCase,
+      ],
+    ] as Array<[DialectRequest, ((p: string) => string) | undefined]>) {
+      expect(resolveDialect(req, readFile, listDir, real, true).id).toBe("foo");
+      expect(
+        errorOf(() => resolveDialect(req, readFile, listDir, real)).message,
+      ).toMatch(/^dialect 'foo' is defined twice/);
+    }
+  });
+
+  it("stops on a broken folder twin of a profile selected as an object", () => {
+    const files = { "b/foo.json": "{oops" };
+    expect(
+      errorOf(() =>
+        resolve(
+          {
+            dialect: JSON.parse(profile({ id: "foo", features: [] })),
+            dialectPath: ["b"],
+          },
+          files,
+        ),
+      ).message,
+    ).toMatch(/^dialect file b\/foo\.json: /);
+    // another broken file in the folder is only skipped
+    expect(
+      resolve(
+        {
+          dialect: JSON.parse(profile({ id: "bar", features: [] })),
+          dialectPath: ["b"],
+        },
+        files,
+      ).warnings,
+    ).toHaveLength(1);
+  });
+
   it("accepts the built-in profile itself under its id", () => {
     expect(resolveDialect({ dialect: IEC_PROFILE }).id).toBe("iec-3");
     const d = resolve(

@@ -10,5 +10,6 @@ import type { DialectIO } from "../dialect.js";
 export const nodeDialectIO: DialectIO = {
   readFile: (path) => readFileSync(path, "utf-8"),
   listDir: (dir) => readdirSync(dir),
-  realPath: (path) => realpathSync(resolve(path)),
+  realPath: (path) => realpathSync.native(resolve(path)),
+  foldCase: process.platform === "win32",
 };

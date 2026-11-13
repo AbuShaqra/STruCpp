@@ -588,6 +588,7 @@ function runPipeline(
       mergedOptions.dialectIO?.readFile,
       mergedOptions.dialectIO?.listDir,
       mergedOptions.dialectIO?.realPath,
+      mergedOptions.dialectIO?.foldCase,
     );
   } catch (e) {
     if (!(e instanceof DialectError)) throw e;

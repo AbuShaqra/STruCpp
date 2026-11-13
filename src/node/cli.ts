@@ -646,6 +646,7 @@ function checkDialect(options: CLIOptions): void {
       nodeDialectIO.readFile,
       nodeDialectIO.listDir,
       nodeDialectIO.realPath,
+      nodeDialectIO.foldCase,
     );
     // compile, build, --test and --check report these with their own output
     if (
@@ -1438,6 +1439,7 @@ function checkMode(options: CLIOptions): never {
       nodeDialectIO.readFile,
       nodeDialectIO.listDir,
       nodeDialectIO.realPath,
+      nodeDialectIO.foldCase,
     ).id;
   } catch (e) {
     if (!(e instanceof DialectError)) throw e;
