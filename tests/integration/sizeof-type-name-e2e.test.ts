@@ -73,7 +73,9 @@ describe.skipIf(!hasGpp)("SIZEOF of a type name — g++ e2e", () => {
         headerFileName: "generated.hpp",
       });
       expect(result.errors).toEqual([]);
-      expect(result.cppCode).toContain("iec_size_of_type<ST_STATUS>::value");
+      expect(result.cppCode).toContain(
+        "iec_size_of_type<struct ::strucpp::ST_STATUS>::value",
+      );
       const stdout = compileAndRunStandalone({
         tempDir,
         pchPath,

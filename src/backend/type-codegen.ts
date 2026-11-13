@@ -241,8 +241,6 @@ export class TypeCodeGenerator {
    */
   /** Each alias of the unit (upper case) to the type it names, for NOT. */
   private aliasTargets: Map<string, string> = new Map();
-  /** Upper-case names of the unit's TYPE declarations. */
-  private declaredTypeNames: Set<string> = new Set();
 
   private structInitEmitter: StructInitEmitter = {
     emitValue: (value: Expression): string => this.expressionToCpp(value),
@@ -304,7 +302,6 @@ export class TypeCodeGenerator {
         })),
     );
     this.unionStored = unionStoredTypes(types);
-    this.declaredTypeNames = new Set(types.map((t) => t.name.toUpperCase()));
     this.typesByName = new Map(types.map((t) => [t.name.toUpperCase(), t]));
     this.aliasTargets = new Map(
       types.flatMap((t) =>
@@ -926,14 +923,15 @@ export class TypeCodeGenerator {
             (name === "SIZEOF" || name === "XSIZEOF") &&
             expr.arguments.length === 1 &&
             arg?.kind === "VariableExpression" &&
-            arg.fieldAccess.length === 0 &&
-            arg.subscripts.length === 0 &&
-            !arg.isDereference &&
-            // A FUNCTION_BLOCK's class is not declared yet where types are emitted
-            (isElementaryType(arg.name.toUpperCase()) ||
-              this.declaredTypeNames.has(arg.name.toUpperCase()))
+            arg.namesType === true
           ) {
-            return `strucpp::iec_size_of_type<${this.mapTypeToCpp(arg.name)}>::value`;
+            const declared = this.typesByName.get(arg.name.toUpperCase());
+            return sizeOfTypeCpp(
+              this.mapTypeToCpp(arg.name),
+              declared?.definition.kind === "StructDefinition"
+                ? "struct"
+                : undefined,
+            );
           }
         }
         return `${expr.functionName}()`;
@@ -1186,4 +1184,25 @@ export function generateTypeCode(
 ): string {
   const generator = new TypeCodeGenerator(options);
   return generator.generateFromRegistry(registry);
+}
+
+/**
+ * `iec_size_of_type<T>::value`, with `T` spelt so that no member, FUNCTION,
+ * METHOD or ACTION of the same name hides it. `classKey` names a STRUCT
+ * (`struct`) or a FUNCTION_BLOCK (`class`).
+ */
+export function sizeOfTypeCpp(
+  cppType: string,
+  classKey: "struct" | "class" | undefined,
+): string {
+  const itf = /^IEC_ITF<(\w+)>$/.exec(cppType);
+  const spelt =
+    itf !== null
+      ? `::strucpp::IEC_ITF<class ::strucpp::${itf[1]}>`
+      : classKey !== undefined
+        ? `${classKey} ::strucpp::${cppType}`
+        : /^\w+$/.test(cppType)
+          ? `::strucpp::${cppType}`
+          : cppType;
+  return `strucpp::iec_size_of_type<${spelt}>::value`;
 }

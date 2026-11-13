@@ -89,7 +89,11 @@ import {
   libraryFunctionDeclaration,
   libraryMethodDeclarations,
 } from "../library/library-methods.js";
-import { TypeCodeGenerator, IEC_TO_CPP_VAR_TYPE } from "./type-codegen.js";
+import {
+  TypeCodeGenerator,
+  IEC_TO_CPP_VAR_TYPE,
+  sizeOfTypeCpp,
+} from "./type-codegen.js";
 import {
   dateArithmeticCpp,
   formatArrayType,
@@ -1024,57 +1028,25 @@ export class CodeGenerator {
   }
 
   /**
-   * `SIZEOF(T)` / `XSIZEOF(T)` naming a type, not a variable: a value of
-   * that type to measure (`T{}`). Undefined for any other operand.
+   * `SIZEOF(T)` / `XSIZEOF(T)` whose operand the analyzer marked as naming a
+   * type: the size of the type. Undefined for any other operand.
    */
   private sizeofTypeOperand(value: Expression): string | undefined {
-    if (
-      value.kind !== "VariableExpression" ||
-      value.fieldAccess.length > 0 ||
-      value.subscripts.length > 0 ||
-      value.isDereference
-    ) {
+    if (value.kind !== "VariableExpression" || value.namesType !== true) {
       return undefined;
     }
     const upper = value.name.toUpperCase();
-    if (this.isVariableNamed(upper)) return undefined;
-    if (!this.isUserDefinedType(value.name) && !isElementaryType(upper)) {
-      return undefined;
-    }
-    // The size of the type itself: no value is built (an ABSTRACT FB has none)
-    return `strucpp::iec_size_of_type<${this.mapTypeRefToCpp({ name: value.name })}>::value`;
-  }
-
-  /**
-   * A variable of this name is in reach: a local, a member inherited from a
-   * base FB, a global or a CONFIGURATION global.
-   */
-  private isVariableNamed(upper: string): boolean {
-    const declares = (blocks: readonly VarBlock[]): boolean =>
-      blocks.some((b) =>
-        b.declarations.some((d) =>
-          d.names.some((n) => n.toUpperCase() === upper),
-        ),
-      );
-    if (this.currentScopeVarTypes.has(upper)) return true;
-    const ast = this.ast;
-    if (ast === undefined) return false;
-    const seen = new Set<string>();
-    let base = this.currentFBExtends?.toUpperCase();
-    while (base !== undefined && !seen.has(base)) {
-      seen.add(base);
-      const current = base;
-      const fb = ast.functionBlocks.find(
-        (f) => f.name.toUpperCase() === current,
-      );
-      if (fb === undefined) break;
-      if (declares(fb.varBlocks)) return true;
-      base = fb.extends?.toUpperCase();
-    }
-    return (
-      declares(ast.globalVarBlocks) ||
-      ast.configurations.some((c) => declares(c.varBlocks))
+    const declared = this.ast?.types.find(
+      (t) => t.name.toUpperCase() === upper,
     );
+    const classKey =
+      declared?.definition.kind === "StructDefinition"
+        ? "struct"
+        : this.knownFBTypes.has(upper)
+          ? "class"
+          : undefined;
+    // The size of the type itself: no value is built (an ABSTRACT FB has none)
+    return sizeOfTypeCpp(this.mapTypeRefToCpp({ name: value.name }), classKey);
   }
 
   protected mapTypeRefToCpp(typeRef: TypeShape): string {
