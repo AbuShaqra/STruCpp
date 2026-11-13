@@ -1180,6 +1180,8 @@ function findUnclosedBlockComment(
  * Uppercase ST source while preserving case inside string literals,
  * wide string literals, block comments, and line comments.
  * IEC 61131-3 is case-insensitive, so this normalizes identifiers/keywords.
+ * The result has the source's length: a character whose upper case is longer
+ * is kept as written.
  */
 export function uppercaseSource(source: string): string {
   const len = source.length;
@@ -1354,8 +1356,10 @@ export function uppercaseSource(source: string): string {
       }
     }
 
-    // Everything else: uppercase
-    out[i] = ch.toUpperCase();
+    // Everything else: uppercase, unless that lengthens the character
+    // ('ß' gives 'SS'), so offsets and columns stay those of the source.
+    const upper = ch.toUpperCase();
+    out[i] = upper.length === ch.length ? upper : ch;
     i++;
   }
 
