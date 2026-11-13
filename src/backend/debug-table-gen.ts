@@ -43,6 +43,7 @@ import {
   typeShadowingMemberNames,
 } from "./member-mangling.js";
 import { globalCppName } from "./global-naming.js";
+import { bitPlaceOf, bitRunMemberName } from "./bit-runs.js";
 
 // ---------------------------------------------------------------------------
 // Type tags — MUST match TypeTag enum in runtime/include/debug_dispatch.hpp.
@@ -72,6 +73,16 @@ export const TAG = {
 } as const;
 
 export type TagName = keyof typeof TAG;
+
+/**
+ * Tag of a BIT member of a STRUCT (feature bit_type): its entry points at the
+ * byte holding it and carries the bit number in the high bits of `flags`.
+ * Listed in a map's `typeTags` only when the map has such a leaf.
+ */
+export const TAG_BIT = 21;
+
+/** Shift of the bit number in an entry's `flags`; mirrors LEAF_BIT_SHIFT in debug_table.hpp. */
+export const LEAF_BIT_SHIFT = 5;
 
 // ---------------------------------------------------------------------------
 // Per-leaf flag bits — MUST match LEAF_FLAG_* in
@@ -142,7 +153,7 @@ const RETAIN_HEADER_SIZE = 14;
  * few lines on an AVR as well as here.
  */
 function retainLayoutHashOf(
-  vars: Array<{ path: string; tagName: TagName }>,
+  vars: Array<{ path: string; tagName: TagName | "BIT" }>,
 ): string {
   let hash = 0x811c9dc5;
   for (const v of vars) {
@@ -169,6 +180,8 @@ function flagsLiteral(flags: number): string {
   const names: string[] = [];
   if (flags & LEAF_FLAG_READONLY) names.push("LEAF_FLAG_READONLY");
   if (flags & LEAF_FLAG_RETAIN) names.push("LEAF_FLAG_RETAIN");
+  const bit = flags >> LEAF_BIT_SHIFT;
+  if (bit !== 0) names.push(`(${bit} << LEAF_BIT_SHIFT)`);
   return names.length > 0 ? names.join(" | ") : "0";
 }
 
@@ -305,6 +318,8 @@ export interface DebugLeaf {
    * holds thousands of leaves and the flag is rare.
    */
   retain?: true;
+  /** For a `"BIT"` leaf: the bit of the addressed byte, 0 the least significant. */
+  bit?: number;
 }
 
 export interface DebugMapV2 {
@@ -383,9 +398,9 @@ const DEFAULTS: Required<Omit<DebugTableGenOptions, "md5">> = {
 
 interface Entry {
   cppExpr: string;
-  tagName: TagName;
+  tagName: TagName | "BIT";
   path: string;
-  type: TagName;
+  type: TagName | "BIT";
   size: number;
   /** Bitwise OR of LEAF_FLAG_*, emitted into the entry's `flags` byte. */
   flags: number;
@@ -472,7 +487,7 @@ export function generateDebugTable(
     elemIdx: number;
     path: string;
     size: number;
-    tagName: TagName;
+    tagName: TagName | "BIT";
   }> = [];
   const skipped: Array<{ path: string; reason: string }> = [];
   /**
@@ -521,6 +536,47 @@ export function generateDebugTable(
     });
     if (flags & LEAF_FLAG_RETAIN) {
       retainVars.push({ arrayIdx: arrIdx, elemIdx, path, size, tagName });
+    }
+  };
+
+  /** A BIT member: the byte `cppExpr` addresses, bit `bit` of it (feature bit_type). */
+  const addBitLeaf = (
+    path: string,
+    cppExpr: string,
+    bit: number,
+    flags: number,
+  ): void => {
+    ensureRoom();
+    const bucket = tail();
+    const arrIdx = arrays.length - 1;
+    const elemIdx = bucket.length;
+    const entryFlags = flags | (bit << LEAF_BIT_SHIFT);
+    bucket.push({
+      cppExpr,
+      tagName: "BIT",
+      path,
+      type: "BIT",
+      size: 1,
+      flags: entryFlags,
+    });
+    leaves.push({
+      arrayIdx: arrIdx,
+      elemIdx,
+      path,
+      type: "BIT",
+      size: 1,
+      ...(flags & LEAF_FLAG_READONLY ? { readOnly: true as const } : {}),
+      ...(flags & LEAF_FLAG_RETAIN ? { retain: true as const } : {}),
+      bit,
+    });
+    if (flags & LEAF_FLAG_RETAIN) {
+      retainVars.push({
+        arrayIdx: arrIdx,
+        elemIdx,
+        path,
+        size: 1,
+        tagName: "BIT",
+      });
     }
   };
 
@@ -850,6 +906,18 @@ export function generateDebugTable(
     // that named the struct carried.
     for (const fieldDecl of def.fields) {
       for (const fieldName of fieldDecl.names) {
+        const place = fieldDecl.type.bit
+          ? bitPlaceOf(def.fields, fieldName.toUpperCase())
+          : undefined;
+        if (place !== undefined) {
+          addBitLeaf(
+            `${path}.${fieldName.toUpperCase()}`,
+            `${cppExpr}.${bitRunMemberName(place.run)}`,
+            place.bit,
+            flags,
+          );
+          continue;
+        }
         visitTypeRef(
           `${path}.${fieldName.toUpperCase()}`,
           // No owner: a STRUCT implements no interfaces, so only the
@@ -1081,7 +1149,10 @@ export function generateDebugTable(
   const debugMap: DebugMapV2 = {
     version: 2,
     md5,
-    typeTags: { ...TAG },
+    typeTags: {
+      ...TAG,
+      ...(leaves.some((l) => l.type === "BIT") ? { BIT: TAG_BIT } : {}),
+    },
     arrays: arrays.map((a, i) => ({ index: i, count: a.length })),
     leaves,
     // Omitted entirely when nothing is retained, so a project that uses no
