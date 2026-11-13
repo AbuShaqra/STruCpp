@@ -3290,6 +3290,51 @@ export class TypeChecker {
       ...ast.configurations.map(orderConfigurationGlobals),
     ]) {
       this.reportGlobalInitialCycles(ordered);
+      if (this.strict || this.inOutErrors) {
+        this.refuseDependentGlobalInitials(ordered);
+      }
+    }
+  }
+
+  /**
+   * Under iec-3 and `--strict`: an initial value is a constant expression, so
+   * a global's initial value reading another global that is no CONSTANT (as a
+   * value; ADR() of it is an address) is refused. No dialect flag keeps the
+   * automatic creation order.
+   */
+  private refuseDependentGlobalInitials({ order }: GlobalOrder): void {
+    const constant = new Set(
+      order
+        .filter((i) => i.block.isConstant === true)
+        .map((i) => i.name.toUpperCase()),
+    );
+    const known = new Set(order.map((i) => i.name.toUpperCase()));
+    for (const item of order) {
+      const value = item.decl.initialValue;
+      if (value === undefined || item.decl.names[0] !== item.name) continue;
+      const reported = new Set<string>();
+      walkAST(value, (node): boolean | void => {
+        // ADR(g) takes an address, not a value
+        if (
+          node.kind === "FunctionCallExpression" &&
+          (node as FunctionCallExpression).functionName.toUpperCase() === "ADR"
+        ) {
+          return false;
+        }
+        if (node.kind !== "VariableExpression") return;
+        const v = node as VariableExpression;
+        const upper = v.name.toUpperCase();
+        if (!known.has(upper) || constant.has(upper) || reported.has(upper)) {
+          return;
+        }
+        reported.add(upper);
+        this.addError(
+          `The initial value of global '${item.name}' reads global '${v.name}', which is no CONSTANT: an initial value is a constant expression`,
+          v.sourceSpan.startLine,
+          v.sourceSpan.startCol,
+          v.sourceSpan.file,
+        );
+      });
     }
   }
 
