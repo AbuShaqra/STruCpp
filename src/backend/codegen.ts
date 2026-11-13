@@ -6074,12 +6074,13 @@ export class CodeGenerator {
     // targets (caught by the runtime, stops the faulting task), or
     // iec_runtime_fault(ArrayBounds) on -fno-exceptions MCU targets — instead of
     // the unchecked operator[]/operator() that silently corrupts memory.
+    // The access names its site, so a fault reports the POU, line and indices.
     if (expr.subscripts.length > 1) {
       const args = expr.subscripts.map((sub) => this.generateExpression(sub));
-      result += `.at(${args.join(", ")})`;
+      result = `strucpp::iec_at(${result}, ${this.faultSite(expr)}, ${args.join(", ")})`;
     } else {
       for (const sub of expr.subscripts) {
-        result += `.at(${this.generateExpression(sub)})`;
+        result = `strucpp::iec_at(${result}, ${this.faultSite(expr)}, ${this.generateExpression(sub)})`;
       }
     }
 
@@ -6228,13 +6229,11 @@ export class CodeGenerator {
           // task) and iec_runtime_fault(IecFault::ArrayBounds) on -fno-exceptions
           // MCU targets. operator[] stays unchecked+constexpr for the debug-table
           // generator's &arr[i] address-of expressions; POU bodies use .at().
-          if (step.indices.length > 1) {
+          if (step.indices.length > 0) {
             const args = step.indices.map((idx) =>
               this.generateExpression(idx),
             );
-            result += `.at(${args.join(", ")})`;
-          } else if (step.indices.length === 1) {
-            result += `.at(${this.generateExpression(step.indices[0]!)})`;
+            result = `strucpp::iec_at(${result}, ${this.faultSite(step.indices[0]!)}, ${args.join(", ")})`;
           }
           break;
         }

@@ -419,7 +419,9 @@ public:
         return union_ref_t<W>(element(i));
     }
     union_ref_t<W> at(std::int64_t i) const {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (i < L || i > U) detail::union_bounds_fault();
+#endif
         return union_ref_t<W>(element(i));
     }
     static constexpr std::int64_t lower_bound(int = 1) noexcept { return L; }

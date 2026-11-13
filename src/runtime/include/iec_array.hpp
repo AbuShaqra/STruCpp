@@ -123,6 +123,7 @@ public:
     
     // Bounds-checked access - throws std::out_of_range on invalid index
     var_type& at(int64_t index) {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (!Bounds::in_bounds(index)) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
@@ -130,10 +131,12 @@ public:
             iec_runtime_fault(IecFault::ArrayBounds);
 #endif
         }
+#endif
         return data_[to_internal_index(index)];
     }
     
     const var_type& at(int64_t index) const {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (!Bounds::in_bounds(index)) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
@@ -141,6 +144,7 @@ public:
             iec_runtime_fault(IecFault::ArrayBounds);
 #endif
         }
+#endif
         return data_[to_internal_index(index)];
     }
     
@@ -248,6 +252,7 @@ public:
     
     // Bounds-checked access - throws std::out_of_range on invalid index
     var_type& at(int64_t i, int64_t j) {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (!Bounds1::in_bounds(i) || !Bounds2::in_bounds(j)) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
@@ -255,10 +260,12 @@ public:
             iec_runtime_fault(IecFault::ArrayBounds);
 #endif
         }
+#endif
         return data_[to_linear_index(i, j)];
     }
     
     const var_type& at(int64_t i, int64_t j) const {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (!Bounds1::in_bounds(i) || !Bounds2::in_bounds(j)) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
@@ -266,6 +273,7 @@ public:
             iec_runtime_fault(IecFault::ArrayBounds);
 #endif
         }
+#endif
         return data_[to_linear_index(i, j)];
     }
     
@@ -392,6 +400,7 @@ public:
     // This is what codegen emits for a subscript in a body, so it has to exist
     // at every rank, not just 1D/2D.
     var_type& at(int64_t i, int64_t j, int64_t k) {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (!Bounds1::in_bounds(i) || !Bounds2::in_bounds(j) || !Bounds3::in_bounds(k)) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
@@ -399,10 +408,12 @@ public:
             iec_runtime_fault(IecFault::ArrayBounds);
 #endif
         }
+#endif
         return data_[to_linear_index(i, j, k)];
     }
 
     const var_type& at(int64_t i, int64_t j, int64_t k) const {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (!Bounds1::in_bounds(i) || !Bounds2::in_bounds(j) || !Bounds3::in_bounds(k)) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
@@ -410,6 +421,7 @@ public:
             iec_runtime_fault(IecFault::ArrayBounds);
 #endif
         }
+#endif
         return data_[to_linear_index(i, j, k)];
     }
 

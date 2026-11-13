@@ -67,15 +67,20 @@ namespace strucpp {
  * The runtime catches this and stops execution of the affected POU.
  */
 class NullReferenceException : public std::runtime_error {
+    /** ", task FAST" for the task running on this thread, if one is named. */
+    static std::string task_suffix() {
+        const char* task = iec_current_task_slot();
+        return task != nullptr ? std::string(", task ") + task : std::string();
+    }
 public:
     NullReferenceException()
-        : std::runtime_error("Null reference dereference") {}
+        : std::runtime_error("Null reference dereference" + task_suffix()) {}
 
     explicit NullReferenceException(const char* context)
-        : std::runtime_error(std::string("Null reference dereference in ") + context) {}
+        : std::runtime_error(std::string("Null reference dereference in ") + context + task_suffix()) {}
 
     explicit NullReferenceException(const std::string& context)
-        : std::runtime_error("Null reference dereference in " + context) {}
+        : std::runtime_error("Null reference dereference in " + context + task_suffix()) {}
 };
 #endif
 
@@ -447,6 +452,7 @@ private:
      * The bound target; an unbound reference raises the NullReference fault
      */
     target_type& bound() const {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (ptr_ == nullptr) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw NullReferenceException("REFERENCE TO");
@@ -454,6 +460,7 @@ private:
             iec_runtime_fault(IecFault::NullReference, "REFERENCE TO");
 #endif
         }
+#endif
         return *ptr_;
     }
 

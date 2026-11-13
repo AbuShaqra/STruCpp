@@ -7,6 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 const DECLS = `
 FUNCTION_BLOCK FB_R
@@ -36,7 +37,7 @@ ${body}
 END_PROGRAM
 `);
   expect(result.errors).toEqual([]);
-  return result.cppCode;
+  return withoutSites(result.cppCode);
 }
 
 describe("REFERENCE TO inputs are bound at the call", () => {
@@ -88,8 +89,8 @@ VAR f : FB_V; n : INT; a : INT; END_VAR
 END_PROGRAM
 `);
     expect(result.errors).toEqual([]);
-    expect(result.cppCode).toContain("F.V = N;");
-    expect(result.cppCode).toContain("A = F_V(N);");
-    expect(result.cppCode).not.toContain("ref_bind");
+    expect(withoutSites(result.cppCode)).toContain("F.V = N;");
+    expect(withoutSites(result.cppCode)).toContain("A = F_V(N);");
+    expect(withoutSites(result.cppCode)).not.toContain("ref_bind");
   });
 });

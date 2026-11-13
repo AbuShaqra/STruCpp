@@ -319,6 +319,13 @@ on a target without exceptions. The POU and line come from the call site (`struc
 The task is the one the runtime named on this thread with `strucpp_set_current_task(name)` before running
 it (thread-local under `STRUCPP_THREADED`); it is left out when none is set.
 
+An array access goes through `strucpp::iec_at(container, site, index...)`: an index outside the bounds raises
+`IecSiteFault` with `Array index out of bounds: <indices> in <POU>, line <n>, task <task>` (a STRING index
+keeps its own text, `String index out of bounds`). An unbound REFERENCE TO raises `NullReferenceException`,
+which names the running task (`Null reference dereference in REFERENCE TO, task FAST`); it does not know the
+POU or line. Defining `STRUCPP_NO_BOUNDS_CHECK` when building the C++ leaves both checks out, for targets
+that cannot afford them; an out-of-range index or an unbound reference is then undefined behaviour.
+
 ## Pointer and Reference Types
 
 ### POINTER TO (`iec_pointer.hpp`)

@@ -129,6 +129,39 @@ private:
 #endif
 }
 
+namespace detail {
+inline void append_indices(std::string&) {}
+template<typename I, typename... Rest>
+inline void append_indices(std::string& out, I first, Rest... rest) {
+    if (!out.empty() && out.back() != '[' && out.back() != ' ') out += ", ";
+    out += std::to_string(static_cast<long long>(first));
+    append_indices(out, rest...);
+}
+}  // namespace detail
+
+/**
+ * `c.at(i...)` at a known site: an index out of bounds raises IecSiteFault
+ * naming the indices, the POU, the line and the task on a hosted target.
+ * Built with STRUCPP_NO_BOUNDS_CHECK, arrays skip the check.
+ */
+template<typename C, typename... I>
+inline decltype(auto) iec_at(C&& c, iec_site site, I... idx) {
+#if STRUCPP_HAS_EXCEPTIONS
+    try {
+        return c.at(idx...);
+    } catch (const std::out_of_range& e) {
+        std::string what = e.what();
+        what += sizeof...(I) > 1 ? ": [" : ": ";
+        detail::append_indices(what, idx...);
+        if (sizeof...(I) > 1) what += "]";
+        iec_site_fault(IecFault::ArrayBounds, what.c_str(), site);
+    }
+#else
+    (void)site;
+    return c.at(idx...);
+#endif
+}
+
 /** An Ed. 3 `s[i]` outside the string's current length (1..LEN). */
 [[noreturn]] inline void iec_string_index_fault() {
 #if STRUCPP_HAS_EXCEPTIONS

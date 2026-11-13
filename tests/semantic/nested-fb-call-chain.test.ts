@@ -5,6 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 const DECLS = `
   FUNCTION_BLOCK FBS
@@ -41,10 +42,10 @@ describe("function block call through a member chain", () => {
       "a.h.sub(k := 3); a.h.s.f(4); a.h.arr[i].f(k := 5); a.h.sub();",
     );
     expect(r.errors).toEqual([]);
-    expect(r.cppCode).toContain("A.H.SUB.K = 3;\n    A.H.SUB();");
-    expect(r.cppCode).toContain("A.H.S.F.K = 4;\n    A.H.S.F();");
-    expect(r.cppCode).toContain("A.H.ARR.at(I).F.K = 5;");
-    expect(r.cppCode).toContain("this->H.SUB.K = 1;\n    this->H.SUB();");
+    expect(withoutSites(r.cppCode)).toContain("A.H.SUB.K = 3;\n    A.H.SUB();");
+    expect(withoutSites(r.cppCode)).toContain("A.H.S.F.K = 4;\n    A.H.S.F();");
+    expect(withoutSites(r.cppCode)).toContain("A.H.ARR.at(I).F.K = 5;");
+    expect(withoutSites(r.cppCode)).toContain("this->H.SUB.K = 1;\n    this->H.SUB();");
   });
 
   it("still refuses a member that is not a function block instance", () => {

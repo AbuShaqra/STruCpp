@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 type Options = Parameters<typeof compile>[1];
 const MODES: Array<[string, Options]> = [
@@ -34,13 +35,13 @@ describe("CHAR and WCHAR", () => {
           options,
         );
         expect(r.errors).toEqual([]);
-        expect(r.headerCode).toContain("IEC_CHAR C;");
-        expect(r.headerCode).toContain("IEC_WCHAR W;");
-        expect(r.cppCode).toContain("C = static_cast<CHAR_t>(65);");
-        expect(r.cppCode).toContain("C = static_cast<CHAR_t>(128);");
-        expect(r.cppCode).toContain("C = static_cast<CHAR_t>(39);");
-        expect(r.cppCode).toContain("W = static_cast<WCHAR_t>(9731);");
-        expect(r.cppCode).toContain("W = static_cast<WCHAR_t>(8364);");
+        expect(withoutSites(r.headerCode)).toContain("IEC_CHAR C;");
+        expect(withoutSites(r.headerCode)).toContain("IEC_WCHAR W;");
+        expect(withoutSites(r.cppCode)).toContain("C = static_cast<CHAR_t>(65);");
+        expect(withoutSites(r.cppCode)).toContain("C = static_cast<CHAR_t>(128);");
+        expect(withoutSites(r.cppCode)).toContain("C = static_cast<CHAR_t>(39);");
+        expect(withoutSites(r.cppCode)).toContain("W = static_cast<WCHAR_t>(9731);");
+        expect(withoutSites(r.cppCode)).toContain("W = static_cast<WCHAR_t>(8364);");
       });
 
       it("refuses a literal of other than one character, or a CHAR CP1252 lacks", () => {
@@ -61,8 +62,8 @@ describe("CHAR and WCHAR", () => {
           options,
         );
         expect(r.errors).toEqual([]);
-        expect(r.cppCode).toContain("C = S.at(2);");
-        expect(r.cppCode).toContain("S.at(1) = C;");
+        expect(withoutSites(r.cppCode)).toContain("C = S.at(2);");
+        expect(withoutSites(r.cppCode)).toContain("S.at(1) = C;");
         expect(errors("w := s[1];", options)).toEqual([
           "Cannot assign CHAR to WCHAR",
         ]);
@@ -89,10 +90,10 @@ describe("CHAR and WCHAR", () => {
           options,
         );
         expect(r.errors).toEqual([]);
-        expect(r.cppCode).toContain(
+        expect(withoutSites(r.cppCode)).toContain(
           "B = TO_BYTE(static_cast<uint8_t>(iec_unwrap(C)));",
         );
-        expect(r.cppCode).toContain(
+        expect(withoutSites(r.cppCode)).toContain(
           "X = static_cast<uint8_t>(iec_unwrap(C)) < static_cast<uint8_t>(iec_unwrap(static_cast<CHAR_t>(122)));",
         );
       });
@@ -121,8 +122,8 @@ describe("CHAR and WCHAR", () => {
           options,
         );
         expect(r.errors).toEqual([]);
-        expect(r.cppCode).toContain("C = static_cast<CHAR_t>(65);");
-        expect(r.cppCode).toContain("W = static_cast<WCHAR_t>(65);");
+        expect(withoutSites(r.cppCode)).toContain("C = static_cast<CHAR_t>(65);");
+        expect(withoutSites(r.cppCode)).toContain("W = static_cast<WCHAR_t>(65);");
         expect(errors("c := 'AB';", options)).toEqual([
           "Cannot assign STRING to CHAR",
         ]);
@@ -134,8 +135,8 @@ describe("CHAR and WCHAR", () => {
           options,
         );
         expect(r.errors).toEqual([]);
-        expect(r.cppCode).toContain("W = static_cast<WCHAR_t>(88);");
-        expect(r.cppCode).toContain("C = static_cast<CHAR_t>(65);");
+        expect(withoutSites(r.cppCode)).toContain("W = static_cast<WCHAR_t>(88);");
+        expect(withoutSites(r.cppCode)).toContain("C = static_cast<CHAR_t>(65);");
         expect(errors("c := CHAR#16#141;", options)).toEqual([
           "CHAR#16#141 is past the CHAR range",
         ]);
@@ -165,7 +166,7 @@ describe("CHAR and WCHAR", () => {
           options,
         );
         expect(r.errors).toEqual([]);
-        expect(r.cppCode).toContain(
+        expect(withoutSites(r.cppCode)).toContain(
           "C = SEL(X, static_cast<CHAR_t>(97), static_cast<CHAR_t>(98));",
         );
         expect(errors("c := SEL(x, 'ab', 'b');", options)).toEqual([
@@ -189,12 +190,12 @@ END_PROGRAM
           headerFileName: "generated.hpp",
         });
         expect(r.errors).toEqual([]);
-        expect(r.cppCode).toContain("M(static_cast<CHAR_t>(66))");
-        expect(r.cppCode).toContain(
+        expect(withoutSites(r.cppCode)).toContain("M(static_cast<CHAR_t>(66))");
+        expect(withoutSites(r.cppCode)).toContain(
           "{static_cast<CHAR_t>(120), static_cast<CHAR_t>(121)}",
         );
-        expect(r.cppCode).toContain("FIN(static_cast<CHAR_t>(68))");
-        expect(r.cppCode).toContain("static_cast<CHAR_t>(65)");
+        expect(withoutSites(r.cppCode)).toContain("FIN(static_cast<CHAR_t>(68))");
+        expect(withoutSites(r.cppCode)).toContain("static_cast<CHAR_t>(65)");
       });
 
       it("refuses a value of another type for a CHAR input, element or alias", () => {
@@ -226,9 +227,9 @@ END_PROGRAM
         );
         expect(r.errors).toEqual([]);
         for (const code of [97, 98, 99]) {
-          expect(r.cppCode).toContain(`case static_cast<CHAR_t>(${code}):`);
+          expect(withoutSites(r.cppCode)).toContain(`case static_cast<CHAR_t>(${code}):`);
         }
-        expect(r.cppCode).toContain("case static_cast<WCHAR_t>(121):");
+        expect(withoutSites(r.cppCode)).toContain("case static_cast<WCHAR_t>(121):");
       });
 
       it("takes no EN or ENO of a nested CHAR call as an operand", () => {
@@ -237,10 +238,10 @@ END_PROGRAM
           options,
         );
         expect(r.errors).toEqual([]);
-        expect(r.cppCode).toContain(
+        expect(withoutSites(r.cppCode)).toContain(
           "const bool en_ = X; X = en_; return en_ ?",
         );
-        expect(r.cppCode).not.toContain(", X, X)");
+        expect(withoutSites(r.cppCode)).not.toContain(", X, X)");
       });
     });
 

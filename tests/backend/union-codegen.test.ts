@@ -8,6 +8,7 @@ import { describe, it, expect } from "vitest";
 import { analyze, compile } from "../../src/index.js";
 import type { VariableExpression } from "../../src/frontend/ast.js";
 import { walkAST } from "../../src/ast-utils.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 type Options = Parameters<typeof compile>[1];
 const ON: Options = { features: ["+union"] };
@@ -38,7 +39,7 @@ END_PROGRAM
     ON,
   );
   expect(result.errors).toEqual([]);
-  return { header: result.headerCode, cpp: result.cppCode };
+  return { header: result.headerCode, cpp: withoutSites(result.cppCode) };
 }
 
 /** Error messages of compile and analyze, as `line:col message`. */
@@ -92,8 +93,8 @@ PROGRAM Main VAR p : ST_P; a : INT; END_VAR a := p.x; END_PROGRAM
       ON,
     );
     expect(result.errors).toEqual([]);
-    expect(result.headerCode).not.toMatch(/union_/);
-    expect(result.cppCode).not.toMatch(/union_/);
+    expect(withoutSites(result.headerCode)).not.toMatch(/union_/);
+    expect(withoutSites(result.cppCode)).not.toMatch(/union_/);
   });
 });
 

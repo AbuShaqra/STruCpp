@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 type Options = Parameters<typeof compile>[1];
 const MODES: Array<[string, Options]> = [
@@ -41,8 +42,8 @@ describe("FB invocation in a global array element", () => {
         features: ["+named_global_lists"],
       });
       expect(r.errors).toEqual([]);
-      expect(r.cppCode).toContain("UNITS.at(0).K = 2;\n    UNITS.at(0)();");
-      expect(r.cppCode).toContain("UNITS.at(1).K = 3;\n    UNITS.at(1)();");
+      expect(withoutSites(r.cppCode)).toContain("UNITS.at(0).K = 2;\n    UNITS.at(0)();");
+      expect(withoutSites(r.cppCode)).toContain("UNITS.at(1).K = 3;\n    UNITS.at(1)();");
     });
   }
 });

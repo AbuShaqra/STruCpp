@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 type Options = Parameters<typeof compile>[1];
 const MODES: Array<[string, Options]> = [
@@ -52,14 +53,14 @@ o := THIS.a.b + THIS.arr[2] + SUPER.s.b + SUPER.arrB[1] + THIS.xs[1].q + SUPER.i
           options,
         );
         expect(r.errors).toEqual([]);
-        expect(r.cppCode).toContain("FB_B::operator()();");
-        expect(r.cppCode).toContain("this->A.B = 3;");
-        expect(r.cppCode).toContain("(*this).ARR.at(2) = 4;");
-        expect(r.cppCode).toContain("FB_B::S.B = 5;");
-        expect(r.cppCode).toContain(
+        expect(withoutSites(r.cppCode)).toContain("FB_B::operator()();");
+        expect(withoutSites(r.cppCode)).toContain("this->A.B = 3;");
+        expect(withoutSites(r.cppCode)).toContain("(*this).ARR.at(2) = 4;");
+        expect(withoutSites(r.cppCode)).toContain("FB_B::S.B = 5;");
+        expect(withoutSites(r.cppCode)).toContain(
           "static_cast<FB_B&>(*this).ARRB.at(1) = 6;",
         );
-        expect(r.cppCode).toContain("FB_B::X = FB_B::X + 100;");
+        expect(withoutSites(r.cppCode)).toContain("FB_B::X = FB_B::X + 100;");
       });
 
       it("applies the member access rule at every step", () => {
