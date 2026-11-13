@@ -1506,6 +1506,28 @@ inline T MOD(T a, T b) noexcept {
 }
 
 /**
+ * A store into a subrange variable: the value, or a run-time fault naming the
+ * variable, the value and the range when it is outside `lo..hi`.
+ */
+template<typename T, typename V>
+inline T iec_subrange_store(const V& value, T lo, T hi, const char* name, iec_site site) {
+    const auto v = iec_unwrap(value);
+    const long long x = static_cast<long long>(v);
+    if (x < static_cast<long long>(lo) || x > static_cast<long long>(hi)) {
+#if STRUCPP_HAS_EXCEPTIONS
+        const std::string what = "Value " + std::to_string(x) + " outside " +
+            std::to_string(static_cast<long long>(lo)) + ".." +
+            std::to_string(static_cast<long long>(hi)) + " stored in " + name;
+        iec_site_fault(IecFault::Subrange, what.c_str(), site);
+#else
+        (void)name;
+        iec_site_fault(IecFault::Subrange, "Subrange", site);
+#endif
+    }
+    return static_cast<T>(v);
+}
+
+/**
  * Integer `/` whose divisor may be 0: a division by zero is a run-time fault
  * naming the POU, line and task; the minimum value / -1 wraps instead of trapping.
  */

@@ -4468,7 +4468,54 @@ export class CodeGenerator {
       return;
     }
 
-    this.emit(`${indent}${target} = ${value};`);
+    const checked = this.subrangeStore(stmt.target, value);
+    this.emit(`${indent}${target} = ${checked ?? value};`);
+  }
+
+  /**
+   * A store into a variable of a subrange type: the value through
+   * `iec_subrange_store`, which faults when it is outside the range.
+   * Undefined for any other target.
+   */
+  private subrangeStore(target: Expression, value: string): string | undefined {
+    if (target.kind !== "VariableExpression") return undefined;
+    const root = this.currentScopeVarTypeRefs.get(target.name.toUpperCase());
+    if (root === undefined) return undefined;
+    const hasAccess =
+      target.subscripts.length > 0 ||
+      target.fieldAccess.length > 0 ||
+      target.isDereference ||
+      (target.accessChain !== undefined && target.accessChain.length > 0);
+    const type = hasAccess
+      ? resolveAccessType(root, target, this.accessLookup)
+      : root;
+    if (
+      type === undefined ||
+      type.arrayDimensions !== undefined ||
+      (type.referenceKind ?? "none") !== "none"
+    ) {
+      return undefined;
+    }
+    let name = type.name.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const current = name;
+      const decl = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === current,
+      );
+      if (decl === undefined) return undefined;
+      if (decl.definition.kind === "SubrangeDefinition") {
+        const shown = [target.name, ...target.fieldAccess].join(".");
+        return `strucpp::iec_subrange_store(${value}, ${decl.name}_MIN, ${decl.name}_MAX, "${shown}", ${this.faultSite(target)})`;
+      }
+      if (
+        decl.definition.kind !== "TypeReference" ||
+        decl.definition.arrayDimensions !== undefined
+      ) {
+        return undefined;
+      }
+      name = decl.definition.name.toUpperCase();
+    }
+    return undefined;
   }
 
   /**

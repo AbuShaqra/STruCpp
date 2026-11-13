@@ -319,6 +319,9 @@ on a target without exceptions. The POU and line come from the call site (`struc
 The task is the one the runtime named on this thread with `strucpp_set_current_task(name)` before running
 it (thread-local under `STRUCPP_THREADED`); it is left out when none is set.
 
+A store into a subrange variable goes through `iec_subrange_store`, which raises the same fault
+(`IecFault::Subrange`) with `Value <v> outside <lo>..<hi> stored in <variable>` when the value is outside the range.
+
 ## Pointer and Reference Types
 
 ### POINTER TO (`iec_pointer.hpp`)
