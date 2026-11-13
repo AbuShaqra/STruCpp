@@ -3,7 +3,7 @@
  * (refused in every dialect).
  */
 import { describe, it, expect } from "vitest";
-import { compile, type CompileOptions } from "../../src/index.js";
+import { compile, compileStlib, type CompileOptions } from "../../src/index.js";
 import {
   DEFAULT_FEATURES,
   KNOWN_FEATURES,
@@ -245,5 +245,107 @@ END_PROGRAM
     expect(on.errors).toEqual([]);
     expect(on.cpp).toBe(off.cpp);
     expect(diag(src).cpp).toBe(off.cpp);
+  });
+});
+
+describe("review regressions", () => {
+  it("a local, method or STRUCT member of the name shadows only in its scope", () => {
+    const src = `FUNCTION_BLOCK Fb_Other
+VAR bitadr : DWORD; END_VAR
+bitadr := 1;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK Fb_M
+METHOD __POUNAME : STRING
+__POUNAME := 'm';
+END_METHOD
+VAR_OUTPUT s : STRING; END_VAR
+s := __POUNAME();
+END_FUNCTION_BLOCK
+TYPE St_X : STRUCT __pouname : INT; END_STRUCT END_TYPE
+PROGRAM Main
+VAR x AT %IX0.1 : BOOL; d : DWORD; s : STRING; END_VAR
+d := BITADR(x);
+s := __POUNAME();
+END_PROGRAM
+`;
+    const r = diag(src, ON);
+    expect(r.errors).toEqual([]);
+    expect(r.cpp).toContain("D = static_cast<IEC_DWORD>(0x80000001);");
+    expect(r.cpp).toContain("S = __POUNAME();");
+    expect(r.cpp).toContain('S = "Main"');
+    expect(r.cpp).not.toContain('S = "Fb_M"');
+  });
+
+  it("names a named BITADR argument as the problem", () => {
+    expect(
+      diag(
+        `PROGRAM Main
+VAR x AT %IX0.1 : BOOL; d : DWORD; END_VAR
+d := BITADR(v := x);
+END_PROGRAM
+`,
+        ON,
+      ).errors,
+    ).toEqual(["3:6: BITADR takes its argument without a name"]);
+  });
+
+  it("skips comments when spelling the POU name", () => {
+    const r = diag(
+      `PROGRAM (* runs MAIN loop *) Main
+VAR s : STRING; END_VAR
+s := __POUNAME();
+END_PROGRAM
+`,
+      ON,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.cpp).toContain('S = "Main"');
+  });
+
+  it("refuses an operator written as a statement instead of crashing", () => {
+    const r = diag(
+      `PROGRAM Main
+VAR x AT %IX0.1 : BOOL; END_VAR
+__POSITION();
+__POUNAME();
+BITADR(x);
+END_PROGRAM
+`,
+      ON,
+    );
+    expect(r.errors).toEqual([
+      "3:1: __POSITION gives a value: use it in an expression, not as a statement",
+      "4:1: __POUNAME gives a value: use it in an expression, not as a statement",
+      "5:1: BITADR gives a value: use it in an expression, not as a statement",
+    ]);
+  });
+
+  it("lets a library global of the operator's name win", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `FUNCTION_BLOCK FB_Pos
+VAR_OUTPUT o : STRING; END_VAR
+o := 'lib';
+END_FUNCTION_BLOCK
+VAR_GLOBAL __POSITION : FB_Pos; END_VAR
+`,
+          fileName: "lib.st",
+        },
+      ],
+      { name: "pos-lib", version: "1.0.0", namespace: "strucpp" },
+    );
+    expect(lib.success).toBe(true);
+    const r = compile(
+      `PROGRAM Main
+VAR s : STRING; END_VAR
+__POSITION();
+s := __POSITION.o;
+END_PROGRAM
+`,
+      { ...ON, libraries: [lib.archive!] },
+    );
+    expect(r.errors.map((e) => e.message)).toEqual([]);
+    expect(r.cppCode).not.toContain("Line 3");
   });
 });

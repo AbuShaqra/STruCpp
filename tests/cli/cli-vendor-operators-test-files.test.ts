@@ -9,6 +9,20 @@ import { resolve, join } from "path";
 import { tmpdir } from "os";
 import { hasGpp } from "../integration/test-helpers.js";
 import { parseTestFile } from "../../src/testing/test-parser.js";
+import { analyzeTestFile } from "../../src/semantic/analyzer.js";
+import { compile } from "../../src/index.js";
+
+/** The errors of a test file analyzed against `source`, with the operators on. */
+function testErrors(source: string, tests: string): string[] {
+  const opts = { features: ["+vendor_operators"] };
+  const src = compile(source, opts);
+  expect(src.errors).toEqual([]);
+  const parsed = parseTestFile(tests, "t.st", opts);
+  expect(parsed.errors).toEqual([]);
+  return analyzeTestFile(parsed.testFile!, src.symbolTables!).errors.map(
+    (e) => `${e.line}:${e.column}: ${e.message}`,
+  );
+}
 
 const CLI_PATH = resolve(__dirname, "../../dist/node/cli.js");
 const DIR = join(tmpdir(), "strucpp-cli-vendor-operators-tests");
@@ -37,20 +51,58 @@ END_TEST
 
 describe("vendor operators in a test file", () => {
   it("refuses __POUNAME and BITADR there", () => {
-    const r = parseTestFile(
-      `TEST 't'
+    expect(
+      testErrors(
+        "PROGRAM P\nEND_PROGRAM\n",
+        `TEST 't'
 VAR s : STRING; d : DWORD; x : BOOL; END_VAR
   s := __POUNAME();
   d := BITADR(x);
+  __POSITION();
 END_TEST
 `,
-      "t.st",
-      { features: ["+vendor_operators"] },
-    );
-    expect(r.errors.map((e) => `${e.line}:${e.column}: ${e.message}`)).toEqual([
+      ),
+    ).toEqual([
       "3:8: __POUNAME is not supported in a test file",
       "4:8: BITADR is not supported in a test file",
+      "5:3: __POSITION gives a value: use it in an expression, not as a statement",
     ]);
+  });
+
+  it("leaves a call to a source FUNCTION or a test variable of the name", () => {
+    const source = `FUNCTION BITADR : DWORD
+VAR_INPUT v : BOOL; END_VAR
+BITADR := 42;
+END_FUNCTION
+FUNCTION __POUNAME : STRING
+__POUNAME := 'mine';
+END_FUNCTION
+FUNCTION_BLOCK FB_Pos
+VAR_OUTPUT o : STRING; END_VAR
+END_FUNCTION_BLOCK
+PROGRAM P
+END_PROGRAM
+`;
+    const tests = `SETUP
+VAR __position : FB_Pos; END_VAR
+END_SETUP
+TEST 't'
+VAR s : STRING; d : DWORD; x : BOOL; END_VAR
+  s := __POUNAME();
+  d := BITADR(x);
+  __POSITION();
+  s := __POSITION.o;
+END_TEST
+`;
+    expect(testErrors(source, tests)).toEqual([]);
+    const parsed = parseTestFile(tests, "t.st", {
+      features: ["+vendor_operators"],
+    });
+    analyzeTestFile(
+      parsed.testFile!,
+      compile(source, { features: ["+vendor_operators"] }).symbolTables!,
+    );
+    expect(JSON.stringify(parsed.testFile)).not.toContain("Line ");
   });
 
   describe.skipIf(!hasGpp)("--test", () => {

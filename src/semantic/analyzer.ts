@@ -127,7 +127,11 @@ import {
   restoreDeclaredPlatformTypes,
 } from "./platform-types.js";
 import { implicitParameterHint } from "./implicit-parameters.js";
-import { POU_OPERATORS } from "./vendor-pou-operators.js";
+import {
+  POU_OPERATORS,
+  lowerTestPouOperators,
+  refusedOperatorCalls,
+} from "./vendor-pou-operators.js";
 
 // =============================================================================
 // Located Variable Address Parsing
@@ -6124,6 +6128,8 @@ export class SemanticAnalyzer {
     ctx: UndeclaredVarContext,
     call: { sourceSpan: SourceSpan },
   ): void {
+    // Refused by the operator lowering already.
+    if (refusedOperatorCalls.has(call)) return;
     const upper = name.toUpperCase();
     const hit = scope.lookup(upper);
     if (hit && hit.kind !== "enumValue") return;
@@ -6276,6 +6282,16 @@ export class SemanticAnalyzer {
       const kind = sourceSymbolTables.globalScope.lookup(name)?.kind;
       return kind === "type" || kind === "functionBlock" || kind === "program";
     });
+    // Operators lower here, where the source declarations that shadow them are known.
+    if (testFile.dialect?.features.has("vendor_operators")) {
+      this.errors.push(
+        ...lowerTestPouOperators(
+          testFile,
+          testFile.fileName,
+          (name) => sourceSymbolTables.globalScope.lookup(name) !== undefined,
+        ),
+      );
+    }
     const typeScope = this.buildTestTypeScope(testFile);
 
     // Validate type references in SETUP and TEST var blocks

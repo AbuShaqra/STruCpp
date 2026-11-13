@@ -110,7 +110,9 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `TYPE ST_A STRUCT` (no `:`)                 | `type_colon_optional` | `TYPE ST_A without ':' before STRUCT needs the feature type_colon_optional` (at `STRUCT`) |
 | `RETURN (cond);`                            | `conditional_return` | `RETURN (condition) needs the feature conditional_return` (at `RETURN`)              |
 | `x : XINT;` (any platform type)            | `platform_types`     | `XINT needs the feature platform_types` (at the type)                                |
-| `__POUNAME()`, `__POSITION()`, `BITADR(x)`  | `vendor_operators`   | `BITADR needs the feature vendor_operators`                                           |
+| `__POUNAME()`                               | `vendor_operators`   | `__POUNAME needs the feature vendor_operators` (at the call)                          |
+| `__POSITION()`                              | `vendor_operators`   | `__POSITION needs the feature vendor_operators` (at the call)                         |
+| `BITADR(x)`                                 | `vendor_operators`   | `BITADR needs the feature vendor_operators` (at the call)                             |
 | `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive). With the feature on, `{define}`/`{undefine}` are accepted ([below](#conditional-pragmas)) |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
@@ -724,8 +726,8 @@ before analysis. Their exact results are **this compiler's rules**:
 
 - `__POUNAME()` gives `Main` in PROGRAM Main and its declarations, `F` in FUNCTION F, `FB_A` in
   FUNCTION_BLOCK FB_A, `FB_A.M` in its METHOD M, `FB_A.P` in either accessor of its PROPERTY P, and
-  `Main.A` in ACTION A of Main (written inside the POU or as `ACTION Main.A`). In a STRUCT or UNION
-  member's initial value it is the TYPE's name, in a top-level `VAR_GLOBAL` the name of its global variable
+  `Main.A` in ACTION A of Main (written inside the POU or as `ACTION Main.A`). In a STRUCT member's
+  initial value it is the TYPE's name, in a top-level `VAR_GLOBAL` the name of its global variable
   list (the file's stem unless one is given, see `named_global_lists`), in a CONFIGURATION's globals the
   configuration's name. A call left anywhere else is `__POUNAME has no value here`.
 - `__POSITION()` numbers lines and columns from 1 in the `.st` file that holds the call, at the call's first
@@ -739,15 +741,23 @@ before analysis. Their exact results are **this compiler's rules**:
   gives `16#40000038`. The value only describes the address: this compiler's I/O image keeps one array
   per size, so `%QW4` there is the fifth word, not bytes 4 and 5. Anything else is an error: `BITADR needs a
   located variable (declared AT %I, %Q or %M); 'X' is not one` (or `write it by name` for a member or
-  element), `BITADR takes one argument, got 2`, and an address with a bit above 7 or past `16#0FFFFFFF`.
+  element), `BITADR takes one argument, got 2`, `BITADR takes its argument without a name`, and an address with a bit above 7 or past `16#0FFFFFFF`.
 - `__POUNAME` and `__POSITION` take no argument: `__POUNAME takes no argument`.
-- With the feature off each call is refused naming the feature. A FUNCTION, POU, method, TYPE or variable of
-  the operator's name, in the sources or a library, wins in every dialect, and the call reaches it.
+- An operator gives a value, so a call written as a statement is an error: `__POSITION gives a value: use
+  it in an expression, not as a statement`.
+- The spelling `__POUNAME()` gives is read from the source with comments skipped.
+- With the feature off each call is refused naming the feature (in an ARRAY bound, as a bound that is not a
+  constant). A FUNCTION, POU, INTERFACE, TYPE or global variable of the operator's name, in the sources or a library, wins in every dialect and in every POU, and
+  the call reaches it. A local variable, method or action of that name wins only where it is in scope: in its
+  POU (an FB's methods and actions also in the FBs that extend it), or in its test (SETUP's in every test).
+  A STRUCT member of that name does not shadow the operator.
 - In a `--test` file the operators follow the dialect flags of the run: `__POSITION()` is lowered there too
-  (its position in the test file), while `__POUNAME()` and `BITADR` have no value there (`__POUNAME is not
-  supported in a test file`).
+  (its position in the test file), unless the sources or the test declare its name, while `__POUNAME()`
+  and `BITADR` have no value there (`__POUNAME is not supported in a test file`).
 - `INDEXOF` is refused in every dialect: `INDEXOF is not supported: use ADR(x) for the address of a
   variable or instance`, unless something of that name is declared.
+- In a unit with inline C++ (`{external ...}`), a call left to an operator name is not refused, with the
+  feature off or for `INDEXOF`, as for any undeclared call: the inline code may declare the name.
 
 ## Strict checks a feature relaxes
 

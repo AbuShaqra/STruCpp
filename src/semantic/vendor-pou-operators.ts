@@ -53,42 +53,56 @@ interface Context {
   section: "Decl" | "Impl";
   /** Variables in scope, by upper-case name, innermost first. */
   variables: ReadonlyMap<string, VarDeclaration>;
+  /** Upper-case names of the methods and actions a bare call here reaches. */
+  methods: ReadonlySet<string>;
 }
 
 export interface PouOperatorOptions {
   /** Source text by file name, to give a name the spelling it was declared with. */
   sources: ReadonlyMap<string, string>;
-  /** Whether a library declares a FUNCTION, FB or TYPE of the upper-case name. */
+  /** Whether a library declares a FUNCTION, FB, TYPE or global of the upper-case name. */
   declaredByLibrary: (nameUpper: string) => boolean;
 }
 
-/** Every name the unit declares (POUs, TYPEs, methods, variables), upper-case. */
-function declaredNames(ast: CompilationUnit): Set<string> {
+/**
+ * Calls of an operator written as a statement: refused by the lowering, so
+ * the analyzer adds no second error for them.
+ */
+export const refusedOperatorCalls = new WeakSet<object>();
+
+/**
+ * Upper-case names a bare call reaches from anywhere: the unit's FUNCTIONs,
+ * POUs, INTERFACEs, TYPEs and top-level and CONFIGURATION globals.
+ */
+function globalNames(ast: CompilationUnit): Set<string> {
   const names = new Set<string>();
-  const seen = new Set<object>();
-  const visit = (node: unknown): void => {
-    if (typeof node !== "object" || node === null || seen.has(node)) return;
-    seen.add(node);
-    if (Array.isArray(node)) {
-      for (const item of node) visit(item);
-      return;
+  for (const list of [
+    ast.functions,
+    ast.functionBlocks,
+    ast.programs,
+    ast.interfaces,
+    ast.types,
+  ]) {
+    for (const d of list) names.add(d.name.toUpperCase());
+  }
+  for (const block of [
+    ...ast.globalVarBlocks,
+    ...ast.configurations.flatMap((c) => c.varBlocks),
+  ]) {
+    for (const decl of block.declarations) {
+      for (const n of decl.names) names.add(n.toUpperCase());
     }
-    const n = node as { kind?: unknown; name?: unknown; names?: unknown };
-    if (
-      (n.kind === "VarDeclaration" && Array.isArray(n.names)) ||
-      (typeof n.kind === "string" &&
-        n.kind.endsWith("Declaration") &&
-        typeof n.name === "string")
-    ) {
-      const list = Array.isArray(n.names) ? n.names : [n.name];
-      for (const name of list) {
-        if (typeof name === "string") names.add(name.toUpperCase());
-      }
-    }
-    for (const value of Object.values(node)) visit(value);
-  };
-  visit(ast);
+  }
   return names;
+}
+
+/** `text` with its comments blanked to spaces, keeping lines and columns. */
+function withoutComments(text: string): string {
+  const blank = (m: string): string => m.replace(/[^\r\n]/g, " ");
+  return text
+    .replace(/\(\*[\s\S]*?\*\)/g, blank)
+    .replace(/\/\*[\s\S]*?\*\//g, blank)
+    .replace(/\/\/[^\r\n]*/g, blank);
 }
 
 /** The spelling of `nameUpper` as first written at or after `span` in its file. */
@@ -97,8 +111,9 @@ function spelled(
   span: SourceSpan,
   sources: ReadonlyMap<string, string>,
 ): string {
-  const text = sources.get(span.file);
-  if (text === undefined) return nameUpper;
+  const raw = sources.get(span.file);
+  if (raw === undefined) return nameUpper;
+  const text = withoutComments(raw);
   const lines = text.split(/\r\n|\r|\n/);
   const from = [
     (lines[span.startLine - 1] ?? "").slice(Math.max(span.startCol - 1, 0)),
@@ -183,13 +198,16 @@ export function lowerPouOperators(
   opts: PouOperatorOptions,
 ): CompileError[] {
   const errors: CompileError[] = [];
-  const shadowed = declaredNames(ast);
+  const declared = globalNames(ast);
   const active = new Set(
     [...POU_OPERATORS].filter(
-      (op) => !shadowed.has(op) && !opts.declaredByLibrary(op),
+      (op) => !declared.has(op) && !opts.declaredByLibrary(op),
     ),
   );
   if (active.size === 0) return errors;
+  // A variable, method or action of the operator's name shadows it where it is in scope.
+  const reaches = (op: string, ctx: Context): boolean =>
+    active.has(op) && !ctx.variables.has(op) && !ctx.methods.has(op);
 
   const globals = varMap([
     ast.globalVarBlocks,
@@ -235,8 +253,12 @@ export function lowerPouOperators(
     const span = call.sourceSpan;
     if (op === "BITADR") {
       const arg = call.arguments[0];
-      if (call.arguments.length !== 1 || arg!.name !== undefined) {
+      if (call.arguments.length !== 1) {
         fail(`BITADR takes one argument, got ${call.arguments.length}`, span);
+        return dwordLiteral(0, span);
+      }
+      if (arg!.name !== undefined || arg!.isOutput) {
+        fail("BITADR takes its argument without a name", span);
         return dwordLiteral(0, span);
       }
       const value = arg!.value;
@@ -293,11 +315,27 @@ export function lowerPouOperators(
       for (const item of node) rewrite(item, ctx);
       return;
     }
+    // An operator written as a statement: its value would be dropped.
+    const statement = node as { kind?: unknown; call?: FunctionCallExpression };
+    if (
+      statement.kind === "FunctionCallStatement" &&
+      statement.call?.kind === "FunctionCallExpression" &&
+      statement.call.instance === undefined &&
+      reaches(statement.call.functionName.toUpperCase(), ctx)
+    ) {
+      const op = statement.call.functionName.toUpperCase();
+      fail(
+        `${op} gives a value: use it in an expression, not as a statement`,
+        statement.call.sourceSpan,
+      );
+      refusedOperatorCalls.add(statement.call);
+      return;
+    }
     const call = node as FunctionCallExpression;
     if (
       call.kind === "FunctionCallExpression" &&
       call.instance === undefined &&
-      active.has(call.functionName.toUpperCase())
+      reaches(call.functionName.toUpperCase(), ctx)
     ) {
       const literal = lowerCall(call, ctx);
       if (literal) {
@@ -310,14 +348,42 @@ export function lowerPouOperators(
     for (const value of Object.values(node)) rewrite(value, ctx);
   };
 
+  const noMethods: ReadonlySet<string> = new Set();
   const pou = (
     pouName: string | undefined,
     variables: ReadonlyMap<string, VarDeclaration>,
     decls: unknown,
     body: unknown,
+    methods: ReadonlySet<string> = noMethods,
   ): void => {
-    rewrite(decls, { pouName, section: "Decl", variables });
-    rewrite(body, { pouName, section: "Impl", variables });
+    rewrite(decls, { pouName, section: "Decl", variables, methods });
+    rewrite(body, { pouName, section: "Impl", variables, methods });
+  };
+  const fbByName = new Map(
+    ast.functionBlocks.map((fb) => [fb.name.toUpperCase(), fb]),
+  );
+  /** Methods and actions of an owner and, for an FB, its EXTENDS chain. */
+  const callables = (
+    owner: (typeof ast.programs)[number] | (typeof ast.functionBlocks)[number],
+  ): Set<string> => {
+    const out = new Set<string>();
+    const seen = new Set<string>();
+    let current: typeof owner | undefined = owner;
+    while (current && !seen.has(current.name.toUpperCase())) {
+      seen.add(current.name.toUpperCase());
+      for (const m of current.methods) out.add(m.name.toUpperCase());
+      for (const a of current.actions) out.add(a.name.toUpperCase());
+      current =
+        current.kind === "FunctionBlockDeclaration" && current.extends
+          ? fbByName.get(current.extends.toUpperCase())
+          : undefined;
+    }
+    for (const a of ast.actions) {
+      if (a.owner?.toUpperCase() === owner.name.toUpperCase()) {
+        out.add(a.name.toUpperCase());
+      }
+    }
+    return out;
   };
 
   const owners = [...ast.programs, ...ast.functionBlocks];
@@ -329,17 +395,25 @@ export function lowerPouOperators(
   for (const owner of owners) {
     const ownerName = name(owner.name, owner.sourceSpan);
     const ownerScope = scope(owner.varBlocks);
-    pou(ownerName, ownerScope, owner.varBlocks, owner.body);
+    const methods = callables(owner);
+    pou(ownerName, ownerScope, owner.varBlocks, owner.body, methods);
     for (const m of owner.methods) {
       pou(
         `${ownerName}.${name(m.name, m.nameSpan ?? m.sourceSpan)}`,
         scope(m.varBlocks, owner.varBlocks),
         [m.varBlocks, m.returnType],
         m.body,
+        methods,
       );
     }
     for (const a of owner.actions) {
-      pou(`${ownerName}.${name(a.name, a.sourceSpan)}`, ownerScope, [], a.body);
+      pou(
+        `${ownerName}.${name(a.name, a.sourceSpan)}`,
+        ownerScope,
+        [],
+        a.body,
+        methods,
+      );
     }
     if (owner.kind === "FunctionBlockDeclaration") {
       for (const p of owner.properties) {
@@ -352,6 +426,7 @@ export function lowerPouOperators(
           scope(blocks, owner.varBlocks),
           blocks,
           [p.getter, p.setter],
+          methods,
         );
       }
     }
@@ -368,6 +443,7 @@ export function lowerPouOperators(
       owner ? scope(owner.varBlocks) : globals,
       [],
       a.body,
+      owner ? callables(owner) : noMethods,
     );
   }
   for (const t of ast.types) {
@@ -395,12 +471,42 @@ export function lowerPouOperators(
 export function lowerTestPouOperators(
   testFile: TestFile,
   fileName: string,
+  declared: (nameUpper: string) => boolean,
 ): CompileError[] {
   const errors: CompileError[] = [];
+  // A test's own variables shadow an operator in that test (SETUP's in every test).
+  const localNames = (blocks: readonly VarBlock[] | undefined): Set<string> =>
+    new Set(
+      (blocks ?? []).flatMap((b) =>
+        b.declarations.flatMap((d) => d.names.map((n) => n.toUpperCase())),
+      ),
+    );
+  const setupNames = localNames(testFile.setup?.varBlocks);
+  let locals: ReadonlySet<string> = setupNames;
   const rewrite = (node: unknown, section: "Decl" | "Impl"): void => {
     if (typeof node !== "object" || node === null) return;
     if (Array.isArray(node)) {
       for (const item of node) rewrite(item, section);
+      return;
+    }
+    const statement = node as { kind?: unknown; call?: FunctionCallExpression };
+    const reaches = (op: string): boolean =>
+      POU_OPERATORS.has(op) && !declared(op) && !locals.has(op);
+    if (
+      statement.kind === "FunctionCallStatement" &&
+      statement.call?.kind === "FunctionCallExpression" &&
+      statement.call.instance === undefined &&
+      reaches(statement.call.functionName.toUpperCase())
+    ) {
+      const span = statement.call.sourceSpan;
+      errors.push({
+        message: `${statement.call.functionName.toUpperCase()} gives a value: use it in an expression, not as a statement`,
+        line: span.startLine,
+        column: span.startCol,
+        severity: "error",
+        file: fileName,
+      });
+      refusedOperatorCalls.add(statement.call);
       return;
     }
     const call = node as FunctionCallExpression;
@@ -408,7 +514,7 @@ export function lowerTestPouOperators(
       call.kind === "FunctionCallExpression" && call.instance === undefined
         ? call.functionName.toUpperCase()
         : undefined;
-    if (op !== undefined && POU_OPERATORS.has(op)) {
+    if (op !== undefined && reaches(op)) {
       const span = call.sourceSpan;
       if (op !== "__POSITION") {
         errors.push({
@@ -418,6 +524,7 @@ export function lowerTestPouOperators(
           severity: "error",
           file: fileName,
         });
+        refusedOperatorCalls.add(call);
         return;
       }
       const text =
@@ -437,6 +544,13 @@ export function lowerTestPouOperators(
     ...testFile.testCases,
   ]) {
     if (!block) continue;
+    locals =
+      block !== testFile.setup && "varBlocks" in block
+        ? new Set([
+            ...setupNames,
+            ...localNames(block.varBlocks as readonly VarBlock[]),
+          ])
+        : setupNames;
     if ("varBlocks" in block) rewrite(block.varBlocks, "Decl");
     rewrite(block.body, "Impl");
   }

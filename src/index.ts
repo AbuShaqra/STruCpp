@@ -832,6 +832,7 @@ function runPipeline(
                   ...a.manifest.functions,
                   ...a.manifest.functionBlocks,
                   ...a.manifest.types,
+                  ...(a.manifest.globals ?? []),
                 ].some((d) => d.name.toUpperCase() === name),
               ),
           })
