@@ -2038,10 +2038,159 @@ export class SemanticAnalyzer {
   }
 
   private validateLiteralRanges(ast: CompilationUnit): void {
+    this.validateStringLiteralLengths(ast);
     this.validateIntegerLiteralRange(ast);
     this.validateStringLiteralCharset(ast);
     this.validateLtimeLiteralRange(ast);
     this.validateRealLiteralRange(ast);
+  }
+
+  /**
+   * A STRING or WSTRING literal longer than the variable, input or field it is
+   * stored in is cut to that length at run time: warn, in every mode.
+   */
+  private validateStringLiteralLengths(ast: CompilationUnit): void {
+    const capacity = (type: TypeReference | undefined): number | undefined => {
+      if (type === undefined || type.arrayDimensions !== undefined)
+        return undefined;
+      if ((type.referenceKind ?? "none") !== "none") return undefined;
+      const name = type.name.toUpperCase();
+      if (name !== "STRING" && name !== "WSTRING") return undefined;
+      if (type.maxLength === undefined) return 254;
+      return typeof type.maxLength === "number" ? type.maxLength : undefined;
+    };
+    const check = (
+      value: Expression | undefined,
+      type: TypeReference | undefined,
+    ): void => {
+      const max = capacity(type);
+      if (max === undefined || value?.kind !== "LiteralExpression") return;
+      const wide = value.literalType === "WSTRING";
+      if (!wide && value.literalType !== "STRING") return;
+      if ((type!.name.toUpperCase() === "WSTRING") !== wide) return;
+      const length = charLiteralUnits(
+        wide ? `WSTRING#${value.rawValue}` : value.rawValue,
+      ).units.length;
+      if (length <= max) return;
+      const kind = wide ? "WSTRING" : "STRING";
+      this.addWarning(
+        `A ${kind} literal of ${length} characters is longer than ${kind}(${max}): it is cut to ${max}`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+    };
+    const inputsOf = (
+      blocks: readonly VarBlock[],
+    ): TypeReference[] & { names?: string[] } => {
+      const out: TypeReference[] & { names?: string[] } = [];
+      out.names = [];
+      for (const b of blocks) {
+        if (b.blockType !== "VAR_INPUT" && b.blockType !== "VAR_IN_OUT")
+          continue;
+        for (const d of b.declarations) {
+          for (const n of d.names) {
+            out.push(
+              b.blockType === "VAR_INPUT" ? d.type : { ...d.type, name: "" },
+            );
+            out.names.push(n.toUpperCase());
+          }
+        }
+      }
+      return out;
+    };
+    const globals = new Map<string, TypeReference>();
+    const addDecls = (
+      blocks: readonly VarBlock[],
+      into: Map<string, TypeReference>,
+    ): void => {
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names)
+            into.set(name.toUpperCase(), decl.type);
+          check(decl.initialValue, decl.type);
+        }
+      }
+    };
+    addDecls(ast.globalVarBlocks, globals);
+    for (const config of ast.configurations)
+      addDecls(config.varBlocks, globals);
+    for (const typeDecl of ast.types) {
+      if (typeDecl.definition.kind !== "StructDefinition") continue;
+      for (const field of ownFields(typeDecl.definition)) {
+        check(field.initialValue, field.type);
+      }
+    }
+    const callInputs = (
+      call: FunctionCallExpression,
+      scope: Map<string, TypeReference>,
+    ): ReturnType<typeof inputsOf> | undefined => {
+      const upper = call.functionName.toUpperCase();
+      const local = scope.get(upper);
+      if (local !== undefined) {
+        const fb = ast.functionBlocks.find(
+          (f) => f.name.toUpperCase() === local.name.toUpperCase(),
+        );
+        return fb === undefined ? undefined : inputsOf(fb.varBlocks);
+      }
+      const fn = ast.functions.find((f) => f.name.toUpperCase() === upper);
+      return fn === undefined ? undefined : inputsOf(fn.varBlocks);
+    };
+    const checkPou = (
+      blocks: readonly VarBlock[],
+      bodies: Statement[][],
+    ): void => {
+      const scope = new Map(globals);
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names)
+            scope.set(name.toUpperCase(), decl.type);
+          check(decl.initialValue, decl.type);
+        }
+      }
+      for (const body of bodies) {
+        for (const stmt of body) {
+          walkAST(stmt as ASTNode, (node) => {
+            if (node.kind === "AssignmentStatement") {
+              const a = node as AssignmentStatement;
+              if (
+                a.target.kind === "VariableExpression" &&
+                a.target.fieldAccess.length === 0 &&
+                a.target.subscripts.length === 0 &&
+                !a.target.isDereference
+              ) {
+                check(a.value, scope.get(a.target.name.toUpperCase()));
+              }
+              return;
+            }
+            if (node.kind !== "FunctionCallExpression") return;
+            const call = node as FunctionCallExpression;
+            if (call.instance !== undefined) return;
+            const inputs = callInputs(call, scope);
+            if (inputs === undefined) return;
+            stripEnEno(call.arguments).forEach((arg, i) => {
+              if (arg.isOutput) return;
+              const type =
+                arg.name === undefined
+                  ? inputs[i]
+                  : inputs[inputs.names!.indexOf(arg.name.toUpperCase())];
+              check(arg.value, type);
+            });
+          });
+        }
+      }
+    };
+    for (const prog of ast.programs) {
+      checkPou(prog.varBlocks, [prog.body]);
+      for (const m of prog.methods)
+        checkPou([...prog.varBlocks, ...m.varBlocks], [m.body]);
+    }
+    for (const func of ast.functions) checkPou(func.varBlocks, [func.body]);
+    for (const fb of ast.functionBlocks) {
+      checkPou(fb.varBlocks, [fb.body]);
+      for (const m of fb.methods)
+        checkPou([...fb.varBlocks, ...m.varBlocks], [m.body]);
+    }
   }
 
   /**
