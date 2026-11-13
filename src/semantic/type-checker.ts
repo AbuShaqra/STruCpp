@@ -563,6 +563,7 @@ export class TypeChecker {
     this.checkAllInitializerElements(ast);
 
     this.checkGlobalInitialCycles(ast);
+    this.refuseGlobalReferenceToValues(ast);
     this.checkStructReferenceDefaults(ast);
     this.markGlobalVendorOperators(ast);
 
@@ -3474,6 +3475,9 @@ export class TypeChecker {
           this.checkReferenceToInitializer(decl, decl.initialValue, scope);
           continue;
         }
+        if (outerKind === "reference_to" && this.refuseReferenceToValue(decl)) {
+          continue;
+        }
         const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
         if (!targetType) continue; // Non-elementary types — handled elsewhere
         // A CHAR initial value refused already (checkCharInitialValue).
@@ -3499,6 +3503,61 @@ export class TypeChecker {
     }
   }
 
+  /**
+   * A REFERENCE TO initial value other than REF(x) or NULL would copy into the
+   * reference, not bind it. True when refused.
+   */
+  private refuseReferenceToValue(decl: VarDeclaration): boolean {
+    const value = decl.initialValue;
+    if (
+      value === undefined ||
+      value.kind === "RefExpression" ||
+      (value.kind === "LiteralExpression" && value.literalType === "NULL")
+    ) {
+      return false;
+    }
+    this.addError(
+      `REFERENCE TO '${(decl.names[0] ?? "").toUpperCase()}' is bound by its initial value only with REF(x); use REF(x)`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /** Top-level and CONFIGURATION globals: a REFERENCE TO bound by a non-REF value. */
+  private refuseGlobalReferenceToValues(ast: CompilationUnit): void {
+    for (const block of [
+      ...ast.globalVarBlocks,
+      ...ast.configurations.flatMap((c) => c.varBlocks),
+    ]) {
+      for (const decl of block.declarations) {
+        if (decl.type.referenceKind === "reference_to") {
+          this.refuseReferenceToValue(decl);
+        }
+      }
+    }
+  }
+
+  /** `REF(w.3)` or `r REF= w.3`: a bit has no address of its own. True when refused. */
+  private refuseReferenceToBit(
+    source: VariableExpression,
+    what: string,
+  ): boolean {
+    const steps =
+      source.accessChain?.map((s) => (s.kind === "field" ? s.name : "")) ??
+      source.fieldAccess;
+    const last = steps[steps.length - 1] ?? "";
+    if (!/^\d+$/.test(last) && source.namedBitIndex !== true) return false;
+    this.addError(
+      `${what} cannot be bound to a bit of a variable: a bit has no address of its own`,
+      source.sourceSpan.startLine,
+      source.sourceSpan.startCol,
+      source.sourceSpan.file,
+    );
+    return true;
+  }
+
   /** The variable `REF(x)` binds a REFERENCE TO initial value to, checked as a REF= source. */
   private checkReferenceToInitializer(
     decl: VarDeclaration,
@@ -3514,6 +3573,14 @@ export class TypeChecker {
         source.sourceSpan.startCol,
         source.sourceSpan.file,
       );
+      return;
+    }
+    if (
+      this.refuseReferenceToBit(
+        source,
+        `REFERENCE TO '${(decl.names[0] ?? "").toUpperCase()}'`,
+      )
+    ) {
       return;
     }
     delete source.aliasReferenceBinding;
@@ -3705,6 +3772,12 @@ export class TypeChecker {
         this.resolveExprType(stmt.target, scope);
         this.resolveExprType(stmt.source, scope);
         this.refuseBitMember(stmt.source, "REF= cannot bind to", scope);
+        if (
+          stmt.source.kind === "VariableExpression" &&
+          this.refuseReferenceToBit(stmt.source, "REF=")
+        ) {
+          break;
+        }
         // REF= rebinds a reference, so the target must be declared
         // REF_TO / REFERENCE TO. Catch `plainVar REF= x` here with a clear
         // message rather than letting it fall through to a confusing C++

@@ -2185,6 +2185,13 @@ export class CodeGenerator {
     this.emitHeader("");
     this.emitHeader("    // Constructor");
     this.emitHeader(`    ${fb.name}();`);
+    if (this.selfBoundReferences(fb).length > 0) {
+      this.emitHeader(
+        "    // A copy binds its REFERENCE TO members to its own members",
+      );
+      this.emitHeader(`    ${fb.name}(const ${fb.name}& __o);`);
+      this.emitHeader(`    ${fb.name}& operator=(const ${fb.name}& __o);`);
+    }
     this.emitHeader("");
     this.emitHeader("    // Execute function block");
     this.emitHeader("    void operator()();");
@@ -2610,6 +2617,109 @@ export class CodeGenerator {
    * Collect VAR_INST members from all methods of a function block or program.
    * These become name-mangled class members: __MethodName__varName
    */
+  /**
+   * REFERENCE TO members of an FB bound by their initial value to a member of
+   * the same instance (`r : REFERENCE TO INT := REF(y)`): a copy rebinds them.
+   */
+  private selfBoundReferences(
+    fb: CompilationUnit["functionBlocks"][0],
+  ): Array<{ member: string; operand: VariableExpression }> {
+    const own = new Set<string>();
+    let current: CompilationUnit["functionBlocks"][0] | undefined = fb;
+    for (let depth = 0; current !== undefined && depth < 32; depth++) {
+      for (const block of current.varBlocks) {
+        if (block.blockType === "VAR_EXTERNAL") continue;
+        for (const decl of block.declarations) {
+          for (const n of decl.names) own.add(n.toUpperCase());
+        }
+      }
+      const base: string | undefined = current.extends?.toUpperCase();
+      current =
+        base === undefined
+          ? undefined
+          : this.ast?.functionBlocks.find((f) => f.name.toUpperCase() === base);
+    }
+    const out: Array<{ member: string; operand: VariableExpression }> = [];
+    for (const block of fb.varBlocks) {
+      if (
+        block.blockType === "VAR_EXTERNAL" ||
+        block.blockType === "VAR_IN_OUT"
+      ) {
+        continue;
+      }
+      for (const decl of block.declarations) {
+        const value = decl.initialValue;
+        if (
+          decl.type.referenceKind !== "reference_to" ||
+          value?.kind !== "RefExpression" ||
+          value.operand.kind !== "VariableExpression" ||
+          !own.has(value.operand.name.toUpperCase())
+        ) {
+          continue;
+        }
+        for (const name of decl.names) {
+          out.push({
+            member: this.mangleMemberIfNeeded(name, decl.type.name),
+            operand: value.operand,
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /** The copy constructor and assignment of an FB with self-bound REFERENCE TO members. */
+  private emitSelfBoundCopy(
+    fb: CompilationUnit["functionBlocks"][0],
+    hasExternals: boolean,
+  ): void {
+    const refs = this.selfBoundReferences(fb);
+    if (refs.length === 0) return;
+    const members: string[] = [];
+    for (const block of fb.varBlocks) {
+      if (block.blockType === "VAR_EXTERNAL") continue;
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          members.push(this.mangleMemberIfNeeded(name, decl.type.name));
+        }
+      }
+    }
+    if (hasExternals) {
+      members.push(...this.collectFBExternals(fb).map((e) => e.name));
+    }
+    members.push(...this.collectVarInstMembers(fb).map((m) => m.mangledName));
+    if (!fb.extends && this.declaredEnoType(fb.name) === undefined) {
+      members.push("ENO");
+    }
+    if (this.options.isTestBuild) members.push("__mocked_", "__mock_state_");
+    const bases = [
+      ...(fb.extends ? [fb.extends] : []),
+      ...(fb.implements ?? []),
+    ];
+    const rebinds = refs.map(
+      ({ member, operand }) =>
+        `    strucpp::rebind_own_member(${member}, __o.${member}, this, &__o, ${this.addressedOperand(operand, "REF", operand)});`,
+    );
+    const init = [
+      ...bases.map((b) => `${b}(__o)`),
+      ...members.map((m) => `${m}(__o.${m})`),
+    ];
+    this.emit(`${fb.name}::${fb.name}(const ${fb.name}& __o)`);
+    this.emit(`    : ${init.join(", ")}`);
+    this.emit("{");
+    for (const line of rebinds) this.emit(line);
+    this.emit("}");
+    this.emit("");
+    this.emit(`${fb.name}& ${fb.name}::operator=(const ${fb.name}& __o) {`);
+    this.emit("    if (this == &__o) return *this;");
+    for (const b of bases) this.emit(`    ${b}::operator=(__o);`);
+    for (const m of members) this.emit(`    ${m} = __o.${m};`);
+    for (const line of rebinds) this.emit(line);
+    this.emit("    return *this;");
+    this.emit("}");
+    this.emit("");
+  }
+
   private collectVarInstMembers(fb: {
     methods: MethodDeclaration[];
   }): Array<{ mangledName: string; cppType: string }> {
@@ -3082,6 +3192,7 @@ export class CodeGenerator {
     this.emit("    // Initialize variables");
     this.emit("}");
     this.emit("");
+    this.emitSelfBoundCopy(fb, externalDecls.length > 0);
 
     // Operator()
     this.emitLineDirective(fb.sourceSpan.startLine);
@@ -5717,6 +5828,22 @@ export class CodeGenerator {
       !expr.isDereference
     ) {
       return `${expr.name}${this.externalPointerSuffix}->read()`;
+    }
+    // `w.3` of a scalar VAR_EXTERNAL: the bit of the value read under the lock.
+    if (
+      this.programExternals.has(nameUpper) &&
+      !this.compositeExternals.has(nameUpper) &&
+      !expr.isDereference &&
+      expr.subscripts.length === 0 &&
+      expr.fieldAccess.length > 0 &&
+      (expr.namedBitIndex === true ||
+        expr.fieldAccess.every((f) => /^\d+$/.test(f)))
+    ) {
+      return this.renderAccessTail(
+        `${expr.name}${this.externalPointerSuffix}->read()`,
+        expr,
+        nameUpper,
+      );
     }
 
     // `p^` / `p^.x` on a VAR_EXTERNAL POINTER TO / REF_TO: dereference the
@@ -9247,7 +9374,7 @@ export class CodeGenerator {
     const upper = value.name.toUpperCase();
     if (this.programExternals.has(upper) && !value.isDereference) {
       return this.renderAccessTail(
-        `${this.resolveVariableBaseName(value.name)}->value`,
+        `${this.resolveVariableBaseName(value.name)}${this.externalPointerSuffix}->value`,
         value,
         upper,
       );
@@ -9767,10 +9894,19 @@ export class CodeGenerator {
       value.kind === "RefExpression" &&
       cppType.startsWith("IEC_REFERENCE_TO<")
     ) {
-      return `${cppType}(${this.generateExpression(value.operand)})`;
+      return `${cppType}(${this.addressedOperand(value.operand, "REF", value)})`;
     }
     if (!isStructInitializerValue(value)) {
       return this.generateExpression(value);
+    }
+    if (this.externalPointerSuffix !== "") {
+      // In a PROGRAM constructor the VAR_EXTERNAL parameters are captured.
+      return generateInitializerValue(
+        value,
+        cppType,
+        stTypeName,
+        this.getStructInitEmitter(),
+      ).replace(/\[\]\(auto& v(\d+)\)/g, "[&](auto& v$1)");
     }
     return generateInitializerValue(
       value,

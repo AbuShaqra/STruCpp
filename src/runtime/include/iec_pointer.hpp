@@ -503,6 +503,23 @@ public:
 // =============================================================================
 
 /**
+ * After a function block is copied: `ref`, copied from `src` of `other`, is
+ * bound to `own` when `src` was bound to the same member of `other`, so the
+ * copy refers to its own member, not to the original's.
+ */
+template<typename R, typename Owner, typename Target>
+inline void rebind_own_member(R& ref, const R& src, const Owner* self,
+                              const Owner* other, Target& own) noexcept {
+    if (src.is_null()) return;
+    const char* bound = reinterpret_cast<const char*>(&src.target());
+    const char* mine = reinterpret_cast<const char*>(&own);
+    if (bound - reinterpret_cast<const char*>(other) ==
+        mine - reinterpret_cast<const char*>(self)) {
+        ref.bind(own);
+    }
+}
+
+/**
  * A function-block VAR_IN_OUT member: a non-owning reference to the caller's
  * variable, bound by every call that maps the parameter (IEC 61131-3 Ed. 3
  * 6.6.1.4, 6.6.3.4). The body reaches the variable as `(*X)`, so field,

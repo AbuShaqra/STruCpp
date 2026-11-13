@@ -2727,12 +2727,24 @@ export class SemanticAnalyzer {
         b.declarations.flatMap((d) => d.names.map((n) => n.toUpperCase())),
       ),
     );
-    if (topLevel.size === 0) return;
+    // A global another CONFIGURATION declares: by upper-case name, its configuration.
+    const configOf = new Map<string, string>();
     for (const config of ast.configurations) {
       for (const block of config.varBlocks) {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
-            if (!topLevel.has(name.toUpperCase())) continue;
+            const upper = name.toUpperCase();
+            const other = configOf.get(upper);
+            if (other !== undefined && other !== config.name.toUpperCase()) {
+              this.addError(
+                `Global '${upper}' of CONFIGURATION ${config.name.toUpperCase()} is also declared in CONFIGURATION ${other}; rename one of them`,
+                decl.sourceSpan.startLine,
+                decl.sourceSpan.startCol,
+                decl.sourceSpan.file,
+              );
+            }
+            configOf.set(upper, other ?? config.name.toUpperCase());
+            if (!topLevel.has(upper)) continue;
             this.addError(
               `Global '${name.toUpperCase()}' of CONFIGURATION ${config.name.toUpperCase()} is also declared in a top-level VAR_GLOBAL; rename one of them`,
               decl.sourceSpan.startLine,
