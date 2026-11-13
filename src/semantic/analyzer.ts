@@ -118,6 +118,15 @@ import {
 import { cp1252Byte } from "../byte-utils.js";
 import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import { libraryOverloadFor } from "./library-overload.js";
+import {
+  vendorOperatorFeature,
+  vendorOperatorNamed,
+} from "./vendor-operators.js";
+import {
+  platformTypeTarget,
+  restoreDeclaredPlatformTypes,
+} from "./platform-types.js";
+import { implicitParameterHint } from "./implicit-parameters.js";
 
 // =============================================================================
 // Located Variable Address Parsing
@@ -490,6 +499,7 @@ export class SemanticAnalyzer {
     // flattened, so its members resolve. Flattening precedes the symbol tables.
     const errorsBeforeStructFeature = this.errors.length;
     this.validateStructExtendsFeature(ast);
+    this.validateTypeColonFeature(ast);
     this.flattenStructTypes(ast);
     // UNION refusals and rules are located and gate nothing either.
     this.validateUnions(ast);
@@ -786,6 +796,18 @@ export class SemanticAnalyzer {
       needFeature: (construct, span) =>
         this.requireFeature("fb_init", construct, span),
     });
+  }
+
+  /** `TYPE X STRUCT` without the colon needs the feature type_colon_optional. Reported at STRUCT. */
+  private validateTypeColonFeature(ast: CompilationUnit): void {
+    for (const typeDecl of ast.types) {
+      if (!typeDecl.colonOmittedSpan) continue;
+      this.requireFeature(
+        "type_colon_optional",
+        `TYPE ${typeDecl.name.toUpperCase()} without ':' before STRUCT`,
+        typeDecl.colonOmittedSpan,
+      );
+    }
   }
 
   /** `TYPE X EXTENDS Base : STRUCT` needs the feature struct_extends. Reported at EXTENDS. */
@@ -3064,7 +3086,7 @@ export class SemanticAnalyzer {
   /** `<construct> needs the feature <id>`, plus the loaded profiles that have it. */
   private featureMessage(feature: FeatureId, construct: string): string {
     const message = `${construct} needs the feature ${feature}`;
-    const dialect = this.options.dialect;
+    const dialect = this.options.dialect ?? this.testFileDialect;
     const profiles = dialect ? profilesWithFeature(dialect, feature) : [];
     return profiles.length > 0
       ? `${message} (profiles: ${profiles.join(", ")})`
@@ -3945,6 +3967,12 @@ export class SemanticAnalyzer {
       if (stmt.kind === "AssignmentStatement") {
         this.validateExpression(stmt.target, varTypeMap, ast);
         this.validateExpression(stmt.value, varTypeMap, ast);
+      } else if (stmt.kind === "IfStatement" && stmt.conditionalReturn) {
+        this.requireFeature(
+          "conditional_return",
+          "RETURN (condition)",
+          stmt.conditionalReturn,
+        );
       } else if (stmt.kind === "RefAssignStatement") {
         this.requireFeature("ref_assign", "REF=", stmt.sourceSpan);
         this.validateExpression(stmt.target, varTypeMap, ast);
@@ -4250,6 +4278,18 @@ export class SemanticAnalyzer {
     return params;
   }
 
+  /** Upper-case names of a user FUNCTION's inputs that carry an implicit-parameter attribute. */
+  private implicitParameterNames(sym: FunctionSymbol): Set<string> {
+    const names = new Set<string>();
+    for (const block of sym.declaration?.varBlocks ?? []) {
+      for (const decl of block.declarations) {
+        if (decl.implicitParameter === undefined) continue;
+        for (const n of decl.names) names.add(n.toUpperCase());
+      }
+    }
+    return names;
+  }
+
   /**
    * Option A: every input without an initial value is mandatory. Resolve the
    * call's named/positional arguments to parameter slots (mirroring the
@@ -4285,10 +4325,13 @@ export class SemanticAnalyzer {
       .filter((p) => !satisfied.has(p.name))
       .map((p) => p.name);
     if (missing.length > 0) {
+      const implicit = this.implicitParameterNames(sym);
       this.addError(
         `'${expr.functionName.toUpperCase()}' is missing required input${
           missing.length > 1 ? "s" : ""
-        }: ${missing.join(", ")}`,
+        }: ${missing.join(", ")}${implicitParameterHint(
+          missing.filter((n) => implicit.has(n)),
+        )}`,
         expr.sourceSpan.startLine,
         expr.sourceSpan.startCol,
         expr.sourceSpan.file,
@@ -4986,6 +5029,18 @@ export class SemanticAnalyzer {
     // For inline arrays, validate the element type instead
     const nameToCheck = typeRef.elementTypeName ?? typeRef.name;
 
+    // A platform type is lowered where its feature is on.
+    if (
+      !this.isKnownType(nameToCheck) &&
+      platformTypeTarget(nameToCheck) !== undefined
+    ) {
+      this.requireFeature(
+        "platform_types",
+        nameToCheck.toUpperCase(),
+        typeRef.sourceSpan,
+      );
+      return;
+    }
     if (!this.isKnownType(nameToCheck)) {
       this.addError(
         `Undefined type '${nameToCheck}'${context ? " in " + context : ""}`,
@@ -6079,6 +6134,12 @@ export class SemanticAnalyzer {
     // Inline C++ may declare the name (a macro, a lambda)
     if (this.hasExternalCode) return;
     const span = call.sourceSpan;
+    // A built-in operator of a dialect feature: refused while it is off.
+    const op = vendorOperatorNamed(upper);
+    if (op !== undefined) {
+      this.requireFeature(vendorOperatorFeature(op), op, span);
+      return;
+    }
     this.addError(
       `Undeclared function '${upper}'`,
       span.startLine,
@@ -6151,6 +6212,9 @@ export class SemanticAnalyzer {
    * Validates type references in var blocks and undeclared variable usage
    * in SETUP, TEARDOWN, and TEST bodies.
    */
+  /** The dialect a test file was parsed under, for the profiles a refusal names. */
+  private testFileDialect: ResolvedDialect | undefined;
+
   analyzeTestFile(
     testFile: TestFile,
     sourceSymbolTables: SymbolTables,
@@ -6158,6 +6222,7 @@ export class SemanticAnalyzer {
   ): { errors: CompileError[]; warnings: CompileError[] } {
     this.errors = [];
     this.warnings = [];
+    this.testFileDialect = testFile.dialect;
     this.symbolTables = sourceSymbolTables;
 
     // Build enum member map from source symbol tables for bare enum resolution
@@ -6175,6 +6240,11 @@ export class SemanticAnalyzer {
     }
     this.enumMemberMap = buildEnumMemberMap(enumDescriptors);
 
+    // A platform type lowered by the test parser that the sources declare.
+    restoreDeclaredPlatformTypes(testFile, (name) => {
+      const kind = sourceSymbolTables.globalScope.lookup(name)?.kind;
+      return kind === "type" || kind === "functionBlock" || kind === "program";
+    });
     const typeScope = this.buildTestTypeScope(testFile);
 
     // Validate type references in SETUP and TEST var blocks
