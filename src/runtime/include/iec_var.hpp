@@ -49,6 +49,23 @@
 
 namespace strucpp {
 
+namespace detail {
+template<typename V>
+constexpr bool iec_mod_minus_one(V v, std::true_type /*signed*/) noexcept { return v == static_cast<V>(-1); }
+template<typename V>
+constexpr bool iec_mod_minus_one(V, std::false_type) noexcept { return false; }
+}  // namespace detail
+
+/**
+ * A signed divisor of -1: x MOD -1 is 0, and computing it with % traps on
+ * the type's minimum, so MOD returns 0 without dividing.
+ */
+template<typename V>
+constexpr bool iec_mod_minus_one(V v) noexcept {
+    return detail::iec_mod_minus_one(v, std::is_signed<V>{});
+}
+
+
 // Forward declaration for pointer-to-integer assignment
 template<typename T> class IEC_Ptr;
 
@@ -262,7 +279,7 @@ public:
     }
 
     IECVar& operator%=(T v) noexcept {
-        set(get() % v);
+        set(v == T(0) || iec_mod_minus_one(v) ? T(0) : T(get() % v));
         return *this;
     }
 
@@ -341,7 +358,7 @@ inline IECVar<T> operator/(const IECVar<T>& a, const IECVar<T>& b) noexcept {
 
 template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>>
 inline IECVar<T> operator%(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return IECVar<T>(a.get() % b.get());
+    return IECVar<T>(b.get() == T(0) || iec_mod_minus_one(b.get()) ? T(0) : T(a.get() % b.get()));
 }
 
 // Mixed-type arithmetic operators (IECVar<T> op T) and (T op IECVar<T>)
@@ -353,8 +370,8 @@ template<typename T> inline IECVar<T> operator*(const IECVar<T>& a, T b) noexcep
 template<typename T> inline IECVar<T> operator*(T a, const IECVar<T>& b) noexcept { return IECVar<T>(a * b.get()); }
 template<typename T> inline IECVar<T> operator/(const IECVar<T>& a, T b) noexcept { return IECVar<T>(a.get() / b); }
 template<typename T> inline IECVar<T> operator/(T a, const IECVar<T>& b) noexcept { return IECVar<T>(a / b.get()); }
-template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>> inline IECVar<T> operator%(const IECVar<T>& a, T b) noexcept { return IECVar<T>(a.get() % b); }
-template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>> inline IECVar<T> operator%(T a, const IECVar<T>& b) noexcept { return IECVar<T>(a % b.get()); }
+template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>> inline IECVar<T> operator%(const IECVar<T>& a, T b) noexcept { return IECVar<T>(b == T(0) || iec_mod_minus_one(b) ? T(0) : T(a.get() % b)); }
+template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>> inline IECVar<T> operator%(T a, const IECVar<T>& b) noexcept { return IECVar<T>(b.get() == T(0) || iec_mod_minus_one(b.get()) ? T(0) : T(a % b.get())); }
 
 // =============================================================================
 // Comparison Operators

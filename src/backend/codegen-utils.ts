@@ -27,6 +27,18 @@ export function isComparisonExpr(expr: Expression): boolean {
   return expr.kind === "BinaryExpression" && isComparison(expr.operator);
 }
 
+/** True for an integer literal other than 0 and -1, such as the `7` of `x MOD 7`. */
+export function isNonZeroIntegerLiteral(expr: Expression): boolean {
+  return (
+    expr.kind === "LiteralExpression" &&
+    expr.literalType === "INT" &&
+    typeof expr.value === "number" &&
+    Number.isInteger(expr.value) &&
+    expr.value !== 0 &&
+    expr.value !== -1
+  );
+}
+
 /**
  * Convert an IEC 61131-3 based numeric string to a C++ literal string.
  * Handles 16#FF → 0xFF, 8#77 → 077, 2#1010 → 0b1010, and plain decimals.
