@@ -21,6 +21,7 @@ import type {
   TypeDeclaration,
   TypeReference,
 } from "../frontend/ast.js";
+import { bitRunMemberName, bitRunTypeName, bitRuns } from "./bit-runs.js";
 
 /** C++ spelling of a member: its field type and its (mangled) name. */
 export interface UnionMemberSpelling {
@@ -107,6 +108,98 @@ function members(
 }
 
 /**
+ * The members of STRUCT `owner` in a UNION's storage: each run of BIT members
+ * (feature bit_type) is one member, its bitfield struct.
+ */
+function membersWithBitRuns(
+  owner: string,
+  def: StructDefinition,
+  spell: UnionMemberSpelling,
+): Array<{ name: string; cpp: string }> {
+  const out: Array<{ name: string; cpp: string }> = [];
+  const runs = bitRuns(def.fields);
+  for (const f of def.fields) {
+    if (f.type.bit) {
+      for (const run of runs.filter((r) => r.first === f)) {
+        out.push({
+          name: bitRunMemberName(run.index),
+          cpp: bitRunTypeName(owner, run.index),
+        });
+      }
+      continue;
+    }
+    for (const n of f.names) {
+      out.push({
+        name: spell.memberName(n, f.type),
+        cpp: spell.fieldCppType(f.type),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * The union helpers of each BIT run of STRUCT `owner`: plain bytes, traits
+ * copying them, and a ref and an in-place view whose members are bit proxies.
+ */
+function bitRunHelperLines(
+  owner: string,
+  def: StructDefinition,
+  spell: UnionMemberSpelling,
+  indent: string,
+): string[] {
+  const lines: string[] = [];
+  const i1 = indent;
+  const i2 = indent + indent;
+  for (const run of bitRuns(def.fields)) {
+    const type = bitRunTypeName(owner, run.index);
+    const bits = run.members.map((m) => spell.memberName(m.name, m.field.type));
+    const bytes = 1;
+    lines.push(`struct ${type}_uref;`);
+    lines.push(
+      `template<std::size_t Off, std::size_t Size> struct ${type}_uview;`,
+    );
+    lines.push(`template<> struct union_traits<${type}, void> {`);
+    lines.push(
+      `${i1}using plain = detail::union_plain_array<unsigned char, ${bytes}>;`,
+    );
+    lines.push(`${i1}using ref = ${type}_uref;`);
+    lines.push(
+      `${i1}template<std::size_t Off, std::size_t Size> using view = ${type}_uview<Off, Size>;`,
+    );
+    lines.push(
+      `${i1}static ${type} load(const unsigned char* p) noexcept { ${type} v; std::memcpy(static_cast<void*>(&v), p, ${bytes}); return v; }`,
+    );
+    lines.push(
+      `${i1}static void store(unsigned char* p, const ${type}& v) noexcept { std::memcpy(p, static_cast<const void*>(&v), ${bytes}); }`,
+    );
+    lines.push("};");
+    lines.push(`struct ${type}_uref {`);
+    for (const [bit, name] of bits.entries()) {
+      lines.push(`${i1}union_bit<${bit}, union_at> ${name};`);
+    }
+    lines.push(
+      `${i1}explicit ${type}_uref(unsigned char* p) noexcept : ${bits.map((n) => `${n}(p)`).join(", ")} {}`,
+    );
+    lines.push("};");
+    lines.push(
+      `template<std::size_t Off, std::size_t Size> struct ${type}_uview {`,
+    );
+    lines.push(`${i1}union {`);
+    lines.push(`${i2}unsigned char union_bytes_[Size];`);
+    for (const [bit, name] of bits.entries()) {
+      lines.push(`${i2}union_bit<${bit}, union_inplace<Off, Size>> ${name};`);
+    }
+    lines.push(`${i1}};`);
+    lines.push(`${i1}${type}_uview() = default;`);
+    lines.push(`${i1}${type}_uview(const ${type}_uview&) = default;`);
+    lines.push("};");
+    lines.push("");
+  }
+  return lines;
+}
+
+/**
  * The owning C++ type of UNION `name`, preceded by its plain layout:
  * `union U_A_uplain {...}; struct U_A { union { bytes; views... }; ... };`
  */
@@ -159,7 +252,7 @@ export function unionHelperLines(
   spell: UnionMemberSpelling,
   indent: string,
 ): string[] {
-  const ms = members(def, spell);
+  const ms = membersWithBitRuns(name, def, spell);
   const union = def.isUnion === true;
   const plain = `${name}_uplain`;
   const ref = `${name}_uref`;
@@ -168,7 +261,7 @@ export function unionHelperLines(
   const i2 = indent + indent;
   const at = (m: { name: string }): string =>
     union ? "" : ` + offsetof(${plain}, ${m.name})`;
-  const lines: string[] = [];
+  const lines: string[] = bitRunHelperLines(name, def, spell, indent);
 
   if (!union) {
     lines.push(`struct ${plain} {`);

@@ -31,6 +31,7 @@ export const KNOWN_FEATURES = [
   "type_colon_optional",
   "conditional_return",
   "platform_types",
+  "bit_type",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];
