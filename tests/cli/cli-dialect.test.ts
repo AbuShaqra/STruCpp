@@ -2,7 +2,7 @@
  * Dialect flags on the CLI: --print-dialect, --dialect, --dialect-path,
  * --dialect-file, --feature, and one plain error line for a bad profile.
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "child_process";
 import {
   mkdirSync,
@@ -11,10 +11,8 @@ import {
   rmSync,
   readdirSync,
   symlinkSync,
+  mkdtempSync,
 } from "fs";
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { execFileSync } from "child_process";
-import { mkdirSync, writeFileSync, existsSync, rmSync, readdirSync, mkdtempSync } from "fs";
 import { resolve, join } from "path";
 import { tmpdir } from "os";
 import { compile } from "../../src/index.js";
