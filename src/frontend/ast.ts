@@ -846,7 +846,12 @@ export interface FunctionCallExpression extends TypedNode {
   globalList?: string;
   /** Set by the type checker: the library whose FUNCTION of a standard function's name is called. */
   libraryFunction?: string;
+  /** Set by the type checker: the call is the built-in operator of this name (`__ISVALIDREF`, `XSIZEOF`). */
+  vendorOperator?: VendorOperator;
 }
+
+/** Built-in operators beyond IEC 61131-3, each enabled by a dialect feature. */
+export type VendorOperator = "__ISVALIDREF" | "XSIZEOF";
 
 /**
  * Method call on an expression (for method chaining / fluent interface).
