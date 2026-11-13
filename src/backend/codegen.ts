@@ -2688,12 +2688,15 @@ export class CodeGenerator {
       members.push(...this.collectFBExternals(fb).map((e) => e.name));
     }
     members.push(...this.collectVarInstMembers(fb).map((m) => m.mangledName));
-    if (!fb.extends && this.declaredEnoType(fb.name) === undefined) {
+    if (
+      fb.extends === undefined &&
+      this.declaredEnoType(fb.name) === undefined
+    ) {
       members.push("ENO");
     }
     if (this.options.isTestBuild) members.push("__mocked_", "__mock_state_");
     const bases = [
-      ...(fb.extends ? [fb.extends] : []),
+      ...(fb.extends !== undefined ? [fb.extends] : []),
       ...(fb.implements ?? []),
     ];
     const rebinds = refs.map(
