@@ -305,6 +305,11 @@ function isAddressOf(expr: Expression): expr is FunctionCallExpression {
   );
 }
 
+/** An elementary integer or bit-string type name (not BOOL). */
+function isIntegerOrBitStringName(name: string): boolean {
+  return /^(U?S?INT|U?DINT|U?LINT|BYTE|WORD|DWORD|LWORD)$/i.test(name);
+}
+
 /** An untyped integer literal 0 (`0`, `16#0`), not `INT#0`. */
 function isUntypedZero(expr: Expression): expr is LiteralExpression {
   return (
@@ -2018,6 +2023,7 @@ export class TypeChecker {
     for (const arg of expr.arguments) {
       this.resolveExprType(arg.value, scope);
     }
+    this.refuseNarrowAddressArguments(expr, scope);
     this.checkCharStdArguments(expr);
     this.adaptCharConversionArgument(expr);
     this.validateReferenceArguments(expr, scope);
@@ -3390,6 +3396,14 @@ export class TypeChecker {
           );
           continue;
         }
+        // An address does not fit an integer narrower than the address width.
+        if (
+          (outerKind ?? "none") === "none" &&
+          isAddressOf(decl.initialValue) &&
+          this.refuseNarrowAddress(decl.type.name, decl.initialValue)
+        ) {
+          continue;
+        }
         // `p : POINTER TO T := ADR(x);` takes an address of any target type.
         if (outerKind === "pointer_to" && isAddressOf(decl.initialValue)) {
           this.resolveExprType(decl.initialValue, scope);
@@ -3440,6 +3454,56 @@ export class TypeChecker {
         );
       }
     }
+  }
+
+  /**
+   * `ADR(x)` stored in an integer narrower than the 64-bit address width (an
+   * initial value, a FUNCTION or METHOD argument) would lose the address's
+   * high bits. True when it was refused.
+   */
+  private refuseNarrowAddress(
+    typeName: string,
+    value: FunctionCallExpression,
+  ): boolean {
+    const type = ELEMENTARY_TYPES[typeName.toUpperCase()];
+    if (
+      type === undefined ||
+      !("sizeBits" in type) ||
+      typeof type.sizeBits !== "number" ||
+      type.sizeBits >= 64 ||
+      !isIntegerOrBitStringName(typeName)
+    ) {
+      return false;
+    }
+    this.addError(
+      `ADR gives a 64-bit address, which ${typeName.toUpperCase()} cannot hold; use __XWORD, LWORD or ULINT`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /** `F(ADR(x))` and `fb.M(ADR(x))` into an input narrower than an address. */
+  private refuseNarrowAddressArguments(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (this.isFBInstanceCall(expr, scope)) return;
+    const inputs =
+      this.callInputs(expr, scope) ??
+      this.dottedMethodInputs(expr.functionName, scope);
+    if (!inputs) return;
+    stripEnEno(expr.arguments).forEach((arg, i) => {
+      if (arg.isOutput || !isAddressOf(arg.value)) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (input === undefined || input.type.referenceKind !== "none") return;
+      this.refuseNarrowAddress(input.type.name, arg.value);
+    });
   }
 
   /**
