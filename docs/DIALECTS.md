@@ -13,6 +13,8 @@ shipped here.
 | `--dialect iec-3`                           | none                                                        |
 | `--dialect <id>`                            | the profile's features plus those it inherits               |
 | one `--dialect-file <path>`, no `--dialect` | that file's profile                                         |
+| several `--dialect-file`, no `--dialect`    | the default set, with a warning naming the profiles         |
+| `--dialect-path` only, no `--dialect`       | the default set (the folder's profiles are only checked)    |
 
 The default set is the compiler's behaviour before profiles existed, so a build with no dialect flag
 behaves exactly as before. `iec-3` is the strict profile: it enables no feature. The default is not
@@ -20,10 +22,25 @@ behaves exactly as before. `iec-3` is the strict profile: it enables no feature.
 
 The id `iec` is reserved and is not an alias: `--dialect iec`, a profile with `"extends": "iec"` and a
 profile whose own `id` is `iec` (file, `--dialect-path` entry or object) are refused with an error that
-names `iec-3`.
+names `iec-3`. A profile whose own `id` is `iec-3` is refused unless it is the built-in profile itself (no
+`extends`, no features, empty `semantics`, and no `name` or the built-in's): such a file or object (the
+exported `IEC_PROFILE` included) selects `iec-3`. A file can never report itself as the built-in profile while
+enabling other features: a profile derived from it names its own id and `"extends": "iec-3"`.
 
-`--dialect <id>` looks the id up in this order: the built-in `iec-3`, the `--dialect-file` profiles, then
-`<dir>/<id>.json` in each `--dialect-path` folder in the order given. `--feature +id`, `--feature -id`
+Each profile id is loaded once: the same id from two different files (`--dialect-file`, `--dialect-path`
+folders, or a profile object) is an error naming both. A file or folder reached more than once (given twice,
+spelled `./d/` and `d`, absolute and relative, through a symbolic link, or a `--dialect-file` inside a
+`--dialect-path` folder) is one source, compared by its real path. On Windows paths that differ only in
+letter case (`C:\w\d\foo.json` and `c:\w\d\foo.json`) are the same file.
+
+A profile from a `--dialect-path` folder stops the compile only when it is the selected one, by `--dialect`
+or as the single `--dialect-file`, or passed as the `dialect` object (or the selected one extends it). Any other that cannot be read, is invalid or does not resolve is skipped with a
+warning naming the file, and the compile goes on. A `--dialect-file` is named explicitly, so its errors
+always stop the compile.
+
+`--dialect <id>` selects the built-in `iec-3` or the loaded profile of that id. A profile id is unique
+across every source (the `--dialect-file` files, every `*.json` in the `--dialect-path` folders and a
+profile object), so the order the sources are given in never decides which profile an id names. `--feature +id`, `--feature -id`
 (and a bare `--feature id`, the same as `+id`) are applied in order after the profile.
 
 `--print-dialect` prints the result and exits without compiling:
@@ -764,7 +781,8 @@ through the API):
 an identifier or a value that is not a string throws a `TypeError`; `validatePragmaDefines()` and
 `isPragmaDefineName()` are exported with that one rule). `compile()` and `analyze()` also take `globalListName` (and the same key on each
 `additionalSources` entry) for `named_global_lists`; a name that is not an identifier throws a `TypeError`. The core never reads files: pass `nodeDialectIO` from `strucpp/node` (or your
-own `{readFile, listDir}`) with `dialectFiles` or `dialectPath`. A bad profile is a compile error
+own `{readFile, listDir, realPath?, foldCase?}`, where `foldCase: true` treats paths differing only in
+case as one file) with `dialectFiles` or `dialectPath`. A bad profile is a compile error
 (line 0). `resolveDialect()` and `profilesWithFeature()` are exported for callers that resolve themselves.
 
 ## Language server
