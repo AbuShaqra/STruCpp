@@ -12,7 +12,7 @@ import * as path from "path";
 import { compile } from "../../src/index.js";
 import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 
-const SOURCE = `VAR_GLOBAL CONSTANT GM : WORD := 16#F0; END_VAR
+const SOURCE = `VAR_GLOBAL CONSTANT GM : WORD := 16#F0; GB : BYTE := 16#0F; GL : LWORD := 16#0F; END_VAR
 TYPE MYW : WORD; END_TYPE
 TYPE INNER : STRUCT w : WORD; b : BYTE; END_STRUCT END_TYPE
 TYPE ST : STRUCT
@@ -30,6 +30,12 @@ TYPE ST : STRUCT
   pw : WORD := NOT (WORD#16#00F0);
   i : INNER := (w := NOT WORD#16#00F0, b := NOT BYTE#16#F0);
   arr : ARRAY[0..1] OF WORD := [NOT WORD#16#00F0, 16#F0 AND 16#3C];
+  ka : WORD := (NOT GB) / 16;
+  kb : BOOL := (NOT GB) = 16#F0;
+  kc : LWORD := NOT GL;
+  kf : WORD := NOT (NOT GM);
+  km : WORD := NOT GM;
+  sh : LWORD := SHL(NOT DWORD#16#0F, 4);
 END_STRUCT END_TYPE
 PROGRAM MAIN
 VAR s : ST; pa : WORD := 16#F0 AND 16#3C; pn : WORD := NOT GM; END_VAR
@@ -44,6 +50,15 @@ describe.skipIf(!hasGpp)("bitwise operators in a STRUCT default — g++ e2e", ()
     pchPath = createPCH(tempDir);
   });
   afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  it("refuses a FUNCTION call in a STRUCT default", () => {
+    const r = compile(
+      "FUNCTION FW : WORD VAR_INPUT x : WORD; END_VAR FW := x; END_FUNCTION\nTYPE S : STRUCT d : WORD := NOT FW(16#0F); END_STRUCT END_TYPE\nPROGRAM MAIN VAR s : S; END_VAR END_PROGRAM\n",
+    );
+    expect(r.errors.map((e) => e.message)).toEqual([
+      "The default of STRUCT field 'S.D' must be a constant expression: 'FW' is a FUNCTION call",
+    ]);
+  });
 
   for (const [label, options] of [
     ["no dialect", {}],
@@ -71,13 +86,14 @@ int main() {
     std::cout << s.A << " " << s.O << " " << s.X << " " << s.G << " " << s.N << " "
               << s.NB << s.B << s.C << " " << p.PA.get() << " " << p.PN.get() << " "
               << s.AN << " " << int(s.Q) << " " << s.PB << " " << s.PW << " " << s.I.W << " "
-              << int(s.I.B) << " " << s.ARR.at(0) << " " << s.ARR.at(1) << std::endl;
+              << int(s.I.B) << " " << s.ARR.at(0) << " " << s.ARR.at(1) << " "
+              << s.KA << s.KB << " " << s.KC << " " << s.KF << " " << s.KM << " " << s.SH << std::endl;
     return 0;
 }
 `,
       });
       expect(stdout).toBe(
-        "48 255 15 48 65295 110 48 65295 65295 15 0 65295 65295 15 65295 48",
+        "48 255 15 48 65295 110 48 65295 65295 15 0 65295 65295 15 65295 48 151 18446744073709551600 240 65295 4294967040",
       );
     });
   }

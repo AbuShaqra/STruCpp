@@ -988,12 +988,35 @@ export class TypeCodeGenerator {
 
   /** The bit string type an operand is known to have: its type, or a typed literal's prefix. */
   private operandBitString(expr: Expression): string | undefined {
-    if (expr.kind === "ParenthesizedExpression") {
-      return this.operandBitString(expr.expression);
-    }
     const t = expr.resolvedType;
     if (t?.typeKind === "elementary") {
       return this.bitStringBase((t as ElementaryType).name);
+    }
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.operandBitString(expr.expression);
+    }
+    // NOT, AND, OR, XOR of a bit string keep its type
+    if (expr.kind === "UnaryExpression" && expr.operator === "NOT") {
+      return this.operandBitString(expr.operand);
+    }
+    if (
+      expr.kind === "BinaryExpression" &&
+      ["AND", "OR", "XOR"].includes(expr.operator)
+    ) {
+      return (
+        this.operandBitString(expr.left) ?? this.operandBitString(expr.right)
+      );
+    }
+    if (expr.kind === "FunctionCallExpression") {
+      const name = expr.functionName.toUpperCase();
+      const first = expr.arguments[0]?.value;
+      // SHL, SHR, ROL, ROR and NOT (x) give IN's type
+      if (
+        ["SHL", "SHR", "ROL", "ROR", "NOT"].includes(name) &&
+        first !== undefined
+      ) {
+        return this.operandBitString(first);
+      }
     }
     if (expr.kind === "LiteralExpression" && (expr.typePrefix ?? "") !== "") {
       return this.bitStringBase(expr.typePrefix!);
