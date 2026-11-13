@@ -7338,8 +7338,7 @@ export class CodeGenerator {
           arg =
             (expr.vendorOperator === "XSIZEOF"
               ? this.sizeofTypeOperand(expr.arguments[0]!.value)
-              : undefined) ??
-            this.generateExpression(expr.arguments[0]!.value);
+              : undefined) ?? this.generateExpression(expr.arguments[0]!.value);
         } finally {
           this.keepReferenceWrapper = kept;
         }
