@@ -2722,10 +2722,19 @@ export class SemanticAnalyzer {
    * two C++ definitions of one name: refused at the CONFIGURATION's declaration.
    */
   private validateConfigurationGlobalNames(ast: CompilationUnit): void {
+    // A name several global lists declare is emitted list-qualified
+    // (named_global_lists), so only a name declared once can collide.
+    const counts = new Map<string, number>();
+    for (const b of ast.globalVarBlocks) {
+      for (const d of b.declarations) {
+        for (const n of d.names) {
+          const upper = n.toUpperCase();
+          counts.set(upper, (counts.get(upper) ?? 0) + 1);
+        }
+      }
+    }
     const topLevel = new Set(
-      ast.globalVarBlocks.flatMap((b) =>
-        b.declarations.flatMap((d) => d.names.map((n) => n.toUpperCase())),
-      ),
+      [...counts].filter(([, count]) => count === 1).map(([name]) => name),
     );
     // A global another CONFIGURATION declares: by upper-case name, its configuration.
     const configOf = new Map<string, string>();

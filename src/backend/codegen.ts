@@ -620,6 +620,16 @@ export class CodeGenerator {
   private programExternals: Set<string> = new Set();
   /** `_ref` while a PROGRAM constructor's initializers are generated: a VAR_EXTERNAL is then its constructor parameter, the member not yet set. */
   private externalPointerSuffix = "";
+  /** While an FB constructor's initializers are generated: each VAR_EXTERNAL's global, its member not yet set. */
+  private externalPointerOf: ReadonlyMap<string, string> | undefined;
+
+  /** The C++ pointer to the GlobalVar a VAR_EXTERNAL reaches, where it is read. */
+  private externalPointer(name: string): string {
+    return (
+      this.externalPointerOf?.get(name.toUpperCase()) ??
+      this.resolveVariableBaseName(name) + this.externalPointerSuffix
+    );
+  }
 
   /** UPPER(names) of the CONFIGURATION globals, set while their storage is emitted. */
   private configGlobalInitNames: Set<string> = new Set();
@@ -2618,17 +2628,24 @@ export class CodeGenerator {
    * These become name-mangled class members: __MethodName__varName
    */
   /**
-   * REFERENCE TO members of an FB bound by their initial value to a member of
-   * the same instance (`r : REFERENCE TO INT := REF(y)`): a copy rebinds them.
+   * The REFERENCE TO and POINTER TO members of an FB, when one of them is bound
+   * by its initial value to a member of the same instance (`REF(y)`,
+   * `ADR(arr[1])`): a copy rebinds each one that points into the original to
+   * the same place in the copy. Empty when none is so bound.
    */
   private selfBoundReferences(
     fb: CompilationUnit["functionBlocks"][0],
-  ): Array<{ member: string; operand: VariableExpression }> {
+  ): string[] {
     const own = new Set<string>();
     let current: CompilationUnit["functionBlocks"][0] | undefined = fb;
     for (let depth = 0; current !== undefined && depth < 32; depth++) {
       for (const block of current.varBlocks) {
-        if (block.blockType === "VAR_EXTERNAL") continue;
+        if (
+          block.blockType === "VAR_EXTERNAL" ||
+          block.blockType === "VAR_IN_OUT"
+        ) {
+          continue;
+        }
         for (const decl of block.declarations) {
           for (const n of decl.names) own.add(n.toUpperCase());
         }
@@ -2639,7 +2656,8 @@ export class CodeGenerator {
           ? undefined
           : this.ast?.functionBlocks.find((f) => f.name.toUpperCase() === base);
     }
-    const out: Array<{ member: string; operand: VariableExpression }> = [];
+    const pointers: string[] = [];
+    let bound = false;
     for (const block of fb.varBlocks) {
       if (
         block.blockType === "VAR_EXTERNAL" ||
@@ -2648,27 +2666,37 @@ export class CodeGenerator {
         continue;
       }
       for (const decl of block.declarations) {
-        const value = decl.initialValue;
+        const kind = decl.type.referenceKind ?? "none";
         if (
-          decl.type.referenceKind !== "reference_to" ||
-          value?.kind !== "RefExpression" ||
-          value.operand.kind !== "VariableExpression" ||
-          !own.has(value.operand.name.toUpperCase())
+          (kind !== "reference_to" && kind !== "pointer_to") ||
+          decl.type.arrayDimensions !== undefined ||
+          (decl.type.referenceChain?.length ?? 1) > 1
         ) {
           continue;
         }
+        const value = decl.initialValue;
+        const operand =
+          value?.kind === "RefExpression"
+            ? value.operand
+            : value?.kind === "FunctionCallExpression" &&
+                value.functionName.toUpperCase() === "ADR"
+              ? value.arguments[0]?.value
+              : undefined;
+        if (
+          operand?.kind === "VariableExpression" &&
+          own.has(operand.name.toUpperCase())
+        ) {
+          bound = true;
+        }
         for (const name of decl.names) {
-          out.push({
-            member: this.mangleMemberIfNeeded(name, decl.type.name),
-            operand: value.operand,
-          });
+          pointers.push(this.mangleMemberIfNeeded(name, decl.type.name));
         }
       }
     }
-    return out;
+    return bound ? pointers : [];
   }
 
-  /** The copy constructor and assignment of an FB with self-bound REFERENCE TO members. */
+  /** The copy constructor and assignment of an FB whose references point into it. */
   private emitSelfBoundCopy(
     fb: CompilationUnit["functionBlocks"][0],
     hasExternals: boolean,
@@ -2700,8 +2728,8 @@ export class CodeGenerator {
       ...(fb.implements ?? []),
     ];
     const rebinds = refs.map(
-      ({ member, operand }) =>
-        `    strucpp::rebind_own_member(${member}, __o.${member}, this, &__o, ${this.addressedOperand(operand, "REF", operand)});`,
+      (member) =>
+        `    strucpp::rebind_own_member(${member}, __o.${member}, this, &__o);`,
     );
     const init = [
       ...bases.map((b) => `${b}(__o)`),
@@ -3162,7 +3190,16 @@ export class CodeGenerator {
       for (const e of externalDecls) {
         fbInits.push(`${e.name}(&${ns}::${globalCppName(e.name)})`);
       }
+      // The members are declared after the variables: initial values reach the globals.
+      this.externalPointerOf = new Map(
+        externalDecls.map((e) => [
+          e.name.toUpperCase(),
+          `(&${ns}::${globalCppName(e.name)})`,
+        ]),
+      );
     }
+    // Members named like their type are reached by their C++ names.
+    this.enterScope(fb.varBlocks);
     for (const block of fb.varBlocks) {
       // An in-out refers to the caller's variable: nothing to initialise.
       if (
@@ -3185,6 +3222,8 @@ export class CodeGenerator {
         }
       }
     }
+    this.exitScope();
+    this.externalPointerOf = undefined;
     if (fbInits.length > 0) {
       this.emit(`${fb.name}::${fb.name}()`);
       this.emit(`    : ${fbInits.join(", ")}`);
@@ -5830,7 +5869,7 @@ export class CodeGenerator {
       expr.fieldAccess.length === 0 &&
       !expr.isDereference
     ) {
-      return `${expr.name}${this.externalPointerSuffix}->read()`;
+      return `${this.externalPointer(expr.name)}->read()`;
     }
     // `w.3` of a scalar VAR_EXTERNAL: the bit of the value read under the lock.
     if (
@@ -5843,7 +5882,7 @@ export class CodeGenerator {
         expr.fieldAccess.every((f) => /^\d+$/.test(f)))
     ) {
       return this.renderAccessTail(
-        `${expr.name}${this.externalPointerSuffix}->read()`,
+        `${this.externalPointer(expr.name)}->read()`,
         expr,
         nameUpper,
       );
@@ -5853,7 +5892,7 @@ export class CodeGenerator {
     // pointer the shared global holds, read under its lock.
     if (this.programExternals.has(nameUpper) && expr.isDereference) {
       return this.renderAccessTail(
-        `${expr.name}${this.externalPointerSuffix}->read()`,
+        `${this.externalPointer(expr.name)}->read()`,
         expr,
         nameUpper,
       );
@@ -5867,8 +5906,7 @@ export class CodeGenerator {
     // with_lock is self-contained (acquire → return → release), so several
     // composite-global reads in one expression are sequential, never nested.
     if (this.compositeExternals.has(nameUpper) && !expr.isDereference) {
-      const ptr =
-        this.resolveVariableBaseName(expr.name) + this.externalPointerSuffix;
+      const ptr = this.externalPointer(expr.name);
       const inner = this.renderAccessTail("(*__glk)", expr, nameUpper);
       return `${ptr}->with_lock([&](auto* __glk){ return ${inner}; })`;
     }
@@ -9377,7 +9415,7 @@ export class CodeGenerator {
     const upper = value.name.toUpperCase();
     if (this.programExternals.has(upper) && !value.isDereference) {
       return this.renderAccessTail(
-        `${this.resolveVariableBaseName(value.name)}${this.externalPointerSuffix}->value`,
+        `${this.externalPointer(value.name)}->value`,
         value,
         upper,
       );
@@ -9892,17 +9930,28 @@ export class CodeGenerator {
     cppType: string,
     stTypeName: string | undefined,
   ): string {
-    // `r : REFERENCE TO T := REF(x)` binds the reference to x.
-    if (
-      value.kind === "RefExpression" &&
-      cppType.startsWith("IEC_REFERENCE_TO<")
-    ) {
+    // `r : REFERENCE TO T := REF(x)` binds the reference to x (also through a
+    // TYPE alias); `:= NULL` leaves it unbound.
+    const referenceTo =
+      cppType.startsWith("IEC_REFERENCE_TO<") ||
+      this.isReferenceToAliasName(stTypeName);
+    if (referenceTo && value.kind === "RefExpression") {
       return `${cppType}(${this.addressedOperand(value.operand, "REF", value)})`;
+    }
+    if (
+      referenceTo &&
+      value.kind === "LiteralExpression" &&
+      value.literalType === "NULL"
+    ) {
+      return `${cppType}()`;
     }
     if (!isStructInitializerValue(value)) {
       return this.generateExpression(value);
     }
-    if (this.externalPointerSuffix !== "") {
+    if (
+      this.externalPointerSuffix !== "" ||
+      this.externalPointerOf !== undefined
+    ) {
       // In a PROGRAM constructor the VAR_EXTERNAL parameters are captured.
       return generateInitializerValue(
         value,
@@ -9917,6 +9966,25 @@ export class CodeGenerator {
       stTypeName,
       this.getStructInitEmitter(),
     );
+  }
+
+  /** A TYPE alias (through aliases) of a REFERENCE TO. */
+  private isReferenceToAliasName(name: string | undefined): boolean {
+    let upper = name?.toUpperCase();
+    for (
+      let depth = 0;
+      depth < 16 && upper !== undefined && this.ast;
+      depth++
+    ) {
+      const def = this.ast.types.find(
+        (t) => t.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference") return false;
+      if (def.referenceKind === "reference_to") return true;
+      if ((def.referenceKind ?? "none") !== "none") return false;
+      upper = def.name.toUpperCase();
+    }
+    return false;
   }
 
   /**

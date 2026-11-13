@@ -503,20 +503,19 @@ public:
 // =============================================================================
 
 /**
- * After a function block is copied: `ref`, copied from `src` of `other`, is
- * bound to `own` when `src` was bound to the same member of `other`, so the
- * copy refers to its own member, not to the original's.
+ * After a function block is copied: when `src` (of `other`) refers into
+ * `other`, `ref` (of `self`) refers to the same place in `self`.
  */
-template<typename R, typename Owner, typename Target>
-inline void rebind_own_member(R& ref, const R& src, const Owner* self,
-                              const Owner* other, Target& own) noexcept {
+template<typename T, typename Owner>
+inline void rebind_own_member(IEC_REFERENCE_TO<T>& ref,
+                              const IEC_REFERENCE_TO<T>& src,
+                              Owner* self, const Owner* other) noexcept {
     if (src.is_null()) return;
     const char* bound = reinterpret_cast<const char*>(&src.target());
-    const char* mine = reinterpret_cast<const char*>(&own);
-    if (bound - reinterpret_cast<const char*>(other) ==
-        mine - reinterpret_cast<const char*>(self)) {
-        ref.bind(own);
-    }
+    const char* from = reinterpret_cast<const char*>(other);
+    if (bound < from || bound >= from + sizeof(Owner)) return;
+    ref.bind(*reinterpret_cast<typename IEC_REFERENCE_TO<T>::target_type*>(
+        reinterpret_cast<char*>(self) + (bound - from)));
 }
 
 /**

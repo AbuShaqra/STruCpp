@@ -3467,15 +3467,15 @@ export class TypeChecker {
           );
           continue;
         }
-        // `r : REFERENCE TO T := REF(x)` binds r to x, checked as `r REF= x`.
-        if (
-          outerKind === "reference_to" &&
-          decl.initialValue.kind === "RefExpression"
-        ) {
+        // `r : REFERENCE TO T := REF(x)` binds r to x, checked as `r REF= x`;
+        // also through a TYPE alias of a REFERENCE TO.
+        const referenceTo =
+          outerKind === "reference_to" || this.isReferenceToAlias(decl.type);
+        if (referenceTo && decl.initialValue.kind === "RefExpression") {
           this.checkReferenceToInitializer(decl, decl.initialValue, scope);
           continue;
         }
-        if (outerKind === "reference_to" && this.refuseReferenceToValue(decl)) {
+        if (referenceTo && this.refuseReferenceToValue(decl)) {
           continue;
         }
         const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
@@ -3525,6 +3525,22 @@ export class TypeChecker {
     return true;
   }
 
+  /** A TYPE alias (through aliases) of a REFERENCE TO. */
+  private isReferenceToAlias(type: TypeReference): boolean {
+    if ((type.referenceKind ?? "none") !== "none" || !this.ast) return false;
+    let name = type.name.toUpperCase();
+    for (let depth = 0; depth < 16; depth++) {
+      const def = this.ast.types.find(
+        (t) => t.name.toUpperCase() === name,
+      )?.definition;
+      if (def?.kind !== "TypeReference") return false;
+      if (def.referenceKind === "reference_to") return true;
+      if ((def.referenceKind ?? "none") !== "none") return false;
+      name = def.name.toUpperCase();
+    }
+    return false;
+  }
+
   /** Top-level and CONFIGURATION globals: a REFERENCE TO bound by a non-REF value. */
   private refuseGlobalReferenceToValues(ast: CompilationUnit): void {
     for (const block of [
@@ -3532,11 +3548,47 @@ export class TypeChecker {
       ...ast.configurations.flatMap((c) => c.varBlocks),
     ]) {
       for (const decl of block.declarations) {
-        if (decl.type.referenceKind === "reference_to") {
+        if (
+          decl.type.referenceKind === "reference_to" ||
+          this.isReferenceToAlias(decl.type)
+        ) {
           this.refuseReferenceToValue(decl);
         }
       }
     }
+  }
+
+  /**
+   * A constant has no writable storage to refer to, and (in an initial value)
+   * a VAR_IN_OUT is bound only by a call. True when refused.
+   */
+  private refuseReferenceToUnbindable(
+    source: VariableExpression,
+    what: string,
+    scope: Scope,
+    initialValue: boolean,
+  ): boolean {
+    const sym = scope.lookup(source.name);
+    const fail = (message: string): true => {
+      this.addError(
+        message,
+        source.sourceSpan.startLine,
+        source.sourceSpan.startCol,
+        source.sourceSpan.file,
+      );
+      return true;
+    };
+    if (sym?.kind === "constant") {
+      return fail(
+        `${what} cannot be bound to the constant '${source.name.toUpperCase()}'`,
+      );
+    }
+    if (initialValue && sym?.kind === "variable" && sym.isInOut) {
+      return fail(
+        `${what} cannot be bound to the VAR_IN_OUT '${source.name.toUpperCase()}' in its initial value: it is bound only by a call; use REF= in the body`,
+      );
+    }
+    return false;
   }
 
   /** `REF(w.3)` or `r REF= w.3`: a bit has no address of its own. True when refused. */
@@ -3573,6 +3625,16 @@ export class TypeChecker {
         source.sourceSpan.startCol,
         source.sourceSpan.file,
       );
+      return;
+    }
+    if (
+      this.refuseReferenceToUnbindable(
+        source,
+        `REFERENCE TO '${(decl.names[0] ?? "").toUpperCase()}'`,
+        scope,
+        true,
+      )
+    ) {
       return;
     }
     if (
@@ -3774,7 +3836,8 @@ export class TypeChecker {
         this.refuseBitMember(stmt.source, "REF= cannot bind to", scope);
         if (
           stmt.source.kind === "VariableExpression" &&
-          this.refuseReferenceToBit(stmt.source, "REF=")
+          (this.refuseReferenceToBit(stmt.source, "REF=") ||
+            this.refuseReferenceToUnbindable(stmt.source, "REF=", scope, false))
         ) {
           break;
         }

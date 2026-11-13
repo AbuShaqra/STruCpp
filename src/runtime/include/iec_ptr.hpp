@@ -265,6 +265,19 @@ public:
     }
 };
 
+/**
+ * After a function block is copied: when `src` (of `other`) points into
+ * `other`, `p` (of `self`) points to the same place in `self`.
+ */
+template<typename T, typename Owner>
+inline void rebind_own_member(IEC_Ptr<T>& p, const IEC_Ptr<T>& src,
+                              Owner* self, const Owner* other) noexcept {
+    const char* bound = static_cast<const char*>(src.get_void());
+    const char* from = reinterpret_cast<const char*>(other);
+    if (bound == nullptr || bound < from || bound >= from + sizeof(Owner)) return;
+    p = IEC_Ptr<T>(static_cast<void*>(reinterpret_cast<char*>(self) + (bound - from)));
+}
+
 // Reverse comparison: nullptr == IEC_Ptr
 template<typename T>
 bool operator==(std::nullptr_t, IEC_Ptr<T> p) noexcept { return p == nullptr; }

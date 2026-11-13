@@ -146,11 +146,15 @@ is created (a PROGRAM, FUNCTION_BLOCK, FUNCTION or METHOD variable, a global), a
 source of `r REF= x` (`REFERENCE TO INT cannot refer to a DINT variable`; an expression is `REFERENCE TO 'R'
 must be bound to a variable, not an expression`). Before, a PROGRAM dropped that initial value, leaving `r`
 unbound, and the other places did not build. `x` may be a VAR_EXTERNAL CONFIGURATION global, also a member of
-one. A copy of an FB whose `REFERENCE TO` is bound to one of its own members (`fb2 := fb1`, an ARRAY OF FB
-element initializer) binds the copy's reference to the copy's own member. Refused: any other initial value
-than `REF(x)` or `NULL` (`REFERENCE TO 'R' is bound by its initial value only with REF(x); use REF(x)`, also
-in an FB, where `:= y` used to bind) and a bit (`REFERENCE TO 'RB' cannot be bound to a bit of a variable: a
-bit has no address of its own`, also for `REF=`). Two CONFIGURATIONs declaring a global of the same name are
+one, in a PROGRAM or an FB. The same holds through a TYPE alias of a REFERENCE TO, and `:= NULL` leaves the
+reference unbound. A copy of an FB whose `REFERENCE TO` or `POINTER TO` is bound by its initial value to one
+of its own members (`fb2 := fb1`, an ARRAY OF FB element initializer) points each such member that refers into
+the original to the same place in the copy. Refused: any other initial value than `REF(x)` or `NULL`
+(`REFERENCE TO 'R' is bound by its initial value only with REF(x); use REF(x)`, also in an FB, where `:= y`
+used to bind), a bit (`REFERENCE TO 'RB' cannot be bound to a bit of a variable: a bit has no address of its
+own`, also for `REF=`), a constant (`REFERENCE TO 'RK' cannot be bound to the constant 'K'`, also for `REF=`)
+and an FB's VAR_IN_OUT, which only a call binds (`... cannot be bound to the VAR_IN_OUT 'IO' in its initial
+value: it is bound only by a call; use REF= in the body`). Two CONFIGURATIONs declaring a global of the same name are
 refused (`Global 'X' of CONFIGURATION CFG2 is also declared in CONFIGURATION CFG; rename one of them`).
 
 A `REFERENCE TO` VAR_INPUT is bound to its argument at the call. Where `reference_to` is on, these
