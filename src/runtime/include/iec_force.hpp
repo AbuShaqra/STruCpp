@@ -373,7 +373,7 @@ inline Status set_bit_locked(Table& t, void* ptr, uint8_t bit, bool value,
 
 /**
  * Force bit `bit` (0 the least significant) of the byte at `ptr` to `value`
- * and write it now: a BIT member of a STRUCT (feature bit_type). The other
+ * and write it now: a BIT member of a STRUCT, under the feature bit_type. The other
  * bits of the byte keep their values; forced bits of one byte share a slot.
  * `lock` is as for set().
  */
