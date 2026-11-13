@@ -116,6 +116,12 @@ SINT; convert it with SINT_TO_WORD or the like`. An untyped constant beside a bi
 (`w := 16#F0 OR 16#0F`, `CW : WORD := 16#F0 AND 16#0F`), which takes its type from where it is used. Only a
 typed integer operand (an INT variable, `INT#16#F0`) is refused.
 
+NOT follows the same rules. `NOT i` with a typed integer `i` keeps its logical meaning with no dialect flag
+(`NOT 5` is FALSE), and is refused under `--dialect iec-3` and `--strict`: `NOT takes bit strings or BOOL
+(ANY_BIT, IEC 61131-3 Table 31), not INT; convert it with INT_TO_WORD or the like`. NOT of an untyped constant
+takes its type from where it is used: into a bit string it is that width's complement (`w := NOT 16#00F0` is
+16#FF0F), elsewhere it stays logical. Code that stored `NOT 16#00F0` into a WORD and got 0 now gets 16#FF0F.
+
 Because `i AND 1` with an INT `i` is an INT, not a BOOL, it is an error in every mode, with no dialect
 flag too, wherever a BOOL is required: as the condition of IF, ELSIF, WHILE or REPEAT ... UNTIL
 (`Condition must be a boolean or bit type, got INT`) and as the G argument of SEL (`Argument 'G' of 'SEL'

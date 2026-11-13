@@ -134,6 +134,7 @@ import {
   type StructInitEmitter,
 } from "./struct-init-codegen.js";
 import { vendorOperatorCpp } from "../semantic/vendor-operators.js";
+import { untypedNotTarget } from "../semantic/untyped-not.js";
 
 // =============================================================================
 // Located Variable Support
@@ -6611,6 +6612,11 @@ export class CodeGenerator {
 
     switch (expr.operator) {
       case "NOT": {
+        // NOT of an untyped constant typed from its use (`w := NOT 16#00F0`)
+        const contextType = untypedNotTarget(expr);
+        if (contextType !== undefined) {
+          return `static_cast<${contextType}_t>(~${operand})`;
+        }
         // NOT on non-BOOL ANY_BIT types must use bitwise complement (~)
         const opType = this.inferExprType(expr.operand);
         if (opType) {
@@ -7317,6 +7323,12 @@ export class CodeGenerator {
           this.keepReferenceWrapper = kept;
         }
         return vendorOperatorCpp(expr.vendorOperator, arg);
+      }
+
+      // `NOT (16#F0)` typed from its use, as `NOT 16#F0` is
+      const notType = untypedNotTarget(expr);
+      if (notType !== undefined) {
+        return `static_cast<${notType}_t>(~(${this.generateExpression(expr.arguments[0]!.value)}))`;
       }
 
       // 0. ADR(x) → &(x) (CODESYS address-of operator)

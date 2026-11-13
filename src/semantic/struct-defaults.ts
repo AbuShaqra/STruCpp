@@ -18,6 +18,7 @@ import type {
   VariableExpression,
 } from "../frontend/ast.js";
 import type { CompileError } from "../types.js";
+import { typeUntypedNot } from "./untyped-not.js";
 
 /** The global variables a field default may name, by upper-case name. */
 interface Globals {
@@ -169,6 +170,22 @@ class Folder {
   }
 }
 
+/** A type name through the unit's aliases, upper case. */
+function aliasBaseOf(unit: CompilationUnit, name: string): string {
+  let upper = name.toUpperCase();
+  for (let i = 0; i < 32; i++) {
+    const current = upper;
+    const def = unit.types.find(
+      (t) => t.name.toUpperCase() === current,
+    )?.definition;
+    if (def?.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+      return upper;
+    }
+    upper = def.name.toUpperCase();
+  }
+  return upper;
+}
+
 /**
  * Fold the global constants in the field defaults of every STRUCT of `unit`.
  * Mutates `unit`. Returns one error per global variable a default names.
@@ -206,6 +223,16 @@ export function foldStructFieldDefaults(
       }
       const name = `${type.name}.${field.names[0] ?? ""}`.toUpperCase();
       field.initialValue = folder.fold(field.initialValue, name);
+      // NOT of an untyped constant takes the element's bit string type
+      const element = aliasBaseOf(
+        unit,
+        field.type.elementTypeName ?? field.type.name,
+      );
+      if (field.initialValue.kind === "ArrayLiteralExpression") {
+        for (const e of field.initialValue.elements) typeUntypedNot(e, element);
+      } else if (field.type.arrayDimensions === undefined) {
+        typeUntypedNot(field.initialValue, element);
+      }
     }
   }
   return errors;

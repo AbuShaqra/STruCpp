@@ -354,7 +354,12 @@ describe("implicit widening (Figures 11 and 12)", () => {
         options,
       );
       expect(r.warnings).toEqual([]);
-      const refuse = (op: string, t: string, line: number, col: number): string =>
+      const refuse = (
+        op: string,
+        t: string,
+        line: number,
+        col: number,
+      ): string =>
         `${line}:${col} ${op} takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${t}; convert it with ${t}_TO_WORD or the like`;
       expect(r.errors.map((e) => `${e.line}:${e.column} ${e.message}`)).toEqual(
         label === "no dialect"
@@ -366,6 +371,18 @@ describe("implicit widening (Figures 11 and 12)", () => {
               refuse("AND", "INT", 7, 6),
               refuse("AND", "INT", 9, 6),
             ],
+      );
+    });
+
+    it(`refuses NOT on a typed integer under iec-3 and --strict only (${label})`, () => {
+      const r = compile(
+        "TYPE MYINT : INT; END_TYPE\nPROGRAM P\nVAR i : INT; mi : MYINT; k : INT; w : WORD; b : BOOL; END_VAR\nk := NOT i;\nk := NOT mi;\nw := NOT 16#00F0;\nb := NOT b;\nEND_PROGRAM\n",
+        options,
+      );
+      const refuse = (t: string, col: number): string =>
+        `${col} NOT takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${t}; convert it with ${t}_TO_WORD or the like`;
+      expect(r.errors.map((e) => `${e.column} ${e.message}`)).toEqual(
+        label === "no dialect" ? [] : [refuse("INT", 10), refuse("INT", 10)],
       );
     });
 

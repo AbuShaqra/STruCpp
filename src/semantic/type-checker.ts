@@ -94,6 +94,11 @@ import {
   fbInitInput,
   storedInstance,
 } from "./fb-init.js";
+import {
+  isUntypedIntegerConstant,
+  typeUntypedNot,
+  untypedNotTarget,
+} from "./untyped-not.js";
 
 // Re-export from type-utils for backward compatibility
 export { ELEMENTARY_TYPES, TYPE_CATEGORIES } from "./type-utils.js";
@@ -2110,6 +2115,20 @@ export class TypeChecker {
     if (expr.operator === "NOT") {
       // NOT preserves the operand type for bit types (NOT BYTE returns BYTE)
       type = operandType;
+      // Table 31: NOT on a typed integer is refused under iec-3 and --strict
+      if (
+        (this.strict || this.inOutErrors) &&
+        this.isIntegerType(operandType) &&
+        !isUntypedIntegerConstant(expr.operand)
+      ) {
+        const base = this.aliasBase(typeNameUtil(operandType));
+        this.addError(
+          `NOT takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${base}; convert it with ${base}_TO_WORD or the like`,
+          expr.operand.sourceSpan.startLine,
+          expr.operand.sourceSpan.startCol,
+          expr.operand.sourceSpan.file,
+        );
+      }
     } else {
       // Unary + and - preserve the operand type
       type = operandType;
@@ -3176,6 +3195,10 @@ export class TypeChecker {
             );
           });
           const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
+          // NOT of an untyped constant takes the global's bit string type
+          if (decl.type.arrayDimensions === undefined) {
+            typeUntypedNot(value, this.aliasBase(decl.type.name).toUpperCase());
+          }
           if (
             value.kind === "FunctionCallExpression" &&
             value.vendorOperator !== undefined &&
@@ -4045,6 +4068,14 @@ export class TypeChecker {
   ): void {
     if (this.adaptCharLiteral(value, this.charTypeOf(targetType))) {
       valueType = value.resolvedType;
+    }
+    // `w := NOT 16#00F0`: NOT of an untyped constant takes the target's type
+    if (targetType?.typeKind === "elementary") {
+      typeUntypedNot(
+        value,
+        this.aliasBase((targetType as ElementaryType).name).toUpperCase(),
+      );
+      if (untypedNotTarget(value) !== undefined) valueType = value.resolvedType;
     }
     const targetInterface = this.interfaceTypeOf(targetType);
     if (targetInterface !== undefined) {
@@ -5111,6 +5142,19 @@ export class TypeChecker {
     args: readonly Argument[],
   ): void {
     if (!inputs) return;
+    // `F(NOT 16#00F0)` into a WORD input: NOT takes the input's type
+    stripEnEno([...args]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (!input || input.inOut || input.type.arrayDimensions !== undefined) {
+        return;
+      }
+      typeUntypedNot(arg.value, this.aliasBase(input.type.name).toUpperCase());
+    });
     stripEnEno([...args]).forEach((arg, i) => {
       if (arg.isOutput) return;
       const argName = arg.name?.toUpperCase();
