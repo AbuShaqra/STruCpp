@@ -47,6 +47,7 @@ import type {
   SymbolTables,
   Scope,
 } from "./symbol-table.js";
+import { Scope as SymbolScope } from "./symbol-table.js";
 import type { StdFunctionRegistry } from "./std-function-registry.js";
 import type { CompileError, SourceSpan } from "../types.js";
 import {
@@ -80,6 +81,12 @@ import { bindStdFunctionArguments } from "./std-function-args.js";
 import { STD_FUNCTIONS_LIBRARY } from "../library/library-manifest.js";
 import { libraryOverloadFor } from "./library-overload.js";
 import { charLiteralUnits } from "../literal-utils.js";
+import {
+  vendorOperatorArgumentError,
+  vendorOperatorFeature,
+  vendorOperatorNamed,
+  vendorOperatorResultType,
+} from "./vendor-operators.js";
 import {
   fbIndex,
   fbInitArgumentScope,
@@ -298,6 +305,11 @@ function isAddressOf(expr: Expression): expr is FunctionCallExpression {
   );
 }
 
+/** An elementary integer or bit-string type name (not BOOL). */
+function isIntegerOrBitStringName(name: string): boolean {
+  return /^(U?S?INT|U?DINT|U?LINT|BYTE|WORD|DWORD|LWORD)$/i.test(name);
+}
+
 /** An untyped integer literal 0 (`0`, `16#0`), not `INT#0`. */
 function isUntypedZero(expr: Expression): expr is LiteralExpression {
   return (
@@ -412,7 +424,7 @@ const STRICT_BIT_STRINGS: ReadonlySet<string> = new Set([
   "LWORD",
 ]);
 
-type StrictKind = "int" | "real" | "bool";
+type StrictKind = "int" | "real" | "bool" | "bit";
 /** The literal kind of an untyped constant expression. */
 type StrictConstKind = "INT" | "REAL" | "BOOL";
 /** Generic constraints: a parameter or result of this kind takes its type from the call. */
@@ -431,6 +443,7 @@ function strictKind(name: string): StrictKind | undefined {
   if (n === "BOOL") return "bool";
   if (n === "REAL" || n === "LREAL") return "real";
   if (/^U?(SINT|INT|DINT|LINT)$/.test(n)) return "int";
+  if (STRICT_BIT_STRINGS.has(n)) return "bit";
   return undefined;
 }
 
@@ -439,9 +452,10 @@ function strictConversionMessage(from: string, to: string): string {
 }
 
 /**
- * Whether converting `from` to `to` loses nothing: integer to a wider integer
- * (unsigned to a wider signed too, never signed to unsigned), SINT/INT/USINT/UINT
- * to REAL, any integer up to 32 bits to LREAL, and REAL to LREAL.
+ * Whether converting `from` to `to` is implicit (Ed. 3 Figures 11 and 12):
+ * integer to a wider integer (unsigned to a wider signed too, never signed to
+ * unsigned), SINT/INT/USINT/UINT to REAL, any integer up to 32 bits to LREAL,
+ * REAL to LREAL, and BOOL or a bit string to a wider bit string.
  */
 function strictIsExactWidening(from: string, to: string): boolean {
   const fromKind = strictKind(from);
@@ -461,6 +475,9 @@ function strictIsExactWidening(from: string, to: string): boolean {
   }
   if (fromKind === "real" && toKind === "real") {
     return from === "REAL" && to === "LREAL";
+  }
+  if ((fromKind === "bit" || fromKind === "bool") && toKind === "bit") {
+    return toBits > fromBits;
   }
   return false;
 }
@@ -547,6 +564,7 @@ export class TypeChecker {
 
     this.checkGlobalInitialCycles(ast);
     this.checkStructReferenceDefaults(ast);
+    this.markGlobalVendorOperators(ast);
 
     // Init arguments of global FB instances (feature fb_init)
     if (this.features.has("fb_init")) {
@@ -1787,7 +1805,8 @@ export class TypeChecker {
     }
     // Logical operators return BOOL
     else if (["AND", "OR", "XOR"].includes(expr.operator)) {
-      type = ELEMENTARY_TYPES["BOOL"];
+      type =
+        this.bitwiseResultType(leftType, rightType) ?? ELEMENTARY_TYPES["BOOL"];
     }
     // IEC 61131-3 date/time arithmetic (table 30 of the standard).
     // Date types are int64_t aliases at the C++ level so the operator-
@@ -1887,6 +1906,23 @@ export class TypeChecker {
     const type = ELEMENTARY_TYPES["BOOL"]!;
     expr.resolvedType = type;
     return type;
+  }
+
+  /**
+   * AND, OR or XOR with a bit-string operand (BYTE to LWORD): the wider
+   * bit string of the two. Undefined otherwise (BOOL operands give BOOL).
+   */
+  private bitwiseResultType(
+    leftType: IECType,
+    rightType: IECType,
+  ): IECType | undefined {
+    const bits = [leftType, rightType].flatMap((t) => {
+      if (t.typeKind !== "elementary") return [];
+      const name = this.aliasBase((t as ElementaryType).name);
+      return STRICT_BIT_STRINGS.has(name) ? [ELEMENTARY_TYPES[name]!] : [];
+    });
+    if (bits.length === 0) return undefined;
+    return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
   }
 
   /**
@@ -1990,6 +2026,7 @@ export class TypeChecker {
     for (const arg of expr.arguments) {
       this.resolveExprType(arg.value, scope);
     }
+    this.refuseNarrowAddressArguments(expr, scope);
     this.refuseBitMemberArguments(expr, scope);
     this.checkCharStdArguments(expr);
     this.adaptCharConversionArgument(expr);
@@ -2108,6 +2145,10 @@ export class TypeChecker {
       expr.resolvedType = returnType;
       return returnType;
     }
+
+    // A built-in operator of a dialect feature (__ISVALIDREF, XSIZEOF).
+    const vendorType = this.vendorOperatorCallType(expr, nameUpper, scope);
+    if (vendorType !== undefined) return vendorType;
 
     // Validate standard function argument types (after resolving args)
     this.validateFunctionCallArgs(expr, scope);
@@ -2975,6 +3016,150 @@ export class TypeChecker {
   }
 
   /**
+   * `__ISVALIDREF` and `XSIZEOF` in a top-level or CONFIGURATION global's
+   * initial value; an initial value that is such a call is checked as an
+   * assignment to the global.
+   */
+  private markGlobalVendorOperators(ast: CompilationUnit): void {
+    const scopes: Array<{ blocks: VarBlock[]; scope: Scope }> = [
+      { blocks: ast.globalVarBlocks, scope: this.symbolTables.globalScope },
+      ...ast.configurations.map((c) => ({
+        blocks: c.varBlocks,
+        scope: this.configurationGlobalScope(c.varBlocks),
+      })),
+    ];
+    for (const { blocks, scope } of scopes) {
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          const value = decl.initialValue;
+          if (!value) continue;
+          walkAST(value, (node) => {
+            if (node.kind !== "FunctionCallExpression") return;
+            const call = node as FunctionCallExpression;
+            this.vendorOperatorCallType(
+              call,
+              call.functionName.toUpperCase(),
+              scope,
+            );
+          });
+          const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
+          if (
+            value.kind === "FunctionCallExpression" &&
+            value.vendorOperator !== undefined &&
+            value.resolvedType !== undefined &&
+            targetType !== undefined &&
+            (decl.type.referenceKind ?? "none") === "none"
+          ) {
+            this.validateAssignment(
+              targetType,
+              value.resolvedType,
+              {
+                kind: "VariableExpression",
+                sourceSpan: decl.sourceSpan,
+                name: decl.names[0] ?? "<unnamed>",
+                fieldAccess: [],
+                subscripts: [],
+                isDereference: false,
+              },
+              value,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  /** A scope holding a CONFIGURATION's globals, over the global scope. */
+  private configurationGlobalScope(blocks: readonly VarBlock[]): Scope {
+    const scope = new SymbolScope(
+      "configuration",
+      this.symbolTables.globalScope,
+    );
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          try {
+            scope.define({
+              name,
+              kind: "variable",
+              declaration: decl,
+              isInput: false,
+              isOutput: false,
+              isInOut: false,
+              isExternal: false,
+              isGlobal: true,
+              isRetain: block.isRetain,
+            });
+          } catch {
+            // A duplicate is reported by the analyzer.
+          }
+        }
+      }
+    }
+    return scope;
+  }
+
+  /**
+   * The result type of a call of a built-in operator whose feature is on and
+   * whose name nothing in scope declares; marks the call for codegen.
+   */
+  private vendorOperatorCallType(
+    expr: FunctionCallExpression,
+    nameUpper: string,
+    scope: Scope,
+  ): IECType | undefined {
+    const op = vendorOperatorNamed(nameUpper);
+    if (op === undefined || !this.features.has(vendorOperatorFeature(op))) {
+      return undefined;
+    }
+    if (expr.instance || scope.lookup(nameUpper) !== undefined) {
+      return undefined;
+    }
+    expr.vendorOperator = op;
+    const error = vendorOperatorArgumentError(expr, op, (arg) => {
+      const value = arg.value;
+      if (value.kind !== "VariableExpression")
+        return "an expression is not one";
+      const name = [value.name, ...value.fieldAccess].join(".").toUpperCase();
+      // `THIS.r` / `THIS^.r`: a member of the enclosing FB.
+      if (this.isSelfMember(value)) {
+        const type = resolveAccessType(
+          { name: this.currentFBName!, referenceKind: "none" },
+          value,
+          this.accessLookup,
+        );
+        if (
+          type?.referenceKind === "reference_to" &&
+          (type.referenceChain?.length ?? 1) === 1
+        ) {
+          return true;
+        }
+        return type === undefined
+          ? `'${name}' is not a variable here`
+          : `'${name}' is declared ${describeReferenceShape(referenceShapeOf(type as TypeReference) ?? { chain: [], base: type.name })}`;
+      }
+      const shape = this.declaredReferenceShape(value, scope);
+      if (shape?.chain.length === 1 && shape.chain[0] === "reference_to") {
+        return true;
+      }
+      return shape === undefined
+        ? `'${name}' is not a variable here`
+        : `'${name}' is declared ${describeReferenceShape(shape)}`;
+    });
+    if (error !== undefined) {
+      this.addError(
+        error,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+    }
+    const type = ELEMENTARY_TYPES[vendorOperatorResultType(op)]!;
+    expr.resolvedType = type;
+    return type;
+  }
+
+  /**
    * A bare `Name(...)` inside a PROGRAM or FUNCTION_BLOCK that names one of
    * its methods, inherited ones included. The method is called, as the C++
    * member shadows a FUNCTION or standard function of the same name.
@@ -3215,6 +3400,14 @@ export class TypeChecker {
           );
           continue;
         }
+        // An address does not fit an integer narrower than the address width.
+        if (
+          (outerKind ?? "none") === "none" &&
+          isAddressOf(decl.initialValue) &&
+          this.refuseNarrowAddress(decl.type.name, decl.initialValue)
+        ) {
+          continue;
+        }
         // `p : POINTER TO T := ADR(x);` takes an address of any target type.
         if (outerKind === "pointer_to" && isAddressOf(decl.initialValue)) {
           this.resolveExprType(decl.initialValue, scope);
@@ -3265,6 +3458,56 @@ export class TypeChecker {
         );
       }
     }
+  }
+
+  /**
+   * `ADR(x)` stored in an integer narrower than the 64-bit address width (an
+   * initial value, a FUNCTION or METHOD argument) would lose the address's
+   * high bits. True when it was refused.
+   */
+  private refuseNarrowAddress(
+    typeName: string,
+    value: FunctionCallExpression,
+  ): boolean {
+    const type = ELEMENTARY_TYPES[typeName.toUpperCase()];
+    if (
+      type === undefined ||
+      !("sizeBits" in type) ||
+      typeof type.sizeBits !== "number" ||
+      type.sizeBits >= 64 ||
+      !isIntegerOrBitStringName(typeName)
+    ) {
+      return false;
+    }
+    this.addError(
+      `ADR gives a 64-bit address, which ${typeName.toUpperCase()} cannot hold; use __XWORD, LWORD or ULINT`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /** `F(ADR(x))` and `fb.M(ADR(x))` into an input narrower than an address. */
+  private refuseNarrowAddressArguments(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (this.isFBInstanceCall(expr, scope)) return;
+    const inputs =
+      this.callInputs(expr, scope) ??
+      this.dottedMethodInputs(expr.functionName, scope);
+    if (!inputs) return;
+    stripEnEno(expr.arguments).forEach((arg, i) => {
+      if (arg.isOutput || !isAddressOf(arg.value)) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (input === undefined || input.type.referenceKind !== "none") return;
+      this.refuseNarrowAddress(input.type.name, arg.value);
+    });
   }
 
   /**
@@ -4994,6 +5237,7 @@ export class TypeChecker {
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
+    if (this.strict) this.checkStrictFbOutputs(expr, scope);
     if (expr.instance || expr.functionName.includes(".")) return;
     if (this.calledInstance(expr.functionName, scope)) return;
     const params = this.calledFunctionParameters(expr.functionName);
@@ -5533,6 +5777,127 @@ export class TypeChecker {
     const declared = sym.declaration as VarDeclaration | undefined;
     if (!declared) return undefined;
     return this.fbInputsOf(declared.type.name);
+  }
+
+  /**
+   * `--strict`: an FB call's `o => v` follows the strict conversion rules of
+   * `v := o`, as a FUNCTION's output does (checkOutputBindings).
+   */
+  private checkStrictFbOutputs(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (!expr.arguments.some((a) => a.isOutput)) return;
+    const fbType = this.calledFbType(expr, scope);
+    if (fbType === undefined) return;
+    const outputs = this.fbOutputsOf(fbType);
+    for (const arg of expr.arguments) {
+      if (!arg.isOutput || arg.name === undefined) continue;
+      if (arg.value.kind !== "VariableExpression") continue;
+      const upper = arg.name.toUpperCase();
+      if (upper === "ENO") continue;
+      const out = outputs.find((o) => o.name.toUpperCase() === upper);
+      if (
+        out === undefined ||
+        out.arrayDimensions !== undefined ||
+        (out.referenceKind ?? "none") !== "none"
+      ) {
+        continue;
+      }
+      const bound = this.boundAccessType(arg.value, scope);
+      const boundType =
+        bound === undefined
+          ? arg.value.resolvedType
+          : this.resolveNamedType(bound.name);
+      if (boundType === undefined) continue;
+      const outType = this.resolveNamedType(out.typeName);
+      this.checkStrictConversion(boundType, {
+        kind: "VariableExpression",
+        sourceSpan: arg.value.sourceSpan,
+        name: out.name,
+        fieldAccess: [],
+        subscripts: [],
+        isDereference: false,
+        resolvedType: outType,
+      });
+    }
+  }
+
+  /** The FB type an instance call invokes: `fb(...)`, `arr[i](...)`, `s.f(...)`. */
+  private calledFbType(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): string | undefined {
+    if (expr.instance !== undefined) {
+      const t = this.resolveExprType(expr.instance, scope);
+      return t?.typeKind === "elementary"
+        ? (t as ElementaryType).name
+        : undefined;
+    }
+    const parts = expr.functionName.split(".");
+    if (parts.length === 1) {
+      if (!this.calledInstance(expr.functionName, scope)) return undefined;
+      const sym = scope.lookup(expr.functionName);
+      return sym?.kind === "variable"
+        ? (sym.declaration as VarDeclaration | undefined)?.type.name
+        : this.inheritedMemberType(expr.functionName)?.name;
+    }
+    if (parts.length !== 2) return undefined;
+    const owner = this.callOwnerType(parts[0]!, scope);
+    return owner === undefined
+      ? undefined
+      : this.resolveFieldTypeAnywhere(this.aliasBase(owner), parts[1]!);
+  }
+
+  /** The VAR_OUTPUTs of a function block type and its bases, a library's too. */
+  private fbOutputsOf(fbTypeName: string): Array<{
+    name: string;
+    typeName: string;
+    arrayDimensions?: unknown;
+    referenceKind?: string;
+  }> {
+    const upper = this.aliasBase(fbTypeName).toUpperCase();
+    const out: Array<{
+      name: string;
+      typeName: string;
+      arrayDimensions?: unknown;
+      referenceKind?: string;
+    }> = [];
+    let current: string | undefined = upper;
+    for (let depth = 0; current !== undefined && depth < 32; depth++) {
+      const name: string = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name,
+      );
+      if (!fb) {
+        const lib = this.symbolTables.lookupFunctionBlock(name);
+        for (const m of lib?.outputs ?? []) {
+          const t = m.declaration.type;
+          out.push({
+            name: m.name,
+            typeName: t.name,
+            arrayDimensions: t.arrayDimensions,
+            referenceKind: t.referenceKind,
+          });
+        }
+        break;
+      }
+      for (const b of fb.varBlocks) {
+        if (b.blockType !== "VAR_OUTPUT") continue;
+        for (const d of b.declarations) {
+          for (const n of d.names) {
+            out.push({
+              name: n,
+              typeName: d.type.name,
+              arrayDimensions: d.type.arrayDimensions,
+              referenceKind: d.type.referenceKind,
+            });
+          }
+        }
+      }
+      current = fb.extends?.toUpperCase();
+    }
+    return out;
   }
 
   /** The VAR_INPUT and VAR_IN_OUT of a function block type, its bases' first; a library's too. */
@@ -6453,10 +6818,10 @@ export class TypeChecker {
     kind: StrictKind | undefined,
   ): boolean {
     return k === "INT"
-      ? kind === "int" || kind === "real"
+      ? kind === "int" || kind === "real" || kind === "bit"
       : k === "REAL"
         ? kind === "real"
-        : kind === "bool";
+        : kind === "bool" || kind === "bit";
   }
 
   /**
