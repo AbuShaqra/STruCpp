@@ -1819,11 +1819,15 @@ export class TypeChecker {
     else if (["AND", "OR", "XOR"].includes(expr.operator)) {
       this.refuseIntegerBitwise(expr, leftType, rightType);
       // Untyped constants only: typed by context, as before (BOOL here)
-      type =
-        (this.isUntypedBitConstant(expr)
-          ? undefined
-          : this.bitwiseResultType(leftType, rightType)) ??
-        ELEMENTARY_TYPES["BOOL"];
+      // An untyped constant takes the type of the other, typed operand
+      type = this.isUntypedBitConstant(expr)
+        ? ELEMENTARY_TYPES["BOOL"]
+        : this.isUntypedBitConstant(expr.left)
+          ? rightType
+          : this.isUntypedBitConstant(expr.right)
+            ? leftType
+            : (this.bitwiseResultType(leftType, rightType) ??
+              ELEMENTARY_TYPES["BOOL"]);
     }
     // IEC 61131-3 date/time arithmetic (table 30 of the standard).
     // Date types are int64_t aliases at the C++ level so the operator-
@@ -1968,20 +1972,17 @@ export class TypeChecker {
     rightType: IECType,
   ): void {
     if (!this.strict && !this.inOutErrors) return;
-    for (const [operand, type, other] of [
-      [expr.left, leftType, rightType],
-      [expr.right, rightType, leftType],
+    for (const [operand, type] of [
+      [expr.left, leftType],
+      [expr.right, rightType],
     ] as const) {
-      if (!this.isIntegerType(type)) continue;
-      const otherOperand = operand === expr.left ? expr.right : expr.left;
-      if (
-        this.isUntypedBitConstant(operand) &&
-        (this.isUntypedBitConstant(otherOperand) || !this.isIntegerType(other))
-      ) {
+      // An untyped constant adapts; only a typed integer operand is refused
+      if (!this.isIntegerType(type) || this.isUntypedBitConstant(operand)) {
         continue;
       }
+      const base = this.aliasBase(typeNameUtil(type));
       this.addError(
-        `${expr.operator} takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${typeNameUtil(type)}; convert it with ${typeNameUtil(type)}_TO_WORD or the like`,
+        `${expr.operator} takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${base}; convert it with ${base}_TO_WORD or the like`,
         operand.sourceSpan.startLine,
         operand.sourceSpan.startCol,
         operand.sourceSpan.file,
@@ -6432,9 +6433,16 @@ export class TypeChecker {
     selectorExpr: Expression,
   ): void {
     // CASE selector must be ANY_INT, ANY_BIT, or enum (IEC 61131-3: ordinal types)
+    // An alias of an elementary type is checked as that type.
+    const base =
+      selectorType.typeKind === "elementary"
+        ? (ELEMENTARY_TYPES[
+            this.aliasBase((selectorType as ElementaryType).name)
+          ] ?? selectorType)
+        : selectorType;
     if (
-      !_isTypeInCategory(selectorType, "ANY_INT") &&
-      !_isTypeInCategory(selectorType, "ANY_BIT") &&
+      !_isTypeInCategory(base, "ANY_INT") &&
+      !_isTypeInCategory(base, "ANY_BIT") &&
       selectorType.typeKind !== "enum" &&
       this.charTypeOf(selectorType) === undefined
     ) {

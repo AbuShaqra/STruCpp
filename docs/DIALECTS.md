@@ -107,10 +107,12 @@ the root. A profile without `extends` has only its own features.
 IEC 61131-3 Ed. 3 Table 31 defines AND, OR and XOR on ANY_BIT (BOOL and the bit strings) only. With no
 dialect flag an integer operand is accepted, as before, and the result now has the operands' common
 integer type (`i AND j` with INT operands is an INT, not a BOOL), so assigning it to a narrower type gets
-the usual narrowing warning. Under `--dialect iec-3`, and under `--strict` in any dialect, an integer
-operand is refused: `AND takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not INT; convert it
-with INT_TO_WORD or the like`. An untyped constant beside a bit string or BOOL (`w AND 16#FF`, `x OR 1`)
-takes that operand's type and is accepted, and so does an expression of untyped constants only
+the usual narrowing warning. An untyped constant beside a typed integer takes that integer's type
+(`s AND 16#7F` with a SINT `s` is a SINT, so `s := s AND 16#7F` gets no warning). Under `--dialect iec-3`,
+and under `--strict` in any dialect, a typed integer operand is refused, at that operand and naming its
+type (an alias by its base type): `AND takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not
+SINT; convert it with SINT_TO_WORD or the like`. An untyped constant beside a bit string or BOOL
+(`w AND 16#FF`, `x OR 1`) takes that operand's type and is accepted, and so does an expression of untyped constants only
 (`w := 16#F0 OR 16#0F`, `CW : WORD := 16#F0 AND 16#0F`), which takes its type from where it is used. Only a
 typed integer operand (an INT variable, `INT#16#F0`) is refused.
 

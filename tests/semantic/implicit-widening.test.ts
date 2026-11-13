@@ -348,6 +348,27 @@ describe("implicit widening (Figures 11 and 12)", () => {
       expect(r.warnings).toEqual([]);
     });
 
+    it(`types an untyped constant beside a typed integer as that integer; refuses the typed operand (${label})`, () => {
+      const r = compile(
+        "TYPE MYINT : INT; END_TYPE\nPROGRAM P\nVAR s : SINT; us : USINT; n : INT; mi : MYINT; END_VAR\ns := s AND 16#7F;\nus := us OR 1;\ns := 1 AND s;\nCASE mi AND 3 OF 1: n := 1; END_CASE;\nCASE mi OF 1: n := 1; END_CASE;\nn := mi AND 16#F;\nEND_PROGRAM\n",
+        options,
+      );
+      expect(r.warnings).toEqual([]);
+      const refuse = (op: string, t: string, line: number, col: number): string =>
+        `${line}:${col} ${op} takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${t}; convert it with ${t}_TO_WORD or the like`;
+      expect(r.errors.map((e) => `${e.line}:${e.column} ${e.message}`)).toEqual(
+        label === "no dialect"
+          ? []
+          : [
+              refuse("AND", "SINT", 4, 6),
+              refuse("OR", "USINT", 5, 7),
+              refuse("AND", "SINT", 6, 12),
+              refuse("AND", "INT", 7, 6),
+              refuse("AND", "INT", 9, 6),
+            ],
+      );
+    });
+
     it(`takes TOD and DT as their long forms in a conversion argument (${label})`, () => {
       const r = compile(
         "PROGRAM Main\nVAR tod : TOD; td : TIME_OF_DAY; dt : DT; dat : DATE_AND_TIME; ltod : LTOD; ldt : LDT; u : ULINT; END_VAR\nu := LTOD_TO_ULINT(tod);\nu := LTIME_OF_DAY_TO_ULINT(td);\nu := LDT_TO_ULINT(dt);\nu := LDATE_AND_TIME_TO_ULINT(dat);\nu := TOD_TO_ULINT(ltod);\nu := DT_TO_ULINT(ldt);\nEND_PROGRAM\n",
