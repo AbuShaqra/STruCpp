@@ -731,16 +731,17 @@ export const DirectAddress = createToken({
 // =============================================================================
 
 /**
- * Non-ASCII ranges a word may hold so that it lexes as one Identifier; each
- * such character is then refused by name (see nameLetterErrors).
+ * A name's characters: A–Z, a–z, digits and _, and any non-ASCII character
+ * but whitespace, so a word holding one lexes as one Identifier and each such
+ * character is then refused by name (see nameLetterErrors).
  */
-const FOREIGN_NAME_CHARS =
-  "\u00C0-\u1FFF\u2C00-\u2FFF\u3040-\uD7FF\uD800-\uDFFF\uF900-\uFDCF\uFE70-\uFEFE";
+/** The first character code, which a character class names as a range start. */
+const NUL = String.fromCharCode(0);
 
 export const Identifier = createToken({
   name: "Identifier",
   pattern: new RegExp(
-    `[a-zA-Z_${FOREIGN_NAME_CHARS}][a-zA-Z0-9_${FOREIGN_NAME_CHARS}]*`,
+    `[^${NUL}-\\x40\\x5B-\\x5E\\x60\\x7B-\\x7F\\s][^${NUL}-\\x2F\\x3A-\\x40\\x5B-\\x5E\\x60\\x7B-\\x7F\\s]*`,
   ),
 });
 
@@ -1449,22 +1450,41 @@ export function shortPragmaText(image: string): string {
     : `${flat.substring(0, PRAGMA_TEXT_MAX - 4)}...}`;
 }
 
-/** A character a name cannot hold, quoted whole: an astral one, or a combining mark with its base. */
-function quotedCharacter(text: string, index: number): string {
-  const cp = text.codePointAt(index) ?? 0;
-  const ch = String.fromCodePoint(cp);
-  if (/^\p{M}$/u.test(ch) && index > 0) return text.charAt(index - 1) + ch;
-  return ch;
-}
-
 function nameLetterMessage(quoted: string): string {
   return `'${quoted}' is not allowed in a name: identifiers use A–Z, digits and _`;
 }
 
+/** A combining mark or a zero-width joiner, kept with the character before it. */
+const JOINS = /^[\p{M}\u200C\u200D]$/u;
+
 /**
- * A name allows A–Z, digits and _ only: each other character of an
- * Identifier is refused by name, the word staying one token; a letter or mark
- * the lexer skipped is named in its error too.
+ * The characters of `text` from `start` to `end` grouped with their marks:
+ * each cluster's offset and text.
+ */
+function clusters(
+  text: string,
+  start: number,
+  end: number,
+): Array<{ offset: number; text: string }> {
+  const out: Array<{ offset: number; text: string }> = [];
+  for (let k = start; k < end; ) {
+    const ch = String.fromCodePoint(text.codePointAt(k) ?? 0);
+    const last = out[out.length - 1];
+    if (last !== undefined && JOINS.test(ch)) last.text += ch;
+    else out.push({ offset: k, text: ch });
+    k += ch.length;
+  }
+  return out;
+}
+
+/** Ends with a literal's last character: a digit, letter, _ or quote. */
+const LITERAL_END = /[\w'"]$/;
+
+/**
+ * A name allows A–Z, digits and _ only. Each cluster of an Identifier that
+ * holds another character is refused by name, quoted whole (a base with its
+ * marks), the word staying one token. A run of them glued to a literal is
+ * refused and dropped, so the parser sees the literal alone.
  */
 function nameLetterErrors(
   result: { tokens: IToken[]; errors: ILexingError[] },
@@ -1472,29 +1492,43 @@ function nameLetterErrors(
 ): void {
   for (const error of result.errors) {
     const ch = String.fromCodePoint(source.codePointAt(error.offset) ?? 0);
-    if (/^[\p{L}\p{M}]$/u.test(ch) && !/^[A-Za-z]$/.test(ch)) {
-      error.message = nameLetterMessage(quotedCharacter(source, error.offset));
+    if (error.offset < source.length && ch >= "\u0080" && !/^\s$/.test(ch)) {
+      const cluster = clusters(source, error.offset, error.offset + ch.length);
+      error.message = nameLetterMessage(cluster[0]?.text ?? ch);
     }
   }
+  const kept: IToken[] = [];
   for (const token of result.tokens) {
-    if (token.tokenType !== Identifier || /^[\w]*$/.test(token.image)) {
+    if (token.tokenType !== Identifier || /^\w*$/.test(token.image)) {
+      kept.push(token);
       continue;
     }
-    for (let k = 0; k < token.image.length; k++) {
-      const code = token.image.charCodeAt(k);
-      if (code < 0x80) continue;
-      const offset = token.startOffset + k;
+    const startCol = token.startColumn ?? 0;
+    for (const cluster of clusters(
+      source,
+      token.startOffset,
+      token.startOffset + token.image.length,
+    )) {
+      if ([...cluster.text].every((c) => c < "\u0080")) continue;
       result.errors.push({
-        offset,
+        offset: cluster.offset,
         line: token.startLine,
-        column: (token.startColumn ?? 0) + k,
-        length: 1,
-        message: nameLetterMessage(quotedCharacter(source, offset)),
+        column: startCol + (cluster.offset - token.startOffset),
+        length: cluster.text.length,
+        message: nameLetterMessage(cluster.text),
       });
-      // Skip the low surrogate of an astral character.
-      if (code >= 0xd800 && code <= 0xdbff) k++;
     }
+    const previous = kept[kept.length - 1];
+    const glued =
+      previous !== undefined &&
+      previous.tokenType !== Identifier &&
+      previous.endOffset !== undefined &&
+      previous.endOffset + 1 === token.startOffset &&
+      LITERAL_END.test(previous.image) &&
+      token.image.charCodeAt(0) >= 0x80;
+    if (!glued) kept.push(token);
   }
+  result.tokens = kept;
   result.errors.sort((a, b) => a.offset - b.offset);
 }
 
