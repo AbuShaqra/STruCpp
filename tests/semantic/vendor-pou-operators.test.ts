@@ -349,3 +349,148 @@ END_PROGRAM
     expect(r.cppCode).not.toContain("Line 3");
   });
 });
+
+describe("recheck regressions", () => {
+  it("a variable or method of a base FB shadows in the FBs that extend it", () => {
+    const r = diag(
+      `FUNCTION_BLOCK FB_X
+VAR_OUTPUT o : STRING; END_VAR
+o := 'fbx';
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_A
+VAR __POSITION : FB_X; END_VAR
+METHOD __POUNAME : STRING
+__POUNAME := 'meth';
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_B EXTENDS FB_A
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_C EXTENDS FB_B
+VAR_OUTPUT s : STRING; t : STRING; END_VAR
+s := __POUNAME();
+__POSITION();
+t := __POSITION.o;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR c : FB_C; END_VAR
+c();
+END_PROGRAM
+`,
+      ON,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.cpp).not.toContain("Line ");
+    expect(r.cpp).not.toContain('S = "FB_C"');
+  });
+
+  it("an ACTION written outside its FB shadows in an FB that extends it", () => {
+    const r = diag(
+      `FUNCTION_BLOCK FB_A
+VAR_OUTPUT n : INT; END_VAR
+END_FUNCTION_BLOCK
+ACTION FB_A.__POSITION
+n := n + 1;
+END_ACTION
+FUNCTION_BLOCK FB_B EXTENDS FB_A
+__POSITION();
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR b : FB_B; END_VAR
+b();
+END_PROGRAM
+`,
+      ON,
+    );
+    expect(r.errors).toEqual([]);
+  });
+
+  it("a method of a library base FB shadows in a source FB that extends it", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `FUNCTION_BLOCK FB_LBase
+VAR __POSITION : INT; END_VAR
+METHOD __POUNAME : STRING
+__POUNAME := 'basemeth';
+END_METHOD
+END_FUNCTION_BLOCK
+`,
+          fileName: "lib.st",
+        },
+      ],
+      { name: "base-lib", version: "1.0.0", namespace: "strucpp" },
+    );
+    expect(lib.success).toBe(true);
+    const r = compile(
+      `FUNCTION_BLOCK FB_D EXTENDS FB_LBase
+VAR_OUTPUT s : STRING; END_VAR
+s := __POUNAME();
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR f : FB_D; END_VAR
+f();
+END_PROGRAM
+`,
+      { ...ON, libraries: [lib.archive!] },
+    );
+    expect(r.errors.map((e) => e.message)).toEqual([]);
+    expect(r.cppCode).not.toContain('S = "FB_D"');
+  });
+
+  it("a GET accessor's local shadows only in that GET", () => {
+    const r = diag(
+      `FUNCTION_BLOCK FB_X
+VAR_OUTPUT o : STRING; END_VAR
+o := 'fbx';
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_A
+VAR_OUTPUT last : STRING; END_VAR
+PROPERTY Speed : STRING
+GET
+VAR __POSITION : FB_X; END_VAR
+__POSITION();
+Speed := __POSITION.o;
+END_GET
+SET
+last := __POSITION();
+END_SET
+END_PROPERTY
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR a : FB_A; END_VAR
+a.Speed := 'z';
+END_PROGRAM
+`,
+      { features: ["+vendor_operators", "+property"] },
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.cpp).toContain('LAST = "Line 14, Column 9 (Impl)"');
+  });
+
+  it("spells the POU name from tokens: strings and nested comments skipped", () => {
+    const strings = diag(
+      `PROGRAM Alpha
+VAR s : STRING := 'x(*y'; END_VAR
+END_PROGRAM
+PROGRAM MainProg (* the main *)
+VAR s : STRING; END_VAR
+s := __POUNAME();
+END_PROGRAM
+(* trailing *)
+`,
+      ON,
+    );
+    expect(strings.errors).toEqual([]);
+    expect(strings.cpp).toContain('S = "MainProg"');
+    const nested = diag(
+      `PROGRAM (* a (* b *) mainprog *) MainProg
+VAR s : STRING; END_VAR
+s := __POUNAME();
+END_PROGRAM
+`,
+      ON,
+    );
+    expect(nested.errors).toEqual([]);
+    expect(nested.cpp).toContain('S = "MainProg"');
+  });
+});

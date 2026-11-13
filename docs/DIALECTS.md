@@ -762,12 +762,14 @@ before analysis. Their exact results are **this compiler's rules**:
 - `__POUNAME` and `__POSITION` take no argument: `__POUNAME takes no argument`.
 - An operator gives a value, so a call written as a statement is an error: `__POSITION gives a value: use
   it in an expression, not as a statement`.
-- The spelling `__POUNAME()` gives is read from the source with comments skipped.
+- The spelling `__POUNAME()` gives is the name token as written in the source (comments, nested ones too,
+  and string literals are skipped).
 - With the feature off each call is refused naming the feature (in an ARRAY bound, as a bound that is not a
   constant). A FUNCTION, POU, INTERFACE, TYPE or global variable of the operator's name, in the sources or a library, wins in every dialect and in every POU, and
   the call reaches it. A local variable, method or action of that name wins only where it is in scope: in its
-  POU (an FB's methods and actions also in the FBs that extend it), or in its test (SETUP's in every test).
-  A STRUCT member of that name does not shadow the operator.
+  POU (an FB's variables, methods and actions, also an `ACTION FB_A.X` written outside it, in the FBs that
+  extend it, the base a library FB too), in its accessor (a GET's local only in that GET), or in its test
+  (SETUP's in every test). A STRUCT or enumeration member of that name does not shadow the operator.
 - In a `--test` file the operators follow the dialect flags of the run: `__POSITION()` is lowered there too
   (its position in the test file), unless the sources or the test declare its name, while `__POUNAME()`
   and `BITADR` have no value there (`__POUNAME is not supported in a test file`).

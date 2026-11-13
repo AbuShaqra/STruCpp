@@ -29,6 +29,7 @@ import type {
   VarDeclaration,
 } from "../frontend/ast.js";
 import type { CompileError, SourceSpan } from "../types.js";
+import { tokenize } from "../frontend/lexer.js";
 
 /** The operators lowered here. */
 export const POU_OPERATORS: ReadonlySet<string> = new Set([
@@ -53,7 +54,7 @@ interface Context {
   section: "Decl" | "Impl";
   /** Variables in scope, by upper-case name, innermost first. */
   variables: ReadonlyMap<string, VarDeclaration>;
-  /** Upper-case names of the methods and actions a bare call here reaches. */
+  /** Upper-case names an owner and its EXTENDS chain declare: variables, methods, actions. */
   methods: ReadonlySet<string>;
 }
 
@@ -62,6 +63,13 @@ export interface PouOperatorOptions {
   sources: ReadonlyMap<string, string>;
   /** Whether a library declares a FUNCTION, FB, TYPE or global of the upper-case name. */
   declaredByLibrary: (nameUpper: string) => boolean;
+  /**
+   * A library FB's member names (variables, methods), upper-case, and the FB
+   * it EXTENDS; undefined when no library declares the FB.
+   */
+  libraryFB?: (
+    nameUpper: string,
+  ) => { members: readonly string[]; extends?: string } | undefined;
 }
 
 /**
@@ -96,13 +104,22 @@ function globalNames(ast: CompilationUnit): Set<string> {
   return names;
 }
 
-/** `text` with its comments blanked to spaces, keeping lines and columns. */
-function withoutComments(text: string): string {
-  const blank = (m: string): string => m.replace(/[^\r\n]/g, " ");
-  return text
-    .replace(/\(\*[\s\S]*?\*\)/g, blank)
-    .replace(/\/\*[\s\S]*?\*\//g, blank)
-    .replace(/\/\/[^\r\n]*/g, blank);
+/** Identifier tokens of a file with their spelling as written, in order. */
+type Spellings = Array<{
+  line: number;
+  col: number;
+  upper: string;
+  text: string;
+}>;
+
+function spellingsOf(text: string): Spellings {
+  // tokenize() upper-cases a copy of the same length, so offsets map to `text`.
+  return tokenize(text).tokens.map((t) => ({
+    line: t.startLine ?? 0,
+    col: t.startColumn ?? 0,
+    upper: t.image.toUpperCase(),
+    text: text.slice(t.startOffset, t.endOffset! + 1),
+  }));
 }
 
 /** The spelling of `nameUpper` as first written at or after `span` in its file. */
@@ -110,21 +127,22 @@ function spelled(
   nameUpper: string,
   span: SourceSpan,
   sources: ReadonlyMap<string, string>,
+  cache: Map<string, Spellings>,
 ): string {
   const raw = sources.get(span.file);
   if (raw === undefined) return nameUpper;
-  const text = withoutComments(raw);
-  const lines = text.split(/\r\n|\r|\n/);
-  const from = [
-    (lines[span.startLine - 1] ?? "").slice(Math.max(span.startCol - 1, 0)),
-    ...lines.slice(span.startLine),
-  ].join("\n");
-  const escaped = nameUpper.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(
-    `(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`,
-    "i",
-  ).exec(from);
-  return match ? match[0] : nameUpper;
+  let tokens = cache.get(span.file);
+  if (tokens === undefined) {
+    tokens = spellingsOf(raw);
+    cache.set(span.file, tokens);
+  }
+  const hit = tokens.find(
+    (t) =>
+      t.upper === nameUpper &&
+      (t.line > span.startLine ||
+        (t.line === span.startLine && t.col >= span.startCol)),
+  );
+  return hit ? hit.text : nameUpper;
 }
 
 function varMap(
@@ -232,8 +250,9 @@ export function lowerPouOperators(
     for (const [name, decl] of globals) if (!map.has(name)) map.set(name, decl);
     return map;
   };
+  const spellingCache = new Map<string, Spellings>();
   const name = (upper: string, span: SourceSpan): string =>
-    spelled(upper, span, opts.sources);
+    spelled(upper, span, opts.sources, spellingCache);
 
   const fail = (message: string, span: SourceSpan): void => {
     errors.push({
@@ -362,27 +381,41 @@ export function lowerPouOperators(
   const fbByName = new Map(
     ast.functionBlocks.map((fb) => [fb.name.toUpperCase(), fb]),
   );
-  /** Methods and actions of an owner and, for an FB, its EXTENDS chain. */
+  const blockNames = (blocks: readonly VarBlock[]): string[] =>
+    blocks.flatMap((b) =>
+      b.declarations.flatMap((d) => d.names.map((n) => n.toUpperCase())),
+    );
+  /**
+   * Names an owner and its EXTENDS chain (source or library FBs) declare:
+   * variables, methods and actions, also actions written outside the FB.
+   */
   const callables = (
     owner: (typeof ast.programs)[number] | (typeof ast.functionBlocks)[number],
   ): Set<string> => {
     const out = new Set<string>();
     const seen = new Set<string>();
-    let current: typeof owner | undefined = owner;
-    while (current && !seen.has(current.name.toUpperCase())) {
-      seen.add(current.name.toUpperCase());
-      for (const m of current.methods) out.add(m.name.toUpperCase());
-      for (const a of current.actions) out.add(a.name.toUpperCase());
-      current =
-        current.kind === "FunctionBlockDeclaration" &&
-        current.extends !== undefined
-          ? fbByName.get(current.extends.toUpperCase())
-          : undefined;
-    }
-    for (const a of ast.actions) {
-      if (a.owner?.toUpperCase() === owner.name.toUpperCase()) {
-        out.add(a.name.toUpperCase());
+    let next: string | undefined = owner.name;
+    while (next !== undefined && !seen.has(next.toUpperCase())) {
+      const upper = next.toUpperCase();
+      seen.add(upper);
+      for (const a of ast.actions) {
+        if (a.owner?.toUpperCase() === upper) out.add(a.name.toUpperCase());
       }
+      const current: typeof owner | undefined =
+        upper === owner.name.toUpperCase() ? owner : fbByName.get(upper);
+      if (current !== undefined) {
+        for (const n of blockNames(current.varBlocks)) out.add(n);
+        for (const m of current.methods) out.add(m.name.toUpperCase());
+        for (const a of current.actions) out.add(a.name.toUpperCase());
+        next =
+          current.kind === "FunctionBlockDeclaration"
+            ? current.extends
+            : undefined;
+        continue;
+      }
+      const lib = opts.libraryFB?.(upper);
+      for (const n of lib?.members ?? []) out.add(n.toUpperCase());
+      next = lib?.extends;
     }
     return out;
   };
@@ -418,17 +451,14 @@ export function lowerPouOperators(
     }
     if (owner.kind === "FunctionBlockDeclaration") {
       for (const p of owner.properties) {
-        const blocks = [
-          ...(p.getterVarBlocks ?? []),
-          ...(p.setterVarBlocks ?? []),
-        ];
-        pou(
-          `${ownerName}.${name(p.name, p.sourceSpan)}`,
-          scope(blocks, owner.varBlocks),
-          blocks,
-          [p.getter, p.setter],
-          methods,
-        );
+        const propName = `${ownerName}.${name(p.name, p.sourceSpan)}`;
+        // Each accessor's locals are in scope only in that accessor.
+        for (const [blocks, body] of [
+          [p.getterVarBlocks ?? [], p.getter],
+          [p.setterVarBlocks ?? [], p.setter],
+        ] as const) {
+          pou(propName, scope(blocks, owner.varBlocks), blocks, body, methods);
+        }
       }
     }
   }

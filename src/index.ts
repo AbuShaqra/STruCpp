@@ -846,6 +846,26 @@ function runPipeline(
                   ...(a.manifest.globals ?? []),
                 ].some((d) => d.name.toUpperCase() === name),
               ),
+            libraryFB: (name) => {
+              for (const a of mergedOptions.libraries ?? []) {
+                const fb = a.manifest.functionBlocks.find(
+                  (f) => f.name.toUpperCase() === name,
+                );
+                if (fb === undefined) continue;
+                const members = [
+                  ...fb.inputs,
+                  ...fb.outputs,
+                  ...fb.inouts,
+                  ...(fb.locals ?? []),
+                  ...(fb.temps ?? []),
+                  ...(fb.methods ?? []),
+                ].map((m) => m.name.toUpperCase());
+                return fb.extends === undefined
+                  ? { members }
+                  : { members, extends: fb.extends };
+              }
+              return undefined;
+            },
           })
         : []),
       ...resolveArrayBounds(ast, mergedOptions.globalConstants ?? {}),

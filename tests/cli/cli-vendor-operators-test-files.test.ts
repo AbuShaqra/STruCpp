@@ -105,6 +105,19 @@ END_TEST
     expect(JSON.stringify(parsed.testFile)).not.toContain("Line ");
   });
 
+  it("lowers __POSITION although a source enumeration has a member of the name", () => {
+    expect(
+      testErrors(
+        "TYPE E_K : (__POSITION, BITADR, OTHER); END_TYPE\nPROGRAM P\nEND_PROGRAM\n",
+        `TEST 'enum'
+VAR s : STRING; END_VAR
+  s := __POSITION();
+END_TEST
+`,
+      ),
+    ).toEqual([]);
+  });
+
   describe.skipIf(!hasGpp)("--test", () => {
     beforeAll(() => {
       if (!existsSync(CLI_PATH)) throw new Error(`CLI not built: ${CLI_PATH}`);

@@ -6288,7 +6288,11 @@ export class SemanticAnalyzer {
         ...lowerTestPouOperators(
           testFile,
           testFile.fileName,
-          (name) => sourceSymbolTables.globalScope.lookup(name) !== undefined,
+          // An enum member is no declaration a call reaches.
+          (name) => {
+            const kind = sourceSymbolTables.globalScope.lookup(name)?.kind;
+            return kind !== undefined && kind !== "enumValue";
+          },
         ),
       );
     }
