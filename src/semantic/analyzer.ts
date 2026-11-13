@@ -126,6 +126,7 @@ import {
   platformTypeTarget,
   restoreDeclaredPlatformTypes,
 } from "./platform-types.js";
+import { implicitParameterHint } from "./implicit-parameters.js";
 
 // =============================================================================
 // Located Variable Address Parsing
@@ -4277,6 +4278,18 @@ export class SemanticAnalyzer {
     return params;
   }
 
+  /** Upper-case names of a user FUNCTION's inputs that carry an implicit-parameter attribute. */
+  private implicitParameterNames(sym: FunctionSymbol): Set<string> {
+    const names = new Set<string>();
+    for (const block of sym.declaration?.varBlocks ?? []) {
+      for (const decl of block.declarations) {
+        if (decl.implicitParameter === undefined) continue;
+        for (const n of decl.names) names.add(n.toUpperCase());
+      }
+    }
+    return names;
+  }
+
   /**
    * Option A: every input without an initial value is mandatory. Resolve the
    * call's named/positional arguments to parameter slots (mirroring the
@@ -4312,10 +4325,13 @@ export class SemanticAnalyzer {
       .filter((p) => !satisfied.has(p.name))
       .map((p) => p.name);
     if (missing.length > 0) {
+      const implicit = this.implicitParameterNames(sym);
       this.addError(
         `'${expr.functionName.toUpperCase()}' is missing required input${
           missing.length > 1 ? "s" : ""
-        }: ${missing.join(", ")}`,
+        }: ${missing.join(", ")}${implicitParameterHint(
+          missing.filter((n) => implicit.has(n)),
+        )}`,
         expr.sourceSpan.startLine,
         expr.sourceSpan.startCol,
         expr.sourceSpan.file,
