@@ -119,6 +119,10 @@ describe("Test Main Generator", () => {
 
       // Should generate test function
       expect(code).toContain("bool test_1(strucpp::TestContext& ctx)");
+      // A run-time fault names the test case as its task
+      expect(code).toContain(
+        `strucpp::strucpp_set_current_task("TEST 'Counter increments'");`,
+      );
       // Should use Program_Counter for the variable type
       expect(code).toContain("Program_Counter uut;");
       // Should generate runner with test name

@@ -322,6 +322,19 @@ it (thread-local under `STRUCPP_THREADED`); it is left out when none is set.
 A store into a subrange variable goes through `iec_subrange_store`, which raises the same fault
 (`IecFault::Subrange`) with `Value <v> outside <lo>..<hi> stored in <variable>` when the value is outside the range.
 
+Where the fork dispatches the programs itself, it names the task:
+
+- the REPL and the cyclic runner (`repl_run`, `cyclic_run`) set the task of each program before its
+  cycle and clear it after; a program bound to a task in a CONFIGURATION carries that task's name, and a
+  program run without a CONFIGURATION carries none;
+- the `--test` runner names each test case as its task, as `TEST '<name>'`.
+
+A runtime that runs the generated programs itself (an embedding scheduler, the threaded runtime of a host
+such as OpenPLC) has no dispatcher in the fork. It must call `strucpp::strucpp_set_current_task(name)` on
+the thread that runs a task, before that task's programs run in each cycle, and
+`strucpp::strucpp_set_current_task(nullptr)` after them. The name is not copied: pass a string that
+outlives the call, such as a literal.
+
 ## Pointer and Reference Types
 
 ### POINTER TO (`iec_pointer.hpp`)
