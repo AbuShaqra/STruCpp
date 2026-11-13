@@ -128,6 +128,8 @@ Three-pass analysis orchestrated by `SemanticAnalyzer`:
 
 **Pass C: Validation** -- Checks assignment compatibility, condition types (must be BOOL), FOR loop bound types, CASE selector types (ANY_INT, ANY_BIT, or enum), function argument constraints, located variable address formats, and VAR_EXTERNAL references.
 
+Where a phase cannot run on the result of a broken one, it stops: conditional-pragma errors stop the parse; parse, AST-building, lowering and project-model (CONFIGURATION) errors stop the semantic analysis; an undefined type or a refused STRUCT feature stops Pass B, and a Pass B error stops Pass C. The literal checks of Pass C (an integer, typed, LTIME or REAL literal its type cannot hold, a STRING character outside Windows-1252) need no resolved type, so they run in every case and are reported in the same pass as the error that stopped the others.
+
 ### Type System
 
 21 elementary types organized into categories (ANY_NUM, ANY_INT, ANY_REAL, ANY_BIT, ANY_STRING, ANY_DATE) used for generic function dispatch. Key compatibility rules:
@@ -188,6 +190,8 @@ Libraries use a single-file `.stlib` archive format (JSON):
 ```
 
 `compile()` is a pure function -- no auto-discovery or implicit library loading. All libraries must be explicitly provided via `libraryPaths` or `libraries` options. The CLI auto-adds a bundled `libs/` directory (like gcc system lib paths), which can be disabled with `--no-default-libs`.
+
+The option `threaded: true` tells `compile()` that the generated C++ will be built with `STRUCPP_THREADED`. The compiler cannot see that macro, so it uses the option for the warnings about a shared global reached by reference (a VAR_IN_OUT bound to it, or its REF/ADR/REF_LINK/REF=): they appear when the build is threaded or when a CONFIGURATION runs more than one task, and not for a single-task, unthreaded build.
 
 ### Bundled Libraries
 
