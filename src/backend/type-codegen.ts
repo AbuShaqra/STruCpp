@@ -234,6 +234,8 @@ export class TypeCodeGenerator {
    */
   /** Each alias of the unit (upper case) to the type it names, for NOT. */
   private aliasTargets: Map<string, string> = new Map();
+  /** Upper-case names of the unit's TYPE declarations. */
+  private declaredTypeNames: Set<string> = new Set();
 
   private structInitEmitter: StructInitEmitter = {
     emitValue: (value: Expression): string => this.expressionToCpp(value),
@@ -290,6 +292,7 @@ export class TypeCodeGenerator {
         })),
     );
     this.unionStored = unionStoredTypes(types);
+    this.declaredTypeNames = new Set(types.map((t) => t.name.toUpperCase()));
     this.aliasTargets = new Map(
       types.flatMap((t) =>
         t.definition.kind === "TypeReference" &&
@@ -805,6 +808,24 @@ export class TypeCodeGenerator {
         ) {
           const arg = expr.arguments[0]!.value;
           return this.notToCpp(arg, `(${this.expressionToCpp(arg)})`);
+        }
+        {
+          // SIZEOF(T) / XSIZEOF(T) of a type: its size, as in a body
+          const name = expr.functionName.toUpperCase();
+          const arg = expr.arguments[0]?.value;
+          if (
+            (name === "SIZEOF" || name === "XSIZEOF") &&
+            expr.arguments.length === 1 &&
+            arg?.kind === "VariableExpression" &&
+            arg.fieldAccess.length === 0 &&
+            arg.subscripts.length === 0 &&
+            !arg.isDereference &&
+            // A FUNCTION_BLOCK's class is not declared yet where types are emitted
+            (isElementaryType(arg.name.toUpperCase()) ||
+              this.declaredTypeNames.has(arg.name.toUpperCase()))
+          ) {
+            return `strucpp::iec_size_of_type<${this.mapTypeToCpp(arg.name)}>::value`;
+          }
         }
         return `${expr.functionName}()`;
       default:

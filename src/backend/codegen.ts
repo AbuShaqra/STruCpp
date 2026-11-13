@@ -1021,19 +1021,44 @@ export class CodeGenerator {
       return undefined;
     }
     const upper = value.name.toUpperCase();
-    const isVariable =
-      this.currentScopeVarTypes.has(upper) ||
-      (this.ast?.globalVarBlocks.some((b) =>
-        b.declarations.some((d) =>
-          d.names.some((n) => n.toUpperCase() === upper),
-        ),
-      ) ??
-        false);
-    if (isVariable) return undefined;
+    if (this.isVariableNamed(upper)) return undefined;
     if (!this.isUserDefinedType(value.name) && !isElementaryType(upper)) {
       return undefined;
     }
-    return `${this.mapTypeRefToCpp({ name: value.name })}{}`;
+    // The size of the type itself: no value is built (an ABSTRACT FB has none)
+    return `strucpp::iec_size_of_type<${this.mapTypeRefToCpp({ name: value.name })}>::value`;
+  }
+
+  /**
+   * A variable of this name is in reach: a local, a member inherited from a
+   * base FB, a global or a CONFIGURATION global.
+   */
+  private isVariableNamed(upper: string): boolean {
+    const declares = (blocks: readonly VarBlock[]): boolean =>
+      blocks.some((b) =>
+        b.declarations.some((d) =>
+          d.names.some((n) => n.toUpperCase() === upper),
+        ),
+      );
+    if (this.currentScopeVarTypes.has(upper)) return true;
+    const ast = this.ast;
+    if (ast === undefined) return false;
+    const seen = new Set<string>();
+    let base = this.currentFBExtends?.toUpperCase();
+    while (base !== undefined && !seen.has(base)) {
+      seen.add(base);
+      const current = base;
+      const fb = ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === current,
+      );
+      if (fb === undefined) break;
+      if (declares(fb.varBlocks)) return true;
+      base = fb.extends?.toUpperCase();
+    }
+    return (
+      declares(ast.globalVarBlocks) ||
+      ast.configurations.some((c) => declares(c.varBlocks))
+    );
   }
 
   protected mapTypeRefToCpp(typeRef: TypeShape): string {
@@ -7337,14 +7362,18 @@ export class CodeGenerator {
     if (!userFunction && expr.libraryFunction === undefined) {
       // A built-in operator the type checker resolved (__ISVALIDREF, XSIZEOF).
       if (expr.vendorOperator !== undefined && expr.arguments.length === 1) {
+        const sizedType =
+          expr.vendorOperator === "XSIZEOF"
+            ? this.sizeofTypeOperand(expr.arguments[0]!.value)
+            : undefined;
+        if (sizedType !== undefined) {
+          return `static_cast<IEC_ULINT>(${sizedType})`;
+        }
         const kept = this.keepReferenceWrapper;
         this.keepReferenceWrapper = expr.vendorOperator === "__ISVALIDREF";
         let arg: string;
         try {
-          arg =
-            (expr.vendorOperator === "XSIZEOF"
-              ? this.sizeofTypeOperand(expr.arguments[0]!.value)
-              : undefined) ?? this.generateExpression(expr.arguments[0]!.value);
+          arg = this.generateExpression(expr.arguments[0]!.value);
         } finally {
           this.keepReferenceWrapper = kept;
         }
@@ -7410,13 +7439,13 @@ export class CodeGenerator {
 
       // 2. Check for standard function (may have different cppName)
       const stdFunc = this.stdRegistry.lookup(nameUpper);
+      const sizedType =
+        nameUpper === "SIZEOF" && expr.arguments.length === 1
+          ? this.sizeofTypeOperand(expr.arguments[0]!.value)
+          : undefined;
+      if (sizedType !== undefined) return sizedType;
       if (stdFunc) {
         const args = expr.arguments.map((arg, idx) => {
-          const sizedType =
-            nameUpper === "SIZEOF" && idx === 0
-              ? this.sizeofTypeOperand(arg.value)
-              : undefined;
-          if (sizedType !== undefined) return sizedType;
           let generated = this.generateExpression(arg.value);
           // For the bare `TO_xxx(temporal_var)` spelling, `nameUpper` is
           // a registered std function (not a `*_TO_*` form) so the source
