@@ -1799,6 +1799,7 @@ export class TypeChecker {
 
     // Comparison operators always return BOOL
     if (["=", "<>", "<", ">", "<=", ">="].includes(expr.operator)) {
+      this.refuseMixedStringComparison(expr, leftType, rightType);
       type = ELEMENTARY_TYPES["BOOL"];
     }
     // Logical operators return BOOL
@@ -1947,6 +1948,36 @@ export class TypeChecker {
       );
       return;
     }
+  }
+
+  /**
+   * A STRING compared with a WSTRING (variables or literals): no comparison
+   * of the two exists, so it is refused in every mode instead of failing the
+   * C++ build.
+   */
+  private refuseMixedStringComparison(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): void {
+    const kind = (t: IECType): string | undefined => {
+      if (t.typeKind !== "elementary") return undefined;
+      const name = this.aliasBase((t as ElementaryType).name).toUpperCase();
+      return /^WSTRING\b/.test(name)
+        ? "WSTRING"
+        : /^STRING\b/.test(name)
+          ? "STRING"
+          : undefined;
+    };
+    const l = kind(leftType);
+    const r = kind(rightType);
+    if (l === undefined || r === undefined || l === r) return;
+    this.addError(
+      `Cannot compare ${l} with ${r}; convert one with STRING_TO_WSTRING or WSTRING_TO_STRING`,
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
   }
 
   /**

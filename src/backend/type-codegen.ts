@@ -19,6 +19,7 @@ import type {
   VariableExpression,
   BinaryExpression,
   UnaryExpression,
+  FunctionCallExpression,
   ElementaryType,
 } from "../frontend/ast.js";
 import { charLiteralUnits } from "../literal-utils.js";
@@ -81,6 +82,8 @@ export interface TypeCodeGenOptions {
   shadowingNames?: ReadonlySet<string> | undefined;
   /** Whether a type name is an INTERFACE: a field or element of one holds a reference (`IEC_ITF`). */
   isInterfaceType?: ((typeName: string) => boolean) | undefined;
+  /** The C++ of a call in a STRUCT default, as a body would emit it (`INT_TO_REAL(3)` as `TO_REAL(3)`). */
+  callToCpp?: ((call: FunctionCallExpression) => string) | undefined;
 }
 
 /**
@@ -806,6 +809,10 @@ export class TypeCodeGenerator {
         ) {
           const arg = expr.arguments[0]!.value;
           return this.notToCpp(arg, `(${this.expressionToCpp(arg)})`);
+        }
+        // The body's emission maps the name (a conversion, LEN) and its arguments
+        if (this.options.callToCpp !== undefined) {
+          return this.options.callToCpp(expr);
         }
         // Positional arguments are kept (`LEN('abc')`)
         return expr.arguments.some((a) => a.name !== undefined || a.isOutput)

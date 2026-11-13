@@ -50,6 +50,9 @@ export function literalStringComparison(
   leftCpp: string,
   rightCpp: string,
 ): [string, string] | undefined {
+  // `('aa') > ('zz')`: the literals inside the parentheses
+  while (left.kind === "ParenthesizedExpression") left = left.expression;
+  while (right.kind === "ParenthesizedExpression") right = right.expression;
   if (left.kind !== "LiteralExpression" || right.kind !== "LiteralExpression") {
     return undefined;
   }

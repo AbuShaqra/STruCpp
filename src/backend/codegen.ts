@@ -1689,6 +1689,7 @@ export class CodeGenerator {
       isUserDefinedType: (t) => this.isUserDefinedType(t),
       shadowingNames: this.shadowingNames(),
       isInterfaceType: (t): boolean => this.isInterfaceType(t),
+      callToCpp: (call): string => this.generateExpression(call),
     });
     if (ast.types.length > 0) {
       const lateStructNames = new Set(lateStructs.map((n) => n.toUpperCase()));

@@ -1201,6 +1201,15 @@ inline auto TO_STRING(const T& src) noexcept -> decltype(WSTRING_TO_STRING(src))
     return WSTRING_TO_STRING(src);
 }
 
+// A WSTRING or STRING literal (a C++ string literal) converts as its text,
+// not as a pointer taken for a BOOL.
+inline IECString<254> TO_STRING(const char16_t* src) noexcept {
+    return WSTRING_TO_STRING(IECWString<254>(src));
+}
+inline IECWString<254> TO_WSTRING(const char* src) noexcept {
+    return STRING_TO_WSTRING(IECString<254>(src));
+}
+
 // A CHAR is the one-character STRING of it, a WCHAR the one-unit WSTRING.
 inline IECString<254> TO_STRING(CHAR_t c) noexcept {
     IECString<254> r;
