@@ -605,6 +605,8 @@ export class CodeGenerator {
    *  while emitting a program body; access to these is rewritten to go through
    *  the GlobalVar pointer (g->read() / g->write() / g->with_lock()). */
   private programExternals: Set<string> = new Set();
+  /** `_ref` while a PROGRAM constructor's initializers are generated: a VAR_EXTERNAL is then its constructor parameter, the member not yet set. */
+  private externalPointerSuffix = "";
 
   /** UPPER(names) of the CONFIGURATION globals, set while their storage is emitted. */
   private configGlobalInitNames: Set<string> = new Set();
@@ -3468,8 +3470,17 @@ export class CodeGenerator {
         .join(", ");
       this.emit(`Program_${prog.name}::Program_${prog.name}(${params})`);
 
-      // Initializer list
+      // Initializer list; an initial value naming a VAR_EXTERNAL reads it through the parameter.
       const inits: string[] = [];
+      this.programExternals = new Set(
+        prog.varExternal.map((ext) => ext.name.toUpperCase()),
+      );
+      this.compositeExternals = new Set(
+        prog.varExternal
+          .filter((ext) => !isElementaryType(ext.typeName))
+          .map((ext) => ext.name.toUpperCase()),
+      );
+      this.externalPointerSuffix = "_ref";
       for (const decl of prog.varDeclarations) {
         const initVal = this.projectVarInitializer(decl);
         if (initVal) {
@@ -3482,6 +3493,9 @@ export class CodeGenerator {
           );
         }
       }
+      this.externalPointerSuffix = "";
+      this.programExternals = new Set();
+      this.compositeExternals = new Set();
       // External globals: bind the pointer member to the canonical GlobalVar<V>
       // passed by the configuration. Identical in both builds.
       const extInits = prog.varExternal.map(
@@ -5065,12 +5079,39 @@ export class CodeGenerator {
       stmt.target.kind === "VariableExpression"
         ? this.refAssignTargetKind(stmt.target)
         : undefined;
+    // A CONFIGURATION global reached through VAR_EXTERNAL: rebind the global
+    // itself under its lock, not the copy read() returns.
+    const external = this.externalRefAssignTarget(stmt.target);
+    if (external !== undefined) {
+      const rebind =
+        targetKind === "ref_to"
+          ? `(*__glk) = REF(${source})`
+          : `(*__glk).bind(${source})`;
+      this.emit(
+        `${indent}${external}->with_lock([&](auto* __glk) { ${rebind}; });`,
+      );
+      return;
+    }
     if (targetKind === "ref_to") {
       this.emit(`${indent}${target} = REF(${source});`);
     } else {
       // REFERENCE_TO (and the default) rebind via bind().
       this.emit(`${indent}${target}.bind(${source});`);
     }
+  }
+
+  /** The C++ name of a REF= target that is a whole VAR_EXTERNAL of a program, if it is one. */
+  private externalRefAssignTarget(target: Expression): string | undefined {
+    if (target.kind !== "VariableExpression") return undefined;
+    const bare =
+      target.subscripts.length === 0 &&
+      target.fieldAccess.length === 0 &&
+      !target.isDereference &&
+      (target.accessChain?.length ?? 0) === 0;
+    if (!bare || !this.programExternals.has(target.name.toUpperCase())) {
+      return undefined;
+    }
+    return this.resolveVariableBaseName(target.name);
   }
 
   /**
@@ -5647,13 +5688,17 @@ export class CodeGenerator {
       expr.fieldAccess.length === 0 &&
       !expr.isDereference
     ) {
-      return `${expr.name}->read()`;
+      return `${expr.name}${this.externalPointerSuffix}->read()`;
     }
 
     // `p^` / `p^.x` on a VAR_EXTERNAL POINTER TO / REF_TO: dereference the
     // pointer the shared global holds, read under its lock.
     if (this.programExternals.has(nameUpper) && expr.isDereference) {
-      return this.renderAccessTail(`${expr.name}->read()`, expr, nameUpper);
+      return this.renderAccessTail(
+        `${expr.name}${this.externalPointerSuffix}->read()`,
+        expr,
+        nameUpper,
+      );
     }
 
     // Composite / array shared-global READ (VAR_EXTERNAL to a composite
@@ -5664,7 +5709,8 @@ export class CodeGenerator {
     // with_lock is self-contained (acquire → return → release), so several
     // composite-global reads in one expression are sequential, never nested.
     if (this.compositeExternals.has(nameUpper) && !expr.isDereference) {
-      const ptr = this.resolveVariableBaseName(expr.name);
+      const ptr =
+        this.resolveVariableBaseName(expr.name) + this.externalPointerSuffix;
       const inner = this.renderAccessTail("(*__glk)", expr, nameUpper);
       return `${ptr}->with_lock([&](auto* __glk){ return ${inner}; })`;
     }

@@ -3029,6 +3029,7 @@ export class TypeChecker {
         for (const decl of block.declarations) {
           const value = decl.initialValue;
           if (!value) continue;
+          let hasOperator = false;
           walkAST(value, (node) => {
             if (node.kind !== "FunctionCallExpression") return;
             const call = node as FunctionCallExpression;
@@ -3037,18 +3038,20 @@ export class TypeChecker {
               call.functionName.toUpperCase(),
               scope,
             );
+            if (call.vendorOperator !== undefined) hasOperator = true;
           });
           const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
-          if (
-            value.kind === "FunctionCallExpression" &&
-            value.vendorOperator !== undefined &&
-            value.resolvedType !== undefined &&
+          // Any expression holding an operator, `(XSIZEOF(g))` or `XSIZEOF(g) + 1` too.
+          const valueType =
+            hasOperator &&
             targetType !== undefined &&
             (decl.type.referenceKind ?? "none") === "none"
-          ) {
+              ? this.resolveExprType(value, scope)
+              : undefined;
+          if (targetType !== undefined && valueType !== undefined) {
             this.validateAssignment(
               targetType,
-              value.resolvedType,
+              valueType,
               {
                 kind: "VariableExpression",
                 sourceSpan: decl.sourceSpan,

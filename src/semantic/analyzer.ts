@@ -499,6 +499,7 @@ export class SemanticAnalyzer {
     // flattened, so its members resolve. Flattening precedes the symbol tables.
     const errorsBeforeStructFeature = this.errors.length;
     this.validateStructExtendsFeature(ast);
+    this.validateConfigurationGlobalNames(ast);
     this.validateTypeColonFeature(ast);
     this.flattenStructTypes(ast);
     // UNION refusals and rules are located and gate nothing either.
@@ -2707,6 +2708,34 @@ export class SemanticAnalyzer {
           caseStmt.elseStatements,
           scope,
         );
+      }
+    }
+  }
+
+  /**
+   * A CONFIGURATION global and a top-level VAR_GLOBAL of the same name would be
+   * two C++ definitions of one name: refused at the CONFIGURATION's declaration.
+   */
+  private validateConfigurationGlobalNames(ast: CompilationUnit): void {
+    const topLevel = new Set(
+      ast.globalVarBlocks.flatMap((b) =>
+        b.declarations.flatMap((d) => d.names.map((n) => n.toUpperCase())),
+      ),
+    );
+    if (topLevel.size === 0) return;
+    for (const config of ast.configurations) {
+      for (const block of config.varBlocks) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names) {
+            if (!topLevel.has(name.toUpperCase())) continue;
+            this.addError(
+              `Global '${name.toUpperCase()}' of CONFIGURATION ${config.name.toUpperCase()} is also declared in a top-level VAR_GLOBAL; rename one of them`,
+              decl.sourceSpan.startLine,
+              decl.sourceSpan.startCol,
+              decl.sourceSpan.file,
+            );
+          }
+        }
       }
     }
   }
