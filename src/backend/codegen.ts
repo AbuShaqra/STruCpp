@@ -2146,7 +2146,7 @@ export class CodeGenerator {
       this.emitHeader("");
       this.emitHeader("    // Method instance variables (VAR_INST)");
       for (const m of varInstMembers) {
-        this.emitHeader(`    ${m.cppType} ${m.mangledName};`);
+        this.emitHeader(`    ${m.cppType} ${m.mangledName}${m.init};`);
       }
     }
 
@@ -2403,7 +2403,7 @@ export class CodeGenerator {
     if (varInstMembers.length === 0) return;
     this.emitHeader("    // Method instance variables (VAR_INST)");
     for (const m of varInstMembers) {
-      this.emitHeader(`    ${m.cppType} ${m.mangledName};`);
+      this.emitHeader(`    ${m.cppType} ${m.mangledName}${m.init};`);
     }
   }
 
@@ -2592,16 +2592,26 @@ export class CodeGenerator {
    */
   private collectVarInstMembers(fb: {
     methods: MethodDeclaration[];
-  }): Array<{ mangledName: string; cppType: string }> {
-    const result: Array<{ mangledName: string; cppType: string }> = [];
+  }): Array<{ mangledName: string; cppType: string; init: string }> {
+    const result: Array<{
+      mangledName: string;
+      cppType: string;
+      init: string;
+    }> = [];
     for (const method of fb.methods) {
       for (const block of method.varBlocks) {
         if (block.blockType === "VAR_INST") {
           for (const decl of block.declarations) {
+            const cppType = this.mapTypeRefToCpp(decl.type);
+            // The initial value, as a default member initializer.
+            const init = decl.initialValue
+              ? ` = ${this.generateInitializer(decl.initialValue, cppType, decl.type.name)}`
+              : "";
             for (const name of decl.names) {
               result.push({
                 mangledName: `__${method.name}__${name}`,
-                cppType: this.mapTypeRefToCpp(decl.type),
+                cppType,
+                init,
               });
             }
           }
@@ -2928,6 +2938,7 @@ export class CodeGenerator {
     this.emitForceScope();
     this.currentProgramName = prog.name;
     this.enterScope(prog.varBlocks);
+    this.emitTempResets(prog.varBlocks);
     if (prog.body.length > 0) {
       // Generate statements (Phase 2.8: only ExternalCodePragma; Phase 3+: all statements)
       this.generateStatements(prog.body);
@@ -3068,6 +3079,7 @@ export class CodeGenerator {
       this.emit("    if (__mocked_) { __mock_state_.call_count++; return; }");
     }
     this.enterScope(fb.varBlocks);
+    this.emitTempResets(fb.varBlocks);
     if (fb.body.length > 0) {
       this.generateStatements(fb.body);
     } else if (this.options.sourceComments) {
@@ -3129,6 +3141,36 @@ export class CodeGenerator {
     this.currentFBInterfaceMethods = new Set();
     this.programExternals = new Set();
     this.compositeExternals = new Set();
+  }
+
+  /**
+   * VAR_TEMP of a PROGRAM or FUNCTION_BLOCK body: stored as a member, so set
+   * back to its initial value at the start of every call (a FUNCTION's and a
+   * METHOD's are C++ locals already). A function block instance is left alone.
+   */
+  private emitTempResets(blocks: readonly VarBlock[]): void {
+    for (const block of blocks) {
+      if (block.blockType !== "VAR_TEMP") continue;
+      for (const decl of block.declarations) {
+        const element = decl.type.elementTypeName ?? decl.type.name;
+        if (this.isFBType(element) || this.isFBType(decl.type.name)) continue;
+        const cppType = this.mapTypeRefToCpp(decl.type);
+        const init = decl.initialValue
+          ? ` = ${this.generateInitializer(decl.initialValue, cppType, decl.type.name)}`
+          : this.scalarTypeInit(decl.type);
+        for (const name of decl.names) {
+          const target = this.generateLvalue({
+            kind: "VariableExpression",
+            name,
+            fieldAccess: [],
+            subscripts: [],
+            isDereference: false,
+            sourceSpan: decl.sourceSpan,
+          });
+          this.emit(`    { ${cppType} __temp${init}; ${target} = __temp; }`);
+        }
+      }
+    }
   }
 
   /**
@@ -3543,6 +3585,7 @@ export class CodeGenerator {
     this.currentProgramName = prog.name;
     if (astProg) {
       this.enterScope(astProg.varBlocks);
+      this.emitTempResets(astProg.varBlocks);
     }
     if (astProg && astProg.body.length > 0) {
       // Generate statements (Phase 2.8: only ExternalCodePragma; Phase 3+: all statements)
