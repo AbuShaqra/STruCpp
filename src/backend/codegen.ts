@@ -666,6 +666,10 @@ export class CodeGenerator {
 
   /** Current function name (for redirecting function name := to result variable) */
   private currentFunctionName: string | undefined;
+  /** The POU a fault site names: `FB`, `FB.M` (a method, property or action), `VAR_GLOBAL`. */
+  private faultPou: string | undefined;
+  /** The PROGRAM or FUNCTION_BLOCK whose methods are emitted, for `faultPou`. */
+  private faultOwner: string | undefined;
   /** The declared result type of the current FUNCTION, METHOD or PROPERTY. */
   private currentFunctionResultType: string | undefined;
   /** The declared type of the property whose SET accessor is being generated. */
@@ -1039,6 +1043,60 @@ export class CodeGenerator {
         : name;
     }
     return this.typeCodeGen.mapTypeToCpp(name);
+  }
+
+  /** True when the expression is of an integer or bit string type (an alias of one too). */
+  private isIntegerExpression(expr: Expression): boolean {
+    const t = expr.resolvedType;
+    const name =
+      t?.typeKind === "elementary" && "name" in t
+        ? String(t.name)
+        : this.inferExprType(expr);
+    if (name === undefined) return false;
+    let upper = name.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const current = upper;
+      const def = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === current,
+      )?.definition;
+      if (def?.kind === "TypeReference" && def.arrayDimensions === undefined) {
+        upper = def.name.toUpperCase();
+      } else if (def?.kind === "SubrangeDefinition") {
+        upper = def.baseType.name.toUpperCase();
+      } else {
+        break;
+      }
+    }
+    return /^(U?(SINT|INT|DINT|LINT)|BYTE|WORD|DWORD|LWORD)$/.test(upper);
+  }
+
+  /** Runs `emit` with `pou` (and `owner`, for its methods) as the POU a fault site names. */
+  private withFaultPou(
+    pou: string,
+    owner: string | undefined,
+    emit: () => void,
+  ): void {
+    const savedPou = this.faultPou;
+    const savedOwner = this.faultOwner;
+    this.faultPou = pou;
+    this.faultOwner = owner;
+    try {
+      emit();
+    } finally {
+      this.faultPou = savedPou;
+      this.faultOwner = savedOwner;
+    }
+  }
+
+  /** `strucpp::iec_site{"POU", line}` for a fault raised at `node`. */
+  protected faultSite(node: { sourceSpan: SourceSpan }): string {
+    const pou =
+      this.faultPou ??
+      this.currentFunctionName ??
+      this.currentFBName ??
+      this.currentProgramName ??
+      "?";
+    return `strucpp::iec_site{"${pou}", ${node.sourceSpan.startLine}}`;
   }
 
   /**
@@ -2010,6 +2068,12 @@ export class CodeGenerator {
    * complete, so it is emitted after the FB classes and late types.
    */
   private emitGvlGlobals(ast: CompilationUnit, late: boolean): void {
+    this.withFaultPou("VAR_GLOBAL", undefined, () =>
+      this.emitGvlGlobalsBody(ast, late),
+    );
+  }
+
+  private emitGvlGlobalsBody(ast: CompilationUnit, late: boolean): void {
     const holdsFB = (typeRef: TypeReference): boolean =>
       typeNamesHeldByValue(typeRef).some((n) => {
         const upper = n.toUpperCase();
@@ -2972,6 +3036,17 @@ export class CodeGenerator {
     method: MethodDeclaration,
     className: string,
   ): void {
+    this.withFaultPou(
+      `${this.faultOwner ?? className}.${method.name}`,
+      this.faultOwner,
+      () => this.generateMethodImplementationBody(method, className),
+    );
+  }
+
+  private generateMethodImplementationBody(
+    method: MethodDeclaration,
+    className: string,
+  ): void {
     const isIfaceReturn =
       method.returnType && this.isInterfaceType(method.returnType.name);
     const returnType = method.returnType
@@ -3067,6 +3142,17 @@ export class CodeGenerator {
     prop: PropertyDeclaration,
     className: string,
   ): void {
+    this.withFaultPou(
+      `${this.faultOwner ?? className}.${prop.name}`,
+      this.faultOwner,
+      () => this.generatePropertyImplementationBody(prop, className),
+    );
+  }
+
+  private generatePropertyImplementationBody(
+    prop: PropertyDeclaration,
+    className: string,
+  ): void {
     const type = this.mapTypeRefToCpp(prop.type);
 
     // Getter
@@ -3117,6 +3203,14 @@ export class CodeGenerator {
    * Generate implementation for a program.
    */
   private generateProgramImplementation(
+    prog: CompilationUnit["programs"][0],
+  ): void {
+    this.withFaultPou(prog.name, prog.name, () =>
+      this.generateProgramImplementationBody(prog),
+    );
+  }
+
+  private generateProgramImplementationBody(
     prog: CompilationUnit["programs"][0],
   ): void {
     // Constructor
@@ -3183,6 +3277,15 @@ export class CodeGenerator {
     prog: CompilationUnit["programs"][0],
     externals: ReadonlyArray<{ name: string; typeName: string }>,
   ): void {
+    this.withFaultPou(prog.name, prog.name, () =>
+      this.generateProgramMethodImplementationsBody(prog, externals),
+    );
+  }
+
+  private generateProgramMethodImplementationsBody(
+    prog: CompilationUnit["programs"][0],
+    externals: ReadonlyArray<{ name: string; typeName: string }>,
+  ): void {
     if (prog.methods.length === 0) return;
     this.currentFBName = prog.name;
     this.currentFBExtends = undefined;
@@ -3215,6 +3318,14 @@ export class CodeGenerator {
    * Generate implementation for a function block.
    */
   private generateFBImplementation(
+    fb: CompilationUnit["functionBlocks"][0],
+  ): void {
+    this.withFaultPou(fb.name, fb.name, () =>
+      this.generateFBImplementationBody(fb),
+    );
+  }
+
+  private generateFBImplementationBody(
     fb: CompilationUnit["functionBlocks"][0],
   ): void {
     this.currentFBName = fb.name;
@@ -3459,6 +3570,14 @@ export class CodeGenerator {
    * Generate implementation for a function.
    */
   private generateFunctionImplementation(
+    func: CompilationUnit["functions"][0],
+  ): void {
+    this.withFaultPou(func.name, undefined, () =>
+      this.generateFunctionImplementationBody(func),
+    );
+  }
+
+  private generateFunctionImplementationBody(
     func: CompilationUnit["functions"][0],
   ): void {
     const params = this.generateFunctionParams(func);
@@ -3772,6 +3891,12 @@ export class CodeGenerator {
    * Generate implementation for a program from the project model.
    */
   private generateProgramImplementationFromModel(prog: ProgramDecl): void {
+    this.withFaultPou(prog.name, prog.name, () =>
+      this.generateProgramImplementationFromModelBody(prog),
+    );
+  }
+
+  private generateProgramImplementationFromModelBody(prog: ProgramDecl): void {
     // Look up AST program for source span
     const astProg = this.ast?.programs.find(
       (p) => p.name.toUpperCase() === prog.name.toUpperCase(),
@@ -4043,6 +4168,15 @@ export class CodeGenerator {
     prog: ProgramDecl,
     astProg: CompilationUnit["programs"][0] | undefined,
   ): void {
+    this.withFaultPou(prog.name, prog.name, () =>
+      this.emitProgramFbInitBody(prog, astProg),
+    );
+  }
+
+  private emitProgramFbInitBody(
+    prog: ProgramDecl,
+    astProg: CompilationUnit["programs"][0] | undefined,
+  ): void {
     if (!this.fbInitPlan) return;
     if (this.fbInitGlobalsEmitted) this.emit("    __fb_init_globals();");
     if (!astProg) return;
@@ -4173,10 +4307,17 @@ export class CodeGenerator {
   }
 
   private emitFileScopeGlobals(): void {
+    this.withFaultPou("VAR_GLOBAL", undefined, () =>
+      this.emitFileScopeGlobalsBody(),
+    );
+  }
+
+  private emitFileScopeGlobalsBody(): void {
     if (!this.projectModel) return;
     const seen = new Set<string>();
     let emittedAny = false;
     for (const config of this.projectModel.configurations) {
+      this.faultPou = config.name;
       this.configGlobalInitNames = new Set(
         config.globalVars.map((g) => g.name.toUpperCase()),
       );
@@ -6706,6 +6847,15 @@ export class CodeGenerator {
       return `${l} ${cppOp} ${r}`;
     }
 
+    // Integer `/` by a divisor that may be 0: a fault naming the POU and line
+    if (
+      expr.operator === "/" &&
+      !isNonZeroIntegerLiteral(expr.right) &&
+      this.isIntegerExpression(expr)
+    ) {
+      return `iec_div(${left}, ${right}, ${this.faultSite(expr)})`;
+    }
+
     // MOD by a divisor that may be 0 gives 0 (Table 29, note e)
     if (expr.operator === "MOD" && !isNonZeroIntegerLiteral(expr.right)) {
       return `iec_mod(${left}, ${right})`;
@@ -7765,6 +7915,21 @@ export class CodeGenerator {
           this.keepReferenceWrapper = kept;
         }
         return vendorOperatorCpp(expr.vendorOperator, arg);
+      }
+      // DIV(a, b) of integers faults on a zero divisor, as `a / b` does
+      if (nameUpper === "DIV" && expr.arguments.length === 2) {
+        const named = (n: string): Expression | undefined =>
+          expr.arguments.find((a) => a.name?.toUpperCase() === n)?.value;
+        const dividend = named("IN1") ?? expr.arguments[0]!.value;
+        const divisor = named("IN2") ?? expr.arguments[1]!.value;
+        if (
+          expr.arguments.every((a) => !a.isOutput) &&
+          this.isIntegerExpression(dividend) &&
+          this.isIntegerExpression(divisor) &&
+          !isNonZeroIntegerLiteral(divisor)
+        ) {
+          return `iec_div(${this.generateExpression(dividend)}, ${this.generateExpression(divisor)}, ${this.faultSite(expr)})`;
+        }
       }
 
       // 0. ADR(x) → &(x) (CODESYS address-of operator)

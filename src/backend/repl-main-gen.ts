@@ -242,6 +242,8 @@ interface ProgramInfo {
   vars: Array<{ name: string; typeName: string }>;
   /** Task interval in nanoseconds (0 = REPL applies 20ms default) */
   intervalNs: number;
+  /** The task that runs the program, named in a run-time fault */
+  task?: string;
 }
 
 /**
@@ -292,7 +294,7 @@ function emitProgramDescriptorsAndMain(
   lines.push(`static ProgramDescriptor programs[] = {`);
   for (const prog of programs) {
     lines.push(
-      `    {"${prog.displayName}", &${prog.instanceExpr}, ${prog.varsDescName}, ${prog.vars.length}, ${prog.intervalNs}LL},`,
+      `    {"${prog.displayName}", &${prog.instanceExpr}, ${prog.varsDescName}, ${prog.vars.length}, ${prog.intervalNs}LL${prog.task !== undefined ? `, "${prog.task}"` : ""}},`,
     );
   }
   lines.push("};");
@@ -308,16 +310,15 @@ function emitProgramDescriptorsAndMain(
   );
   lines.push("    }");
   lines.push("");
+  // The exit status is 1 when a task faulted
   lines.push("    if (cyclic) {");
   lines.push(
-    `        strucpp::cyclic_run(programs, ${programs.length}, print_vars);`,
-  );
-  lines.push("    } else {");
-  lines.push(
-    `        strucpp::repl_run(programs, ${programs.length}, g_st_source, g_cpp_source, g_line_map, g_line_map_count);`,
+    `        return strucpp::cyclic_run(programs, ${programs.length}, print_vars);`,
   );
   lines.push("    }");
-  lines.push("    return 0;");
+  lines.push(
+    `    return strucpp::repl_run(programs, ${programs.length}, g_st_source, g_cpp_source, g_line_map, g_line_map_count);`,
+  );
   lines.push("}");
   lines.push("");
 }
@@ -389,6 +390,7 @@ function generateWithConfiguration(
           varsDescName: `vars_${inst.instanceName}`,
           vars: astProg ? collectVarsFromBlocks(astProg.varBlocks) : [],
           intervalNs,
+          task: task.name,
         });
       }
     }
