@@ -1509,21 +1509,35 @@ inline T MOD(T a, T b) noexcept {
  * A store into a subrange variable: the value, or a run-time fault naming the
  * variable, the value and the range when it is outside `lo..hi`.
  */
+namespace detail {
+/** `a < b` for any two integers, compared by value: an unsigned above 2^63 is not negative. */
+template<typename A, typename B>
+constexpr bool subrange_below(A a, B b) noexcept {
+    return (a < static_cast<A>(0)) != (b < static_cast<B>(0))
+        ? a < static_cast<A>(0)
+        : static_cast<unsigned long long>(a) < static_cast<unsigned long long>(b);
+}
+
+/** Raise the subrange fault for `v` outside `lo..hi`, each written as its value. */
+template<typename X, typename T>
+[[noreturn]] STRUCPP_FAULT_PATH void subrange_fault(X v, T lo, T hi, const char* name, iec_site site) {
+    fault_text text;
+    text.add("Value ").add_number(v).add(" outside ").add_number(lo).add("..").add_number(hi);
+    text.add(" stored in ").add(name);
+    iec_raise_fault(IecFault::Subrange, text, site);
+}
+}  // namespace detail
+
 template<typename T, typename V>
 inline T iec_subrange_store(const V& value, T lo, T hi, const char* name, iec_site site) {
     const auto v = iec_unwrap(value);
-    const long long x = static_cast<long long>(v);
-    if (x < static_cast<long long>(lo) || x > static_cast<long long>(hi)) {
-#if STRUCPP_HAS_EXCEPTIONS
-        const std::string what = "Value " + std::to_string(x) + " outside " +
-            std::to_string(static_cast<long long>(lo)) + ".." +
-            std::to_string(static_cast<long long>(hi)) + " stored in " + name;
-        iec_site_fault(IecFault::Subrange, what.c_str(), site);
-#else
-        (void)name;
-        iec_site_fault(IecFault::Subrange, "Subrange", site);
-#endif
+#ifndef STRUCPP_NO_BOUNDS_CHECK
+    if (detail::subrange_below(v, lo) || detail::subrange_below(hi, v)) {
+        detail::subrange_fault(v, lo, hi, name, site);
     }
+#else
+    (void)lo; (void)hi; (void)name; (void)site;
+#endif
     return static_cast<T>(v);
 }
 

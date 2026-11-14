@@ -57,6 +57,7 @@ enum class IecFault : uint8_t {
     ArrayBounds   = 1,  ///< IEC array index out of bounds.
     BadLocation   = 2,  ///< Invalid located-variable area/size character.
     DivideByZero  = 3,  ///< Integer division by zero.
+    Subrange      = 4,  ///< A value stored outside its subrange.
 };
 
 /** Where a fault happened: the POU and the line of its source, as compiled. */

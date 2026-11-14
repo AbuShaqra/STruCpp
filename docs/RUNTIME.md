@@ -327,7 +327,13 @@ runtime named on this thread with `strucpp_set_current_task(name)` before runnin
 `STRUCPP_THREADED`); it is left out when none is set.
 
 A store into a subrange variable goes through `iec_subrange_store`, which raises the same fault
-(`IecFault::Subrange`) with `Value <v> outside <lo>..<hi> stored in <variable>` when the value is outside the range.
+(`IecFault::Subrange`) with `Value <v> outside <lo>..<hi> stored in <variable>` when the value is outside the range,
+each number as written (a ULINT above 2^63 too). Every store is checked: an assignment (to a local, a member, a
+FUNCTION or METHOD result, a global, a CONFIGURATION global through VAR_EXTERNAL, an ARRAY element, a STRUCT
+field), an FB input passed at the call (`f(i := v)`), an output or in-out copied back (`f(o => x)`). A FUNCTION or
+METHOD input is checked on entry, so its fault names the callee and the line of its VAR_INPUT. An integer literal
+inside the range is stored with no check. Defining `STRUCPP_NO_BOUNDS_CHECK` leaves the check out, as it does the
+index check.
 
 Where the fork dispatches the programs itself, it names the task:
 

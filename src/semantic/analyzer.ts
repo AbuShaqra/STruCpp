@@ -112,6 +112,7 @@ import {
 import {
   charLiteralUnits,
   exactIntegerLiteralValue,
+  exactIntegerValue,
   IEC_INTEGER_MAX,
   IEC_INTEGER_MIN,
   integerTypeRange,
@@ -5323,6 +5324,83 @@ export class SemanticAnalyzer {
     );
     if (this.features.has("fb_init")) this.validateFbInitArgumentNames(ast);
     this.validateInitialValueNames(ast);
+    this.validateSubrangeInitialValues(ast);
+  }
+
+  /**
+   * A constant initial value outside its subrange is refused: a variable's,
+   * a STRUCT field's, an ARRAY element's and a TYPE's own default.
+   */
+  private validateSubrangeInitialValues(ast: CompilationUnit): void {
+    const types = new Map(ast.types.map((t) => [t.name.toUpperCase(), t]));
+    const rangeOf = (
+      name: string | undefined,
+    ): { name: string; lo: bigint; hi: bigint } | undefined => {
+      let upper = name?.toUpperCase();
+      for (let i = 0; i < 32 && upper !== undefined; i++) {
+        const decl = types.get(upper);
+        if (decl === undefined) return undefined;
+        const def = decl.definition;
+        if (def.kind === "SubrangeDefinition") {
+          const lo = exactIntegerValue(def.lowerBound);
+          const hi = exactIntegerValue(def.upperBound);
+          // An inline subrange is shown as written: `INT (0..10)`
+          const shown =
+            decl.inline !== undefined ? def.baseType.name : decl.name;
+          return lo === undefined || hi === undefined
+            ? undefined
+            : { name: shown, lo, hi };
+        }
+        if (def.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+          return undefined;
+        }
+        upper = def.name.toUpperCase();
+      }
+      return undefined;
+    };
+    const elementOf = (type: TypeReference): string | undefined => {
+      if (type.arrayDimensions !== undefined) return type.elementTypeName;
+      const def = types.get(type.name.toUpperCase())?.definition;
+      return def?.kind === "ArrayDefinition" ? def.elementType.name : undefined;
+    };
+    const reported = new Set<Expression>();
+    const check = (
+      value: Expression,
+      typeName: string | undefined,
+      owner: string,
+    ): void => {
+      if (reported.has(value)) return;
+      const range = rangeOf(typeName);
+      const v = exactIntegerValue(value);
+      if (range === undefined || v === undefined) return;
+      if (v >= range.lo && v <= range.hi) return;
+      reported.add(value);
+      this.addError(
+        `The initial value ${v} of '${owner}' is outside ${range.name} (${range.lo}..${range.hi})`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+    };
+    const checkDecl = (decl: VarDeclaration): void => {
+      const value = decl.initialValue;
+      if (value === undefined) return;
+      const owner = decl.names.join(", ");
+      if (value.kind === "ArrayLiteralExpression") {
+        const element = elementOf(decl.type);
+        for (const e of value.elements) check(e, element, owner);
+      } else if (decl.type.arrayDimensions === undefined) {
+        check(value, decl.type.name, owner);
+      }
+    };
+    for (const type of ast.types) {
+      if (type.defaultValue !== undefined) {
+        check(type.defaultValue, type.name, type.name);
+      }
+    }
+    walkAST(ast, (node) => {
+      if (node.kind === "VarDeclaration") checkDecl(node as VarDeclaration);
+    });
   }
 
   /**

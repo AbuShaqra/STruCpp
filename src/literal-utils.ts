@@ -13,6 +13,8 @@
  * layers need it and neither should depend on the other for it.
  */
 
+import type { Expression } from "./frontend/ast.js";
+
 import { cp1252Byte } from "./byte-utils.js";
 
 /** Widest value any IEC 61131-3 integer type (ULINT) can hold. */
@@ -136,4 +138,23 @@ export function charLiteralUnits(raw: string): {
     }
   }
   return { wide, units };
+}
+
+/** An integer constant written as a literal (typed, signed or in parentheses): its exact value. */
+export function exactIntegerValue(expr: Expression): bigint | undefined {
+  if (expr.kind === "ParenthesizedExpression") {
+    return exactIntegerValue(expr.expression);
+  }
+  if (expr.kind === "UnaryExpression" && expr.operator === "-") {
+    const inner = exactIntegerValue(expr.operand);
+    return inner === undefined ? undefined : -inner;
+  }
+  if (expr.kind !== "LiteralExpression" || expr.literalType !== "INT") {
+    return undefined;
+  }
+  const raw =
+    expr.rawValue.includes("#") && !/^(16|8|2)#/.test(expr.rawValue)
+      ? expr.rawValue.slice(expr.rawValue.indexOf("#") + 1)
+      : expr.rawValue;
+  return exactIntegerLiteralValue(raw);
 }

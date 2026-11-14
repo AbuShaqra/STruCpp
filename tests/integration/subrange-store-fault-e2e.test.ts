@@ -65,4 +65,141 @@ int main() {
       );
     });
   }
+
+  const PATHS = `TYPE SR : INT (0..10); END_TYPE
+TYPE SUW : ULINT (0..18446744073709551614); END_TYPE
+FUNCTION_BLOCK FB
+VAR_INPUT i : SR; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+o := 42;
+END_FUNCTION_BLOCK
+FUNCTION FR : SR
+VAR_INPUT a : INT; END_VAR
+FR := a;
+END_FUNCTION
+FUNCTION FI : INT
+VAR_INPUT a : SR; END_VAR
+FI := a;
+END_FUNCTION
+VAR_GLOBAL g : SR; END_VAR
+PROGRAM Main
+VAR f : FB; x : SR; v : INT := 42; r : INT; k : INT; SR_MIN : INT := 0; SR_MAX : INT := 100; w : SUW; big : ULINT := 9223372036854775808; huge : ULINT := 18446744073709551615; END_VAR
+CASE k OF
+1: f(i := v);
+2: f(o => x);
+3: r := FR(v);
+4: r := FI(v);
+5: g := v;
+6: x := v;
+7: w := big;
+8: w := huge;
+END_CASE;
+END_PROGRAM
+`;
+
+  const runPaths = (name: string, extraFlags: string[]): string[] => {
+    const result = compile(PATHS, { headerFileName: "generated.hpp" });
+    expect(result.errors).toEqual([]);
+    return compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: name,
+      extraFlags,
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::strucpp_set_current_task("T");
+    for (int k = 1; k <= 8; ++k) {
+        try { strucpp::Program_MAIN p; p.K = k; p.run(); std::cout << k << " ok|"; }
+        catch (const std::exception& e) { std::cout << k << " " << e.what() << "|"; }
+    }
+    std::cout << std::endl;
+    return 0;
+}
+`,
+    })
+      .split("|")
+      .filter((l) => l !== "");
+  };
+
+  it("checks FB inputs and outputs, FUNCTION inputs and results, globals; qualifies the bounds; compares ULINT exactly", () => {
+    expect(runPaths("subrange_paths", [])).toEqual([
+      "1 Value 42 outside 0..10 stored in I in MAIN, line 20, task T",
+      "2 Value 42 outside 0..10 stored in X in MAIN, line 21, task T",
+      "3 Value 42 outside 0..10 stored in FR in FR, line 10, task T",
+      "4 Value 42 outside 0..10 stored in A in FI, line 13, task T",
+      "5 Value 42 outside 0..10 stored in G in MAIN, line 24, task T",
+      "6 Value 42 outside 0..10 stored in X in MAIN, line 25, task T",
+      "7 ok",
+      "8 Value 18446744073709551615 outside 0..18446744073709551614 stored in W in MAIN, line 27, task T",
+    ]);
+  });
+
+  it("leaves the check out under STRUCPP_NO_BOUNDS_CHECK", () => {
+    expect(
+      runPaths("subrange_paths_off", ["-DSTRUCPP_NO_BOUNDS_CHECK"]),
+    ).toEqual(["1 ok", "2 ok", "3 ok", "4 ok", "5 ok", "6 ok", "7 ok", "8 ok"]);
+  });
+
+  it("checks a CONFIGURATION global stored through VAR_EXTERNAL", () => {
+    const result = compile(
+      `TYPE SR : INT (0..10); END_TYPE
+PROGRAM Main
+VAR_EXTERNAL cg : SR; END_VAR
+VAR v : INT := 42; END_VAR
+cg := v;
+END_PROGRAM
+CONFIGURATION C
+VAR_GLOBAL cg : SR; END_VAR
+RESOURCE R ON PLC
+TASK t(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH t : Main;
+END_RESOURCE
+END_CONFIGURATION
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "subrange_config_global",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::strucpp_set_current_task("T");
+    try { strucpp::Program_MAIN p(&strucpp::CG); p.run(); std::cout << "ok" << std::endl; }
+    catch (const std::exception& e) { std::cout << e.what() << std::endl; }
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe(
+      "Value 42 outside 0..10 stored in CG in MAIN, line 5, task T",
+    );
+  });
+
+  it("refuses a constant initial value outside the subrange", () => {
+    const result = compile(`TYPE SR : INT (0..10); END_TYPE
+TYPE SD : INT (0..10) := 42; END_TYPE
+TYPE ST : STRUCT f : SR := 42; END_STRUCT END_TYPE
+PROGRAM Main
+VAR x : INT (0..10) := 42; y : SD; t : ST; a : ARRAY[1..2] OF SR := [42, 1]; ok : SR := 5; n : SR := -1; END_VAR
+x := x;
+END_PROGRAM
+`);
+    expect(
+      result.errors.map((e) => `${e.line}:${e.column} ${e.message}`).sort(),
+    ).toEqual([
+      "2:26 The initial value 42 of 'SD' is outside SD (0..10)",
+      "3:28 The initial value 42 of 'F' is outside SR (0..10)",
+      "5:102 The initial value -1 of 'N' is outside SR (0..10)",
+      "5:24 The initial value 42 of 'X' is outside INT (0..10)",
+      "5:70 The initial value 42 of 'A' is outside SR (0..10)",
+    ]);
+  });
 });
