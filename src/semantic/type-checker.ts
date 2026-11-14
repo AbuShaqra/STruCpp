@@ -662,10 +662,109 @@ export class TypeChecker {
       this.currentFBName = undefined;
     }
 
+    this.refuseMixedStringComparisonsInInitialValues(ast);
+
     return {
       errors: this.errors,
       warnings: this.warnings,
     };
+  }
+
+  /**
+   * A STRING/WSTRING comparison in an initial value the checks above do not
+   * type (a STRUCT field default, an array or structure initializer, a global's
+   * initial value) is refused as in a body. Operand types come from literals,
+   * declared variables and types already resolved; nothing is inferred anew.
+   */
+  private refuseMixedStringComparisonsInInitialValues(
+    ast: CompilationUnit,
+  ): void {
+    const global = this.symbolTables.globalScope;
+    const visit = (value: Expression | undefined, scope: Scope): void => {
+      if (value === undefined) return;
+      walkAST(value, (node) => {
+        if (node.kind !== "BinaryExpression") return;
+        const expr = node as BinaryExpression;
+        if (
+          !["=", "<>", "<", ">", "<=", ">="].includes(expr.operator) ||
+          this.refusedMixedComparisons.has(expr)
+        ) {
+          return;
+        }
+        const left = this.knownOperandType(expr.left, scope);
+        const right = this.knownOperandType(expr.right, scope);
+        if (left !== undefined && right !== undefined) {
+          this.refuseMixedStringComparison(expr, left, right);
+        }
+      });
+    };
+    const blocks = (
+      list: readonly VarBlock[],
+      scope: Scope | undefined,
+    ): void => {
+      for (const block of list) {
+        for (const decl of block.declarations) {
+          visit(decl.initialValue, scope ?? global);
+        }
+      }
+    };
+    blocks(ast.globalVarBlocks, global);
+    for (const c of ast.configurations) blocks(c.varBlocks, global);
+    for (const prog of ast.programs) {
+      const scope = this.symbolTables.getProgramScope(prog.name);
+      blocks(prog.varBlocks, scope);
+      for (const m of prog.methods) {
+        blocks(
+          m.varBlocks,
+          this.symbolTables.getMethodScope(prog.name, m.name) ?? scope,
+        );
+      }
+    }
+    for (const func of ast.functions) {
+      blocks(func.varBlocks, this.symbolTables.getFunctionScope(func.name));
+    }
+    for (const fb of ast.functionBlocks) {
+      const scope = this.symbolTables.getFBScope(fb.name);
+      blocks(fb.varBlocks, scope);
+      for (const m of fb.methods) {
+        blocks(
+          m.varBlocks,
+          this.symbolTables.getMethodScope(fb.name, m.name) ?? scope,
+        );
+      }
+    }
+    for (const type of ast.types) {
+      if (type.definition.kind !== "StructDefinition") continue;
+      for (const field of type.definition.fields) {
+        visit(field.initialValue, global);
+      }
+    }
+  }
+
+  /** An operand's type when known without inference: a literal, a declared name or a resolved type. */
+  private knownOperandType(
+    expr: Expression,
+    scope: Scope,
+  ): IECType | undefined {
+    while (expr.kind === "ParenthesizedExpression") expr = expr.expression;
+    if (expr.resolvedType !== undefined) return expr.resolvedType;
+    if (expr.kind === "LiteralExpression") {
+      return expr.literalType === "STRING" || expr.literalType === "WSTRING"
+        ? ELEMENTARY_TYPES[expr.literalType]
+        : undefined;
+    }
+    if (
+      expr.kind === "VariableExpression" &&
+      expr.fieldAccess.length === 0 &&
+      expr.subscripts.length === 0 &&
+      !expr.isDereference
+    ) {
+      const symbol = scope.lookup(expr.name);
+      if (symbol?.kind === "variable" || symbol?.kind === "constant") {
+        return symbol.type;
+      }
+    }
+    return undefined;
   }
 
   // ===========================================================================
@@ -1804,6 +1903,7 @@ export class TypeChecker {
 
     // Comparison operators always return BOOL
     if (["=", "<>", "<", ">", "<=", ">="].includes(expr.operator)) {
+      this.refuseMixedStringComparison(expr, leftType, rightType);
       type = ELEMENTARY_TYPES["BOOL"];
     }
     // Logical operators return BOOL
@@ -1952,6 +2052,40 @@ export class TypeChecker {
       );
       return;
     }
+  }
+
+  /**
+   * A STRING compared with a WSTRING (variables or literals): no comparison
+   * of the two exists, so it is refused in every mode instead of failing the
+   * C++ build.
+   */
+  /** Comparisons refused as STRING against WSTRING, so none is refused twice. */
+  private refusedMixedComparisons = new WeakSet<BinaryExpression>();
+
+  private refuseMixedStringComparison(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): void {
+    const kind = (t: IECType): string | undefined => {
+      if (t.typeKind !== "elementary") return undefined;
+      const name = this.aliasBase((t as ElementaryType).name).toUpperCase();
+      return /^WSTRING\b/.test(name)
+        ? "WSTRING"
+        : /^STRING\b/.test(name)
+          ? "STRING"
+          : undefined;
+    };
+    const l = kind(leftType);
+    const r = kind(rightType);
+    if (l === undefined || r === undefined || l === r) return;
+    this.refusedMixedComparisons.add(expr);
+    this.addError(
+      `Cannot compare ${l} with ${r}; convert one with STRING_TO_WSTRING or WSTRING_TO_STRING`,
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
   }
 
   /**

@@ -101,6 +101,7 @@ import {
   iecBaseToCppLiteral,
   isComparison,
   isComparisonExpr,
+  literalStringComparison,
   isNonZeroIntegerLiteral,
   literalTemporalType,
   translateIECString,
@@ -1742,6 +1743,7 @@ export class CodeGenerator {
       isUserDefinedType: (t) => this.isUserDefinedType(t),
       shadowingNames: this.shadowingNames(),
       isInterfaceType: (t): boolean => this.isInterfaceType(t),
+      callToCpp: (call): string => this.generateExpression(call),
     });
     if (ast.types.length > 0) {
       const lateStructNames = new Set(lateStructs.map((n) => n.toUpperCase()));
@@ -6650,6 +6652,14 @@ export class CodeGenerator {
     // A comparison nested directly in a comparison comes from a chain such
     // as `a < b = c`; parenthesise it so C++ keeps the ST grouping.
     if (isComparison(expr.operator)) {
+      const texts = literalStringComparison(
+        expr.left,
+        expr.right,
+        left,
+        right,
+        expr.operator,
+      );
+      if (texts !== undefined) return `${texts[0]} ${cppOp} ${texts[1]}`;
       const l = isComparisonExpr(expr.left) ? `(${left})` : left;
       const r = isComparisonExpr(expr.right) ? `(${right})` : right;
       return `${l} ${cppOp} ${r}`;
