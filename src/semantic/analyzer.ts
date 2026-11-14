@@ -504,6 +504,7 @@ export class SemanticAnalyzer {
     // flattened, so its members resolve. Flattening precedes the symbol tables.
     const errorsBeforeStructFeature = this.errors.length;
     this.validateStructExtendsFeature(ast);
+    this.validateConfigurationGlobalNames(ast);
     this.validateTypeColonFeature(ast);
     this.flattenStructTypes(ast);
     // UNION refusals and rules are located and gate nothing either.
@@ -2724,6 +2725,55 @@ export class SemanticAnalyzer {
           caseStmt.elseStatements,
           scope,
         );
+      }
+    }
+  }
+
+  /**
+   * A CONFIGURATION global and a top-level VAR_GLOBAL of the same name would be
+   * two C++ definitions of one name: refused at the CONFIGURATION's declaration.
+   */
+  private validateConfigurationGlobalNames(ast: CompilationUnit): void {
+    // A name several global lists declare is emitted list-qualified
+    // (named_global_lists), so only a name declared once can collide.
+    const counts = new Map<string, number>();
+    for (const b of ast.globalVarBlocks) {
+      for (const d of b.declarations) {
+        for (const n of d.names) {
+          const upper = n.toUpperCase();
+          counts.set(upper, (counts.get(upper) ?? 0) + 1);
+        }
+      }
+    }
+    const topLevel = new Set(
+      [...counts].filter(([, count]) => count === 1).map(([name]) => name),
+    );
+    // A global another CONFIGURATION declares: by upper-case name, its configuration.
+    const configOf = new Map<string, string>();
+    for (const config of ast.configurations) {
+      for (const block of config.varBlocks) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names) {
+            const upper = name.toUpperCase();
+            const other = configOf.get(upper);
+            if (other !== undefined && other !== config.name.toUpperCase()) {
+              this.addError(
+                `Global '${upper}' of CONFIGURATION ${config.name.toUpperCase()} is also declared in CONFIGURATION ${other}; rename one of them`,
+                decl.sourceSpan.startLine,
+                decl.sourceSpan.startCol,
+                decl.sourceSpan.file,
+              );
+            }
+            configOf.set(upper, other ?? config.name.toUpperCase());
+            if (!topLevel.has(upper)) continue;
+            this.addError(
+              `Global '${name.toUpperCase()}' of CONFIGURATION ${config.name.toUpperCase()} is also declared in a top-level VAR_GLOBAL; rename one of them`,
+              decl.sourceSpan.startLine,
+              decl.sourceSpan.startCol,
+              decl.sourceSpan.file,
+            );
+          }
+        }
       }
     }
   }
