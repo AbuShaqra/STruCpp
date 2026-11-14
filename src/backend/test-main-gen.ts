@@ -551,9 +551,9 @@ class TestFunctionGenerator {
     // If there's a SETUP, create the struct instance and call setup()
     if (setupStructName) {
       lines.push(`${this.indent}${setupStructName} s;`);
-      // A failed assertion in SETUP fails the test; TEARDOWN still runs.
+      // A failed assertion or a run-time fault in SETUP fails the test; TEARDOWN still runs.
       lines.push(
-        `${this.indent}if (!s.setup(ctx)) { s.teardown(ctx); return false; }`,
+        `${this.indent}try { if (!s.setup(ctx)) { s.teardown(ctx); return false; } } catch (...) { s.teardown(ctx); throw; }`,
       );
       // Track setup var names so we prefix accesses with s.
       this.setupVarNames = new Set<string>();
@@ -581,7 +581,9 @@ class TestFunctionGenerator {
 
     if (setupStructName) {
       // Wrap body in a lambda so assert failures (return false) don't skip teardown
-      lines.push(`${this.indent}bool __passed = [&]() -> bool {`);
+      // A run-time fault in the body: TEARDOWN runs, then the runner reports it
+      lines.push(`${this.indent}bool __passed = false;`);
+      lines.push(`${this.indent}try { __passed = [&]() -> bool {`);
       const savedIndent = this.indent;
       this.indent += "    ";
       for (const stmt of tc.body) {
@@ -589,7 +591,9 @@ class TestFunctionGenerator {
       }
       lines.push(`${this.indent}return true;`);
       this.indent = savedIndent;
-      lines.push(`${this.indent}}();`);
+      lines.push(
+        `${this.indent}}(); } catch (...) { s.teardown(ctx); throw; }`,
+      );
       lines.push(`${this.indent}const bool __torn_down = s.teardown(ctx);`);
       lines.push(`${this.indent}return __passed && __torn_down;`);
     } else {

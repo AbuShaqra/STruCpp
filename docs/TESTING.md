@@ -77,7 +77,7 @@ TEARDOWN
 END_TEARDOWN
 ```
 
-SETUP runs before each test case, its variables starting from their declared initial values. TEARDOWN runs after each test case, also in a file with no SETUP, and also when the test failed or ended with `RETURN`. Variables declared in SETUP are accessible in all TEST blocks within the same file.
+SETUP runs before each test case, its variables starting from their declared initial values. TEARDOWN runs after each test case, also in a file with no SETUP, and also when the test failed, ended with `RETURN` or stopped on a run-time fault (a division by zero, an index out of bounds): the fault is reported as the test's failure after TEARDOWN has run. Variables declared in SETUP are accessible in all TEST blocks within the same file.
 
 ### TEST Blocks
 
