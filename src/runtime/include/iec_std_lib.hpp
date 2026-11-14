@@ -1048,26 +1048,36 @@ inline int64_t parse_time_ns(const char* s) noexcept {
         negative = *s == '-';
         ++s;
     }
-    int64_t total = 0;
+    // The magnitude, unsigned: the LTIME minimum's is 2^63
+    uint64_t total = 0;
     while (*s) {
-        char* end = nullptr;
-        const double val = std::strtod(s, &end);
-        if (end == s) { ++s; continue; }
-        s = end;
+        if (!(*s >= '0' && *s <= '9') && *s != '.') { ++s; continue; }
+        uint64_t whole = 0;
+        while (*s >= '0' && *s <= '9') {
+            whole = whole * 10u + static_cast<uint64_t>(*s - '0');
+            ++s;
+        }
+        double frac = 0;
+        if (*s == '.') {
+            char* end = nullptr;
+            frac = std::strtod(s, &end);
+            if (end != s) s = end; else ++s;
+        }
         const char u0 = (*s >= 'A' && *s <= 'Z') ? static_cast<char>(*s + 32) : *s;
         const char u1 =
             (s[0] && s[1] >= 'A' && s[1] <= 'Z') ? static_cast<char>(s[1] + 32) : s[1];
-        int64_t mult = 1000000LL; // default unit: milliseconds
-        if (u0 == 'm' && u1 == 's') { mult = 1000000LL; s += 2; }
-        else if (u0 == 'u' && u1 == 's') { mult = 1000LL; s += 2; }
-        else if (u0 == 'n' && u1 == 's') { mult = 1LL; s += 2; }
-        else if (u0 == 'd') { mult = 86400000000000LL; s += 1; }
-        else if (u0 == 'h') { mult = 3600000000000LL; s += 1; }
-        else if (u0 == 'm') { mult = 60000000000LL; s += 1; }
-        else if (u0 == 's') { mult = 1000000000LL; s += 1; }
-        total += static_cast<int64_t>(val * static_cast<double>(mult));
+        uint64_t mult = 1000000u; // default unit: milliseconds
+        if (u0 == 'm' && u1 == 's') { mult = 1000000u; s += 2; }
+        else if (u0 == 'u' && u1 == 's') { mult = 1000u; s += 2; }
+        else if (u0 == 'n' && u1 == 's') { mult = 1u; s += 2; }
+        else if (u0 == 'd') { mult = 86400000000000u; s += 1; }
+        else if (u0 == 'h') { mult = 3600000000000u; s += 1; }
+        else if (u0 == 'm') { mult = 60000000000u; s += 1; }
+        else if (u0 == 's') { mult = 1000000000u; s += 1; }
+        total += whole * mult + static_cast<uint64_t>(frac * static_cast<double>(mult));
     }
-    return negative ? -total : total;
+    // Negated in unsigned arithmetic, then read as the signed value it encodes
+    return static_cast<int64_t>(negative ? 0u - total : total);
 }
 
 inline void read_int(const char*& s, long long& out) noexcept {
@@ -1127,8 +1137,12 @@ inline int64_t parse_dt_ns(const char* s) noexcept {
             ++s;
         }
     }
-    return days_from_civil(y, mo ? mo : 1, d ? d : 1) * 86400000000000LL +
-           hh * 3600000000000LL + mm * 60000000000LL + ss * 1000000000LL + frac_ns;
+    // Modulo 2^64: the day count of the LDT minimum times ns-per-day overflows
+    // int64 before the time of day brings it back in range
+    const uint64_t days = static_cast<uint64_t>(days_from_civil(y, mo ? mo : 1, d ? d : 1));
+    const uint64_t time_of_day = static_cast<uint64_t>(
+        hh * 3600000000000LL + mm * 60000000000LL + ss * 1000000000LL + frac_ns);
+    return static_cast<int64_t>(days * 86400000000000ULL + time_of_day);
 }
 
 } // namespace iec_strparse

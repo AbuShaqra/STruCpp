@@ -121,4 +121,39 @@ int main() {
       "T#-1s500ms|LTIME#-1d1ns|DT#1969-12-31-23:59:59.5|LDT#2000-01-01-00:00:00.000000001|T#1h2m3s4ms",
     );
   });
+
+  it("reads back the LTIME and LDT minimum with no overflow", () => {
+    const result = compile(
+      `PROGRAM Main
+VAR s : STRING := 'LTIME#-106751d23h47m16s854ms775us808ns'; r : LTIME; a : LDT; t, b, c : STRING; END_VAR
+r := STRING_TO_LTIME(s); b := LTIME_TO_STRING(r);
+a := LDT#2262-04-11-23:47:16.854775807; a := a - LTIME#106751d23h47m16s854ms775us807ns;
+a := a - LTIME#106751d23h47m16s854ms775us807ns; a := a - LTIME#1ns;
+t := LDT_TO_STRING(a); c := LDT_TO_STRING(STRING_TO_LDT(t));
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "temporal_minimum",
+      extraFlags: ["-fsanitize=undefined", "-fno-sanitize-recover=undefined"],
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.B.get().c_str() << "|" << p.T.get().c_str() << "|" << p.C.get().c_str() << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe(
+      "LTIME#-106751d23h47m16s854ms775us808ns|LDT#1677-09-21-00:12:43.145224192|LDT#1677-09-21-00:12:43.145224192",
+    );
+  });
 });
