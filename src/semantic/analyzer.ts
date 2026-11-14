@@ -5335,7 +5335,7 @@ export class SemanticAnalyzer {
     const types = new Map(ast.types.map((t) => [t.name.toUpperCase(), t]));
     const rangeOf = (
       name: string | undefined,
-    ): { name: string; lo: bigint; hi: bigint } | undefined => {
+    ): { lo: bigint; hi: bigint } | undefined => {
       let upper = name?.toUpperCase();
       for (let i = 0; i < 32 && upper !== undefined; i++) {
         const decl = types.get(upper);
@@ -5344,12 +5344,7 @@ export class SemanticAnalyzer {
         if (def.kind === "SubrangeDefinition") {
           const lo = exactIntegerValue(def.lowerBound);
           const hi = exactIntegerValue(def.upperBound);
-          // An inline subrange is shown as written: `INT (0..10)`
-          const shown =
-            decl.inline !== undefined ? def.baseType.name : decl.name;
-          return lo === undefined || hi === undefined
-            ? undefined
-            : { name: shown, lo, hi };
+          return lo === undefined || hi === undefined ? undefined : { lo, hi };
         }
         if (def.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
           return undefined;
@@ -5376,7 +5371,7 @@ export class SemanticAnalyzer {
       if (v >= range.lo && v <= range.hi) return;
       reported.add(value);
       this.addError(
-        `The initial value ${v} of '${owner}' is outside ${range.name} (${range.lo}..${range.hi})`,
+        `The initial value ${v} of '${owner}' is outside its subrange ${range.lo}..${range.hi}`,
         value.sourceSpan.startLine,
         value.sourceSpan.startCol,
         value.sourceSpan.file,

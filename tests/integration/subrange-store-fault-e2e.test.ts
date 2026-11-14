@@ -195,11 +195,11 @@ END_PROGRAM
     expect(
       result.errors.map((e) => `${e.line}:${e.column} ${e.message}`).sort(),
     ).toEqual([
-      "2:26 The initial value 42 of 'SD' is outside SD (0..10)",
-      "3:28 The initial value 42 of 'F' is outside SR (0..10)",
-      "5:102 The initial value -1 of 'N' is outside SR (0..10)",
-      "5:24 The initial value 42 of 'X' is outside INT (0..10)",
-      "5:70 The initial value 42 of 'A' is outside SR (0..10)",
+      "2:26 The initial value 42 of 'SD' is outside its subrange 0..10",
+      "3:28 The initial value 42 of 'F' is outside its subrange 0..10",
+      "5:102 The initial value -1 of 'N' is outside its subrange 0..10",
+      "5:24 The initial value 42 of 'X' is outside its subrange 0..10",
+      "5:70 The initial value 42 of 'A' is outside its subrange 0..10",
     ]);
   });
 });
