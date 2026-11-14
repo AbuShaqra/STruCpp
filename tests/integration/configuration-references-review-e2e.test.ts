@@ -147,6 +147,40 @@ END_PROGRAM
     ).toEqual(["12"]);
   });
 
+  it("rebinds an ARRAY OF POINTER TO and a POINTER TO POINTER TO in a copy (recheck 3 #1, #2)", () => {
+    const main = (): string =>
+      `Program_MAIN m; m.run(); ${["m.A.Y.get()", "m.B.Y.get()", "m.FA.at(1).Y.get()"].map(p).join(" ")}`;
+    const prog = (fb: string): string => `PROGRAM MAIN
+VAR a, b : ${fb}; fa : ARRAY[0..1] OF ${fb} := [(y := 1), (y := 2)]; END_VAR
+a(); b := a; b(); fa[1]();
+END_PROGRAM
+`;
+    expect(
+      run(
+        `FUNCTION_BLOCK FB_AP
+VAR_INPUT y : INT := 3; END_VAR
+VAR z : INT; ap : ARRAY[0..1] OF POINTER TO INT := [ADR(y), ADR(z)]; END_VAR
+ap[0]^ := ap[0]^ + 10;
+END_FUNCTION_BLOCK
+${prog("FB_AP")}`,
+        "cfgrev_arrptr",
+        main(),
+      ),
+    ).toEqual(["13", "23", "12"]);
+    expect(
+      run(
+        `FUNCTION_BLOCK FB_PP
+VAR_INPUT y : INT := 3; END_VAR
+VAR p : POINTER TO INT := ADR(y); pp : POINTER TO POINTER TO INT := ADR(p); END_VAR
+pp^^ := pp^^ + 10;
+END_FUNCTION_BLOCK
+${prog("FB_PP")}`,
+        "cfgrev_ptrptr",
+        main(),
+      ),
+    ).toEqual(["13", "23", "12"]);
+  });
+
   it("reads an FB's VAR_EXTERNAL in its initial values (recheck #2)", () => {
     expect(
       run(

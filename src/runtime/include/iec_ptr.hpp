@@ -278,6 +278,17 @@ inline void rebind_own_member(IEC_Ptr<T>& p, const IEC_Ptr<T>& src,
     p = IEC_Ptr<T>(static_cast<void*>(reinterpret_cast<char*>(self) + (bound - from)));
 }
 
+/** The same for each element of an ARRAY of pointers. */
+template<typename A, typename Owner>
+inline auto rebind_own_member(A& arr, const A& src, Owner* self,
+                              const Owner* other) noexcept
+    -> decltype(arr.begin(), src.begin(), void()) {
+    auto to = arr.begin();
+    for (auto from = src.begin(); from != src.end(); ++from, ++to) {
+        rebind_own_member(*to, *from, self, other);
+    }
+}
+
 // Reverse comparison: nullptr == IEC_Ptr
 template<typename T>
 bool operator==(std::nullptr_t, IEC_Ptr<T> p) noexcept { return p == nullptr; }

@@ -2667,26 +2667,37 @@ export class CodeGenerator {
       }
       for (const decl of block.declarations) {
         const kind = decl.type.referenceKind ?? "none";
+        // A pointer or reference at any level, or an ARRAY OF POINTER TO.
+        const levels = [
+          kind,
+          ...(decl.type.referenceChain ?? []),
+          ...(decl.type.arrayDimensions !== undefined
+            ? (decl.type.elementReferenceChain ?? [])
+            : []),
+        ];
         if (
-          (kind !== "reference_to" && kind !== "pointer_to") ||
-          decl.type.arrayDimensions !== undefined ||
-          (decl.type.referenceChain?.length ?? 1) > 1
+          !levels.includes("reference_to") &&
+          !levels.includes("pointer_to")
         ) {
           continue;
         }
         const value = decl.initialValue;
-        const operand =
-          value?.kind === "RefExpression"
-            ? value.operand
-            : value?.kind === "FunctionCallExpression" &&
-                value.functionName.toUpperCase() === "ADR"
-              ? value.arguments[0]?.value
-              : undefined;
-        if (
-          operand?.kind === "VariableExpression" &&
-          own.has(operand.name.toUpperCase())
-        ) {
-          bound = true;
+        const operands =
+          value?.kind === "ArrayLiteralExpression" ? value.elements : [value];
+        for (const v of operands) {
+          const operand =
+            v?.kind === "RefExpression"
+              ? v.operand
+              : v?.kind === "FunctionCallExpression" &&
+                  v.functionName.toUpperCase() === "ADR"
+                ? v.arguments[0]?.value
+                : undefined;
+          if (
+            operand?.kind === "VariableExpression" &&
+            own.has(operand.name.toUpperCase())
+          ) {
+            bound = true;
+          }
         }
         for (const name of decl.names) {
           pointers.push(this.mangleMemberIfNeeded(name, decl.type.name));
