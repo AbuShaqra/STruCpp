@@ -1937,10 +1937,6 @@ export class TypeChecker {
     return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
   }
 
-  /**
-   * MOD takes integers (ANY_INT, IEC 61131-3 Table 29): a REAL or LREAL
-   * operand is refused, in every mode, as the C++ build would fail.
-   */
   /** The elementary type a variable path names through `^`, fields and subscripts, if any. */
   private accessedElementaryType(
     expr: Expression,
@@ -1966,6 +1962,10 @@ export class TypeChecker {
     return t;
   }
 
+  /**
+   * MOD takes integers (ANY_INT, IEC 61131-3 Table 29): a REAL or LREAL
+   * operand is refused, in every mode, as the C++ build would fail.
+   */
   private refuseRealMod(
     expr: BinaryExpression,
     leftType: IECType,
