@@ -1025,7 +1025,10 @@ template<size_t N> inline IEC_WCHAR TO_WCHAR(const IECWStringVar<N>& s) noexcept
 //   TOD  : [TOD#] HH:MM[:SS[.fff]]                 -> ns since midnight
 //   DATE : [D#] YYYY-MM-DD                         -> days since 1970-01-01
 //   DT   : [DT#] YYYY-MM-DD-HH:MM[:SS[.fff]]       -> ns since the Unix epoch
-// Lenient and exception-free (AVR-safe); unparseable input yields 0.
+// Lenient and exception-free (AVR-safe), with no undefined behaviour on any
+// input: text holding no number yields 0; other characters it does not expect
+// are skipped, and a value beyond the type's range wraps modulo 2^64.
+// Fractions are read digit by digit, exactly to the nanosecond.
 namespace iec_strparse {
 
 // Skip a leading `IDENT#` literal prefix (e.g. "T#", "TOD#") if present.
@@ -1038,6 +1041,17 @@ inline const char* skip_literal_prefix(const char* s) noexcept {
         if (!idish) break;
     }
     return s;
+}
+
+/** The digits after a '.', exactly, as a count of `unit / 10^k` (digits past `unit`'s precision are dropped). */
+inline uint64_t read_fraction(const char*& s, uint64_t unit) noexcept {
+    uint64_t value = 0;
+    while (*s >= '0' && *s <= '9') {
+        unit /= 10u;
+        value += static_cast<uint64_t>(*s - '0') * unit;
+        ++s;
+    }
+    return value;
 }
 
 inline int64_t parse_time_ns(const char* s) noexcept {
@@ -1057,15 +1071,12 @@ inline int64_t parse_time_ns(const char* s) noexcept {
             whole = whole * 10u + static_cast<uint64_t>(*s - '0');
             ++s;
         }
-        double frac = 0;
-        if (*s == '.') {
-            char* end = nullptr;
-            frac = std::strtod(s, &end);
-            if (end != s) s = end; else ++s;
-        }
+        const char* frac_start = nullptr;
+        if (*s == '.') frac_start = ++s;
+        while (*s >= '0' && *s <= '9') ++s;  // the fraction, read once its unit is known
         const char u0 = (*s >= 'A' && *s <= 'Z') ? static_cast<char>(*s + 32) : *s;
-        const char u1 =
-            (s[0] && s[1] >= 'A' && s[1] <= 'Z') ? static_cast<char>(s[1] + 32) : s[1];
+        const char u1 = *s == '\0' ? '\0'
+            : (s[1] >= 'A' && s[1] <= 'Z') ? static_cast<char>(s[1] + 32) : s[1];
         uint64_t mult = 1000000u; // default unit: milliseconds
         if (u0 == 'm' && u1 == 's') { mult = 1000000u; s += 2; }
         else if (u0 == 'u' && u1 == 's') { mult = 1000u; s += 2; }
@@ -1074,7 +1085,8 @@ inline int64_t parse_time_ns(const char* s) noexcept {
         else if (u0 == 'h') { mult = 3600000000000u; s += 1; }
         else if (u0 == 'm') { mult = 60000000000u; s += 1; }
         else if (u0 == 's') { mult = 1000000000u; s += 1; }
-        total += whole * mult + static_cast<uint64_t>(frac * static_cast<double>(mult));
+        total += whole * mult;
+        if (frac_start != nullptr) total += read_fraction(frac_start, mult);
     }
     // Negated in unsigned arithmetic, then read as the signed value it encodes
     return static_cast<int64_t>(negative ? 0u - total : total);
@@ -1089,13 +1101,14 @@ inline void read_int(const char*& s, long long& out) noexcept {
 inline int64_t parse_tod_ns(const char* s) noexcept {
     s = skip_literal_prefix(s);
     long long hh = 0, mm = 0, ss = 0;
-    double frac = 0;
     read_int(s, hh);
     if (*s == ':') { ++s; read_int(s, mm); }
     if (*s == ':') { ++s; read_int(s, ss); }
-    if (*s == '.') { char* e = nullptr; frac = std::strtod(s, &e); if (e != s) s = e; }
-    return hh * 3600000000000LL + mm * 60000000000LL + ss * 1000000000LL +
-           static_cast<int64_t>(frac * 1e9);
+    uint64_t frac_ns = 0;
+    if (*s == '.') { ++s; frac_ns = read_fraction(s, 1000000000u); }
+    return static_cast<int64_t>(
+        static_cast<uint64_t>(hh) * 3600000000000u + static_cast<uint64_t>(mm) * 60000000000u +
+        static_cast<uint64_t>(ss) * 1000000000u + frac_ns);
 }
 
 // Days from 1970-01-01 for a proleptic-Gregorian date (Hinnant's algorithm).
@@ -1119,6 +1132,7 @@ inline int64_t parse_date_days(const char* s) noexcept {
 
 inline int64_t parse_dt_ns(const char* s) noexcept {
     s = skip_literal_prefix(s);
+    if (!(*s >= '0' && *s <= '9')) return 0;  // no date: 0, as for no number
     long long y = 0, mo = 0, d = 0, hh = 0, mm = 0, ss = 0;
     read_int(s, y);
     if (*s == '-') { ++s; read_int(s, mo); }
@@ -1127,22 +1141,20 @@ inline int64_t parse_dt_ns(const char* s) noexcept {
     if (*s == ':') { ++s; read_int(s, mm); }
     if (*s == ':') { ++s; read_int(s, ss); }
     // A fraction of a second, to the nanosecond: DT#1969-12-31-23:59:59.5
-    long long frac_ns = 0;
-    if (*s == '.') {
-        ++s;
-        long long scale = 100000000LL;
-        while (*s >= '0' && *s <= '9') {
-            frac_ns += (*s - '0') * scale;
-            scale /= 10;
-            ++s;
-        }
-    }
-    // Modulo 2^64: the day count of the LDT minimum times ns-per-day overflows
+    uint64_t frac_ns = 0;
+    if (*s == '.') { ++s; frac_ns = read_fraction(s, 1000000000u); }
+    // Modulo 2^64: the LDT minimum's day count times ns-per-day overflows
     // int64 before the time of day brings it back in range
-    const uint64_t days = static_cast<uint64_t>(days_from_civil(y, mo ? mo : 1, d ? d : 1));
-    const uint64_t time_of_day = static_cast<uint64_t>(
-        hh * 3600000000000LL + mm * 60000000000LL + ss * 1000000000LL + frac_ns);
-    return static_cast<int64_t>(days * 86400000000000ULL + time_of_day);
+    // Date fields far out of range are clamped, so the day count cannot overflow
+    const auto clamp = [](long long v) noexcept {
+        return v < -1000000000LL ? -1000000000LL : v > 1000000000LL ? 1000000000LL : v;
+    };
+    const uint64_t days = static_cast<uint64_t>(
+        days_from_civil(clamp(y), mo ? clamp(mo) : 1, d ? clamp(d) : 1));
+    return static_cast<int64_t>(
+        days * 86400000000000u + static_cast<uint64_t>(hh) * 3600000000000u +
+        static_cast<uint64_t>(mm) * 60000000000u + static_cast<uint64_t>(ss) * 1000000000u +
+        frac_ns);
 }
 
 } // namespace iec_strparse

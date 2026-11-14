@@ -156,4 +156,55 @@ int main() {
       "LTIME#-106751d23h47m16s854ms775us808ns|LDT#1677-09-21-00:12:43.145224192|LDT#1677-09-21-00:12:43.145224192",
     );
   });
+
+  it("reads malformed and out-of-range text with no undefined behaviour, and TOD fractions exactly", () => {
+    const result = compile(
+      `PROGRAM Main
+VAR a, b, c, d, e, f, g, h, i, j : STRING;
+  sa : STRING := 'DT#2000-01-01-99999999999:00:00'; sb : STRING := 'T#1.5e30s'; sc : STRING := 'T#.'; sd : STRING := 'T#5';
+  se : STRING := ''; sf : STRING := 'DT#'; sg : STRING := 'LTOD#10:38:42.129794059'; sh : STRING := 'TOD#22:38:44.511365';
+  si : STRING := 'T#1.5s'; sj : STRING := 'DT#99999999999999999999-99999999999-99999999999'; END_VAR
+a := DT_TO_STRING(STRING_TO_DT(sa)); b := TIME_TO_STRING(STRING_TO_TIME(sb)); c := TIME_TO_STRING(STRING_TO_TIME(sc));
+d := TIME_TO_STRING(STRING_TO_TIME(sd)); e := DT_TO_STRING(STRING_TO_DT(se)); f := DT_TO_STRING(STRING_TO_DT(sf));
+g := LTOD_TO_STRING(STRING_TO_LTOD(sg)); h := TOD_TO_STRING(STRING_TO_TOD(sh)); i := TIME_TO_STRING(STRING_TO_TIME(si));
+j := DT_TO_STRING(STRING_TO_DT(sj));
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "temporal_malformed",
+      extraFlags: [
+        "-fsanitize=address,undefined,float-cast-overflow",
+        "-fno-sanitize-recover=all",
+      ],
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    for (auto* s : {&p.A, &p.B, &p.C, &p.D, &p.E, &p.F, &p.G, &p.H, &p.I, &p.J}) std::cout << s->get().c_str() << "|";
+    std::cout << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout.split("|").filter((l) => l !== "")).toEqual([
+      "DT#1789-01-13-09:11:24.390662144",
+      "T#30s1ms500us",
+      "T#0ms",
+      "T#5ms",
+      "DT#1970-01-01-00:00:00",
+      "DT#1970-01-01-00:00:00",
+      "LTOD#10:38:42.129794059",
+      "TOD#22:38:44.511365",
+      "T#1s500ms",
+      "DT#1988-12-29-20:03:13.025376256",
+    ]);
+  });
 });
