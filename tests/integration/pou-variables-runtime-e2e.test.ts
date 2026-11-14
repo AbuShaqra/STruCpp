@@ -104,6 +104,35 @@ c := fb.M(); d := fb.M();
 END_PROGRAM
 `;
 
+const SOURCE4 = `FUNCTION_BLOCK Inner
+VAR_INPUT k : INT; END_VAR
+VAR x : INT; p : POINTER TO INT := ADR(x); END_VAR
+VAR_OUTPUT n : INT; END_VAR
+p^ := p^ + 1 + k; n := x;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB
+VAR_TEMP tc : Inner := (k := 2); END_VAR
+VAR_OUTPUT o : INT; END_VAR
+tc(); o := tc.n;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR f : FB; o1, o2, o3 : INT; END_VAR
+f(); f(); o1 := f.o;
+END_PROGRAM
+`;
+
+const SOURCE5 = `FUNCTION_BLOCK FB
+VAR_TEMP ta : ARRAY[0..2] OF INT := [1, 2, 3]; END_VAR
+VAR_OUTPUT oa : INT; END_VAR
+oa := oa + ta[1]; ta[1] := 50;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR_TEMP pa : ARRAY[0..2] OF INT := [1, 2, 3]; END_VAR
+VAR f : FB; o1, o2, o3 : INT; END_VAR
+f(); f(); o2 := f.oa; o3 := o3 + pa[1]; pa[1] := 50;
+END_PROGRAM
+`;
+
 describe.skipIf(!hasGpp)("VAR_TEMP and VAR_INST at run time — g++ e2e", () => {
   let tempDir: string;
   let pchPath: string;
@@ -196,6 +225,61 @@ int main() {
 `,
       });
       expect(stdout).toBe("11 22 1111");
+    });
+
+    it(`builds a VAR_TEMP FB instance with an initial value in place (${label})`, () => {
+      const result = compile(SOURCE4, {
+        ...options,
+        headerFileName: "generated.hpp",
+        features: ["+pointer_to"],
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `pouvars4_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    p.run();
+    std::cout << p.O1.get() << " " << p.O2.get() << " " << p.O3.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      // A fresh Inner each call: 0 + 1 + 2
+      expect(stdout).toBe("3 0 0");
+    });
+    it(`resets a VAR_TEMP ARRAY with an initial value (${label})`, () => {
+      const result = compile(SOURCE5, {
+        ...options,
+        headerFileName: "generated.hpp",
+        features: ["+pointer_to"],
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `pouvars5_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    p.run();
+    std::cout << p.O1.get() << " " << p.O2.get() << " " << p.O3.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      // ta and pa reset to [1, 2, 3] each call
+      expect(stdout).toBe("0 8 4");
     });
   }
 });

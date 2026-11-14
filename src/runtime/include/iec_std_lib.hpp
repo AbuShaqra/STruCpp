@@ -715,11 +715,14 @@ inline void iec_reset_in_place(T& x) {
     new (&x) T();
 }
 
-/** As above, from an initial value. */
-template<typename T, typename V>
-inline void iec_reset_in_place(T& x, V&& init) {
+/**
+ * Ends `x`'s lifetime and returns its storage, for `new (iec_destroyed(x)) T(init)`:
+ * the initial value is built in that storage, not copied from a temporary.
+ */
+template<typename T>
+inline void* iec_destroyed(T& x) noexcept {
     x.~T();
-    new (&x) T(std::forward<V>(init));
+    return static_cast<void*>(&x);
 }
 
 // =============================================================================

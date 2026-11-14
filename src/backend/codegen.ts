@@ -3245,10 +3245,14 @@ export class CodeGenerator {
             isDereference: false,
             sourceSpan: decl.sourceSpan,
           });
+          // The initial value is built in the storage: a temporary copied in
+          // would leave a pointer into itself (`p := ADR(x)`) dangling
           this.emit(
-            inPlace
-              ? `    iec_reset_in_place(${target}${initValue !== undefined ? `, ${initValue}` : ""});`
-              : `    { ${cppType} __temp${init}; ${target} = __temp; }`,
+            !inPlace
+              ? `    { ${cppType} __temp${init}; ${target} = __temp; }`
+              : initValue === undefined
+                ? `    iec_reset_in_place(${target});`
+                : `    ::new (strucpp::iec_destroyed(${target})) ${cppType}(${initValue});`,
           );
         }
       }
