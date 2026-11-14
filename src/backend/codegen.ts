@@ -6526,10 +6526,10 @@ export class CodeGenerator {
 
   /** The declared type of a top-level or CONFIGURATION global of this name. */
   private globalDeclType(upper: string): TypeReference | undefined {
-    if (!this.ast) return undefined;
+    // A partial unit (a test runner's) may have neither list
     for (const block of [
-      ...this.ast.globalVarBlocks,
-      ...this.ast.configurations.flatMap((c) => c.varBlocks),
+      ...(this.ast?.globalVarBlocks ?? []),
+      ...(this.ast?.configurations ?? []).flatMap((c) => c.varBlocks),
     ]) {
       for (const decl of block.declarations) {
         if (decl.names.some((n) => n.toUpperCase() === upper)) return decl.type;
