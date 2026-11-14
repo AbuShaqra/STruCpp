@@ -551,26 +551,15 @@ export function resolveFieldDeclaration(
   const named = (decl: VarDeclaration): boolean =>
     decl.names.some((name) => name.toUpperCase() === fieldUpper);
 
-  // Struct type definitions, through a TYPE alias of one
-  let structUpper = typeUpper;
-  for (let depth = 0; depth < MAX_TYPE_ALIAS_DEPTH; depth++) {
-    const current = structUpper;
-    const td = ast.types.find((t) => t.name.toUpperCase() === current);
-    if (td === undefined) break;
-    const def = td.definition;
-    if (def.kind === "StructDefinition") {
-      const field = def.fields.find(named);
-      if (field) return field;
-      break;
-    }
+  // Struct type definitions
+  for (const td of ast.types) {
     if (
-      def.kind !== "TypeReference" ||
-      def.arrayDimensions !== undefined ||
-      def.referenceKind !== "none"
+      td.name.toUpperCase() === typeUpper &&
+      td.definition.kind === "StructDefinition"
     ) {
-      break;
+      const field = td.definition.fields.find(named);
+      if (field) return field;
     }
-    structUpper = def.name.toUpperCase();
   }
 
   // FB members, then the members each EXTENDS ancestor adds

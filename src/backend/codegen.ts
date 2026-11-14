@@ -4915,25 +4915,6 @@ export class CodeGenerator {
     valueExpr?: Expression,
   ): string | undefined {
     if (target.kind !== "VariableExpression") return undefined;
-    const type = this.declaredAccessType(target);
-    const shown = [target.name, ...target.fieldAccess].join(".");
-    const element = this.subrangeElementOf(type);
-    if (element !== undefined) {
-      return this.subrangeArrayChecked(
-        element,
-        value,
-        valueExpr,
-        shown,
-        target,
-      );
-    }
-    return this.subrangeChecked(type, value, valueExpr, shown, target);
-  }
-
-  /** The declared type a variable access lands on; undefined when unknown. */
-  private declaredAccessType(
-    target: VariableExpression,
-  ): TypeShape | undefined {
     const upper = target.name.toUpperCase();
     const hasAccess =
       target.subscripts.length > 0 ||
@@ -4952,50 +4933,11 @@ export class CodeGenerator {
         : undefined) ??
       this.globalVarTypeRef(upper);
     if (root === undefined) return undefined;
-    return hasAccess
+    const type = hasAccess
       ? resolveAccessType(root, target, this.accessLookup)
       : root;
-  }
-
-  /** The subrange TYPE the elements of an ARRAY type are; undefined for any other type. */
-  private subrangeElementOf(
-    type: TypeShape | undefined,
-  ): TypeDeclaration | undefined {
-    if (type === undefined || (type.referenceKind ?? "none") !== "none") {
-      return undefined;
-    }
-    const element =
-      type.arrayDimensions !== undefined
-        ? type.elementTypeName === undefined
-          ? undefined
-          : { name: type.elementTypeName, referenceKind: "none" as const }
-        : this.accessLookup.arrayElement(type.name);
-    return this.subrangeTypeOf(element);
-  }
-
-  /**
-   * A whole ARRAY stored into an ARRAY OF a subrange: every element checked,
-   * unless the source's elements are of that same subrange.
-   */
-  private subrangeArrayChecked(
-    element: TypeDeclaration,
-    value: string,
-    valueExpr: Expression | undefined,
-    shown: string,
-    site: { sourceSpan: SourceSpan },
-  ): string | undefined {
-    if (
-      valueExpr === undefined ||
-      (valueExpr.kind !== "VariableExpression" &&
-        valueExpr.kind !== "FunctionCallExpression")
-    ) {
-      return undefined;
-    }
-    if (valueExpr.kind === "VariableExpression") {
-      const source = this.subrangeElementOf(this.declaredAccessType(valueExpr));
-      if (source === element) return undefined;
-    }
-    return `strucpp::iec_subrange_store_each(${value}, ::strucpp::${element.name}_MIN, ::strucpp::${element.name}_MAX, "${shown}", ${this.faultSite(site)})`;
+    const shown = [target.name, ...target.fieldAccess].join(".");
+    return this.subrangeChecked(type, value, valueExpr, shown, target);
   }
 
   /**
@@ -5262,18 +5204,16 @@ export class CodeGenerator {
       !arg.isDereference &&
       arg.accessChain?.some((s) => s.kind === "dereference") !== true &&
       this.currentScopeVarRefKinds.get(upper) !== "reference_to";
-    // The copy-back into a subrange variable is a store too
-    const stored = this.subrangeStore(arg, tmp) ?? tmp;
     const copyOut =
       bitStore !== undefined
         ? bitStore
         : this.compositeExternals.has(upper)
-          ? this.compositeGlobalStore(arg, stored)
+          ? this.compositeGlobalStore(arg, tmp)
           : this.programExternals.has(upper) &&
               arg.fieldAccess.length === 0 &&
               !arg.isDereference
-            ? `${arg.name}->write(${stored});`
-            : `${read} = ${stored};`;
+            ? `${arg.name}->write(${tmp});`
+            : `${read} = ${tmp};`;
     // A temporary of the parameter's type when the argument's type differs.
     const declaration =
       cppType !== undefined
@@ -5283,11 +5223,11 @@ export class CodeGenerator {
       once === true &&
       plainLvalue &&
       cppType !== undefined &&
-      copyOut === `${read} = ${stored};`
+      copyOut === `${read} = ${tmp};`
     ) {
       return {
         declaration: `auto& ${tmp}_ref = ${read}; ${cppType} ${tmp}; ${tmp} = ${tmp}_ref;`,
-        copyOut: `${tmp}_ref = ${stored};`,
+        copyOut: `${tmp}_ref = ${tmp};`,
       };
     }
     return { declaration, copyOut };
