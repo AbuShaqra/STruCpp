@@ -337,9 +337,13 @@ after `a`. `ADR(a) - ADR(b)` is the signed count of bytes between them.
 
 A dereference needs the address aligned for its target type: the access through a pointer is a plain
 C++ access, which is undefined behaviour when misaligned (x86 tolerates it; a strict-alignment target
-faults). Moving a POINTER TO a multi-byte elementary type by a constant that is not a multiple of its
-size is therefore an error (`Moving a POINTER TO DINT by 1 byte(s) would make its dereference
-misaligned; move it by a multiple of 4 bytes`); an offset known only at run time is not checked.
+faults). Moving a POINTER TO a multi-byte elementary type, an element of an ARRAY OF POINTER TO, or
+`ADR(x)` of an elementary `x`, by a constant that is not a multiple of its size is therefore an error
+(`Moving a POINTER TO DINT by 1 byte(s) would make its dereference misaligned; move it by a multiple
+of 4 bytes`). The offset is the whole chain folded: literals of any base, constants, `+`, `-`, `*` and
+parentheses, on either side of the pointer. An offset known only at run time is not checked. An address
+is only offset by `+` or `-` an integer, or subtracted from another address: taking it from a value
+(`w - ADR(x)`) or adding two addresses is an error.
 
 ### REF_TO and REFERENCE_TO (`iec_ptr.hpp`)
 

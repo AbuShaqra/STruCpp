@@ -150,4 +150,46 @@ int main() {
     });
     expect(stdout).toBe("3 5");
   });
+
+  it("refuses a misaligned move by any constant offset, and an address taken from a value", () => {
+    const result = compile(`PROGRAM MAIN
+VAR ad : ARRAY[0..7] OF DINT := [1,2,3,4,5,6,7,8]; p : POINTER TO DINT; a : ARRAY[0..1] OF POINTER TO DINT; v1 : DINT; x : ARRAY[0..3] OF DINT; w, d1 : LWORD; END_VAR
+VAR CONSTANT one : INT := 1; four : INT := 4; END_VAR
+p := p + 16#1;
+p := 1 + p;
+p := p + 4 + 1;
+p := p + (1);
+p := ADR(ad[0]) + 1;
+p := p + one;
+p := p + -1;
+a[0] := a[0] + 1;
+p := p + 2 * 2;
+p := p + four;
+p := p + four - 4 + 8;
+p := ADR(ad[0]) + 4;
+d1 := w - (ADR(x[0]) + 4);
+d1 := w - ADR(x[0]);
+v1 := p^;
+END_PROGRAM
+`);
+    expect(
+      result.errors.map((e) => `${e.line}:${e.column} ${e.message}`),
+    ).toEqual([
+      ...[
+        "4:10 1",
+        "5:6 1",
+        "6:10 5",
+        "7:11 1",
+        "8:19 1",
+        "9:10 1",
+        "10:10 -1",
+        "11:16 1",
+      ].map((t) => {
+        const [at, bytes] = t.split(" ");
+        return `${at} Moving a POINTER TO DINT by ${bytes} byte(s) would make its dereference misaligned; move it by a multiple of 4 bytes`;
+      }),
+      "16:12 An address is offset by + or - an integer, or subtracted from another address: it cannot be subtracted from a value or added to an address",
+      "17:11 An address is offset by + or - an integer, or subtracted from another address: it cannot be subtracted from a value or added to an address",
+    ]);
+  });
 });

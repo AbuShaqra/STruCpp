@@ -80,10 +80,7 @@ import { structExtends } from "./struct-extends.js";
 import { bindStdFunctionArguments } from "./std-function-args.js";
 import { STD_FUNCTIONS_LIBRARY } from "../library/library-manifest.js";
 import { libraryOverloadFor } from "./library-overload.js";
-import {
-  charLiteralUnits,
-  exactIntegerLiteralValue,
-} from "../literal-utils.js";
+import { charLiteralUnits } from "../literal-utils.js";
 import {
   vendorOperatorArgumentError,
   vendorOperatorFeature,
@@ -1960,47 +1957,182 @@ export class TypeChecker {
     }
   }
 
+  /** Pointer terms already checked for a misaligned move, so a nested chain reports once. */
+  private checkedPointerTerms = new WeakSet<Expression>();
+
   /**
-   * `p + n` / `p - n` moves a POINTER TO by n bytes: by a constant that is not
-   * a multiple of the size of the type it points to, a dereference would be a
-   * misaligned access, so it is refused.
+   * A + / - chain that moves an address (a POINTER TO, or ADR(x)) by bytes.
+   * By a constant offset that is not a multiple of the size of the elementary
+   * type pointed to, a dereference would be misaligned: refused. An address
+   * taken from a value that is no address, or two addresses added, is refused.
    */
   private refuseMisalignedPointerMove(
     expr: BinaryExpression,
     scope: Scope,
   ): void {
-    const left = expr.left;
-    if (
-      left.kind !== "VariableExpression" ||
-      left.isDereference ||
-      left.fieldAccess.length > 0 ||
-      left.subscripts.length > 0 ||
-      (left.accessChain?.length ?? 0) > 0
-    ) {
+    const terms: Array<{ expr: Expression; sign: number }> = [];
+    const flatten = (e: Expression, sign: number): void => {
+      if (e.kind === "ParenthesizedExpression") {
+        flatten(e.expression, sign);
+      } else if (
+        e.kind === "BinaryExpression" &&
+        (e.operator === "+" || e.operator === "-")
+      ) {
+        flatten(e.left, sign);
+        flatten(e.right, e.operator === "-" ? -sign : sign);
+      } else {
+        terms.push({ expr: e, sign });
+      }
+    };
+    flatten(expr, 1);
+    const isAdr = (e: Expression): boolean =>
+      e.kind === "FunctionCallExpression" &&
+      e.functionName.toUpperCase() === "ADR" &&
+      e.libraryFunction === undefined &&
+      this.ast?.functions.some((f) => f.name.toUpperCase() === "ADR") !== true;
+    const adrNet = terms
+      .filter((t) => isAdr(t.expr))
+      .reduce((n, t) => n + t.sign, 0);
+    if (adrNet < 0 || adrNet > 1) {
+      const term = terms.find((t) => isAdr(t.expr))!;
+      if (!this.checkedPointerTerms.has(term.expr)) {
+        this.checkedPointerTerms.add(term.expr);
+        this.addError(
+          "An address is offset by + or - an integer, or subtracted from another address: it cannot be subtracted from a value or added to an address",
+          term.expr.sourceSpan.startLine,
+          term.expr.sourceSpan.startCol,
+          term.expr.sourceSpan.file,
+        );
+      }
       return;
     }
-    const symbol = scope.lookup(left.name);
-    const declared =
-      symbol?.kind === "variable" ? symbol.declaration?.type : undefined;
-    if (declared?.referenceKind !== "pointer_to") return;
-    const name = declared.name.toUpperCase();
-    const bits = ELEMENTARY_TYPES[name]?.sizeBits;
-    if (bits === undefined) return;
-    const size = BigInt(Math.max(1, Math.floor(bits / 8)));
-    const right = expr.right;
-    const bytes =
-      right.kind === "LiteralExpression" &&
-      right.literalType === "INT" &&
-      !right.rawValue.includes("#")
-        ? exactIntegerLiteralValue(right.rawValue)
-        : undefined;
-    if (size <= 1n || bytes === undefined || bytes % size === 0n) return;
-    this.addError(
-      `Moving a POINTER TO ${name} by ${bytes} byte(s) would make its dereference misaligned; move it by a multiple of ${size} bytes`,
-      expr.right.sourceSpan.startLine,
-      expr.right.sourceSpan.startCol,
-      expr.right.sourceSpan.file,
+    const pointers = terms.filter(
+      (t) => this.pointerTargetSize(t.expr, scope) !== undefined,
     );
+    if (pointers.length !== 1 || pointers[0]!.sign !== 1) return;
+    const pointer = pointers[0]!.expr;
+    let offset = 0n;
+    for (const t of terms) {
+      if (t.expr === pointer) continue;
+      const v = this.foldIntegerConstant(t.expr, scope, 0);
+      if (v === undefined) return;
+      offset += t.sign > 0 ? v : -v;
+    }
+    const size = this.pointerTargetSize(pointer, scope)!;
+    if (size.bytes <= 1n || offset % size.bytes === 0n) return;
+    if (this.checkedPointerTerms.has(pointer)) return;
+    this.checkedPointerTerms.add(pointer);
+    const at = terms.find((t) => t.expr !== pointer)?.expr ?? expr;
+    this.addError(
+      `Moving a POINTER TO ${size.name} by ${offset} byte(s) would make its dereference misaligned; move it by a multiple of ${size.bytes} bytes`,
+      at.sourceSpan.startLine,
+      at.sourceSpan.startCol,
+      at.sourceSpan.file,
+    );
+  }
+
+  /** The elementary type an address term points to, and its size: a POINTER TO variable or element, or ADR(x). */
+  private pointerTargetSize(
+    e: Expression,
+    scope: Scope,
+  ): { name: string; bytes: bigint } | undefined {
+    let name: string | undefined;
+    if (
+      e.kind === "FunctionCallExpression" &&
+      e.functionName.toUpperCase() === "ADR" &&
+      e.arguments.length === 1
+    ) {
+      const target = e.arguments[0]!.value.resolvedType;
+      name =
+        target?.typeKind === "elementary"
+          ? (target as ElementaryType).name
+          : undefined;
+    } else if (
+      e.kind === "VariableExpression" &&
+      !e.isDereference &&
+      e.fieldAccess.length === 0
+    ) {
+      const symbol = scope.lookup(e.name);
+      const declared =
+        symbol?.kind === "variable" ? symbol.declaration?.type : undefined;
+      if (declared === undefined) return undefined;
+      const subscripted =
+        e.subscripts.length > 0 ||
+        (e.accessChain ?? []).some((step) => step.kind === "subscript");
+      if (!subscripted && declared.referenceKind === "pointer_to") {
+        name = declared.name;
+      } else if (
+        subscripted &&
+        declared.arrayDimensions !== undefined &&
+        declared.elementReferenceChain?.length === 1 &&
+        declared.elementReferenceChain[0] === "pointer_to"
+      ) {
+        name = declared.elementTypeName;
+      }
+    }
+    if (name === undefined) return undefined;
+    const bits = ELEMENTARY_TYPES[name.toUpperCase()]?.sizeBits;
+    if (bits === undefined) return undefined;
+    return {
+      name: name.toUpperCase(),
+      bytes: BigInt(Math.max(1, Math.floor(bits / 8))),
+    };
+  }
+
+  /** An integer constant expression's value: literals, constants, + - * and parentheses. */
+  private foldIntegerConstant(
+    e: Expression,
+    scope: Scope,
+    depth: number,
+  ): bigint | undefined {
+    if (depth > 16) return undefined;
+    switch (e.kind) {
+      case "LiteralExpression": {
+        if (e.literalType !== "INT") return undefined;
+        const v = e.value;
+        return typeof v === "number" && Number.isSafeInteger(v)
+          ? BigInt(v)
+          : typeof v === "bigint"
+            ? v
+            : undefined;
+      }
+      case "ParenthesizedExpression":
+        return this.foldIntegerConstant(e.expression, scope, depth + 1);
+      case "UnaryExpression": {
+        const v = this.foldIntegerConstant(e.operand, scope, depth + 1);
+        if (v === undefined) return undefined;
+        return e.operator === "-" ? -v : e.operator === "+" ? v : undefined;
+      }
+      case "BinaryExpression": {
+        const l = this.foldIntegerConstant(e.left, scope, depth + 1);
+        const r = this.foldIntegerConstant(e.right, scope, depth + 1);
+        if (l === undefined || r === undefined) return undefined;
+        if (e.operator === "+") return l + r;
+        if (e.operator === "-") return l - r;
+        if (e.operator === "*") return l * r;
+        return undefined;
+      }
+      case "VariableExpression": {
+        if (
+          e.isDereference ||
+          e.fieldAccess.length > 0 ||
+          e.subscripts.length > 0
+        ) {
+          return undefined;
+        }
+        const symbol = scope.lookup(e.name);
+        const value =
+          symbol?.kind === "constant" || symbol?.kind === "variable"
+            ? symbol.declaration?.initialValue
+            : undefined;
+        if (symbol?.kind !== "constant" || value === undefined) {
+          return undefined;
+        }
+        return this.foldIntegerConstant(value, scope, depth + 1);
+      }
+      default:
+        return undefined;
+    }
   }
 
   /**
