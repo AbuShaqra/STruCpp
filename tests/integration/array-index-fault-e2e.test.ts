@@ -90,21 +90,41 @@ describe.skipIf(!hasGpp)("array index and reference faults — g++ e2e", () => {
     expect(stdout).toBe("Unbound REFERENCE TO R in FB, line 4, task FAST");
   });
 
-  it("builds without the checks under STRUCPP_NO_BOUNDS_CHECK", () => {
-    const result = compile(ARRAY_SOURCE.replace("arr[i] := 1;\n", ""), {
-      headerFileName: "generated.hpp",
-    });
+  it("builds without the checks under STRUCPP_NO_BOUNDS_CHECK, and only there (-Wextra -Werror)", () => {
+    // m[0, j] is outside its row but inside the array: unchecked, it stores into m[1, 0]
+    const result = compile(
+      `PROGRAM Main
+VAR m : ARRAY[0..1, 0..1] OF INT; j : INT := 2; r : REFERENCE TO INT; x : INT; END_VAR
+r REF= x; r := 5; x := r;
+m[0, j] := 7;
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
     expect(result.errors).toEqual([]);
-    const stdout = compileAndRunStandalone({
-      tempDir,
-      pchPath,
-      headerCode: result.headerCode,
-      cppCode: result.cppCode,
-      testName: "no_bounds_check",
-      extraFlags: ["-DSTRUCPP_NO_BOUNDS_CHECK"],
-      mainCode: MAIN,
-    });
-    expect(stdout).toBe("");
+    const run = (name: string, extraFlags: string[]): string =>
+      compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: name,
+        extraFlags: ["-Wall", "-Wextra", "-Werror", ...extraFlags],
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    strucpp::strucpp_set_current_task("FAST");
+    try { p.run(); } catch (const std::exception& e) { std::cout << e.what(); }
+    std::cout << "|" << p.X << " " << p.M.data()[2] << std::endl;
+    return 0;
+}
+`,
+      });
+    expect(run("bounds_check_on", [])).toBe(
+      "Array index out of bounds: [0, 2] in MAIN, line 4, task FAST|5 0",
+    );
+    expect(run("no_bounds_check", ["-DSTRUCPP_NO_BOUNDS_CHECK"])).toBe("|5 7");
   });
 
   const DEREF_SOURCE = `TYPE SS : STRUCT f : INT; END_STRUCT END_TYPE
@@ -286,6 +306,33 @@ END_PROGRAM
     ]);
   });
 
+  const REFS_THROUGH = `TYPE S : STRUCT r : REFERENCE TO INT; v : INT; END_STRUCT END_TYPE
+VAR_GLOBAL g : S; END_VAR
+PROGRAM MAIN
+VAR rs : REFERENCE TO S; t : S; p : POINTER TO S; y : INT; k : INT; END_VAR
+rs REF= t; p := ADR(t);
+CASE k OF
+1: y := rs.r;
+2: rs.r := 3;
+3: y := p^.r;
+4: p^.r := 4;
+5: y := g.r;
+6: g.r := 2;
+END_CASE;
+END_PROGRAM
+`;
+
+  it("names a REFERENCE TO member reached through a REFERENCE TO, a pointer and a global", () => {
+    expect(runCases(REFS_THROUGH, "refs_through", 6)).toEqual([
+      "1 Unbound REFERENCE TO RS.R in MAIN, line 7, task FAST",
+      "2 Unbound REFERENCE TO RS.R in MAIN, line 8, task FAST",
+      "3 Unbound REFERENCE TO P.R in MAIN, line 9, task FAST",
+      "4 Unbound REFERENCE TO P.R in MAIN, line 10, task FAST",
+      "5 Unbound REFERENCE TO G.R in MAIN, line 11, task FAST",
+      "6 Unbound REFERENCE TO G.R in MAIN, line 12, task FAST",
+    ]);
+  });
+
   const LONG = "F" + "X".repeat(240);
   const LONG_SOURCE = `FUNCTION_BLOCK ${LONG}
 VAR_INPUT z : DINT; END_VAR
@@ -323,6 +370,42 @@ int main() {
     expect(stdout.startsWith("Division by zero in FXXX")).toBe(true);
     expect(stdout.endsWith("…, line 4, task FAST_TASK")).toBe(true);
     expect(Buffer.byteLength(stdout)).toBeLessThan(224);
+  });
+
+  it("keeps the description and line with a long task name: shortens the POU, then the task, on a UTF-8 boundary", () => {
+    const result = compile(LONG_SOURCE, {
+      headerFileName: "generated.hpp",
+      dialect: "iec-3",
+    });
+    expect(result.errors).toEqual([]);
+    const run = (name: string, task: string): string =>
+      compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: name,
+        mainCode: `
+#include <iostream>
+int main() {
+    strucpp::strucpp_set_current_task("${task}");
+    try { strucpp::Program_MAIN p; p.K = 1; p.run(); }
+    catch (const std::exception& e) { std::cout << e.what() << std::endl; }
+    return 0;
+}
+`,
+      });
+    // The task fits once the POU is shortened: it stays whole
+    const medium = "T".repeat(150);
+    const first = run("long_task_medium", medium);
+    expect(first).toMatch(/^Division by zero in FX+…, line 4, task T+$/);
+    expect(first.endsWith(`, task ${medium}`)).toBe(true);
+    expect(Buffer.byteLength(first)).toBe(223);
+    // Too long even so: the POU goes, then the task is cut, never inside a character
+    const second = run("long_task_utf8", "TEST 'x" + "é".repeat(150) + "'");
+    expect(second).toMatch(/^Division by zero in …, line 4, task TEST 'xé+…$/);
+    expect(second).not.toContain("\uFFFD");
+    expect(Buffer.byteLength(second)).toBeLessThanOrEqual(223);
   });
 
   it("keeps the STRING index text without exceptions", () => {

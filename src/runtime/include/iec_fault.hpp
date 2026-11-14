@@ -150,39 +150,69 @@ public:
                                      : add_unsigned(static_cast<unsigned long long>(v));
     }
     /**
-     * Append " in <pou>" and `tail` (", line <n>, task <T>"), which is always
-     * kept whole: a long POU name is shortened, marked with "…", and a long
-     * description before it is cut short if even that does not fit.
+     * Append " in <pou>", `line` (", line <n>") and ", task <task>" (none when
+     * `task` is null). The description and the line are kept whole: a message
+     * too long is shortened in the POU name first, then in the task name, each
+     * marked with "…", and only then in the description. A cut never splits a
+     * UTF-8 character.
      */
-    void finish(const char* pou, const fault_text& tail) noexcept {
+    void finish(const char* pou, const fault_text& line, const char* task) noexcept {
         static const char ellipsis[] = "\xE2\x80\xA6";
+        const unsigned mark = sizeof(ellipsis) - 1;
         const unsigned cap = sizeof(buf_) - 1;
-        unsigned pl = 0;
-        while (pou[pl] != '\0') ++pl;
-        const unsigned fixed = 4 + tail.len_;  // " in " and the tail
-        if (len_ + fixed + pl > cap) {
-            const unsigned mark = sizeof(ellipsis) - 1;
-            const unsigned min_pou = 16;
-            if (len_ + fixed + mark + min_pou > cap) {
-                len_ = cap > fixed + mark + min_pou ? cap - fixed - mark - min_pou : 0;
-                buf_[len_] = '\0';
-            }
-            const unsigned room = cap - len_ - fixed - mark;
-            if (room < pl) {
-                add(" in ");
-                for (unsigned i = 0; i < room; ++i) buf_[len_++] = pou[i];
-                buf_[len_] = '\0';
-                add(ellipsis);
-                add(tail.c_str());
-                return;
-            }
+        const unsigned pl = length(pou);
+        const unsigned tl = task != nullptr ? length(task) : 0;
+        unsigned pou_keep = pl;
+        unsigned task_keep = tl;
+        bool pou_cut = false;
+        bool task_cut = false;
+        auto total = [&]() -> unsigned {
+            return len_ + 4 + pou_keep + (pou_cut ? mark : 0) + line.len_ +
+                   (task != nullptr ? 7 + task_keep + (task_cut ? mark : 0) : 0);
+        };
+        if (total() > cap) {
+            pou_cut = true;
+            const unsigned over = total() - cap;
+            pou_keep = over >= pl ? 0 : utf8_prefix(pou, pl - over);
         }
-        add(" in ").add(pou).add(tail.c_str());
+        if (total() > cap && task != nullptr) {
+            task_cut = true;
+            const unsigned over = total() - cap;
+            task_keep = over >= tl ? 0 : utf8_prefix(task, tl - over);
+        }
+        if (total() > cap) {
+            const unsigned over = total() - cap + mark;
+            len_ = over >= len_ ? 0 : utf8_prefix(buf_, len_ - over);
+            buf_[len_] = '\0';
+            add(ellipsis);
+        }
+        add(" in ").add_prefix(pou, pou_keep);
+        if (pou_cut) add(ellipsis);
+        add(line.c_str());
+        if (task != nullptr) {
+            add(", task ").add_prefix(task, task_keep);
+            if (task_cut) add(ellipsis);
+        }
     }
     const char* c_str() const noexcept { return buf_; }
     bool empty() const noexcept { return len_ == 0; }
     char back() const noexcept { return len_ == 0 ? '\0' : buf_[len_ - 1]; }
 private:
+    static unsigned length(const char* s) noexcept {
+        unsigned n = 0;
+        while (s[n] != '\0') ++n;
+        return n;
+    }
+    /** `n`, or less so that the first `n` bytes of `s` end on a whole UTF-8 character. */
+    static unsigned utf8_prefix(const char* s, unsigned n) noexcept {
+        while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0u) == 0x80u) --n;
+        return n;
+    }
+    fault_text& add_prefix(const char* s, unsigned n) noexcept {
+        for (unsigned i = 0; i < n && len_ + 1 < sizeof(buf_); ++i) buf_[len_++] = s[i];
+        buf_[len_] = '\0';
+        return *this;
+    }
     char buf_[224];
     unsigned len_ = 0;
 };
@@ -196,12 +226,9 @@ private:
  */
 [[noreturn]] STRUCPP_FAULT_PATH inline void iec_raise_fault(
     IecFault reason, detail::fault_text& text, iec_site site) {
-    detail::fault_text tail;
-    tail.add(", line ").add_signed(site.line);
-    if (iec_current_task_slot() != nullptr) {
-        tail.add(", task ").add(iec_current_task_slot());
-    }
-    text.finish(site.pou != nullptr ? site.pou : "?", tail);
+    detail::fault_text line;
+    line.add(", line ").add_signed(site.line);
+    text.finish(site.pou != nullptr ? site.pou : "?", line, iec_current_task_slot());
 #if STRUCPP_HAS_EXCEPTIONS
     throw IecSiteFault(reason, text.c_str());
 #else
@@ -340,6 +367,8 @@ inline auto iec_ref(R& r, const char* name, iec_site site) -> decltype(r.target(
         text.add("Unbound REFERENCE TO ").add(name);
         iec_raise_fault(IecFault::NullReference, text, site);
     }
+#else
+    (void)name; (void)site;
 #endif
     return r.target();
 }

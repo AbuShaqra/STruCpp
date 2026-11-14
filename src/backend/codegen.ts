@@ -6490,7 +6490,7 @@ export class CodeGenerator {
     node: { sourceSpan: SourceSpan },
   ): string {
     // Already the checked target (a plain reference renders as one)
-    if (base.startsWith("strucpp::iec_ref(")) return base;
+    if (this.refWrapper(base) !== base) return base;
     return `strucpp::iec_ref(${base}, "${name.toUpperCase()}", ${this.faultSite(node)})`;
   }
 
@@ -6506,17 +6506,36 @@ export class CodeGenerator {
   /** Set while a REF= target is generated: it names the reference itself. */
   private keepReferenceWrapper = false;
 
-  /** `s.r`, `a[i]`, `f.r`: an access that ends in a REFERENCE TO member or element. */
+  /**
+   * `s.r`, `a[i]`, `f.r`, `rs.r`, `p^.r`: an access that ends in a REFERENCE TO
+   * member or element, from a variable of the scope or a global.
+   */
   private accessEndsInReference(expr: VariableExpression): boolean {
     const hasAccess =
       expr.fieldAccess.length > 0 ||
       expr.subscripts.length > 0 ||
       (expr.accessChain?.length ?? 0) > 0;
-    if (!hasAccess || expr.isDereference) return false;
-    const root = this.currentScopeVarTypeRefs.get(expr.name.toUpperCase());
+    if (!hasAccess) return false;
+    const upper = expr.name.toUpperCase();
+    const root =
+      this.currentScopeVarTypeRefs.get(upper) ?? this.globalDeclType(upper);
     if (root === undefined) return false;
     const type = resolveAccessType(root, expr, this.accessLookup);
     return type?.referenceKind === "reference_to";
+  }
+
+  /** The declared type of a top-level or CONFIGURATION global of this name. */
+  private globalDeclType(upper: string): TypeReference | undefined {
+    if (!this.ast) return undefined;
+    for (const block of [
+      ...this.ast.globalVarBlocks,
+      ...this.ast.configurations.flatMap((c) => c.varBlocks),
+    ]) {
+      for (const decl of block.declarations) {
+        if (decl.names.some((n) => n.toUpperCase() === upper)) return decl.type;
+      }
+    }
+    return undefined;
   }
 
   /** `rr`, a REFERENCE TO variable of the scope, with no access. */

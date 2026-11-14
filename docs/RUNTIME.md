@@ -318,8 +318,8 @@ on every integer and bit string type, through `iec_div`) is such a fault. `MOD` 
 (Table 29, note e).
 
 Every fault goes through `strucpp::iec_raise_fault`, which builds the message in a fixed buffer, with no
-allocation. A message too long for it keeps `line <n>, task <task>` whole and shortens the POU's name, marked
-with `…`. On a hosted target it throws `strucpp::IecSiteFault` (a `std::runtime_error`, whose `reason()`
+allocation. A message too long for it keeps the description and `line <n>` whole: it shortens the POU's name
+first, then the task's, each marked with `…`, never inside a UTF-8 character. On a hosted target it throws `strucpp::IecSiteFault` (a `std::runtime_error`, whose `reason()`
 is the `IecFault`); on a target without exceptions it calls `iec_runtime_fault(reason, message)` with the
 same message. The POU and line come from the call site (`strucpp::iec_site{"MAIN", 12}`): the POU is the
 PROGRAM, FUNCTION_BLOCK or FUNCTION, `FB.M` for a METHOD, PROPERTY or ACTION, and the POU whose variable
@@ -332,7 +332,8 @@ fault `Array index out of bounds: <indices> in <POU>, line <n>, task <task>`, ea
 above 2^63 too, which no array has); a STRING index keeps its own text, `String index out of bounds`. A
 dereference of a NULL POINTER TO or REF_TO (`p^`) goes through `strucpp::iec_deref(p, site)`: `Null pointer
 dereference` or `Null reference dereference in <POU>, line <n>, task <task>`. A REFERENCE TO read, written or
-reached through goes through `strucpp::iec_ref(r, name, site)`: `Unbound REFERENCE TO <name> in <POU>, line <n>,
+reached through (a member or element of it reached through a variable, a global, another REFERENCE TO or a
+pointer included) goes through `strucpp::iec_ref(r, name, site)`: `Unbound REFERENCE TO <name> in <POU>, line <n>,
 task <task>`; binding another REFERENCE TO input to it passes the reference on, unchecked. On a target without
 exceptions the same text reaches `iec_runtime_fault`; an index fault names the site there, not the index.
 Defining `STRUCPP_NO_BOUNDS_CHECK` when building the C++ leaves all of these checks out (every array, ARRAY[*]
