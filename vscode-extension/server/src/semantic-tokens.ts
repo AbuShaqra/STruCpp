@@ -89,6 +89,7 @@ export function getSemanticTokens(
   const tokens: RawToken[] = [];
   const sourceLines = source?.split("\n") ?? [];
   const varBlockMap = buildVarBlockMap(ast);
+  spanLines = sourceLines;
 
   walkAST(ast, (node) => {
     // Filter to only nodes in the requested file
@@ -149,6 +150,7 @@ export function getSemanticTokens(
     }
   });
 
+  spanLines = [];
   return deltaEncode(tokens);
 }
 
@@ -157,6 +159,32 @@ export function getSemanticTokens(
 // ---------------------------------------------------------------------------
 
 /** Push a token, converting 1-indexed compiler coords to 0-indexed LSP coords. */
+/** The source lines of the file getSemanticTokens is working on. */
+let spanLines: string[] = [];
+
+/** A character a name refuses: non-ASCII or a control (dropped from the name). */
+function refusedChar(ch: string): boolean {
+  const code = ch.charCodeAt(0);
+  return (code >= 0x7f || code < 0x20) && !/\s/.test(ch);
+}
+
+/**
+ * The source length of a token whose text has `length` characters once the
+ * characters a name refuses are left out: they are counted back in.
+ */
+function sourceLength(startLine: number, startCol: number, length: number): number {
+  const line = spanLines[startLine - 1];
+  if (line === undefined) return length;
+  let i = startCol - 1;
+  let counted = 0;
+  while (counted < length && i < line.length) {
+    if (!refusedChar(line.charAt(i))) counted++;
+    i++;
+  }
+  while (i < line.length && refusedChar(line.charAt(i))) i++;
+  return i - (startCol - 1);
+}
+
 function pushToken(
   tokens: RawToken[],
   startLine: number,
@@ -164,11 +192,13 @@ function pushToken(
   length: number,
   typeIdx: number,
   modBits: number,
+  /** The length is the source text's already (a literal's span). */
+  exact = false,
 ): void {
   tokens.push({
     line: startLine - 1,
     col: startCol - 1,
-    length,
+    length: exact ? length : sourceLength(startLine, startCol, length),
     typeIdx,
     modBits,
   });
@@ -325,9 +355,9 @@ function emitLiteral(
   if (length <= 0) return;
 
   if (lit.literalType === "STRING") {
-    pushToken(tokens, lit.sourceSpan.startLine, lit.sourceSpan.startCol, length, TYPE_IDX.string, 0);
+    pushToken(tokens, lit.sourceSpan.startLine, lit.sourceSpan.startCol, length, TYPE_IDX.string, 0, true);
   } else if (lit.literalType === "INT" || lit.literalType === "REAL") {
-    pushToken(tokens, lit.sourceSpan.startLine, lit.sourceSpan.startCol, length, TYPE_IDX.number, 0);
+    pushToken(tokens, lit.sourceSpan.startLine, lit.sourceSpan.startCol, length, TYPE_IDX.number, 0, true);
   }
 }
 

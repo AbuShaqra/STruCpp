@@ -22,6 +22,8 @@ import {
 /** The fields of a Chevrotain lexer error or recognition exception we read. */
 interface RawFrontendError {
   message?: unknown;
+  /** Lexer error: the number of code units it covers. */
+  length?: unknown;
   /** Lexer error: 1-based line. */
   line?: unknown;
   /** Lexer error: 1-based column. */
@@ -88,6 +90,10 @@ export function toCompileErrors(
       severity: "error",
     };
     if (file !== undefined) entry.file = file;
+    // A lexer error over more than one code unit (a refused cluster) ends after it.
+    if (typeof err.length === "number" && err.length > 1) {
+      entry.endColumn = column + err.length;
+    }
     if (err.token !== undefined) {
       const stack = Array.isArray(err.context?.ruleStack)
         ? (err.context.ruleStack as unknown[])

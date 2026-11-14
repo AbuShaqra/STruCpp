@@ -1613,9 +1613,13 @@ function lexWithoutRefused<R extends ILexingResult>(
   text += source.slice(k);
   for (let i = k; i < source.length; i++) at.push(i);
   at.push(source.length);
+  // Lines end as the lexer counts them: LF, CR LF, or a lone CR.
   const lineStart: number[] = [0];
   for (let i = 0; i < source.length; i++) {
-    if (source.charCodeAt(i) === 0x0a) lineStart.push(i + 1);
+    const c = source.charCodeAt(i);
+    if (c === 0x0a || (c === 0x0d && source.charCodeAt(i + 1) !== 0x0a)) {
+      lineStart.push(i + 1);
+    }
   }
   const column = (offset: number, line: number | undefined): number =>
     offset - (lineStart[(line ?? 1) - 1] ?? 0) + 1;
@@ -1634,8 +1638,13 @@ function lexWithoutRefused<R extends ILexingResult>(
     for (const t of group) move(t);
   }
   for (const e of second.errors) {
+    const stripped = e.offset;
     e.offset = at[e.offset] ?? e.offset;
     if (e.line !== undefined) e.column = column(e.offset, e.line);
+    e.message = e.message.replace(
+      `at offset: ${stripped},`,
+      `at offset: ${e.offset},`,
+    );
   }
   second.errors.push(...refusals.errors);
   second.errors.sort((a, b) => a.offset - b.offset);

@@ -318,3 +318,30 @@ describe("names: lexed as if the refused characters were not there (recheck 4)",
     expect(r.tokens.map((t) => t.tokenType.name)).toContain("END_TEST");
   });
 });
+
+describe("two-pass positions (recheck 5)", () => {
+  const checked = (src: string): string[] =>
+    analyze(src).errors.map((e) => `${e.line}:${e.column}: ${e.message}`);
+
+  it("maps columns after a refused character in a CR-only file (#1, #7)", () => {
+    const errs = checked(
+      "PROGRAM P\rVAR x : INT; END_VAR\rx := xä + q1;\rx := q2;\rEND_PROGRAM\r",
+    );
+    expect(errs).toContain("3:11: Undeclared variable 'Q1'");
+    expect(errs).toContain("4:6: Undeclared variable 'Q2'");
+  });
+
+  it("quotes the source offset in a second-pass lexer error (#2)", () => {
+    const src =
+      "PROGRAM P\nVAR x : INT; y : INT; b : BOOL; s : STRING; END_VAR\nx := xä; y := 1 ? 2;\nEND_PROGRAM\n";
+    const err = analyze(src).errors.find((e) => e.message.includes("?"));
+    expect(err?.message).toContain(`at offset: ${src.indexOf("?")},`);
+  });
+
+  it("ends a refusal after the whole character (#3)", () => {
+    const err = analyze(
+      "PROGRAM P\nVAR x : INT; END_VAR\nx := \u{1F600}x;\nEND_PROGRAM\n",
+    ).errors.find((e) => e.message.includes("U+1F600"));
+    expect([err?.column, err?.endColumn]).toEqual([6, 8]);
+  });
+});
