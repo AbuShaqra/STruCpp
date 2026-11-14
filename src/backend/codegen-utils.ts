@@ -4,7 +4,11 @@
  * Shared utility functions for C++ code generation.
  */
 
-import type { Expression } from "../frontend/ast.js";
+import type {
+  ElementaryType,
+  Expression,
+  LiteralExpression,
+} from "../frontend/ast.js";
 import { exactIntegerLiteralValue } from "../literal-utils.js";
 import { cp1252Byte } from "../byte-utils.js";
 
@@ -37,6 +41,70 @@ export function isNonZeroIntegerLiteral(expr: Expression): boolean {
     expr.value !== 0 &&
     expr.value !== -1
   );
+}
+
+/**
+ * A comparison with a STRING (or WSTRING) literal: each literal emitted
+ * wrapped as a string value, so C++ compares the text, not pointers. Two
+ * literals, or a literal and an operand of the same string type (for `=` and
+ * `<>` only a literal on the left of an operand that is no plain variable).
+ * Undefined for any other comparison.
+ */
+export function literalStringComparison(
+  left: Expression,
+  right: Expression,
+  leftCpp: string,
+  rightCpp: string,
+  operator = "<",
+): [string, string] | undefined {
+  // `('aa') > ('zz')`: the literals inside the parentheses
+  while (left.kind === "ParenthesizedExpression") left = left.expression;
+  while (right.kind === "ParenthesizedExpression") right = right.expression;
+  const literalKind = (e: Expression): string | undefined =>
+    e.kind === "LiteralExpression" &&
+    (e.literalType === "STRING" || e.literalType === "WSTRING")
+      ? e.literalType
+      : undefined;
+  const wrap = (kind: string, raw: string, cpp: string): string =>
+    `strucpp::${kind === "STRING" ? "IECString" : "IECWString"}<${Math.max(254, raw.length)}>(${cpp})`;
+  const lk = literalKind(left);
+  const rk = literalKind(right);
+  if (lk !== undefined && rk !== undefined) {
+    if (lk !== rk) return undefined;
+    const len = Math.max(
+      254,
+      (left as LiteralExpression).rawValue.length,
+      (right as LiteralExpression).rawValue.length,
+    );
+    const type = lk === "STRING" ? "IECString" : "IECWString";
+    return [
+      `strucpp::${type}<${len}>(${leftCpp})`,
+      `strucpp::${type}<${len}>(${rightCpp})`,
+    ];
+  }
+  const kind = lk ?? rk;
+  if (kind === undefined) return undefined;
+  const other = lk !== undefined ? right : left;
+  if (stringKindOf(other) !== kind) return undefined;
+  // `=` / `<>` with the literal on the right, or against a variable, already
+  // compares the text
+  if (
+    (operator === "=" || operator === "<>") &&
+    (rk !== undefined || other.kind === "VariableExpression")
+  ) {
+    return undefined;
+  }
+  return lk !== undefined
+    ? [wrap(kind, (left as LiteralExpression).rawValue, leftCpp), rightCpp]
+    : [leftCpp, wrap(kind, (right as LiteralExpression).rawValue, rightCpp)];
+}
+
+/** STRING or WSTRING when the type checker typed the expression as one. */
+function stringKindOf(e: Expression): string | undefined {
+  const type = e.resolvedType;
+  if (type?.typeKind !== "elementary") return undefined;
+  const m = /^(W?STRING)\b/i.exec((type as ElementaryType).name);
+  return m === null ? undefined : m[1]!.toUpperCase();
 }
 
 /**
