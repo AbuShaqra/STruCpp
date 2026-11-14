@@ -232,5 +232,60 @@ END_TEST
       );
       expect(setup.out).toContain("[PASS] after");
     });
+    it("reports an undeclared name or a type error in a SETUP or TEST initial value as a diagnostic", () => {
+      writeFileSync(
+        join(DIR, "badinit.st"),
+        `SETUP
+VAR x : INT := nosuch; END_VAR
+END_SETUP
+TEST 'a'
+VAR z : INT := alsonot; END_VAR
+  ASSERT_EQ(x, 0);
+END_TEST
+`,
+      );
+      const r = runErr([
+        join(DIR, "src.st"),
+        "--test",
+        join(DIR, "badinit.st"),
+        "-o",
+        join(DIR, "out-badinit"),
+      ]);
+      expect(r.status).toBe(1);
+      expect(r.err).toContain(
+        "badinit.st:2:16: error: Undeclared variable 'NOSUCH'",
+      );
+      // a type error is reported once the names resolve
+      expect(r.err).toContain(
+        "badinit.st:5:16: error: Undeclared variable 'ALSONOT'",
+      );
+      expect(r.err).not.toContain("C++ compilation failed");
+      writeFileSync(
+        join(DIR, "badtype.st"),
+        `SETUP
+VAR y : INT := 'abc'; END_VAR
+END_SETUP
+TEST 'a'
+VAR w : INT := 'q'; END_VAR
+  ASSERT_EQ(y, 0);
+END_TEST
+`,
+      );
+      const t = runErr([
+        join(DIR, "src.st"),
+        "--test",
+        join(DIR, "badtype.st"),
+        "-o",
+        join(DIR, "out-badtype"),
+      ]);
+      expect(t.status).toBe(1);
+      expect(t.err).toContain(
+        "badtype.st:2:16: error: Cannot assign STRING to INT",
+      );
+      expect(t.err).toContain(
+        "badtype.st:5:16: error: Cannot assign STRING to INT",
+      );
+      expect(t.err).not.toContain("C++ compilation failed");
+    });
   },
 );

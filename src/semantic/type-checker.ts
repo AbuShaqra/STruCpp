@@ -559,6 +559,8 @@ export class TypeChecker {
     this.errors = [];
     this.warnings = [];
     this.ast = ast;
+    // The initial values' types, as a POU's are checked
+    this.checkVarBlocks(varBlocks as VarBlock[], scope);
     for (const block of varBlocks) {
       for (const decl of block.declarations) {
         if (decl.initialValue === undefined) continue;

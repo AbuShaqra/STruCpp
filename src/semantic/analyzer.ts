@@ -6649,6 +6649,11 @@ export class SemanticAnalyzer {
 
     // Walk SETUP body
     if (testFile.setup) {
+      this.checkTestInitialValueNames(
+        testFile.setup.varBlocks,
+        setupScope,
+        sourceAst,
+      );
       this.walkTestStatementsForUndeclaredVars(testFile.setup.body, setupScope);
       this.checkTestMemberAccess(testFile.setup.body, setupScope);
     }
@@ -6673,6 +6678,7 @@ export class SemanticAnalyzer {
     // Walk each TEST body with scope = SETUP vars + TEST-local vars
     for (const tc of testFile.testCases) {
       const testScope = this.buildTestScope(tc.varBlocks, setupScope);
+      this.checkTestInitialValueNames(tc.varBlocks, testScope, sourceAst);
       this.walkTestStatementsForUndeclaredVars(tc.body, testScope);
       this.checkTestMemberAccess(
         tc.body,
@@ -6761,6 +6767,31 @@ export class SemanticAnalyzer {
     );
     this.errors.push(...found.errors);
     this.warnings.push(...found.warnings);
+  }
+
+  /** The names a SETUP or TEST VAR's initial values read: declared in its scope. */
+  private checkTestInitialValueNames(
+    blocks: readonly VarBlock[],
+    scope: Scope,
+    sourceAst: CompilationUnit | undefined,
+  ): void {
+    const ctx: UndeclaredVarContext = { checkContinue: true };
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (decl.initialValue === undefined) continue;
+        if (sourceAst !== undefined) {
+          this.checkInitialValueNames(
+            decl.initialValue,
+            scope,
+            ctx,
+            sourceAst,
+            this.declaredTypeName(decl.type),
+          );
+        } else {
+          this.checkExpressionForUndeclaredVars(decl.initialValue, scope, ctx);
+        }
+      }
+    }
   }
 
   /** Output bindings in test bodies: checked as assignments, copied out where needed. */
