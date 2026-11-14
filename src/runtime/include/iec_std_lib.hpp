@@ -47,6 +47,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
+#include <new>
 
 // Undefine AVR `<time.h>` macros that collide with common IEC
 // identifiers.  `<chrono>` above pulls in `<ctime>` → `<time.h>`,
@@ -700,6 +701,31 @@ inline IEC_BOOL NE(A a, B b, C c, Rest... rest) noexcept {
 }
 
 // =============================================================================
+// VAR_TEMP reset
+// =============================================================================
+
+/**
+ * Rebuild `x` in place as a fresh object (a VAR_TEMP holding a function block
+ * instance), so a member that refers to another of its members (a POINTER TO
+ * set at construction) refers to `x`'s own, not to a destroyed temporary.
+ */
+template<typename T>
+inline void iec_reset_in_place(T& x) {
+    x.~T();
+    new (&x) T();
+}
+
+/**
+ * Ends `x`'s lifetime and returns its storage, for `new (iec_destroyed(x)) T(init)`:
+ * the initial value is built in that storage, not copied from a temporary.
+ */
+template<typename T>
+inline void* iec_destroyed(T& x) noexcept {
+    x.~T();
+    return static_cast<void*>(&x);
+}
+
+// =============================================================================
 // Bit Shift Functions (ANY_BIT -> ANY_BIT)
 // =============================================================================
 
@@ -1209,6 +1235,12 @@ inline IECString<254> TO_STRING(const char16_t* src) noexcept {
 inline IECWString<254> TO_WSTRING(const char* src) noexcept {
     return STRING_TO_WSTRING(IECString<254>(src));
 }
+inline IECString<254> TO_STRING(const char* src) noexcept {
+    return IECString<254>(src);
+}
+inline IECWString<254> TO_WSTRING(const char16_t* src) noexcept {
+    return IECWString<254>(src);
+}
 
 // A CHAR is the one-character STRING of it, a WCHAR the one-unit WSTRING.
 inline IECString<254> TO_STRING(CHAR_t c) noexcept {
@@ -1512,6 +1544,25 @@ inline T MOD(T a, T b) noexcept {
         a, b,
         std::integral_constant<bool,
             std::is_floating_point<iec_underlying_type_t<T>>::value>{});
+}
+
+/**
+ * Integer `/` whose divisor may be 0: a division by zero is a run-time fault
+ * naming the POU, line and task; the minimum value / -1 wraps instead of trapping.
+ */
+template<typename A, typename B>
+inline auto iec_div(const A& a, const B& b, iec_site site) -> decltype(a / b) {
+    using Result = decltype(a / b);
+    const auto av = iec_unwrap(a) + 0;
+    const auto bv = iec_unwrap(b) + 0;
+    using C = decltype(av / bv);
+    if (bv == 0) iec_site_fault(IecFault::DivideByZero, "Division by zero", site);
+    if (::strucpp::iec_mod_minus_one(bv)) {
+        return Result(static_cast<C>(
+            static_cast<std::make_unsigned_t<C>>(0) -
+            static_cast<std::make_unsigned_t<C>>(av)));
+    }
+    return a / b;
 }
 
 /**

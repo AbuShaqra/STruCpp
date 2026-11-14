@@ -83,4 +83,62 @@ int main() {
       expect(stdout).toBe("1010 10 4 10111 10 3 7 ab1");
     });
   }
+
+  it("refuses STRING compared with WSTRING in a STRUCT default, an array initializer and a global", () => {
+    const r =
+      compile(`TYPE ST : STRUCT b : BOOL := 'a' = "a"; END_STRUCT END_TYPE
+VAR_GLOBAL g : BOOL := 'a' < "a"; END_VAR
+PROGRAM Main
+VAR x : ST; y : BOOL := 'a' = "a"; a : ARRAY[0..1] OF BOOL := ['a' = "a", TRUE]; END_VAR
+END_PROGRAM
+`);
+    expect(r.errors.map((e) => `${e.line}:${e.column}`).sort()).toEqual([
+      "1:30",
+      "2:24",
+      "4:25",
+      "4:64",
+    ]);
+    expect(new Set(r.errors.map((e) => e.message))).toEqual(
+      new Set([
+        "Cannot compare STRING with WSTRING; convert one with STRING_TO_WSTRING or WSTRING_TO_STRING",
+      ]),
+    );
+  });
+
+  it("converts a literal by TO_STRING / TO_WSTRING, and compares a literal with a string operand", () => {
+    const result = compile(
+      `PROGRAM Main
+VAR a, d : STRING; w1 : WSTRING; s : STRING := 'm'; t : STRING := 'n'; ws : WSTRING := "b"; r : ARRAY[0..13] OF BOOL; END_VAR
+VAR CONSTANT CS : STRING := 'm'; END_VAR
+a := TO_STRING('abc'); d := TO_STRING('$E9'); w1 := TO_WSTRING("ab");
+r[0] := s > 'l'; r[1] := 'l' < s; r[2] := CS > 'l'; r[3] := 'l' < CS;
+r[4] := 'ab' = CONCAT('a', 'b'); r[5] := "a" < ws; r[6] := s <= 'm'; r[7] := 'n' >= s;
+r[8] := CONCAT('a', 'b') <> 'ab'; r[9] := 'l' = s; r[10] := s <= t; r[11] := s >= t;
+r[12] := "b" <= ws; r[13] := ws >= "c";
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "litstr_operand",
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.A.get().c_str() << " " << (int)(unsigned char)p.D.get().c_str()[0] << " "
+              << p.W1.get().length() << " " << (p.W1.get() == u"ab") << " ";
+    for (int i = 0; i < 14; ++i) std::cout << p.R.at(i).get();
+    std::cout << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("abc 233 2 1 11111111001010");
+  });
 });
