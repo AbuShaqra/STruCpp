@@ -33,4 +33,42 @@ describe("constant expression overflow", () => {
       "Implicit narrowing conversion from INT to USINT",
     ]);
   });
+  it("warns on an untyped literal, a typed subexpression and a call argument", () => {
+    const r = compile(
+      `FUNCTION F : INT
+VAR_INPUT x : INT; END_VAR
+F := x;
+END_FUNCTION
+FUNCTION_BLOCK FB
+VAR_INPUT x : SINT; END_VAR
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR i : INT := 40000; s : SINT; b : INT; d : DINT; fb1 : FB; ok : INT := 32767; END_VAR
+s := 200;
+d := INT#32767 + INT#1;
+b := SINT#100 * SINT#2;
+d := UINT#0 - UINT#1;
+b := F(x := 200 * 200);
+b := F(200 * 200);
+fb1(x := 100 + 100);
+END_PROGRAM
+`,
+      { strict: true },
+    );
+    expect(r.errors).toEqual([]);
+    expect(
+      r.warnings
+        .filter((w) => w.message.startsWith("The constant"))
+        .map((w) => `${w.line}:${w.column} ${w.message}`),
+    ).toEqual([
+      "9:16 The constant expression is 40000, outside INT (-32768..32767): it wraps",
+      "10:6 The constant expression is 200, outside SINT (-128..127): it wraps",
+      "11:6 The constant expression is 32768, outside INT (-32768..32767): it wraps",
+      "12:6 The constant expression is 200, outside SINT (-128..127): it wraps",
+      "13:6 The constant expression is -1, outside UINT (0..65535): it wraps",
+      "14:13 The constant expression is 40000, outside INT (-32768..32767): it wraps",
+      "15:8 The constant expression is 40000, outside INT (-32768..32767): it wraps",
+      "16:10 The constant expression is 200, outside SINT (-128..127): it wraps",
+    ]);
+  });
 });

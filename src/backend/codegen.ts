@@ -589,6 +589,16 @@ export interface CodeGenResult {
 /**
  * C++ code generator for IEC 61131-3 programs.
  */
+/** The runtime helper that computes +, - or * so that it wraps instead of overflowing. */
+const WRAPPING_ARITHMETIC: Readonly<Record<string, string>> = {
+  "+": "iec_add",
+  "-": "iec_sub",
+  "*": "iec_mul",
+};
+
+/** The signed types whose C++ arithmetic would overflow (narrower ones are computed as int). */
+const WRAPPING_TYPES: ReadonlySet<string> = new Set(["DINT", "LINT"]);
+
 export class CodeGenerator {
   private options: CodeGenOptions;
 
@@ -6552,6 +6562,16 @@ export class CodeGenerator {
       return `iec_mod(${left}, ${right})`;
     }
 
+    // DINT and LINT +, -, * wrap (two's complement) instead of overflowing
+    const wrapped = WRAPPING_ARITHMETIC[expr.operator];
+    const t = expr.resolvedType;
+    if (
+      wrapped !== undefined &&
+      t?.typeKind === "elementary" &&
+      WRAPPING_TYPES.has((t as ElementaryType).name.toUpperCase())
+    ) {
+      return `strucpp::${wrapped}<${(t as ElementaryType).name.toUpperCase()}_t>(${left}, ${right})`;
+    }
     return `${left} ${cppOp} ${right}`;
   }
 

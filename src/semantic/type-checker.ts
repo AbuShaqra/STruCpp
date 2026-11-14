@@ -1967,20 +1967,75 @@ export class TypeChecker {
     value: Expression,
   ): void {
     if (targetType?.typeKind !== "elementary") return;
-    if (value.kind === "LiteralExpression") return; // a plain literal has its own range check
+    // A typed literal has its own range check
+    if (value.kind === "LiteralExpression" && (value.typePrefix ?? "") !== "") {
+      return;
+    }
+    // A typed subexpression wraps in its own type, whatever the target
+    const inner = this.typedConstantOverflow(value);
+    if (inner !== undefined) {
+      this.warnOverflowAt(inner.at, inner.value, inner.type);
+      return;
+    }
     const name = this.aliasBase(
       (targetType as ElementaryType).name,
     ).toUpperCase();
-    const range = integerTypeRange(name);
-    if (range === undefined) return;
     const v = this.constantIntegerValue(value);
-    if (v === undefined || (v >= range.min && v <= range.max)) return;
+    if (v !== undefined) this.warnOverflowAt(value, v, name);
+  }
+
+  /** The --strict wrap warning at `at` when `v` is outside the integer type `name`. */
+  private warnOverflowAt(at: Expression, v: bigint, name: string): void {
+    const range = integerTypeRange(name);
+    if (range === undefined || (v >= range.min && v <= range.max)) return;
     this.addWarning(
       `The constant expression is ${v}, outside ${name} (${range.min}..${range.max}): it wraps`,
-      value.sourceSpan.startLine,
-      value.sourceSpan.startCol,
-      value.sourceSpan.file,
+      at.sourceSpan.startLine,
+      at.sourceSpan.startCol,
+      at.sourceSpan.file,
     );
+  }
+
+  /**
+   * The first subexpression of typed literals (`INT#32767 + INT#1`) whose
+   * value is outside its own type, with that value and type.
+   */
+  private typedConstantOverflow(
+    expr: Expression,
+  ): { at: Expression; value: bigint; type: string } | undefined {
+    let found: { at: Expression; value: bigint; type: string } | undefined;
+    const typeOf = (e: Expression): string | undefined => {
+      switch (e.kind) {
+        case "LiteralExpression":
+          return e.literalType === "INT" && (e.typePrefix ?? "") !== ""
+            ? this.aliasBase(e.typePrefix!).toUpperCase()
+            : undefined;
+        case "ParenthesizedExpression":
+          return typeOf(e.expression);
+        case "UnaryExpression":
+          return typeOf(e.operand);
+        case "BinaryExpression": {
+          if (!["+", "-", "*", "/"].includes(e.operator)) return undefined;
+          const type = typeOf(e.left) ?? typeOf(e.right);
+          if (found !== undefined) return undefined;
+          const v = this.constantIntegerValue(e);
+          const range = type === undefined ? undefined : integerTypeRange(type);
+          if (
+            type !== undefined &&
+            v !== undefined &&
+            range !== undefined &&
+            (v < range.min || v > range.max)
+          ) {
+            found = { at: e, value: v, type };
+          }
+          return type;
+        }
+        default:
+          return undefined;
+      }
+    };
+    typeOf(expr);
+    return found;
   }
 
   /** The exact value of an integer constant expression of literals, if it is one. */
@@ -5443,7 +5498,10 @@ export class TypeChecker {
       : lit.literalType;
   }
 
-  /** A one-character literal passed to a CHAR or WCHAR input is that character. */
+  /**
+   * A one-character literal passed to a CHAR or WCHAR input is that character;
+   * under --strict an overflowing constant argument warns.
+   */
   private adaptCharArguments(
     inputs: CallInput[] | undefined,
     args: readonly Argument[],
@@ -5461,6 +5519,13 @@ export class TypeChecker {
       }
       const refKind = input.type.referenceKind;
       if (refKind !== undefined && refKind !== "none") return;
+      // An overflowing constant argument wraps as its assignment would
+      if (this.strict) {
+        this.warnConstantOverflow(
+          this.resolveNamedType(input.type.name),
+          arg.value,
+        );
+      }
       const charType = this.charTypeOfName(input.type.name);
       if (charType === undefined) return;
       this.adaptCharLiteral(arg.value, charType);
