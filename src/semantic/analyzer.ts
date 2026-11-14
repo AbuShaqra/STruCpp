@@ -5337,7 +5337,9 @@ export class SemanticAnalyzer {
 
   /**
    * A constant initial value outside its subrange is refused: a variable's,
-   * a STRUCT field's, an ARRAY element's and a TYPE's own default.
+   * a STRUCT field's, an ARRAY element's and a TYPE's own default. A value
+   * is constant when it folds to an integer: literals, named constants in
+   * scope and `+ - * / MOD` on them.
    */
   private validateSubrangeInitialValues(ast: CompilationUnit): void {
     const types = new Map(ast.types.map((t) => [t.name.toUpperCase(), t]));
@@ -5361,21 +5363,156 @@ export class SemanticAnalyzer {
       }
       return undefined;
     };
-    const elementOf = (type: TypeReference): string | undefined => {
-      if (type.arrayDimensions !== undefined) return type.elementTypeName;
-      const def = types.get(type.name.toUpperCase())?.definition;
-      return def?.kind === "ArrayDefinition" ? def.elementType.name : undefined;
+    type Shape = Pick<
+      TypeReference,
+      "name" | "arrayDimensions" | "elementTypeName"
+    >;
+    // The dimensions of an ARRAY type (inline, named or an alias of one) and its element type
+    const arrayOf = (
+      type: Shape,
+    ): { dims: number; element: Shape } | undefined => {
+      if (type.arrayDimensions !== undefined) {
+        return type.elementTypeName === undefined
+          ? undefined
+          : {
+              dims: Math.max(1, type.arrayDimensions.length),
+              element: { name: type.elementTypeName },
+            };
+      }
+      let upper = type.name.toUpperCase();
+      for (let i = 0; i < 32; i++) {
+        const def = types.get(upper)?.definition;
+        if (def?.kind === "ArrayDefinition") {
+          return { dims: def.dimensions.length, element: def.elementType };
+        }
+        if (def?.kind !== "TypeReference") return undefined;
+        if (def.arrayDimensions !== undefined) return arrayOf(def);
+        upper = def.name.toUpperCase();
+      }
+      return undefined;
     };
+
+    // Named constants: the global ones, then a POU's (and its METHOD's) own
+    type Constants = Map<string, Expression | bigint | null>;
+    const addConstants = (
+      blocks: readonly VarBlock[],
+      into: Constants,
+    ): void => {
+      // Any other variable is null: it hides a constant of an outer scope
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names) {
+            into.set(
+              name.toUpperCase(),
+              block.isConstant ? (decl.initialValue ?? null) : null,
+            );
+          }
+        }
+      }
+    };
+    const globals: Constants = new Map();
+    addConstants(ast.globalVarBlocks, globals);
+    for (const c of ast.configurations) addConstants(c.varBlocks, globals);
+    const scopeOf = new Map<VarDeclaration, Constants[]>();
+    const enterScope = (node: ASTNode, tables: Constants[]): void => {
+      walkAST(node, (n) => {
+        if (n.kind === "VarDeclaration") {
+          scopeOf.set(n as VarDeclaration, tables);
+        }
+      });
+    };
+    const pouTables = (blocks: readonly VarBlock[]): Constants[] => {
+      const local: Constants = new Map();
+      addConstants(blocks, local);
+      return [local, globals];
+    };
+    for (const pou of [...ast.programs, ...ast.functionBlocks]) {
+      const tables = pouTables(pou.varBlocks);
+      enterScope(pou, tables);
+      for (const method of pou.methods) {
+        const own: Constants = new Map();
+        addConstants(method.varBlocks, own);
+        enterScope(method, [own, ...tables]);
+      }
+    }
+    for (const fn of ast.functions) enterScope(fn, pouTables(fn.varBlocks));
+    const evaluating = new Set<string>();
+    const fold = (
+      expr: Expression,
+      tables: readonly Constants[],
+    ): bigint | undefined => {
+      const literal = exactIntegerValue(expr);
+      if (literal !== undefined) return literal;
+      switch (expr.kind) {
+        case "ParenthesizedExpression":
+          return fold(expr.expression, tables);
+        case "UnaryExpression": {
+          const v = fold(expr.operand, tables);
+          if (v === undefined) return undefined;
+          if (expr.operator === "-") return -v;
+          return expr.operator === "+" ? v : undefined;
+        }
+        case "BinaryExpression": {
+          const l = fold(expr.left, tables);
+          const r = fold(expr.right, tables);
+          if (l === undefined || r === undefined) return undefined;
+          switch (expr.operator) {
+            case "+":
+              return l + r;
+            case "-":
+              return l - r;
+            case "*":
+              return l * r;
+            case "/":
+              return r === 0n ? undefined : l / r;
+            case "MOD":
+              return r === 0n ? undefined : l % r;
+            default:
+              return undefined;
+          }
+        }
+        case "VariableExpression": {
+          if (
+            expr.subscripts.length > 0 ||
+            expr.fieldAccess.length > 0 ||
+            expr.isDereference ||
+            (expr.accessChain !== undefined && expr.accessChain.length > 0)
+          ) {
+            return undefined;
+          }
+          const upper = expr.name.toUpperCase();
+          for (let i = 0; i < tables.length; i++) {
+            const table = tables[i]!;
+            const entry = table.get(upper);
+            if (entry === undefined) continue;
+            if (typeof entry === "bigint") return entry;
+            if (entry === null || evaluating.has(upper)) return undefined;
+            evaluating.add(upper);
+            // A constant's own value names only what its scope or an outer one declares
+            const v = fold(entry, tables.slice(i));
+            evaluating.delete(upper);
+            if (v !== undefined) table.set(upper, v);
+            return v;
+          }
+          return undefined;
+        }
+        default:
+          return undefined;
+      }
+    };
+
     const reported = new Set<Expression>();
     const check = (
       value: Expression,
       typeName: string | undefined,
       owner: string,
+      tables: readonly Constants[],
     ): void => {
       if (reported.has(value)) return;
       const range = rangeOf(typeName);
-      const v = exactIntegerValue(value);
-      if (range === undefined || v === undefined) return;
+      if (range === undefined) return;
+      const v = fold(value, tables);
+      if (v === undefined) return;
       if (v >= range.lo && v <= range.hi) return;
       reported.add(value);
       this.addError(
@@ -5388,64 +5525,64 @@ export class SemanticAnalyzer {
     // Into STRUCT initialisers and ARRAY literals, nested ones included
     const checkValue = (
       value: Expression,
-      type: TypeReference | undefined,
-      typeName: string | undefined,
+      type: Shape | undefined,
       owner: string,
+      tables: readonly Constants[],
     ): void => {
+      const array = type === undefined ? undefined : arrayOf(type);
       if (value.kind === "ArrayLiteralExpression") {
-        const element =
-          type !== undefined
-            ? elementOf(type)
-            : typeName === undefined
-              ? undefined
-              : elementOfName(typeName);
-        for (const e of value.elements) {
-          // A nested literal of a multi-dimensional ARRAY has the same elements
-          if (e.kind === "ArrayLiteralExpression") {
-            checkValue(e, type, typeName, owner);
-          } else {
-            checkValue(e, undefined, element, owner);
-          }
-        }
+        if (array === undefined) return;
+        checkElements(value, array, 1, owner, tables);
+      } else if (array !== undefined) {
+        // A flat element where an ARRAY is: the innermost element's
+        checkValue(value, array.element, owner, tables);
       } else if (value.kind === "StructInitializerExpression") {
         for (const el of value.elements) {
           const field =
-            typeName === undefined
+            type === undefined
               ? undefined
-              : resolveFieldDeclaration(typeName, el.name, ast);
+              : resolveFieldDeclaration(type.name, el.name, ast);
           if (field !== undefined) {
-            checkValue(
-              el.value,
-              field.type,
-              field.type.name,
-              `${owner}.${el.name}`,
-            );
+            checkValue(el.value, field.type, `${owner}.${el.name}`, tables);
           }
         }
-      } else if (type === undefined || type.arrayDimensions === undefined) {
-        check(value, typeName, owner);
+      } else {
+        check(value, type?.name, owner, tables);
       }
     };
-    const elementOfName = (name: string): string | undefined => {
-      const def = types.get(name.toUpperCase())?.definition;
-      return def?.kind === "ArrayDefinition" ? def.elementType.name : undefined;
+    // A nested literal is the next dimension, then the element type's own
+    const checkElements = (
+      literal: ArrayLiteralExpression,
+      array: { dims: number; element: Shape },
+      dim: number,
+      owner: string,
+      tables: readonly Constants[],
+    ): void => {
+      for (const e of literal.elements) {
+        if (e.kind === "ArrayLiteralExpression" && dim < array.dims) {
+          checkElements(e, array, dim + 1, owner, tables);
+        } else {
+          checkValue(e, array.element, owner, tables);
+        }
+      }
     };
-    const checkDecl = (decl: VarDeclaration): void => {
+    for (const type of ast.types) {
+      if (type.defaultValue !== undefined) {
+        checkValue(type.defaultValue, { name: type.name }, type.name, [
+          globals,
+        ]);
+      }
+    }
+    walkAST(ast, (node) => {
+      if (node.kind !== "VarDeclaration") return;
+      const decl = node as VarDeclaration;
       if (decl.initialValue === undefined) return;
       checkValue(
         decl.initialValue,
         decl.type,
-        decl.type.arrayDimensions === undefined ? decl.type.name : undefined,
         decl.names.join(", "),
+        scopeOf.get(decl) ?? [globals],
       );
-    };
-    for (const type of ast.types) {
-      if (type.defaultValue !== undefined) {
-        checkValue(type.defaultValue, undefined, type.name, type.name);
-      }
-    }
-    walkAST(ast, (node) => {
-      if (node.kind === "VarDeclaration") checkDecl(node as VarDeclaration);
     });
   }
 

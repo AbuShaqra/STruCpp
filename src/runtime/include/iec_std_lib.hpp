@@ -1582,6 +1582,17 @@ inline T iec_subrange_store(const V& value, T lo, T hi, const char* name, iec_si
     return static_cast<T>(v);
 }
 
+/** A whole ARRAY stored into an ARRAY OF a subrange: each element checked, the array returned. */
+template<typename A, typename T>
+inline const A& iec_subrange_store_each(const A& array, T lo, T hi, const char* name, iec_site site) {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
+    for (const auto& element : array) iec_subrange_store(element, lo, hi, name, site);
+#else
+    (void)lo; (void)hi; (void)name; (void)site;
+#endif
+    return array;
+}
+
 /**
  * Integer `/` whose divisor may be 0: a division by zero is a run-time fault
  * naming the POU, line and task; the minimum value / -1 wraps instead of trapping.
