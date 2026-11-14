@@ -3985,7 +3985,8 @@ export class TypeChecker {
     const valueType = value.resolvedType;
     if (
       valueType === undefined ||
-      typeNameUtil(valueType).toUpperCase() !== "__XWORD"
+      typeNameUtil(valueType).toUpperCase() !== "__XWORD" ||
+      this.isAddressDifference(value)
     ) {
       return false;
     }
@@ -4003,6 +4004,20 @@ export class TypeChecker {
       );
     }
     return true;
+  }
+
+  /** `a - b` of two addresses (ADR, REF or __XWORD values): an offset, no address. */
+  private isAddressDifference(value: Expression): boolean {
+    let v = value;
+    while (v.kind === "ParenthesizedExpression") v = v.expression;
+    if (v.kind !== "BinaryExpression" || v.operator !== "-") return false;
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    const isAddress = (e: Expression): boolean =>
+      addressSource(e, user) !== undefined ||
+      (e.resolvedType !== undefined &&
+        typeNameUtil(e.resolvedType).toUpperCase() === "__XWORD");
+    return isAddress(v.left) && isAddress(v.right);
   }
 
   /**
@@ -4040,18 +4055,38 @@ export class TypeChecker {
     resolved: IECType | undefined,
     scope: Scope,
   ): string | undefined {
-    return resolved !== undefined
-      ? typeNameUtil(resolved)
-      : (this.resultTargetType(target) ??
-          this.accessedTypeName(target, scope) ??
-          this.propertyTargetTypeName(target, scope));
+    const declared = this.storeTargetDeclaredType(target, scope);
+    // A POINTER TO, REF_TO or REFERENCE TO takes an address whole.
+    if (
+      (declared?.referenceKind ?? "none") !== "none" ||
+      resolved?.typeKind === "reference"
+    ) {
+      return undefined;
+    }
+    return resolved !== undefined ? typeNameUtil(resolved) : declared?.name;
+  }
+
+  /**
+   * The declared type, references included, that a store reaches: the
+   * FUNCTION or METHOD result, a variable access (`p`, `s.f`, `pu^`) or a
+   * PROPERTY.
+   */
+  private storeTargetDeclaredType(
+    target: Expression,
+    scope: Scope,
+  ): Pick<TypeReference, "name" | "referenceKind"> | undefined {
+    return (
+      this.resultTargetType(target) ??
+      this.accessedType(target, scope) ??
+      this.propertyTargetType(target, scope)
+    );
   }
 
   /** The type of a PROPERTY set by `fb.Pr :=`, `itf.Pr :=` or `THIS^.Pr :=`. */
-  private propertyTargetTypeName(
+  private propertyTargetType(
     target: Expression,
     scope: Scope,
-  ): string | undefined {
+  ): TypeReference | undefined {
     if (
       target.kind !== "VariableExpression" ||
       target.fieldAccess.length !== 1 ||
@@ -4084,18 +4119,18 @@ export class TypeChecker {
       const found = (fb?.properties ?? itf?.properties ?? []).find(
         (p) => p.name.toUpperCase() === prop,
       );
-      if (found) return found.type.name;
+      if (found) return found.type;
       if (fb?.extends !== undefined) pending.push(fb.extends.toUpperCase());
       for (const base of itf?.extends ?? []) pending.push(base.toUpperCase());
     }
     return undefined;
   }
 
-  /** The declared type a variable access reaches (`pu^`, `s.pu^`), when it is no reference. */
-  private accessedTypeName(
+  /** The declared type a variable access reaches (`p`, `pu^`, `s.pu^`). */
+  private accessedType(
     target: Expression,
     scope: Scope,
-  ): string | undefined {
+  ): Pick<TypeReference, "name" | "referenceKind"> | undefined {
     if (target.kind !== "VariableExpression") return undefined;
     const sym = scope.lookup(target.name);
     const declared =
@@ -4103,10 +4138,7 @@ export class TypeChecker {
         ? (sym.declaration as VarDeclaration | undefined)?.type
         : undefined;
     if (declared === undefined) return undefined;
-    const reached = resolveAccessType(declared, target, this.accessLookup);
-    return reached !== undefined && (reached.referenceKind ?? "none") === "none"
-      ? reached.name
-      : undefined;
+    return resolveAccessType(declared, target, this.accessLookup);
   }
 
   /** `p^`, `s.p^`, `p^.x`: a store that reaches through a dereference. */
@@ -4118,14 +4150,15 @@ export class TypeChecker {
     );
   }
 
-  /** The declared result type name when `target` is the bare FUNCTION or METHOD result. */
-  private resultTargetType(target: Expression): string | undefined {
+  /** The declared result type when `target` is the bare FUNCTION or METHOD result. */
+  private resultTargetType(target: Expression): TypeReference | undefined {
     return this.currentReturn !== undefined &&
       target.kind === "VariableExpression" &&
       target.fieldAccess.length === 0 &&
       target.subscripts.length === 0 &&
+      !target.isDereference &&
       target.name.toUpperCase() === this.currentReturn.name.toUpperCase()
-      ? this.currentReturn.type.name
+      ? this.currentReturn.type
       : undefined;
   }
 
@@ -4601,7 +4634,15 @@ export class TypeChecker {
         const controlSym = scope.lookup(stmt.controlVariable);
         // Start, end and step are stored in the control variable.
         const addressBound = new Set<Expression>();
-        if (controlSym?.kind === "variable" && controlSym.type) {
+        const controlDeclared =
+          controlSym?.kind === "variable"
+            ? (controlSym.declaration as VarDeclaration | undefined)?.type
+            : undefined;
+        if (
+          controlSym?.kind === "variable" &&
+          controlSym.type &&
+          (controlDeclared?.referenceKind ?? "none") === "none"
+        ) {
           for (const bound of [stmt.start, stmt.end, stmt.step]) {
             if (
               bound !== undefined &&
