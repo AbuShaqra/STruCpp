@@ -735,13 +735,20 @@ export const DirectAddress = createToken({
  * but whitespace, so a word holding one lexes as one Identifier and each such
  * character is then refused by name (see nameLetterErrors).
  */
-/** The first character code, which a character class names as a range start. */
-const NUL = String.fromCharCode(0);
+/** Control characters a character class names as range ends (not written literally). */
+const TAB = String.fromCharCode(0x09);
+const CR = String.fromCharCode(0x0d);
 
+/**
+ * A name's characters: A–Z, a–z, digits and _, and any other character but
+ * whitespace and ASCII punctuation (non-ASCII, and control characters), so a
+ * word holding one lexes as one Identifier and each such character is then
+ * refused (see nameLetterErrors).
+ */
 export const Identifier = createToken({
   name: "Identifier",
   pattern: new RegExp(
-    `[^${NUL}-\\x40\\x5B-\\x5E\\x60\\x7B-\\x7F\\s][^${NUL}-\\x2F\\x3A-\\x40\\x5B-\\x5E\\x60\\x7B-\\x7F\\s]*`,
+    `[^${TAB}-${CR}\\x20-\\x40\\x5B-\\x5E\\x60\\x7B-\\x7E\\s][^${TAB}-${CR}\\x20-\\x2F\\x3A-\\x40\\x5B-\\x5E\\x60\\x7B-\\x7E\\s]*`,
   ),
 });
 
@@ -1504,23 +1511,10 @@ function clusters(
   return out;
 }
 
-/** The error for each cluster of `text[start, end)` holding a non-ASCII character. */
-function clusterErrors(
-  source: string,
-  start: number,
-  end: number,
-  line: number | undefined,
-  column: number,
-): ILexingError[] {
-  return clusters(source, start, end)
-    .filter((c) => [...c.text].some((ch) => ch >= "\u0080"))
-    .map((c) => ({
-      offset: c.offset,
-      line,
-      column: column + (c.offset - start),
-      length: c.text.length,
-      message: nameLetterMessage(c.text),
-    }));
+/** A character a name refuses: non-ASCII, or a control character. */
+function refused(ch: string): boolean {
+  const code = ch.codePointAt(0) ?? 0;
+  return code >= 0x7f || code < 0x20;
 }
 
 /** The keyword token a whole word lexes as, if any. */
@@ -1537,12 +1531,13 @@ function keywordToken(word: string): IToken | undefined {
 }
 
 /**
- * A name allows A–Z, digits and _ only. Each grapheme cluster of an
- * Identifier that holds another character is refused once, the word staying
- * one token. A run of such characters that does not continue a name (glued
- * to the token before it, or after a keyword) is refused and dropped, so the
- * parser sees the rest unchanged; a combining mark there is quoted with the
- * character it combines with.
+ * A name allows A–Z, digits and _ only. For each Identifier holding other
+ * characters: each grapheme cluster holding one is refused once, at its
+ * first character, quoted with its base (a mark glued to the token before
+ * takes that token's last character); the refused characters are stripped
+ * from the image, positions kept. Nothing left drops the token; a keyword
+ * before the first refused character (`END_IFäx`) is split off as that
+ * keyword, the rest staying a name.
  */
 function nameLetterErrors(
   result: { tokens: IToken[]; errors: ILexingError[] },
@@ -1550,7 +1545,7 @@ function nameLetterErrors(
 ): void {
   for (const error of result.errors) {
     const ch = String.fromCodePoint(source.codePointAt(error.offset) ?? 0);
-    if (error.offset < source.length && ch >= "\u0080" && !/^\s$/.test(ch)) {
+    if (error.offset < source.length && refused(ch) && !/^\s$/.test(ch)) {
       const cluster = clusters(source, error.offset, error.offset + ch.length);
       error.message = nameLetterMessage(cluster[0]?.text ?? ch);
     }
@@ -1564,61 +1559,52 @@ function nameLetterErrors(
     const start = token.startOffset;
     const end = start + token.image.length;
     const startCol = token.startColumn ?? 0;
-    // `END_IFä`: the keyword stays, the run after it is dropped.
-    const prefix = /^\w*/.exec(token.image)?.[0] ?? "";
-    const keyword = prefix === "" ? undefined : keywordToken(prefix);
-    if (keyword !== undefined) {
-      kept.push({
-        ...token,
-        image: prefix,
-        tokenType: keyword.tokenType,
-        tokenTypeIdx: keyword.tokenTypeIdx,
-        endOffset: start + prefix.length - 1,
-        endColumn: startCol + prefix.length - 1,
-      });
-      result.errors.push(
-        ...clusterErrors(
-          source,
-          start + prefix.length,
-          end,
-          token.startLine,
-          startCol + prefix.length,
-        ),
-      );
-      continue;
-    }
-    const previous = kept[kept.length - 1];
-    const glued =
-      prefix === "" &&
-      previous !== undefined &&
-      previous.endOffset !== undefined &&
-      previous.endOffset + 1 === start;
-    if (!glued) {
-      kept.push(token);
-      result.errors.push(
-        ...clusterErrors(source, start, end, token.startLine, startCol),
-      );
-      continue;
-    }
-    // A mark at the start combines with the token's last character.
+    // A mark at the start combines with the previous token's last character.
     const first = String.fromCodePoint(source.codePointAt(start) ?? 0);
+    const before = start > 0 ? source.charAt(start - 1) : "";
     const back =
-      JOINS.test(first) && start > 0
-        ? source.charCodeAt(start - 1) >= 0xdc00 &&
-          source.charCodeAt(start - 1) <= 0xdfff &&
-          start > 1
+      JOINS.test(first) && before !== "" && !/\s/.test(before)
+        ? before >= "\udc00" && before <= "\udfff" && start > 1
           ? 2
           : 1
         : 0;
-    result.errors.push(
-      ...clusterErrors(
-        source,
-        start - back,
-        end,
-        token.startLine,
-        startCol - back,
-      ),
-    );
+    for (const c of clusters(source, start - back, end)) {
+      if (![...c.text].some(refused)) continue;
+      result.errors.push({
+        offset: c.offset,
+        line: token.startLine,
+        column: startCol + (c.offset - start),
+        length: c.text.length,
+        message: nameLetterMessage(c.text),
+      });
+    }
+    // The image without the refused characters, and where the first one was.
+    let stripped = "";
+    let firstRefused = -1;
+    for (const ch of token.image) {
+      if (refused(ch)) {
+        if (firstRefused < 0) firstRefused = stripped.length;
+      } else {
+        stripped += ch;
+      }
+    }
+    if (stripped === "") continue;
+    const keyword =
+      firstRefused > 0
+        ? keywordToken(stripped.slice(0, firstRefused))
+        : undefined;
+    if (keyword === undefined) {
+      kept.push({ ...token, image: stripped });
+      continue;
+    }
+    kept.push({
+      ...token,
+      image: keyword.image,
+      tokenType: keyword.tokenType,
+      tokenTypeIdx: keyword.tokenTypeIdx,
+    });
+    const rest = stripped.slice(firstRefused);
+    if (rest !== "") kept.push({ ...token, image: rest });
   }
   result.tokens = kept;
   result.errors.sort((a, b) => a.offset - b.offset);

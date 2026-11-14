@@ -3,7 +3,7 @@
  * longer ('ß', 'ΐ', 'ﬁ') is kept as written, so later columns stay right.
  */
 import { describe, it, expect } from "vitest";
-import { compile } from "../../src/index.js";
+import { analyze, compile } from "../../src/index.js";
 import { uppercaseSource } from "../../src/frontend/lexer.js";
 
 /** How the refusal shows a character: quoted when visible, with its code points. */
@@ -199,5 +199,68 @@ describe("names: clusters, invisible characters, glued runs (recheck 2)", () => 
 
   it("quotes a mark glued to a literal with its base (#5)", () => {
     expect(body("x := 5\u0301;")).toEqual([msg("3:6", "5\u0301")]);
+  });
+});
+
+describe("names: one rule for refused characters (recheck 3)", () => {
+  const msg = (at: string, ch: string): string =>
+    `${at}: ${nameText(ch)} is not allowed in a name: identifiers use A–Z, digits and _`;
+  // As --check reports: the analysis goes on past a refused character.
+  const checked = (src: string): string[] =>
+    analyze(src).errors.map((e) => `${e.line}:${e.column}: ${e.message}`);
+  const body = (stmt: string): string[] =>
+    checked(
+      `PROGRAM P\nVAR x : INT; y : INT; r : REAL; s : STRING; ab : INT; b : INT; c : INT; END_VAR\n${stmt}\nEND_PROGRAM\n`,
+    );
+  const qq = "3:{c}: Undeclared variable 'QQ'";
+  const und = (col: number): string => qq.replace("{c}", String(col));
+
+  it("refuses a run after a comment or pragma once (#1)", () => {
+    expect(body("x := 1; (* c *)ä y := 2; x := qq;")).toEqual([
+      msg("3:16", "ä"),
+      und(31),
+    ]);
+    expect(body("x := 1 (* c *)ä; x := qq;")).toEqual([
+      msg("3:15", "ä"),
+      und(23),
+    ]);
+    expect(body("{attribute 'hide'}ä x := 1; y := qq;")).toEqual([
+      msg("3:19", "ä"),
+      und(34),
+    ]);
+  });
+
+  it("keeps the ASCII letters after a refused run (#2, #6)", () => {
+    expect(body("x := 1;äy := qq;")).toEqual([msg("3:8", "ä"), und(14)]);
+    expect(body("x := 1 +äy; y := qq;")).toEqual([msg("3:9", "ä"), und(18)]);
+    expect(body("IF TRUE THEN x := 1; END_IFäx := qq;")).toEqual([
+      msg("3:28", "ä"),
+      und(34),
+    ]);
+    expect(body("x :=äb;")).toEqual([msg("3:5", "ä")]);
+    expect(body("x := ABS(äb);")).toEqual([msg("3:10", "ä")]);
+    expect(body("x := b ANDäc;")).toEqual([msg("3:11", "ä")]);
+  });
+
+  it("names the variable without the refused character (#3)", () => {
+    for (const cp of [0x9b, 0x200b, 0x202e]) {
+      const ch = String.fromCodePoint(cp);
+      expect(body(`x${ch} := 1;`)).toEqual([msg("3:2", ch)]);
+    }
+  });
+
+  it("refuses a C0 control in a name by code point (#4)", () => {
+    expect(
+      checked("PROGRAM P\nVAR\n  x\u0007y : INT;\nEND_VAR\nEND_PROGRAM\n"),
+    ).toEqual([msg("3:4", "\u0007")]);
+    expect(body("x := 1\u0007;")).toEqual([msg("3:7", "\u0007")]);
+  });
+
+  it("quotes a mark glued to a keyword with its last letter (#5, #7)", () => {
+    expect(body("IF TRUÉ THEN x := 1; END_IF;")).toEqual([msg("3:7", "É")]);
+    expect(body("IF TRUE THEN x:=1; END_IF́")).toEqual([msg("3:25", "F́")]);
+    expect(
+      errors("PROGRAM P\nVAR x : INT; END_VAR\nx := 1;\nEND_PROGRAḾ"),
+    ).toEqual([msg("4:11", "Ḿ")]);
   });
 });
