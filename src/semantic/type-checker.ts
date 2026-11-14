@@ -563,6 +563,7 @@ export class TypeChecker {
     this.checkAllInitializerElements(ast);
 
     this.checkGlobalInitialCycles(ast);
+    this.refuseGlobalReferenceToValues(ast);
     this.checkStructReferenceDefaults(ast);
     this.markGlobalVendorOperators(ast);
 
@@ -3061,6 +3062,7 @@ export class TypeChecker {
         for (const decl of block.declarations) {
           const value = decl.initialValue;
           if (!value) continue;
+          let hasOperator = false;
           walkAST(value, (node) => {
             if (node.kind !== "FunctionCallExpression") return;
             const call = node as FunctionCallExpression;
@@ -3069,18 +3071,20 @@ export class TypeChecker {
               call.functionName.toUpperCase(),
               scope,
             );
+            if (call.vendorOperator !== undefined) hasOperator = true;
           });
           const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
-          if (
-            value.kind === "FunctionCallExpression" &&
-            value.vendorOperator !== undefined &&
-            value.resolvedType !== undefined &&
+          // Any expression holding an operator, `(XSIZEOF(g))` or `XSIZEOF(g) + 1` too.
+          const valueType =
+            hasOperator &&
             targetType !== undefined &&
             (decl.type.referenceKind ?? "none") === "none"
-          ) {
+              ? this.resolveExprType(value, scope)
+              : undefined;
+          if (targetType !== undefined && valueType !== undefined) {
             this.validateAssignment(
               targetType,
-              value.resolvedType,
+              valueType,
               {
                 kind: "VariableExpression",
                 sourceSpan: decl.sourceSpan,
@@ -3458,6 +3462,7 @@ export class TypeChecker {
           this.checkFbInitArguments(decl, argumentScope);
         }
         if (!decl.initialValue) continue;
+        if (this.refuseInOutInInitialValue(blocks, decl, scope)) continue;
         const outerKind = decl.type.referenceKind;
         if (
           (outerKind === "ref_to" || outerKind === "pointer_to") &&
@@ -3508,6 +3513,17 @@ export class TypeChecker {
           );
           continue;
         }
+        // `r : REFERENCE TO T := REF(x)` binds r to x, checked as `r REF= x`;
+        // also through a TYPE alias of a REFERENCE TO.
+        const referenceTo =
+          outerKind === "reference_to" || this.isReferenceToAlias(decl.type);
+        if (referenceTo && decl.initialValue.kind === "RefExpression") {
+          this.checkReferenceToInitializer(decl, decl.initialValue, scope);
+          continue;
+        }
+        if (referenceTo && this.refuseReferenceToValue(decl)) {
+          continue;
+        }
         const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
         if (!targetType) continue; // Non-elementary types — handled elsewhere
         // A CHAR initial value refused already (checkCharInitialValue).
@@ -3530,6 +3546,207 @@ export class TypeChecker {
           decl.initialValue,
         );
       }
+    }
+  }
+
+  /**
+   * A REFERENCE TO initial value other than REF(x) or NULL would copy into the
+   * reference, not bind it. True when refused.
+   */
+  private refuseReferenceToValue(decl: VarDeclaration): boolean {
+    const value = decl.initialValue;
+    if (
+      value === undefined ||
+      value.kind === "RefExpression" ||
+      (value.kind === "LiteralExpression" && value.literalType === "NULL")
+    ) {
+      return false;
+    }
+    this.addError(
+      `REFERENCE TO '${(decl.names[0] ?? "").toUpperCase()}' is bound by its initial value only with REF(x); use REF(x)`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /**
+   * An FB member's initial value is evaluated when the FB is created, before
+   * any call binds its VAR_IN_OUT: one that reads or addresses it is refused
+   * (`REF(io)` is refused by checkReferenceToInitializer). True when refused.
+   */
+  private refuseInOutInInitialValue(
+    blocks: readonly VarBlock[],
+    decl: VarDeclaration,
+    scope: Scope,
+  ): boolean {
+    const value = decl.initialValue;
+    if (value === undefined || value.kind === "RefExpression") return false;
+    const fb = this.ast?.functionBlocks.find(
+      (f) => f.name.toUpperCase() === this.currentFBName?.toUpperCase(),
+    );
+    if (fb === undefined || fb.varBlocks !== blocks) return false;
+    let found: VariableExpression | undefined;
+    walkAST(value, (node) => {
+      if (found !== undefined || node.kind !== "VariableExpression") return;
+      const v = node as VariableExpression;
+      const sym = scope.lookup(v.name);
+      if (sym?.kind === "variable" && sym.isInOut) found = v;
+    });
+    if (found === undefined) return false;
+    this.addError(
+      `The initial value of '${(decl.names[0] ?? "").toUpperCase()}' cannot use the VAR_IN_OUT '${found.name.toUpperCase()}': it is bound only by a call; assign it in the body`,
+      found.sourceSpan.startLine,
+      found.sourceSpan.startCol,
+      found.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /** A TYPE alias (through aliases) of a REFERENCE TO. */
+  private isReferenceToAlias(type: TypeReference): boolean {
+    if ((type.referenceKind ?? "none") !== "none" || !this.ast) return false;
+    let name = type.name.toUpperCase();
+    for (let depth = 0; depth < 16; depth++) {
+      const def = this.ast.types.find(
+        (t) => t.name.toUpperCase() === name,
+      )?.definition;
+      if (def?.kind !== "TypeReference") return false;
+      if (def.referenceKind === "reference_to") return true;
+      if ((def.referenceKind ?? "none") !== "none") return false;
+      name = def.name.toUpperCase();
+    }
+    return false;
+  }
+
+  /** Top-level and CONFIGURATION globals: a REFERENCE TO bound by a non-REF value. */
+  private refuseGlobalReferenceToValues(ast: CompilationUnit): void {
+    for (const block of [
+      ...ast.globalVarBlocks,
+      ...ast.configurations.flatMap((c) => c.varBlocks),
+    ]) {
+      for (const decl of block.declarations) {
+        if (
+          decl.type.referenceKind === "reference_to" ||
+          this.isReferenceToAlias(decl.type)
+        ) {
+          this.refuseReferenceToValue(decl);
+        }
+      }
+    }
+  }
+
+  /**
+   * A constant has no writable storage to refer to, and (in an initial value)
+   * a VAR_IN_OUT is bound only by a call. True when refused.
+   */
+  private refuseReferenceToUnbindable(
+    source: VariableExpression,
+    what: string,
+    scope: Scope,
+    initialValue: boolean,
+  ): boolean {
+    const sym = scope.lookup(source.name);
+    const fail = (message: string): true => {
+      this.addError(
+        message,
+        source.sourceSpan.startLine,
+        source.sourceSpan.startCol,
+        source.sourceSpan.file,
+      );
+      return true;
+    };
+    if (sym?.kind === "constant") {
+      return fail(
+        `${what} cannot be bound to the constant '${source.name.toUpperCase()}'`,
+      );
+    }
+    if (initialValue && sym?.kind === "variable" && sym.isInOut) {
+      return fail(
+        `${what} cannot be bound to the VAR_IN_OUT '${source.name.toUpperCase()}' in its initial value: it is bound only by a call; use REF= in the body`,
+      );
+    }
+    return false;
+  }
+
+  /** `REF(w.3)` or `r REF= w.3`: a bit has no address of its own. True when refused. */
+  private refuseReferenceToBit(
+    source: VariableExpression,
+    what: string,
+  ): boolean {
+    const steps =
+      source.accessChain?.map((s) => (s.kind === "field" ? s.name : "")) ??
+      source.fieldAccess;
+    const last = steps[steps.length - 1] ?? "";
+    if (!/^\d+$/.test(last) && source.namedBitIndex !== true) return false;
+    this.addError(
+      `${what} cannot be bound to a bit of a variable: a bit has no address of its own`,
+      source.sourceSpan.startLine,
+      source.sourceSpan.startCol,
+      source.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /** The variable `REF(x)` binds a REFERENCE TO initial value to, checked as a REF= source. */
+  private checkReferenceToInitializer(
+    decl: VarDeclaration,
+    value: Extract<Expression, { kind: "RefExpression" }>,
+    scope: Scope,
+  ): void {
+    this.resolveExprType(value, scope);
+    const source = value.operand;
+    if (source.kind !== "VariableExpression") {
+      this.addError(
+        `REFERENCE TO '${decl.names[0] ?? ""}' must be bound to a variable, not an expression`,
+        source.sourceSpan.startLine,
+        source.sourceSpan.startCol,
+        source.sourceSpan.file,
+      );
+      return;
+    }
+    if (
+      this.refuseReferenceToUnbindable(
+        source,
+        `REFERENCE TO '${(decl.names[0] ?? "").toUpperCase()}'`,
+        scope,
+        true,
+      )
+    ) {
+      return;
+    }
+    if (
+      this.refuseReferenceToBit(
+        source,
+        `REFERENCE TO '${(decl.names[0] ?? "").toUpperCase()}'`,
+      )
+    ) {
+      return;
+    }
+    delete source.aliasReferenceBinding;
+    const targetShape = referenceShapeOf(decl.type);
+    const sourceShape = this.declaredReferenceShape(source, scope);
+    if (
+      targetShape === undefined ||
+      targetShape.chain.length !== 1 ||
+      sourceShape === undefined
+    ) {
+      return;
+    }
+    this.markAliasReferenceBinding(targetShape, sourceShape, source);
+    const mismatch = this.referenceBindingMismatch(
+      targetShape,
+      sourceShape,
+      source,
+    );
+    if (mismatch !== undefined) {
+      this.addError(
+        mismatch,
+        source.sourceSpan.startLine,
+        source.sourceSpan.startCol,
+        source.sourceSpan.file,
+      );
     }
   }
 
@@ -3696,6 +3913,13 @@ export class TypeChecker {
         this.resolveExprType(stmt.target, scope);
         this.resolveExprType(stmt.source, scope);
         this.refuseBitMember(stmt.source, "REF= cannot bind to", scope);
+        if (
+          stmt.source.kind === "VariableExpression" &&
+          (this.refuseReferenceToBit(stmt.source, "REF=") ||
+            this.refuseReferenceToUnbindable(stmt.source, "REF=", scope, false))
+        ) {
+          break;
+        }
         // REF= rebinds a reference, so the target must be declared
         // REF_TO / REFERENCE TO. Catch `plainVar REF= x` here with a clear
         // message rather than letting it fall through to a confusing C++
