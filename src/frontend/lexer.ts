@@ -1450,22 +1450,49 @@ export function shortPragmaText(image: string): string {
     : `${flat.substring(0, PRAGMA_TEXT_MAX - 4)}...}`;
 }
 
-function nameLetterMessage(quoted: string): string {
-  return `'${quoted}' is not allowed in a name: identifiers use A–Z, digits and _`;
+/**
+ * The refusal of a character in a name, its code points listed. It is quoted
+ * too when it shows (not only format, control, separator or mark characters).
+ */
+function nameLetterMessage(cluster: string): string {
+  const chars = [...cluster];
+  const points = chars
+    .map(
+      (c) =>
+        `U+${(c.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`,
+    )
+    .join(" ");
+  const visible = chars.some(
+    (c) => !/^[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{M}]$/u.test(c),
+  );
+  const shown = visible ? `'${cluster}' (${points})` : points;
+  return `${shown} is not allowed in a name: identifiers use A–Z, digits and _`;
 }
 
 /** A combining mark or a zero-width joiner, kept with the character before it. */
 const JOINS = /^[\p{M}\u200C\u200D]$/u;
 
+/** Grapheme segmentation where the runtime has it. */
+const GRAPHEMES =
+  typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
+    ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+    : undefined;
+
 /**
- * The characters of `text` from `start` to `end` grouped with their marks:
- * each cluster's offset and text.
+ * The characters of `text` from `start` to `end` grouped into user-perceived
+ * characters (grapheme clusters): each cluster's offset and text.
  */
 function clusters(
   text: string,
   start: number,
   end: number,
 ): Array<{ offset: number; text: string }> {
+  if (GRAPHEMES !== undefined) {
+    return [...GRAPHEMES.segment(text.slice(start, end))].map((g) => ({
+      offset: start + g.index,
+      text: g.segment,
+    }));
+  }
   const out: Array<{ offset: number; text: string }> = [];
   for (let k = start; k < end; ) {
     const ch = String.fromCodePoint(text.codePointAt(k) ?? 0);
@@ -1477,14 +1504,45 @@ function clusters(
   return out;
 }
 
-/** Ends with a literal's last character: a digit, letter, _ or quote. */
-const LITERAL_END = /[\w'"]$/;
+/** The error for each cluster of `text[start, end)` holding a non-ASCII character. */
+function clusterErrors(
+  source: string,
+  start: number,
+  end: number,
+  line: number | undefined,
+  column: number,
+): ILexingError[] {
+  return clusters(source, start, end)
+    .filter((c) => [...c.text].some((ch) => ch >= "\u0080"))
+    .map((c) => ({
+      offset: c.offset,
+      line,
+      column: column + (c.offset - start),
+      length: c.text.length,
+      message: nameLetterMessage(c.text),
+    }));
+}
+
+/** The keyword token a whole word lexes as, if any. */
+function keywordToken(word: string): IToken | undefined {
+  const lexed = STLexer.tokenize(word);
+  const only = lexed.tokens[0];
+  return lexed.errors.length === 0 &&
+    lexed.tokens.length === 1 &&
+    only !== undefined &&
+    only.tokenType !== Identifier &&
+    only.image === word
+    ? only
+    : undefined;
+}
 
 /**
- * A name allows A–Z, digits and _ only. Each cluster of an Identifier that
- * holds another character is refused by name, quoted whole (a base with its
- * marks), the word staying one token. A run of them glued to a literal is
- * refused and dropped, so the parser sees the literal alone.
+ * A name allows A–Z, digits and _ only. Each grapheme cluster of an
+ * Identifier that holds another character is refused once, the word staying
+ * one token. A run of such characters that does not continue a name (glued
+ * to the token before it, or after a keyword) is refused and dropped, so the
+ * parser sees the rest unchanged; a combining mark there is quoted with the
+ * character it combines with.
  */
 function nameLetterErrors(
   result: { tokens: IToken[]; errors: ILexingError[] },
@@ -1503,30 +1561,64 @@ function nameLetterErrors(
       kept.push(token);
       continue;
     }
+    const start = token.startOffset;
+    const end = start + token.image.length;
     const startCol = token.startColumn ?? 0;
-    for (const cluster of clusters(
-      source,
-      token.startOffset,
-      token.startOffset + token.image.length,
-    )) {
-      if ([...cluster.text].every((c) => c < "\u0080")) continue;
-      result.errors.push({
-        offset: cluster.offset,
-        line: token.startLine,
-        column: startCol + (cluster.offset - token.startOffset),
-        length: cluster.text.length,
-        message: nameLetterMessage(cluster.text),
+    // `END_IFä`: the keyword stays, the run after it is dropped.
+    const prefix = /^\w*/.exec(token.image)?.[0] ?? "";
+    const keyword = prefix === "" ? undefined : keywordToken(prefix);
+    if (keyword !== undefined) {
+      kept.push({
+        ...token,
+        image: prefix,
+        tokenType: keyword.tokenType,
+        tokenTypeIdx: keyword.tokenTypeIdx,
+        endOffset: start + prefix.length - 1,
+        endColumn: startCol + prefix.length - 1,
       });
+      result.errors.push(
+        ...clusterErrors(
+          source,
+          start + prefix.length,
+          end,
+          token.startLine,
+          startCol + prefix.length,
+        ),
+      );
+      continue;
     }
     const previous = kept[kept.length - 1];
     const glued =
+      prefix === "" &&
       previous !== undefined &&
-      previous.tokenType !== Identifier &&
       previous.endOffset !== undefined &&
-      previous.endOffset + 1 === token.startOffset &&
-      LITERAL_END.test(previous.image) &&
-      token.image.charCodeAt(0) >= 0x80;
-    if (!glued) kept.push(token);
+      previous.endOffset + 1 === start;
+    if (!glued) {
+      kept.push(token);
+      result.errors.push(
+        ...clusterErrors(source, start, end, token.startLine, startCol),
+      );
+      continue;
+    }
+    // A mark at the start combines with the token's last character.
+    const first = String.fromCodePoint(source.codePointAt(start) ?? 0);
+    const back =
+      JOINS.test(first) && start > 0
+        ? source.charCodeAt(start - 1) >= 0xdc00 &&
+          source.charCodeAt(start - 1) <= 0xdfff &&
+          start > 1
+          ? 2
+          : 1
+        : 0;
+    result.errors.push(
+      ...clusterErrors(
+        source,
+        start - back,
+        end,
+        token.startLine,
+        startCol - back,
+      ),
+    );
   }
   result.tokens = kept;
   result.errors.sort((a, b) => a.offset - b.offset);

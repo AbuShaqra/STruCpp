@@ -477,7 +477,7 @@ describe("length-changing upper case before a directive", () => {
     ].join("\n");
     const r = compile(src, { features: ["+conditional_pragmas"] });
     expect(r.errors.map((e) => `${e.line}:${e.column}: ${e.message}`)).toEqual([
-      "3:5: 'ß' is not allowed in a name: identifiers use A–Z, digits and _",
+      "3:5: 'ß' (U+00DF) is not allowed in a name: identifiers use A–Z, digits and _",
     ]);
   });
 

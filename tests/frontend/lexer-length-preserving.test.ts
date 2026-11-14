@@ -6,6 +6,20 @@ import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
 import { uppercaseSource } from "../../src/frontend/lexer.js";
 
+/** How the refusal shows a character: quoted when visible, with its code points. */
+function nameText(ch: string): string {
+  const points = [...ch]
+    .map(
+      (c) =>
+        `U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`,
+    )
+    .join(" ");
+  const visible = [...ch].some(
+    (c) => !/^[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{M}]$/u.test(c),
+  );
+  return visible ? `'${ch}' (${points})` : points;
+}
+
 const errors = (src: string, features: string[] = []): string[] =>
   compile(src, { features }).errors.map(
     (e) => `${e.line}:${e.column}: ${e.message}`,
@@ -43,20 +57,20 @@ describe("length-preserving upper-casing", () => {
     expect(
       errors("PROGRAM P\nVAR ﬁx : INT; END_VAR\nﬁx := 1;\nEND_PROGRAM\n"),
     ).toEqual([
-      "2:5: 'ﬁ' is not allowed in a name: identifiers use A–Z, digits and _",
-      "3:1: 'ﬁ' is not allowed in a name: identifiers use A–Z, digits and _",
+      "2:5: 'ﬁ' (U+FB01) is not allowed in a name: identifiers use A–Z, digits and _",
+      "3:1: 'ﬁ' (U+FB01) is not allowed in a name: identifiers use A–Z, digits and _",
     ]);
     expect(
       errors("PROGRAM P\nVAR straße : INT; END_VAR\nEND_PROGRAM\n")[0],
     ).toBe(
-      "2:9: 'ß' is not allowed in a name: identifiers use A–Z, digits and _",
+      "2:9: 'ß' (U+00DF) is not allowed in a name: identifiers use A–Z, digits and _",
     );
   });
 });
 
 describe("names hold A–Z, digits and _ only", () => {
   const msg = (at: string, ch: string): string =>
-    `${at}: '${ch}' is not allowed in a name: identifiers use A–Z, digits and _`;
+    `${at}: ${nameText(ch)} is not allowed in a name: identifiers use A–Z, digits and _`;
 
   it("never turns a non-ASCII character into ASCII", () => {
     expect(uppercaseSource("ınt ſ x")).toBe("ıNT ſ X");
@@ -91,7 +105,7 @@ describe("names hold A–Z, digits and _ only", () => {
 
 describe("names: every non-ASCII character but whitespace (recheck)", () => {
   const msg = (at: string, ch: string): string =>
-    `${at}: '${ch}' is not allowed in a name: identifiers use A–Z, digits and _`;
+    `${at}: ${nameText(ch)} is not allowed in a name: identifiers use A–Z, digits and _`;
   const decl = (name: string): string[] =>
     errors(`PROGRAM P\nVAR\n  ${name} : INT;\nEND_VAR\nEND_PROGRAM\n`);
 
@@ -141,5 +155,49 @@ describe("names: every non-ASCII character but whitespace (recheck)", () => {
         ),
       ).toEqual([]);
     }
+  });
+});
+
+describe("names: clusters, invisible characters, glued runs (recheck 2)", () => {
+  const msg = (at: string, ch: string): string =>
+    `${at}: ${nameText(ch)} is not allowed in a name: identifiers use A–Z, digits and _`;
+  const decl = (name: string): string[] =>
+    errors(`PROGRAM P\nVAR\n  ${name} : INT;\nEND_VAR\nEND_PROGRAM\n`);
+  const body = (stmt: string): string[] =>
+    errors(
+      `PROGRAM P\nVAR x : INT; r : REAL; t : TIME; s : STRING; ab : INT; END_VAR\n${stmt}\nEND_PROGRAM\n`,
+    );
+
+  it("gives one error for a run glued to any other token (#4)", () => {
+    expect(body("x := (1)ä;")).toEqual([msg("3:9", "ä")]);
+    expect(body("IF TRUE THEN x:=1; END_IFä")).toEqual([msg("3:26", "ä")]);
+  });
+
+  it("refuses a whole grapheme cluster once (#1)", () => {
+    const cp = (...c: number[]): string => String.fromCodePoint(...c);
+    for (const cluster of [
+      cp(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467),
+      cp(0x1f1e9, 0x1f1ea),
+      cp(0x1f44d, 0x1f3fb),
+      cp(0x1100, 0x1161),
+    ]) {
+      expect(decl(`x${cluster}y`)).toEqual([msg("3:4", cluster)]);
+    }
+  });
+
+  it("names an invisible, format or bidi character by its code point (#2)", () => {
+    expect(decl("x\u0085y")).toEqual([
+      "3:4: U+0085 is not allowed in a name: identifiers use A–Z, digits and _",
+    ]);
+    expect(decl("x\u202Ey")).toEqual([
+      "3:4: U+202E is not allowed in a name: identifiers use A–Z, digits and _",
+    ]);
+    expect(decl("\u200Dx")).toEqual([
+      "3:3: U+200D is not allowed in a name: identifiers use A–Z, digits and _",
+    ]);
+  });
+
+  it("quotes a mark glued to a literal with its base (#5)", () => {
+    expect(body("x := 5\u0301;")).toEqual([msg("3:6", "5\u0301")]);
   });
 });
