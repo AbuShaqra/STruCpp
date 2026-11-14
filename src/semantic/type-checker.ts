@@ -1766,6 +1766,18 @@ export class TypeChecker {
     expr: BinaryExpression,
     scope: Scope,
   ): IECType | undefined {
+    if (expr.operator === "+" || expr.operator === "-") {
+      // The operands of a + / - chain are checked with it, as one chain
+      for (let side of [expr.left, expr.right]) {
+        while (side.kind === "ParenthesizedExpression") side = side.expression;
+        if (
+          side.kind === "BinaryExpression" &&
+          (side.operator === "+" || side.operator === "-")
+        ) {
+          this.innerChainNodes.add(side);
+        }
+      }
+    }
     let leftType = this.resolveExprType(expr.left, scope);
     let rightType = this.resolveExprType(expr.right, scope);
     delete expr.comparesReferences;
@@ -1793,8 +1805,11 @@ export class TypeChecker {
       return this.inferCharBinaryType(expr, leftType, rightType);
     }
 
-    if (expr.operator === "+" || expr.operator === "-") {
-      this.refuseMisalignedPointerMove(expr, scope);
+    if (
+      (expr.operator === "+" || expr.operator === "-") &&
+      !this.innerChainNodes.has(expr)
+    ) {
+      this.refuseAddressArithmetic(expr, scope);
     }
     if (this.strict && STRICT_ARITHMETIC_OPS.has(expr.operator)) {
       this.checkStrictArithmetic(expr, leftType, rightType);
@@ -1957,77 +1972,98 @@ export class TypeChecker {
     }
   }
 
-  /** Pointer terms already checked for a misaligned move, so a nested chain reports once. */
-  private checkedPointerTerms = new WeakSet<Expression>();
+  /** + / - nodes inside a chain, checked with the chain's top node. */
+  private innerChainNodes = new WeakSet<Expression>();
 
-  /**
-   * A + / - chain that moves an address (a POINTER TO, or ADR(x)) by bytes.
-   * By a constant offset that is not a multiple of the size of the elementary
-   * type pointed to, a dereference would be misaligned: refused. An address
-   * taken from a value that is no address, or two addresses added, is refused.
-   */
-  private refuseMisalignedPointerMove(
-    expr: BinaryExpression,
-    scope: Scope,
-  ): void {
+  /** The signed terms of a + / - chain, through parentheses. */
+  private chainTerms(e: Expression): Array<{ expr: Expression; sign: number }> {
     const terms: Array<{ expr: Expression; sign: number }> = [];
-    const flatten = (e: Expression, sign: number): void => {
-      if (e.kind === "ParenthesizedExpression") {
-        flatten(e.expression, sign);
+    const flatten = (x: Expression, sign: number): void => {
+      if (x.kind === "ParenthesizedExpression") {
+        flatten(x.expression, sign);
       } else if (
-        e.kind === "BinaryExpression" &&
-        (e.operator === "+" || e.operator === "-")
+        x.kind === "BinaryExpression" &&
+        (x.operator === "+" || x.operator === "-")
       ) {
-        flatten(e.left, sign);
-        flatten(e.right, e.operator === "-" ? -sign : sign);
+        flatten(x.left, sign);
+        flatten(x.right, x.operator === "-" ? -sign : sign);
       } else {
-        terms.push({ expr: e, sign });
+        terms.push({ expr: x, sign });
       }
     };
-    flatten(expr, 1);
-    const isAdr = (e: Expression): boolean =>
+    flatten(e, 1);
+    return terms;
+  }
+
+  /** ADR(x) of the standard function, or a POINTER TO variable or element: an address. */
+  private isAddressTerm(e: Expression, scope: Scope): boolean {
+    if (
       e.kind === "FunctionCallExpression" &&
       e.functionName.toUpperCase() === "ADR" &&
-      e.libraryFunction === undefined &&
-      this.ast?.functions.some((f) => f.name.toUpperCase() === "ADR") !== true;
-    const adrNet = terms
-      .filter((t) => isAdr(t.expr))
-      .reduce((n, t) => n + t.sign, 0);
-    if (adrNet < 0 || adrNet > 1) {
-      const term = terms.find((t) => isAdr(t.expr))!;
-      if (!this.checkedPointerTerms.has(term.expr)) {
-        this.checkedPointerTerms.add(term.expr);
-        this.addError(
-          "An address is offset by + or - an integer, or subtracted from another address: it cannot be subtracted from a value or added to an address",
-          term.expr.sourceSpan.startLine,
-          term.expr.sourceSpan.startCol,
-          term.expr.sourceSpan.file,
-        );
-      }
-      return;
+      e.libraryFunction === undefined
+    ) {
+      return (
+        this.ast?.functions.some((f) => f.name.toUpperCase() === "ADR") !== true
+      );
     }
-    const pointers = terms.filter(
-      (t) => this.pointerTargetSize(t.expr, scope) !== undefined,
+    return (
+      e.kind === "VariableExpression" &&
+      this.pointerTargetSize(e, scope) !== undefined
     );
-    if (pointers.length !== 1 || pointers[0]!.sign !== 1) return;
-    const pointer = pointers[0]!.expr;
+  }
+
+  /**
+   * A + / - chain of addresses: an address is offset by + or - an integer, or
+   * subtracted from another address. One taken from a value, or two added,
+   * is refused.
+   */
+  private refuseAddressArithmetic(expr: BinaryExpression, scope: Scope): void {
+    const terms = this.chainTerms(expr);
+    const addresses = terms.filter((t) => this.isAddressTerm(t.expr, scope));
+    const net = addresses.reduce((n, t) => n + t.sign, 0);
+    if (addresses.length === 0 || net === 0 || net === 1) return;
+    const at = addresses[0]!.expr;
+    this.addError(
+      "An address is offset by + or - an integer, or subtracted from another address: it cannot be subtracted from a value or added to an address",
+      at.sourceSpan.startLine,
+      at.sourceSpan.startCol,
+      at.sourceSpan.file,
+    );
+  }
+
+  /**
+   * `p := <address> + n`, p a POINTER TO a multi-byte elementary type: when
+   * the address is known to be aligned for that type (it points to a type at
+   * least as wide) and the chain's net constant offset is not a multiple of
+   * its size, a dereference of p would be misaligned: refused. A byte address
+   * (POINTER TO BYTE, MEMCPY) is never refused.
+   */
+  private refuseMisalignedPointerStore(
+    target: Expression,
+    value: Expression,
+    scope: Scope,
+  ): void {
+    const dest = this.pointerTargetSize(target, scope);
+    if (dest === undefined || dest.bytes <= 1n) return;
+    const terms = this.chainTerms(value);
+    if (terms.length < 2) return;
+    const addresses = terms.filter((t) => this.isAddressTerm(t.expr, scope));
+    if (addresses.length !== 1 || addresses[0]!.sign !== 1) return;
+    const base = this.pointerTargetSize(addresses[0]!.expr, scope);
+    if (base === undefined || base.bytes < dest.bytes) return;
     let offset = 0n;
     for (const t of terms) {
-      if (t.expr === pointer) continue;
+      if (t === addresses[0]) continue;
       const v = this.foldIntegerConstant(t.expr, scope, 0);
       if (v === undefined) return;
       offset += t.sign > 0 ? v : -v;
     }
-    const size = this.pointerTargetSize(pointer, scope)!;
-    if (size.bytes <= 1n || offset % size.bytes === 0n) return;
-    if (this.checkedPointerTerms.has(pointer)) return;
-    this.checkedPointerTerms.add(pointer);
-    const at = terms.find((t) => t.expr !== pointer)?.expr ?? expr;
+    if (offset % dest.bytes === 0n) return;
     this.addError(
-      `Moving a POINTER TO ${size.name} by ${offset} byte(s) would make its dereference misaligned; move it by a multiple of ${size.bytes} bytes`,
-      at.sourceSpan.startLine,
-      at.sourceSpan.startCol,
-      at.sourceSpan.file,
+      `Moving a POINTER TO ${dest.name} by ${offset} byte(s) would make its dereference misaligned; move it by a multiple of ${dest.bytes} bytes`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
     );
   }
 
@@ -3998,6 +4034,7 @@ export class TypeChecker {
       case "AssignmentStatement": {
         let targetType = this.resolveExprType(stmt.target, scope);
         const valueType = this.resolveExprType(stmt.value, scope);
+        this.refuseMisalignedPointerStore(stmt.target, stmt.value, scope);
         if (
           this.strict &&
           targetType === undefined &&

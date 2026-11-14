@@ -1079,23 +1079,30 @@ export class CodeGenerator {
    * chain holds no ADR, or adds addresses together.
    */
   private adrArithmetic(expr: BinaryExpression): string | undefined {
-    if (!this.holdsAdrTerm(expr)) return undefined;
+    // With an ADR, or with two addresses (a difference of POINTER TOs)
+    if (!this.holdsAdrTerm(expr) && this.addressTermCount(expr) < 2) {
+      return undefined;
+    }
     let net = 0;
     let proto: string | undefined;
     const render = (e: Expression, sign: number): string => {
-      if (this.isAdrCall(e)) {
-        const address = this.generateExpression(e);
+      if (this.isAdrCall(e) || this.isPointerVariable(e)) {
+        const generated = this.generateExpression(e);
+        const address = this.isAdrCall(e) ? generated : `${generated}.get()`;
         net += sign;
         if (sign > 0 && proto === undefined) proto = address;
         return `strucpp::iec_byte_addr(${address})`;
       }
-      if (e.kind === "ParenthesizedExpression" && this.holdsAdrTerm(e)) {
+      if (
+        e.kind === "ParenthesizedExpression" &&
+        this.addressTermCount(e) > 0
+      ) {
         return `(${render(e.expression, sign)})`;
       }
       if (
         e.kind === "BinaryExpression" &&
         (e.operator === "+" || e.operator === "-") &&
-        this.holdsAdrTerm(e)
+        this.addressTermCount(e) > 0
       ) {
         const left = render(e.left, sign);
         const right = render(e.right, e.operator === "-" ? -sign : sign);
@@ -1110,6 +1117,41 @@ export class CodeGenerator {
     }
     if (net === 0) return `static_cast<std::intptr_t>(${total})`;
     return undefined;
+  }
+
+  /** A POINTER TO variable of the scope, read as a whole: an address term. */
+  private isPointerVariable(e: Expression): boolean {
+    if (
+      e.kind !== "VariableExpression" ||
+      e.isDereference ||
+      e.fieldAccess.length > 0 ||
+      e.subscripts.length > 0 ||
+      (e.accessChain?.length ?? 0) > 0
+    ) {
+      return false;
+    }
+    const type = this.currentScopeVarTypeRefs.get(e.name.toUpperCase());
+    return (
+      type !== undefined &&
+      type.arrayDimensions === undefined &&
+      (type.referenceChain?.length ?? 1) === 1 &&
+      type.referenceKind === "pointer_to"
+    );
+  }
+
+  /** The address terms (ADR(x), POINTER TO variables) of a + / - chain. */
+  private addressTermCount(e: Expression): number {
+    if (this.isAdrCall(e) || this.isPointerVariable(e)) return 1;
+    if (e.kind === "ParenthesizedExpression") {
+      return this.addressTermCount(e.expression);
+    }
+    if (
+      e.kind === "BinaryExpression" &&
+      (e.operator === "+" || e.operator === "-")
+    ) {
+      return this.addressTermCount(e.left) + this.addressTermCount(e.right);
+    }
+    return 0;
   }
 
   /** An ADR(x) term of a + / - chain, through parentheses. */

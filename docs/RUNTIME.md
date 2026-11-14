@@ -337,12 +337,15 @@ after `a`. `ADR(a) - ADR(b)` is the signed count of bytes between them.
 
 A dereference needs the address aligned for its target type: the access through a pointer is a plain
 C++ access, which is undefined behaviour when misaligned (x86 tolerates it; a strict-alignment target
-faults). Moving a POINTER TO a multi-byte elementary type, an element of an ARRAY OF POINTER TO, or
-`ADR(x)` of an elementary `x`, by a constant that is not a multiple of its size is therefore an error
-(`Moving a POINTER TO DINT by 1 byte(s) would make its dereference misaligned; move it by a multiple
-of 4 bytes`). The offset is the whole chain folded: literals of any base, constants, `+`, `-`, `*` and
-parentheses, on either side of the pointer. An offset known only at run time is not checked. An address
-is only offset by `+` or `-` an integer, or subtracted from another address: taking it from a value
+faults). Storing an address moved by a constant into a POINTER TO a multi-byte elementary type is
+therefore an error when the address it starts from is known to be aligned for that type (a POINTER TO,
+or `ADR(x)` of, a type at least as wide) and the chain's net offset is not a multiple of its size
+(`Moving a POINTER TO DINT by 1 byte(s) would make its dereference misaligned; move it by a multiple of
+4 bytes`). The offset is the whole chain folded (literals of any base, constants, `+`, `-`, `*`,
+parentheses), so `p + 1 + 3` is aligned. A byte address is never refused: `ADR(dw) + 1` into a POINTER
+TO BYTE, or as a MEMCPY argument, reads the bytes of `dw`. An offset known only at run time is not
+checked. An address is offset by `+` or `-` an integer, or subtracted from another address (ADR or a
+POINTER TO), which gives the signed count of bytes between them; taking an address from a value
 (`w - ADR(x)`) or adding two addresses is an error.
 
 ### REF_TO and REFERENCE_TO (`iec_ptr.hpp`)

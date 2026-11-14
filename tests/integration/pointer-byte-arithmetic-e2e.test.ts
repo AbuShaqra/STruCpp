@@ -114,7 +114,7 @@ END_PROGRAM
     expect(
       result.errors.map((e) => `${e.line}:${e.column} ${e.message}`),
     ).toEqual([
-      "3:30 Moving a POINTER TO DINT by 1 byte(s) would make its dereference misaligned; move it by a multiple of 4 bytes",
+      "3:25 Moving a POINTER TO DINT by 1 byte(s) would make its dereference misaligned; move it by a multiple of 4 bytes",
     ]);
   });
 
@@ -176,14 +176,14 @@ END_PROGRAM
       result.errors.map((e) => `${e.line}:${e.column} ${e.message}`),
     ).toEqual([
       ...[
-        "4:10 1",
+        "4:6 1",
         "5:6 1",
-        "6:10 5",
-        "7:11 1",
-        "8:19 1",
-        "9:10 1",
-        "10:10 -1",
-        "11:16 1",
+        "6:6 5",
+        "7:6 1",
+        "8:6 1",
+        "9:6 1",
+        "10:6 -1",
+        "11:9 1",
       ].map((t) => {
         const [at, bytes] = t.split(" ");
         return `${at} Moving a POINTER TO DINT by ${bytes} byte(s) would make its dereference misaligned; move it by a multiple of 4 bytes`;
@@ -191,5 +191,45 @@ END_PROGRAM
       "16:12 An address is offset by + or - an integer, or subtracted from another address: it cannot be subtracted from a value or added to an address",
       "17:11 An address is offset by + or - an integer, or subtracted from another address: it cannot be subtracted from a value or added to an address",
     ]);
+  });
+
+  it("takes bytes of a wider value through a byte address, folds a chain's net offset, and subtracts pointers", () => {
+    const result = compile(
+      `PROGRAM MAIN
+VAR dw : DWORD := 16#44332211; pb : POINTER TO BYTE; b1, b2, b3, b4 : BYTE; buf : ARRAY[0..3] OF BYTE;
+  ad : ARRAY[0..7] OF DINT; p, q : POINTER TO DINT; pdw : POINTER TO DWORD; n1, n2, n3 : DINT; v : DINT; END_VAR
+pb := ADR(dw) + 1; b1 := pb^;
+MEMCPY(ADR(buf), ADR(dw) + 2, 2); b2 := buf[0];
+pdw := ADR(dw); pb := pdw + 3; b3 := pb^;
+ad[2] := 77; p := ADR(ad[0]); p := p + 1 + 3; p := p + 2 + 2; v := p^;
+p := ADR(ad[1]); q := ADR(ad[5]);
+n1 := q - p; n2 := ADR(ad[5]) - p; n3 := q - ADR(ad[1]);
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "adr_byte_view",
+      extraFlags: [
+        "-fsanitize=address,undefined",
+        "-fno-sanitize-recover=undefined",
+      ],
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << (int)p.B1.get() << " " << (int)p.B2.get() << " " << (int)p.B3.get() << " " << p.V.get() << " "
+              << p.N1.get() << " " << p.N2.get() << " " << p.N3.get() << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("34 51 68 77 16 16 16");
   });
 });
