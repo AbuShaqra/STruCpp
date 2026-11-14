@@ -29,7 +29,7 @@ import type {
   VarDeclaration,
 } from "../frontend/ast.js";
 import type { CompileError, SourceSpan } from "../types.js";
-import { tokenize, uppercaseSource } from "../frontend/lexer.js";
+import { tokenize } from "../frontend/lexer.js";
 
 /** The operators lowered here. */
 export const POU_OPERATORS: ReadonlySet<string> = new Set([
@@ -113,32 +113,13 @@ type Spellings = Array<{
 }>;
 
 function spellingsOf(text: string): Spellings {
-  const upper = uppercaseSource(text);
-  const raw = rawOffsets(text, upper);
+  // The lexer upper-cases a copy of the same length, so offsets map to `text`.
   return tokenize(text).tokens.map((t) => ({
     line: t.startLine ?? 0,
     col: t.startColumn ?? 0,
     upper: t.image.toUpperCase(),
-    text: text.slice(raw[t.startOffset], raw[t.endOffset! + 1]),
+    text: text.slice(t.startOffset, t.endOffset! + 1),
   }));
-}
-
-/**
- * For each offset of `upper` (and its end), the offset in `text` it comes
- * from: upper-casing can lengthen a character ('ß' gives 'SS').
- */
-function rawOffsets(text: string, upper: string): number[] {
-  const map: number[] = [];
-  let pos = 0;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text.charAt(i);
-    const up = ch.toUpperCase();
-    const piece = up !== ch && upper.startsWith(up, pos) ? up : ch;
-    for (let k = 0; k < piece.length; k++) map.push(i);
-    pos += piece.length;
-  }
-  map.push(text.length);
-  return map;
 }
 
 /** The spelling of `nameUpper` as first written at or after `span` in its file. */
