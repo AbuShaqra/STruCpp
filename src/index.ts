@@ -311,8 +311,10 @@ function shakeLibraryChunks(
       case "VariableExpression": {
         // Inline-global reads (e.g. `MATH.PI2`) show up as
         // VariableExpression with name="MATH".
-        const ve = node as unknown as { name: string };
+        const ve = node as VariableExpression;
         variableNames.add(ve.name.toUpperCase());
+        // `SIZEOF(T)` of a library type needs its class
+        if (ve.namesType === true) referencedNames.add(ve.name.toUpperCase());
         break;
       }
       case "TypeReference": {

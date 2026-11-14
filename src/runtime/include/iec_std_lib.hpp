@@ -1894,6 +1894,16 @@ inline IEC_UDINT IEC_SIZEOF(const T&) noexcept {
     return static_cast<IEC_UDINT>(sizeof(T));
 }
 
+/** SIZEOF of a type name: the size IEC_SIZEOF gives a value of `T`, with no value built. */
+template<typename T>
+struct iec_size_of_type {
+    static constexpr UDINT_t value = static_cast<UDINT_t>(sizeof(T));
+};
+template<typename T>
+struct iec_size_of_type<IECVar<T>> {
+    static constexpr UDINT_t value = static_cast<UDINT_t>(sizeof(T));
+};
+
 /**
  * MEMCPY(dest, src, n) - Copies n bytes from src to dest.
  * CODESYS extension. Accepts uintptr_t addresses from ADR() for
