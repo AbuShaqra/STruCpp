@@ -218,3 +218,66 @@ END_PROGRAM
     ).toEqual([]);
   });
 });
+
+describe("address stores: recheck", () => {
+  it("leaves a test file's call of a user FUNCTION named ADR to it (#10)", () => {
+    const source = `FUNCTION ADR : UDINT
+VAR_INPUT v : INT; END_VAR
+ADR := 7;
+END_FUNCTION
+PROGRAM P
+END_PROGRAM
+`;
+    for (const opts of [
+      {},
+      { dialect: "iec-3" },
+    ] as Partial<CompileOptions>[]) {
+      const src = compile(source, opts);
+      expect(src.errors).toEqual([]);
+      const parsed = parseTestFile(
+        "TEST 'g'\nVAR x : INT; u : UDINT; END_VAR\nu := ADR(x);\nEND_TEST\n",
+        "t.st",
+        opts,
+      );
+      expect(parsed.errors).toEqual([]);
+      expect(
+        analyzeTestFile(parsed.testFile!, src.symbolTables!, src.ast).errors,
+      ).toEqual([]);
+    }
+  });
+
+  it("refuses a repeated element's ADR once with pointer_to off (#8, #15)", () => {
+    expect(
+      errors(
+        "PROGRAM P\nVAR x : INT; r1 : ARRAY[0..3] OF UDINT := [4(ADR(x))]; END_VAR\nEND_PROGRAM\n",
+        { dialect: "iec-3" },
+      ),
+    ).toEqual(["2:46: ADR needs the feature pointer_to"]);
+    const src = compile("PROGRAM P\nEND_PROGRAM\n", { dialect: "iec-3" });
+    const parsed = parseTestFile(
+      "TEST 'f'\nVAR x : INT; a : ARRAY[0..2] OF LWORD := [3(ADR(x))]; END_VAR\nEND_TEST\n",
+      "t.st",
+      { dialect: "iec-3" },
+    );
+    const all = [
+      ...parsed.errors,
+      ...(parsed.testFile
+        ? analyzeTestFile(parsed.testFile, src.symbolTables!, src.ast).errors
+        : []),
+    ].map((e) => `${e.line}:${e.column}: ${e.message}`);
+    expect(all).toEqual(["2:45: ADR needs the feature pointer_to"]);
+  });
+
+  it("names a misused address and takes a difference as an integer (#7)", () => {
+    const offset = "An address can only be offset by + or - an integer";
+    expect(
+      errors(`PROGRAM P
+VAR x : INT; y : INT; u : UDINT; li : LINT; END_VAR
+u := ADR(x) * 2;
+u := 4 - ADR(x);
+li := ADR(x) - ADR(y);
+END_PROGRAM
+`),
+    ).toEqual([`3:6: ${offset}`, `4:6: ${offset}`]);
+  });
+});

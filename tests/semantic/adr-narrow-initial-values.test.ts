@@ -7,6 +7,7 @@
 import { describe, it, expect } from "vitest";
 import { compile, type CompileOptions } from "../../src/index.js";
 import { parseTestFile } from "../../src/testing/test-parser.js";
+import { analyzeTestFile } from "../../src/semantic/analyzer.js";
 
 const TAIL = "use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT";
 
@@ -73,14 +74,17 @@ VAR v : INT; p : POINTER TO INT; END_VAR
 END_TEST
 `;
   it("are refused without pointer_to", () => {
+    const parsed = parseTestFile(TESTS, "t.st", { dialect: "iec-3" });
     expect(
-      parseTestFile(TESTS, "t.st", { dialect: "iec-3" }).errors.map(
-        (e) => `${e.line}:${e.column}: ${e.message}`,
-      ),
-    ).toEqual([
-      "2:18: POINTER TO needs the feature pointer_to",
-      "3:8: ADR needs the feature pointer_to",
-    ]);
+      parsed.errors.map((e) => `${e.line}:${e.column}: ${e.message}`),
+    ).toEqual(["2:18: POINTER TO needs the feature pointer_to"]);
+    // ADR is refused by the analysis, which knows a source FUNCTION named ADR.
+    const src = compile("PROGRAM P\nEND_PROGRAM\n", { dialect: "iec-3" });
+    expect(
+      analyzeTestFile(parsed.testFile!, src.symbolTables!, src.ast)
+        .errors.map((e) => `${e.line}:${e.column}: ${e.message}`)
+        .filter((e) => e.includes("pointer_to")),
+    ).toEqual(["3:8: ADR needs the feature pointer_to"]);
   });
   it("are accepted with it", () => {
     expect(parseTestFile(TESTS, "t.st").errors).toEqual([]);

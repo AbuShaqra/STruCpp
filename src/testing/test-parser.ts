@@ -182,7 +182,10 @@ function conditionalReturnErrors(
   return errors;
 }
 
-/** `POINTER TO` and `ADR` in a test file need the feature pointer_to, as in a source. */
+/**
+ * `POINTER TO` in a test file needs the feature pointer_to, as in a source
+ * (`ADR` is gated by the analysis, which knows a source FUNCTION named ADR).
+ */
 function pointerFeatureErrors(
   testFile: TestFile,
   dialect: ResolvedDialect,
@@ -223,14 +226,6 @@ function pointerFeatureErrors(
         ...chain(n.elementReferenceChain),
       ];
       if (levels.includes("pointer_to")) refuse("POINTER TO", n.sourceSpan);
-    }
-    if (
-      n.kind === "FunctionCallExpression" &&
-      typeof n.functionName === "string" &&
-      n.functionName.toUpperCase() === "ADR" &&
-      n.sourceSpan !== undefined
-    ) {
-      refuse("ADR", n.sourceSpan);
     }
     for (const value of Object.values(node)) visit(value);
   };

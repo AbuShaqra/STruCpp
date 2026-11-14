@@ -40,10 +40,29 @@ export function addressSource(value: Expression): AddressSource | undefined {
       if (value.operator === "+") {
         return addressSource(value.left) ?? addressSource(value.right);
       }
-      return value.operator === "-" ? addressSource(value.left) : undefined;
+      // ADR(x) - n is an address; ADR(x) - ADR(y) is a difference, an integer.
+      return value.operator === "-" && addressSource(value.right) === undefined
+        ? addressSource(value.left)
+        : undefined;
     default:
       return undefined;
   }
+}
+
+/**
+ * An address used where only an offset by + or - an integer keeps it an
+ * address: `ADR(x) * 2`, `4 - ADR(x)`, `ADR(x) + ADR(y)`.
+ */
+export function addressMisuse(value: Expression): boolean {
+  if (value.kind === "ParenthesizedExpression") {
+    return addressMisuse(value.expression);
+  }
+  if (value.kind !== "BinaryExpression") return false;
+  const left = addressSource(value.left) !== undefined;
+  const right = addressSource(value.right) !== undefined;
+  if (value.operator === "+") return left && right;
+  if (value.operator === "-") return right && !left;
+  return left || right;
 }
 
 /** Integer and bit-string types narrower than an address, by upper-case name. */

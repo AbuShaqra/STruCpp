@@ -77,6 +77,7 @@ import {
 import { stripEnEno, walkAST } from "../ast-utils.js";
 import {
   addressFit,
+  addressMisuse,
   addressSource,
   narrowAddressMessage,
 } from "./address-store.js";
@@ -3761,6 +3762,14 @@ export class TypeChecker {
     }
   }
 
+  /** A user FUNCTION named ADR, which a call of ADR reaches. */
+  private userAddressFunction(): boolean {
+    return (
+      this.findUserFunction("ADR") !== undefined ||
+      this.symbolTables.lookupFunction("ADR") !== undefined
+    );
+  }
+
   /** Positions already refused by checkAddressStore (a repeated literal element is one). */
   private addressStoresReported = new Set<string>();
 
@@ -3776,10 +3785,25 @@ export class TypeChecker {
     typeName: string | undefined,
     value: Expression,
   ): boolean {
+    if (typeName === undefined) return false;
+    // `ADR(x) * 2` into an integer: no address, no offset of one.
+    if (
+      addressMisuse(value) &&
+      addressFit(typeName, this.ast?.types ?? []) !== undefined &&
+      !this.userAddressFunction()
+    ) {
+      this.addError(
+        "An address can only be offset by + or - an integer",
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+      return true;
+    }
     const source = addressSource(value);
-    if (source === undefined || typeName === undefined) return false;
+    if (source === undefined) return false;
     // A user FUNCTION named ADR is called, not the operator.
-    if (source.op === "ADR" && this.findUserFunction("ADR")) return false;
+    if (source.op === "ADR" && this.userAddressFunction()) return false;
     const fit = addressFit(typeName, this.ast?.types ?? []);
     if (source.op === "ADR" && !this.features.has("pointer_to")) {
       return fit !== undefined;

@@ -3133,12 +3133,20 @@ export class SemanticAnalyzer {
     span: { startLine: number; startCol: number; file?: string | undefined },
   ): void {
     if (this.features.has(feature)) return;
-    this.addError(
-      this.featureMessage(feature, construct),
-      span.startLine,
-      span.startCol,
-      span.file,
-    );
+    // One refusal per position (a repeated array-literal element is one).
+    const message = this.featureMessage(feature, construct);
+    if (
+      this.errors.some(
+        (e) =>
+          e.message === message &&
+          e.line === span.startLine &&
+          e.column === span.startCol &&
+          e.file === span.file,
+      )
+    ) {
+      return;
+    }
+    this.addError(message, span.startLine, span.startCol, span.file);
   }
 
   /** `<construct> needs the feature <id>`, plus the loaded profiles that have it. */
@@ -6618,6 +6626,7 @@ export class SemanticAnalyzer {
         ),
       );
     }
+    this.refuseTestAddressOperator(testFile, sourceSymbolTables);
     const typeScope = this.buildTestTypeScope(testFile);
 
     // Validate type references in SETUP and TEST var blocks
@@ -6685,6 +6694,46 @@ export class SemanticAnalyzer {
 
     this.testTypeNames.clear();
     return { errors: [...this.errors], warnings: [...this.warnings] };
+  }
+
+  /**
+   * `ADR` in a test file needs the feature pointer_to, unless the sources
+   * declare a FUNCTION named ADR; one refusal per position.
+   */
+  private refuseTestAddressOperator(
+    testFile: TestFile,
+    sourceSymbolTables: SymbolTables,
+  ): void {
+    if (this.testFileDialect?.features.has("pointer_to") ?? true) return;
+    if (sourceSymbolTables.lookupFunction("ADR") !== undefined) return;
+    const calls: FunctionCallExpression[] = [];
+    const seen = new Set<object>();
+    const visit = (node: unknown): void => {
+      if (typeof node !== "object" || node === null || seen.has(node)) return;
+      seen.add(node);
+      if (node === testFile.dialect) return;
+      const n = node as { kind?: unknown };
+      if (n.kind === "FunctionCallExpression") {
+        calls.push(node as FunctionCallExpression);
+      }
+      for (const value of Object.values(node)) visit(value);
+    };
+    visit(testFile);
+    for (const call of calls) {
+      if (call.functionName.toUpperCase() !== "ADR" || call.instance) continue;
+      const span = call.sourceSpan;
+      const message = this.featureMessage("pointer_to", "ADR");
+      const known = this.errors.some(
+        (e) =>
+          e.message === message &&
+          e.line === span.startLine &&
+          e.column === span.startCol &&
+          e.file === span.file,
+      );
+      if (!known) {
+        this.addError(message, span.startLine, span.startCol, span.file);
+      }
+    }
   }
 
   /** Addresses stored in narrow integers in a test's VARs and statements. */
