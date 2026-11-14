@@ -70,6 +70,7 @@ import {
   type AccessType,
 } from "./type-utils.js";
 import {
+  type GlobalItem,
   type GlobalOrder,
   orderConfigurationGlobals,
   orderGlobals,
@@ -391,6 +392,14 @@ const TEMPORAL_STORAGE: Readonly<Record<string, string>> = {
   LDATE_AND_TIME: "dt",
   LDT: "dt",
 };
+
+/** Calls that take a variable's address or size, not its value. */
+const NOT_READING_CALLS: ReadonlySet<string> = new Set([
+  "ADR",
+  "REF",
+  "SIZEOF",
+  "XSIZEOF",
+]);
 
 const COMPARISON_OPS: ReadonlySet<string> = new Set([
   "=",
@@ -3289,13 +3298,17 @@ export class TypeChecker {
    * initial values that depend on each other cannot be created.
    */
   private checkGlobalInitialCycles(ast: CompilationUnit): void {
-    for (const ordered of [
-      orderGlobals(ast),
-      ...ast.configurations.map(orderConfigurationGlobals),
+    const topLevel = orderGlobals(ast);
+    for (const [ordered, outer] of [
+      [topLevel, []] as const,
+      // A CONFIGURATION global also sees the top-level globals
+      ...ast.configurations.map(
+        (c) => [orderConfigurationGlobals(c), topLevel.order] as const,
+      ),
     ]) {
       this.reportGlobalInitialCycles(ordered);
       if (this.strict || this.inOutErrors) {
-        this.refuseDependentGlobalInitials(ordered);
+        this.refuseDependentGlobalInitials(ordered, outer);
       }
     }
   }
@@ -3306,22 +3319,34 @@ export class TypeChecker {
    * value; ADR() of it is an address) is refused. No dialect flag keeps the
    * automatic creation order.
    */
-  private refuseDependentGlobalInitials({ order }: GlobalOrder): void {
+  private refuseDependentGlobalInitials(
+    { order }: GlobalOrder,
+    outer: readonly GlobalItem[],
+  ): void {
+    const own = new Set(order.map((i) => i.name.toUpperCase()));
+    // The scope's own globals hide outer ones of the same name
+    const visible = [
+      ...order,
+      ...outer.filter((i) => !own.has(i.name.toUpperCase())),
+    ];
     const constant = new Set(
-      order
+      visible
         .filter((i) => i.block.isConstant === true)
         .map((i) => i.name.toUpperCase()),
     );
-    const known = new Set(order.map((i) => i.name.toUpperCase()));
+    const known = new Set(visible.map((i) => i.name.toUpperCase()));
     for (const item of order) {
       const value = item.decl.initialValue;
       if (value === undefined || item.decl.names[0] !== item.name) continue;
       const reported = new Set<string>();
       walkAST(value, (node): boolean | void => {
-        // ADR(g) takes an address, not a value
+        // ADR(g) and REF(g) take an address, SIZEOF(g) a size: none reads g
         if (
-          node.kind === "FunctionCallExpression" &&
-          (node as FunctionCallExpression).functionName.toUpperCase() === "ADR"
+          node.kind === "RefExpression" ||
+          (node.kind === "FunctionCallExpression" &&
+            NOT_READING_CALLS.has(
+              (node as FunctionCallExpression).functionName.toUpperCase(),
+            ))
         ) {
           return false;
         }

@@ -24,5 +24,38 @@ describe("dependent global initial values", () => {
         "2:23 The initial value of global 'A' reads global 'B', which is no CONSTANT: an initial value is a constant expression",
       ]);
     });
+
+    it(`accept REF and SIZEOF of a global (${label})`, () => {
+      expect(
+        compile(
+          `VAR_GLOBAL g : INT := 3; p : REF_TO INT := REF(g); s : UDINT := SIZEOF(g); END_VAR
+PROGRAM Main VAR x : INT; END_VAR x := p^; END_PROGRAM
+`,
+          options,
+        ).errors,
+      ).toEqual([]);
+    });
+
+    it(`refuse a CONFIGURATION global reading a top-level global (${label})`, () => {
+      expect(
+        compile(
+          `VAR_GLOBAL t : INT := 4; END_VAR
+VAR_GLOBAL CONSTANT tk : INT := 4; END_VAR
+CONFIGURATION C
+VAR_GLOBAL u : INT := t; v : INT := tk; w : INT := z; z : INT := 2; END_VAR
+RESOURCE R ON PLC
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM I WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+PROGRAM Main VAR_EXTERNAL u : INT; END_VAR VAR x : INT; END_VAR x := u; END_PROGRAM
+`,
+          options,
+        ).errors.map((e) => `${e.line}:${e.column} ${e.message}`),
+      ).toEqual([
+        "4:23 The initial value of global 'U' reads global 'T', which is no CONSTANT: an initial value is a constant expression",
+        "4:52 The initial value of global 'W' reads global 'Z', which is no CONSTANT: an initial value is a constant expression",
+      ]);
+    });
   }
 });
