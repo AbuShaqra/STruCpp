@@ -5608,7 +5608,10 @@ export class CodeGenerator {
     } finally {
       this.keepReferenceWrapper = false;
     }
-    const source = this.addressedOperand(stmt.source, "REF=", stmt);
+    // Bound from another REFERENCE TO: the reference itself, unchecked
+    const source = this.refWrapper(
+      this.addressedOperand(stmt.source, "REF=", stmt),
+    );
     const targetKind =
       stmt.target.kind === "VariableExpression"
         ? this.refAssignTargetKind(stmt.target)
@@ -6201,7 +6204,11 @@ export class CodeGenerator {
     // A REFERENCE TO STRING / WSTRING read as a value: the bound variable, so
     // the string functions' templates see a string (no conversion deduced).
     if (!this.keepReferenceWrapper && this.isPlainStringReference(expr)) {
-      return `${this.resolveVariableBaseName(expr.name)}.target()`;
+      return this.refTarget(
+        this.resolveVariableBaseName(expr.name),
+        expr.name,
+        expr,
+      );
     }
 
     // `PRG_A.x`: a member of a reached program's one shared instance.
@@ -6434,8 +6441,22 @@ export class CodeGenerator {
       }
     }
 
-    if (this.reachesThroughReference(expr)) result = `${result}.target()`;
-    return this.renderAccessTail(result, expr, nameUpper);
+    if (this.reachesThroughReference(expr)) {
+      result = this.refTarget(result, expr.name, expr);
+    } else if (!this.keepReferenceWrapper && this.isPlainReference(expr)) {
+      // A REFERENCE TO read or written: its target, an unbound one a fault
+      return this.refTarget(result, expr.name, expr);
+    }
+    const rendered = this.renderAccessTail(result, expr, nameUpper);
+    // A REFERENCE TO reached as a member, an element or another FB's input
+    if (!this.keepReferenceWrapper && this.accessEndsInReference(expr)) {
+      return this.refTarget(
+        rendered,
+        [expr.name, ...expr.fieldAccess].join("."),
+        expr,
+      );
+    }
+    return rendered;
   }
 
   /**
@@ -6492,8 +6513,73 @@ export class CodeGenerator {
     return this.memberMangledNames.get(name.toUpperCase()) ?? name;
   }
 
+  /** The object a REFERENCE TO `base` (named `name`) is bound to; unbound, a fault naming the site. */
+  private refTarget(
+    base: string,
+    name: string,
+    node: { sourceSpan: SourceSpan },
+  ): string {
+    // Already the checked target (a plain reference renders as one)
+    if (this.refWrapper(base) !== base) return base;
+    return `strucpp::iec_ref(${base}, "${name.toUpperCase()}", ${this.faultSite(node)})`;
+  }
+
+  /** A REFERENCE TO itself, from its checked target: what binds another reference to the same object. */
+  private refWrapper(generated: string): string {
+    const m =
+      /^strucpp::iec_ref\((.*), "[^"]*", strucpp::iec_site\{"[^"]*", \d+\}\)$/.exec(
+        generated,
+      );
+    return m === null ? generated : m[1]!;
+  }
+
   /** Set while a REF= target is generated: it names the reference itself. */
   private keepReferenceWrapper = false;
+
+  /**
+   * `s.r`, `a[i]`, `f.r`, `rs.r`, `p^.r`: an access that ends in a REFERENCE TO
+   * member or element, from a variable of the scope or a global.
+   */
+  private accessEndsInReference(expr: VariableExpression): boolean {
+    const hasAccess =
+      expr.fieldAccess.length > 0 ||
+      expr.subscripts.length > 0 ||
+      (expr.accessChain?.length ?? 0) > 0;
+    if (!hasAccess) return false;
+    const upper = expr.name.toUpperCase();
+    const root =
+      this.currentScopeVarTypeRefs.get(upper) ?? this.globalDeclType(upper);
+    if (root === undefined) return false;
+    const type = resolveAccessType(root, expr, this.accessLookup);
+    return type?.referenceKind === "reference_to";
+  }
+
+  /** The declared type of a top-level or CONFIGURATION global of this name. */
+  private globalDeclType(upper: string): TypeReference | undefined {
+    // A partial unit (a test runner's) may have neither list
+    for (const block of [
+      ...(this.ast?.globalVarBlocks ?? []),
+      ...(this.ast?.configurations ?? []).flatMap((c) => c.varBlocks),
+    ]) {
+      for (const decl of block.declarations) {
+        if (decl.names.some((n) => n.toUpperCase() === upper)) return decl.type;
+      }
+    }
+    return undefined;
+  }
+
+  /** `rr`, a REFERENCE TO variable of the scope, with no access. */
+  private isPlainReference(expr: VariableExpression): boolean {
+    const upper = expr.name.toUpperCase();
+    return (
+      this.currentScopeVarRefKinds.get(upper) === "reference_to" &&
+      !this.isCurrentFunctionResult(upper) &&
+      !expr.isDereference &&
+      expr.fieldAccess.length === 0 &&
+      expr.subscripts.length === 0 &&
+      (expr.accessChain?.length ?? 0) === 0
+    );
+  }
 
   /** `rr`, a REFERENCE TO STRING / WSTRING variable of the scope, with no access. */
   private isPlainStringReference(expr: VariableExpression): boolean {
@@ -6604,6 +6690,7 @@ export class CodeGenerator {
         nameUpper,
         baseType,
         expr.namedBitIndex === true,
+        expr,
       );
     }
 
@@ -6613,12 +6700,13 @@ export class CodeGenerator {
     // targets (caught by the runtime, stops the faulting task), or
     // iec_runtime_fault(ArrayBounds) on -fno-exceptions MCU targets — instead of
     // the unchecked operator[]/operator() that silently corrupts memory.
+    // The access names its site, so a fault reports the POU, line and indices.
     if (expr.subscripts.length > 1) {
       const args = expr.subscripts.map((sub) => this.generateExpression(sub));
-      result += `.at(${args.join(", ")})`;
+      result = `strucpp::iec_at(${result}, ${this.faultSite(expr)}, ${args.join(", ")})`;
     } else {
       for (const sub of expr.subscripts) {
-        result += `.at(${this.generateExpression(sub)})`;
+        result = `strucpp::iec_at(${result}, ${this.faultSite(expr)}, ${this.generateExpression(sub)})`;
       }
     }
 
@@ -6660,9 +6748,9 @@ export class CodeGenerator {
       }
     }
 
-    // Dereference (^ operator → pointer dereference)
+    // Dereference (^ operator): a NULL pointer is a fault naming the site
     if (expr.isDereference) {
-      result = `(*${result})`;
+      result = `(*strucpp::iec_deref(${result}, ${this.faultSite(expr)}))`;
     }
 
     return result;
@@ -6721,6 +6809,7 @@ export class CodeGenerator {
     baseNameUpper: string,
     baseType?: string,
     namedBit = false,
+    site?: { sourceSpan: SourceSpan },
   ): string {
     let result = base;
     let currentType = baseType ?? this.rootVariableType(baseNameUpper);
@@ -6767,18 +6856,20 @@ export class CodeGenerator {
           // task) and iec_runtime_fault(IecFault::ArrayBounds) on -fno-exceptions
           // MCU targets. operator[] stays unchecked+constexpr for the debug-table
           // generator's &arr[i] address-of expressions; POU bodies use .at().
-          if (step.indices.length > 1) {
+          if (step.indices.length > 0) {
             const args = step.indices.map((idx) =>
               this.generateExpression(idx),
             );
-            result += `.at(${args.join(", ")})`;
-          } else if (step.indices.length === 1) {
-            result += `.at(${this.generateExpression(step.indices[0]!)})`;
+            result = `strucpp::iec_at(${result}, ${this.faultSite(step.indices[0]!)}, ${args.join(", ")})`;
           }
           break;
         }
         case "dereference": {
-          result = `(*${result})`;
+          // A NULL pointer is a fault naming the site
+          result =
+            site !== undefined
+              ? `(*strucpp::iec_deref(${result}, ${this.faultSite(site)}))`
+              : `(*${result})`;
           break;
         }
       }
@@ -7172,7 +7263,11 @@ export class CodeGenerator {
       expr.subscripts.length === 0 &&
       (expr.accessChain?.length ?? 0) === 0
     ) {
-      return `${this.resolveVariableBaseName(expr.name)}.target()`;
+      return this.refTarget(
+        this.resolveVariableBaseName(expr.name),
+        expr.name,
+        expr,
+      );
     }
     return generated;
   }
@@ -7886,7 +7981,7 @@ export class CodeGenerator {
                 ? instance()
                 : this.currentScopeVarRefKinds.get(prefix.toUpperCase()) ===
                     "reference_to"
-                  ? `${instance()}.target()`
+                  ? this.refTarget(instance(), prefix, expr)
                   : prefix;
         return `${receiver}.${resolvedMethod}(${args.join(", ")})`;
       }
@@ -7937,7 +8032,10 @@ export class CodeGenerator {
           return `static_cast<IEC_ULINT>(${sizedType})`;
         }
         const kept = this.keepReferenceWrapper;
-        this.keepReferenceWrapper = expr.vendorOperator === "__ISVALIDREF";
+        // __ISVALIDREF and XSIZEOF of a REFERENCE TO read the reference itself
+        this.keepReferenceWrapper =
+          expr.vendorOperator === "__ISVALIDREF" ||
+          expr.vendorOperator === "XSIZEOF";
         let arg: string;
         try {
           arg = this.generateExpression(expr.arguments[0]!.value);
@@ -8058,6 +8156,8 @@ export class CodeGenerator {
       if (stdFunc) {
         const args = expr.arguments.map((arg, idx) => {
           let generated = this.generateExpression(arg.value);
+          // SIZEOF of a REFERENCE TO measures the reference: no binding needed
+          if (nameUpper === "SIZEOF") generated = this.refWrapper(generated);
           if (stdFunc.isConversion) {
             generated = this.bitConversionArg(arg.value, generated);
           }
@@ -8388,7 +8488,7 @@ export class CodeGenerator {
       for (const decl of block.declarations) {
         for (let n = 0; n < decl.names.length; n++, index++) {
           if (index < args.length && isReferenceInput(block, decl)) {
-            args[index] = `ref_bind(${args[index]})`;
+            args[index] = `ref_bind(${this.refWrapper(args[index]!)})`;
           }
         }
       }
@@ -8540,7 +8640,7 @@ export class CodeGenerator {
       const refType = params[i]!.refInput;
       if (refType === undefined) continue;
       if (result[i] !== undefined) {
-        result[i] = `ref_bind(${result[i]})`;
+        result[i] = `ref_bind(${this.refWrapper(result[i]!)})`;
       } else if (params[i]!.defaultExpr === undefined) {
         result[i] = `${this.mapTypeRefToCpp(refType)}()`;
       }
@@ -9633,7 +9733,11 @@ export class CodeGenerator {
             ? this.generateExpression(this.dottedInstanceExpression(call))
             : this.currentScopeVarRefKinds.get(rawName.toUpperCase()) ===
                 "reference_to"
-              ? `${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName}.target()`
+              ? this.refTarget(
+                  this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName,
+                  rawName,
+                  call,
+                )
               : this.scopeInOutRefs.has(rawName.toUpperCase())
                 ? `(*${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName})`
                 : (this.varInstMangledNames.get(rawName.toUpperCase()) ??
@@ -9874,7 +9978,11 @@ export class CodeGenerator {
       (value.accessChain?.length ?? 0) === 0 &&
       !value.isDereference
     ) {
-      return `${this.resolveVariableBaseName(value.name)}.target()`;
+      return this.refTarget(
+        this.resolveVariableBaseName(value.name),
+        value.name,
+        value,
+      );
     }
     const saved = this.inOutBindExprs.delete(value);
     const rendered = this.generateLvalue(value);
@@ -9962,7 +10070,7 @@ export class CodeGenerator {
     if (inout?.has(paramName.toUpperCase()) === true) return generated;
     const field = this.accessLookup.field(fbTypeName, paramName);
     return field?.type.referenceKind === "reference_to"
-      ? `ref_bind(${generated})`
+      ? `ref_bind(${this.refWrapper(generated)})`
       : generated;
   }
 
