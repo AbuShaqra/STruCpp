@@ -503,6 +503,22 @@ public:
 // =============================================================================
 
 /**
+ * After a function block is copied: when `src` (of `other`) refers into
+ * `other`, `ref` (of `self`) refers to the same place in `self`.
+ */
+template<typename T, typename Owner>
+inline void rebind_own_member(IEC_REFERENCE_TO<T>& ref,
+                              const IEC_REFERENCE_TO<T>& src,
+                              Owner* self, const Owner* other) noexcept {
+    if (src.is_null()) return;
+    const char* bound = reinterpret_cast<const char*>(&src.target());
+    const char* from = reinterpret_cast<const char*>(other);
+    if (bound < from || bound >= from + sizeof(Owner)) return;
+    ref.bind(*reinterpret_cast<typename IEC_REFERENCE_TO<T>::target_type*>(
+        reinterpret_cast<char*>(self) + (bound - from)));
+}
+
+/**
  * A function-block VAR_IN_OUT member: a non-owning reference to the caller's
  * variable, bound by every call that maps the parameter (IEC 61131-3 Ed. 3
  * 6.6.1.4, 6.6.3.4). The body reaches the variable as `(*X)`, so field,
