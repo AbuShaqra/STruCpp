@@ -1151,6 +1151,7 @@ export class TypeChecker {
         seen.add(decl);
         if (decl.initialValue) {
           this.checkInitializerElements(decl.type, decl.initialValue, context);
+          this.typeInitializerNots(decl.type, decl.initialValue);
         }
       });
     for (const fb of ast.functionBlocks) visit(fb, fb.name);
@@ -1158,6 +1159,12 @@ export class TypeChecker {
     for (const t of ast.types) {
       if (t.defaultValue && t.definition.kind === "TypeReference") {
         this.checkCharInitialValue(t.name, t.defaultValue);
+      }
+      if (t.defaultValue) {
+        this.typeInitializerNots(
+          { name: t.name, referenceKind: "none" },
+          t.defaultValue,
+        );
       }
     }
   }
@@ -1788,6 +1795,14 @@ export class TypeChecker {
   ): IECType | undefined {
     let leftType = this.resolveExprType(expr.left, scope);
     let rightType = this.resolveExprType(expr.right, scope);
+    // `w = NOT 16#00F0`: the NOT takes the other operand's type
+    if (COMPARISON_OPS.has(expr.operator)) {
+      if (this.typeNotFromExpected(expr.left, rightType)) {
+        leftType = expr.left.resolvedType;
+      } else if (this.typeNotFromExpected(expr.right, leftType)) {
+        rightType = expr.right.resolvedType;
+      }
+    }
     delete expr.comparesReferences;
     if (
       (expr.operator === "=" || expr.operator === "<>") &&
@@ -4042,6 +4057,21 @@ export class TypeChecker {
             ),
           );
         }
+        // NOT of an untyped constant into a result or through `p^`
+        if (targetType === undefined) {
+          this.typeNotFromExpected(
+            stmt.value,
+            stmt.target.kind === "VariableExpression" &&
+              this.currentReturn !== undefined &&
+              stmt.target.fieldAccess.length === 0 &&
+              stmt.target.subscripts.length === 0 &&
+              !stmt.target.isDereference &&
+              stmt.target.name.toUpperCase() ===
+                this.currentReturn.name.toUpperCase()
+              ? this.currentReturn.type.name
+              : this.dereferencedType(stmt.target, scope),
+          );
+        }
         this.validateInOutMemberWrite(stmt.target, scope);
         if (this.isAddressIntoPointer(stmt.target, valueType, scope)) break;
         if (this.isZeroIntoPointer(stmt.target, stmt.value, scope)) break;
@@ -4171,6 +4201,8 @@ export class TypeChecker {
           for (const label of c.labels) {
             this.resolveExprType(label.start, scope);
             if (label.end) this.resolveExprType(label.end, scope);
+            this.typeNotFromExpected(label.start, selectorType);
+            if (label.end) this.typeNotFromExpected(label.end, selectorType);
             // A CHAR selector takes 'a' and CHAR#'a' labels, of its own type only.
             if (selectorChar !== undefined) {
               for (const bound of label.end
@@ -4363,12 +4395,8 @@ export class TypeChecker {
       valueType = value.resolvedType;
     }
     // `w := NOT 16#00F0`: NOT of an untyped constant takes the target's type
-    if (targetType?.typeKind === "elementary") {
-      typeUntypedNot(
-        value,
-        this.aliasBase((targetType as ElementaryType).name).toUpperCase(),
-      );
-      if (untypedNotTarget(value) !== undefined) valueType = value.resolvedType;
+    if (this.typeNotFromExpected(value, targetType)) {
+      valueType = value.resolvedType;
     }
     const targetInterface = this.interfaceTypeOf(targetType);
     if (targetInterface !== undefined) {
@@ -6066,6 +6094,88 @@ export class TypeChecker {
       upper = this.aliasBase(def.baseType.name);
     }
     return upper;
+  }
+
+  /**
+   * Type each NOT of an untyped constant in `value` from the type the context
+   * expects of it. True when `value` itself is such a NOT, now typed.
+   */
+  private typeNotFromExpected(
+    value: Expression,
+    expected: IECType | string | undefined,
+  ): boolean {
+    if (expected === undefined) return false;
+    const name =
+      typeof expected === "string" ? expected : typeNameUtil(expected);
+    typeUntypedNot(value, this.aliasBase(name).toUpperCase());
+    return untypedNotTarget(value) !== undefined;
+  }
+
+  /**
+   * Type the NOTs of an initial value from its declared type, element by
+   * element through ARRAY and STRUCT initialisers.
+   */
+  private typeInitializerNots(
+    type: AccessType | undefined,
+    value: Expression,
+  ): void {
+    if (
+      !this.ast ||
+      !type ||
+      type.referenceKind !== "none" ||
+      type.referenceChain !== undefined
+    ) {
+      return;
+    }
+    if (value.kind === "ArrayLiteralExpression") {
+      const element: AccessType | undefined =
+        type.arrayDimensions !== undefined
+          ? type.elementTypeName !== undefined &&
+            type.elementReferenceChain === undefined
+            ? { name: type.elementTypeName, referenceKind: "none" }
+            : undefined
+          : resolveArrayElementAccessType(type.name, this.ast);
+      for (const e of value.elements) this.typeInitializerNots(element, e);
+      return;
+    }
+    if (type.arrayDimensions !== undefined) return;
+    if (value.kind !== "StructInitializerExpression") {
+      this.typeNotFromExpected(value, type.name);
+      return;
+    }
+    const upper = this.aliasBase(type.name);
+    for (const el of value.elements) {
+      const field = resolveFieldDeclaration(upper, el.name, this.ast);
+      if (field) this.typeInitializerNots(field.type, el.value);
+    }
+  }
+
+  /** The type `p^` designates, for a pointer or REF_TO variable `p`. */
+  private dereferencedType(
+    target: Expression,
+    scope: Scope,
+  ): string | undefined {
+    if (
+      target.kind !== "VariableExpression" ||
+      !target.isDereference ||
+      target.fieldAccess.length > 0 ||
+      target.subscripts.length > 0 ||
+      (target.accessChain !== undefined &&
+        (target.accessChain.length !== 1 ||
+          target.accessChain[0]!.kind !== "dereference"))
+    ) {
+      return undefined;
+    }
+    const sym = scope.lookup(target.name);
+    if (sym?.kind !== "variable") return undefined;
+    const type = (sym.declaration as VarDeclaration | undefined)?.type;
+    return type !== undefined &&
+      (type.referenceKind === "pointer_to" ||
+        type.referenceKind === "ref_to") &&
+      type.referenceChain === undefined &&
+      type.arrayDimensions === undefined
+      ? type.name
+      : undefined;
   }
 
   private aliasBase(name: string): string {

@@ -62,6 +62,18 @@ function notOperand(expr: Expression): Expression | undefined {
   return notCallOperand(expr);
 }
 
+/** The values SEL or MUX returns one of: its arguments after the first. */
+function selectedValues(expr: Expression): Expression[] {
+  if (expr.kind !== "FunctionCallExpression") return [];
+  const name = expr.functionName.toUpperCase();
+  if (name !== "SEL" && name !== "MUX") return [];
+  const args = expr.arguments.filter(
+    (a) => !a.isOutput && !["EN", "ENO"].includes((a.name ?? "").toUpperCase()),
+  );
+  if (args.some((a) => a.name !== undefined)) return [];
+  return args.slice(1).map((a) => a.value);
+}
+
 /**
  * Type each NOT of an untyped constant in `value` as `target` when `target`
  * (upper case, aliases resolved) is a bit string other than BOOL.
@@ -82,6 +94,7 @@ export function typeUntypedNot(value: Expression, target: string): void {
           e.resolvedType = type;
           walk(operand);
         }
+        for (const v of selectedValues(e)) walk(v);
         return;
       }
       case "BinaryExpression":
@@ -107,4 +120,12 @@ export function untypedNotTarget(expr: Expression): string | undefined {
   return BIT_STRINGS.has(name) && isUntypedIntegerConstant(operand)
     ? name
     : undefined;
+}
+
+/**
+ * The C++ of NOT on an untyped constant typed as the bit string `type`: the
+ * operand is widened first, so a 64-bit complement keeps its upper bits.
+ */
+export function untypedNotCpp(type: string, operandCpp: string): string {
+  return `static_cast<${type}_t>(~static_cast<${type}_t>(${operandCpp}))`;
 }

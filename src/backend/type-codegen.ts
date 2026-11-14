@@ -65,7 +65,7 @@ import {
   unionTypeLines,
   type UnionMemberSpelling,
 } from "./union-codegen.js";
-import { untypedNotTarget } from "../semantic/untyped-not.js";
+import { untypedNotCpp, untypedNotTarget } from "../semantic/untyped-not.js";
 
 /**
  * Options for type code generation
@@ -911,7 +911,10 @@ export class TypeCodeGenerator {
         {
           const notType = untypedNotTarget(expr);
           if (notType !== undefined) {
-            return `static_cast<${notType}_t>(~(${this.expressionToCpp(expr.arguments[0]!.value)}))`;
+            return untypedNotCpp(
+              notType,
+              this.expressionToCpp(expr.arguments[0]!.value),
+            );
           }
         }
         if (
@@ -1128,7 +1131,7 @@ export class TypeCodeGenerator {
     // NOT of an untyped constant typed from the element (`w : WORD := NOT 16#0F`)
     const contextType = untypedNotTarget(expr);
     if (contextType !== undefined) {
-      return `static_cast<${contextType}_t>(~${operand})`;
+      return untypedNotCpp(contextType, operand);
     }
     if (expr.operator === "NOT") return this.notToCpp(expr.operand, operand);
 
