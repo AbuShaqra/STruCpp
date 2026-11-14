@@ -490,6 +490,10 @@ class TestFunctionGenerator {
     const lines: string[] = [];
     lines.push(`// TEST '${escapeString(tc.name)}'`);
     lines.push(`bool ${funcName}(strucpp::TestContext& ctx) {`);
+    // A run-time fault names the test as its task
+    lines.push(
+      `${this.indent}strucpp::strucpp_set_current_task("TEST '${escapeString(tc.name)}'");`,
+    );
 
     // Reset function dispatch pointers to real implementations
     if (mockedFunctionNames && mockedFunctionNames.size > 0) {
