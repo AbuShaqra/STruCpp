@@ -128,7 +128,7 @@ public:
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
-            iec_runtime_fault(IecFault::ArrayBounds);
+            detail::bounds_fault();
 #endif
         }
 #endif
@@ -141,7 +141,7 @@ public:
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
-            iec_runtime_fault(IecFault::ArrayBounds);
+            detail::bounds_fault();
 #endif
         }
 #endif
@@ -257,7 +257,7 @@ public:
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
-            iec_runtime_fault(IecFault::ArrayBounds);
+            detail::bounds_fault();
 #endif
         }
 #endif
@@ -270,7 +270,7 @@ public:
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
-            iec_runtime_fault(IecFault::ArrayBounds);
+            detail::bounds_fault();
 #endif
         }
 #endif
@@ -405,7 +405,7 @@ public:
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
-            iec_runtime_fault(IecFault::ArrayBounds);
+            detail::bounds_fault();
 #endif
         }
 #endif
@@ -418,7 +418,7 @@ public:
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
-            iec_runtime_fault(IecFault::ArrayBounds);
+            detail::bounds_fault();
 #endif
         }
 #endif
@@ -535,26 +535,30 @@ public:
     // Bounds-checked access — the codegen emits .at() for all subscripts so an
     // out-of-range index raises a clean fault instead of corrupting memory.
     T& at(int64_t index) {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (index < lower_ || index > upper_) {
             detail::view_unbound_check(data_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
-            iec_runtime_fault(IecFault::ArrayBounds);
+            detail::bounds_fault();
 #endif
         }
+#endif
         return data_[index - lower_];
     }
 
     const T& at(int64_t index) const {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (index < lower_ || index > upper_) {
             detail::view_unbound_check(data_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
-            iec_runtime_fault(IecFault::ArrayBounds);
+            detail::bounds_fault();
 #endif
         }
+#endif
         return data_[index - lower_];
     }
 
@@ -593,26 +597,30 @@ public:
 
     // Bounds-checked access — codegen emits .at(i, j) for 2D subscripts.
     T& at(int64_t i, int64_t j) {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (i < lower1_ || i > upper1_ || j < lower2_ || j > upper2_) {
             detail::view_unbound_check(data_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
-            iec_runtime_fault(IecFault::ArrayBounds);
+            detail::bounds_fault();
 #endif
         }
+#endif
         return data_[(i - lower1_) * dim2_ + (j - lower2_)];
     }
 
     const T& at(int64_t i, int64_t j) const {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (i < lower1_ || i > upper1_ || j < lower2_ || j > upper2_) {
             detail::view_unbound_check(data_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
-            iec_runtime_fault(IecFault::ArrayBounds);
+            detail::bounds_fault();
 #endif
         }
+#endif
         return data_[(i - lower1_) * dim2_ + (j - lower2_)];
     }
 

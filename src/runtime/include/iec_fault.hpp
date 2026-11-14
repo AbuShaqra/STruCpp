@@ -25,6 +25,7 @@
 #pragma once
 
 #include <cstdint>
+#include <type_traits>
 
 // Are C++ exceptions available in this translation unit? GCC/Clang define
 // __cpp_exceptions / __EXCEPTIONS with -fexceptions (the hosted default) and
@@ -37,7 +38,12 @@
 
 #if STRUCPP_HAS_EXCEPTIONS
 #include <stdexcept>
-#include <string>
+#endif
+
+#if defined(__GNUC__)
+#  define STRUCPP_FAULT_PATH __attribute__((noinline, cold))
+#else
+#  define STRUCPP_FAULT_PATH
 #endif
 
 namespace strucpp {
@@ -52,7 +58,6 @@ enum class IecFault : uint8_t {
     ArrayBounds   = 1,  ///< IEC array index out of bounds.
     BadLocation   = 2,  ///< Invalid located-variable area/size character.
     DivideByZero  = 3,  ///< Integer division by zero.
-    Subrange      = 4,  ///< A value stored outside its subrange.
 };
 
 /** Where a fault happened: the POU and the line of its source, as compiled. */
@@ -102,7 +107,7 @@ inline void strucpp_set_current_task(const char* name) noexcept {
 /** A run-time fault at a known site: what happened, the POU, line and task. */
 class IecSiteFault : public std::runtime_error {
 public:
-    IecSiteFault(IecFault reason, const std::string& message)
+    IecSiteFault(IecFault reason, const char* message)
         : std::runtime_error(message), reason_(reason) {}
     IecFault reason() const noexcept { return reason_; }
 private:
@@ -110,56 +115,194 @@ private:
 };
 #endif
 
-/** Raise `reason` at `site`, with `what` describing it ("Division by zero"). */
-[[noreturn]] inline void iec_site_fault(IecFault reason, const char* what, iec_site site) {
-#if STRUCPP_HAS_EXCEPTIONS
-    std::string message(what);
-    message += " in ";
-    message += site.pou != nullptr ? site.pou : "?";
-    message += ", line ";
-    message += std::to_string(site.line);
-    if (iec_current_task_slot() != nullptr) {
-        message += ", task ";
-        message += iec_current_task_slot();
-    }
-    throw IecSiteFault(reason, message);
-#else
-    (void)site;
-    iec_runtime_fault(reason, what);
-#endif
-}
-
 namespace detail {
-inline void append_indices(std::string&) {}
-template<typename I, typename... Rest>
-inline void append_indices(std::string& out, I first, Rest... rest) {
-    if (!out.empty() && out.back() != '[' && out.back() != ' ') out += ", ";
-    out += std::to_string(static_cast<long long>(first));
-    append_indices(out, rest...);
-}
+
+/** A fault message in a fixed buffer: no allocation, so a target without exceptions builds it too. */
+class fault_text {
+public:
+    fault_text() noexcept { buf_[0] = '\0'; }
+    fault_text& add(const char* s) noexcept {
+        while (s != nullptr && *s != '\0' && len_ + 1 < sizeof(buf_)) buf_[len_++] = *s++;
+        buf_[len_] = '\0';
+        return *this;
+    }
+    fault_text& add_unsigned(unsigned long long v) noexcept {
+        char digits[24];
+        unsigned n = 0;
+        do {
+            digits[n++] = static_cast<char>('0' + v % 10);
+            v /= 10;
+        } while (v != 0);
+        while (n > 0 && len_ + 1 < sizeof(buf_)) buf_[len_++] = digits[--n];
+        buf_[len_] = '\0';
+        return *this;
+    }
+    fault_text& add_signed(long long v) noexcept {
+        if (v >= 0) return add_unsigned(static_cast<unsigned long long>(v));
+        add("-");
+        return add_unsigned(0ULL - static_cast<unsigned long long>(v));
+    }
+    /** An integer value as written, unsigned ones above 2^63 included. */
+    template<typename T>
+    fault_text& add_number(T v) noexcept {
+        return v < static_cast<T>(0) ? add_signed(static_cast<long long>(v))
+                                     : add_unsigned(static_cast<unsigned long long>(v));
+    }
+    const char* c_str() const noexcept { return buf_; }
+    bool empty() const noexcept { return len_ == 0; }
+    char back() const noexcept { return len_ == 0 ? '\0' : buf_[len_ - 1]; }
+private:
+    char buf_[224];
+    unsigned len_ = 0;
+};
+
 }  // namespace detail
 
 /**
- * `c.at(i...)` at a known site: an index out of bounds raises IecSiteFault
- * naming the indices, the POU, the line and the task on a hosted target.
- * Built with STRUCPP_NO_BOUNDS_CHECK, arrays skip the check.
+ * Raise `reason`: `text` (what happened), then " in <POU>, line <n>, task <T>".
+ * A hosted target throws IecSiteFault; one without exceptions passes the same
+ * text to iec_runtime_fault().
+ */
+[[noreturn]] STRUCPP_FAULT_PATH inline void iec_raise_fault(
+    IecFault reason, detail::fault_text& text, iec_site site) {
+    text.add(" in ").add(site.pou != nullptr ? site.pou : "?").add(", line ");
+    text.add_signed(site.line);
+    if (iec_current_task_slot() != nullptr) {
+        text.add(", task ").add(iec_current_task_slot());
+    }
+#if STRUCPP_HAS_EXCEPTIONS
+    throw IecSiteFault(reason, text.c_str());
+#else
+    iec_runtime_fault(reason, text.c_str());
+#endif
+}
+
+/** Raise `reason` at `site`, with `what` describing it ("Division by zero"). */
+[[noreturn]] STRUCPP_FAULT_PATH inline void iec_site_fault(
+    IecFault reason, const char* what, iec_site site) {
+    detail::fault_text text;
+    text.add(what);
+    iec_raise_fault(reason, text, site);
+}
+
+namespace detail {
+
+/** The site of the array access in progress, for a target without exceptions (iec_at sets it). */
+#ifdef STRUCPP_THREADED
+inline const iec_site*& bounds_site() noexcept {
+    static thread_local const iec_site* site = nullptr;
+    return site;
+}
+#else
+inline const iec_site*& bounds_site() noexcept {
+    static const iec_site* site = nullptr;
+    return site;
+}
+#endif
+
+/**
+ * An index outside an array's bounds: `std::out_of_range`, to which iec_at
+ * adds the site; without exceptions, the fault at the site iec_at noted.
+ */
+[[noreturn]] STRUCPP_FAULT_PATH inline void bounds_fault() {
+#if STRUCPP_HAS_EXCEPTIONS
+    throw std::out_of_range("Array index out of bounds");
+#else
+    fault_text text;
+    text.add("Array index out of bounds");
+    if (bounds_site() == nullptr) iec_runtime_fault(IecFault::ArrayBounds, text.c_str());
+    iec_raise_fault(IecFault::ArrayBounds, text, *bounds_site());
+#endif
+}
+
+inline void add_indices(fault_text&) {}
+template<typename I, typename... Rest>
+inline void add_indices(fault_text& text, const I& first, const Rest&... rest) {
+    if (!text.empty() && text.back() != '[' && text.back() != ' ') text.add(", ");
+    text.add_number(+first);
+    add_indices(text, rest...);
+}
+
+/** An index no array has: an unsigned one beyond the signed 64-bit range array bounds use. */
+template<typename I>
+constexpr bool beyond_int64(const I& index) noexcept {
+    return static_cast<decltype(+index)>(-1) > static_cast<decltype(+index)>(0) &&
+           static_cast<unsigned long long>(+index) > 9223372036854775807ULL;
+}
+inline constexpr bool any_beyond_int64() noexcept { return false; }
+template<typename I, typename... Rest>
+constexpr bool any_beyond_int64(const I& first, const Rest&... rest) noexcept {
+    return beyond_int64(first) || any_beyond_int64(rest...);
+}
+
+/** Raise the index fault: `what`, the indices as written, the site. */
+template<typename... I>
+[[noreturn]] STRUCPP_FAULT_PATH void index_fault(const char* what, iec_site site, const I&... idx) {
+    fault_text text;
+    text.add(what).add(sizeof...(I) > 1 ? ": [" : ": ");
+    add_indices(text, idx...);
+    if (sizeof...(I) > 1) text.add("]");
+    iec_raise_fault(IecFault::ArrayBounds, text, site);
+}
+
+/** The text of a NULL dereference of a `P`; REF_TO specialises it. */
+template<typename P>
+struct null_deref {
+    static constexpr const char* text = "Null pointer dereference";
+};
+
+}  // namespace detail
+
+/**
+ * `c.at(i...)` at a known site: an index out of bounds is a fault naming the
+ * indices (as written), the POU, the line and the task. Without exceptions the
+ * site is named, not the index. Built with STRUCPP_NO_BOUNDS_CHECK, no check.
  */
 template<typename C, typename... I>
 inline decltype(auto) iec_at(C&& c, iec_site site, I... idx) {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
+    if (detail::any_beyond_int64(idx...)) {
+        detail::index_fault("Array index out of bounds", site, idx...);
+    }
+#endif
 #if STRUCPP_HAS_EXCEPTIONS
     try {
         return c.at(idx...);
     } catch (const std::out_of_range& e) {
-        std::string what = e.what();
-        what += sizeof...(I) > 1 ? ": [" : ": ";
-        detail::append_indices(what, idx...);
-        if (sizeof...(I) > 1) what += "]";
-        iec_site_fault(IecFault::ArrayBounds, what.c_str(), site);
+        detail::index_fault(e.what(), site, idx...);
     }
 #else
-    (void)site;
-    return c.at(idx...);
+    detail::bounds_site() = &site;
+    decltype(auto) element = c.at(idx...);
+    detail::bounds_site() = nullptr;
+    return element;
 #endif
+}
+
+/** `*p` at a known site: a NULL POINTER TO or REF_TO is a fault naming the POU, line and task. */
+template<typename P>
+inline decltype(auto) iec_deref(P&& p, iec_site site) {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
+    if (!p) {
+        detail::fault_text text;
+        text.add(detail::null_deref<std::decay_t<P>>::text);
+        iec_raise_fault(IecFault::NullReference, text, site);
+    }
+#endif
+    return *p;
+}
+
+/** The object a REFERENCE TO is bound to; an unbound one is a fault naming the reference and the site. */
+template<typename R>
+inline auto iec_ref(R& r, const char* name, iec_site site) -> decltype(r.target()) {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
+    if (r.is_null()) {
+        detail::fault_text text;
+        text.add("Unbound REFERENCE TO ").add(name);
+        iec_raise_fault(IecFault::NullReference, text, site);
+    }
+#endif
+    return r.target();
 }
 
 /** An Ed. 3 `s[i]` outside the string's current length (1..LEN). */
@@ -167,7 +310,7 @@ inline decltype(auto) iec_at(C&& c, iec_site site, I... idx) {
 #if STRUCPP_HAS_EXCEPTIONS
     throw std::out_of_range("String index out of bounds");
 #else
-    iec_runtime_fault(IecFault::ArrayBounds);
+    detail::bounds_fault();
 #endif
 }
 

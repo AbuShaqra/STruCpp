@@ -664,6 +664,10 @@ export class CodeGenerator {
 
   /** Current function name (for redirecting function name := to result variable) */
   private currentFunctionName: string | undefined;
+  /** The POU a fault site names: `FB`, `FB.M` (a method, property or action), `VAR_GLOBAL`. */
+  private faultPou: string | undefined;
+  /** The PROGRAM or FUNCTION_BLOCK whose methods are emitted, for `faultPou`. */
+  private faultOwner: string | undefined;
   /** The declared result type of the current FUNCTION, METHOD or PROPERTY. */
   private currentFunctionResultType: string | undefined;
   /** The declared type of the property whose SET accessor is being generated. */
@@ -1039,7 +1043,7 @@ export class CodeGenerator {
     return this.typeCodeGen.mapTypeToCpp(name);
   }
 
-  /** True when the expression is of an integer type (an alias of one too). */
+  /** True when the expression is of an integer or bit string type (an alias of one too). */
   private isIntegerExpression(expr: Expression): boolean {
     const t = expr.resolvedType;
     const name =
@@ -1061,12 +1065,31 @@ export class CodeGenerator {
         break;
       }
     }
-    return /^U?(SINT|INT|DINT|LINT)$/.test(upper);
+    return /^(U?(SINT|INT|DINT|LINT)|BYTE|WORD|DWORD|LWORD)$/.test(upper);
+  }
+
+  /** Runs `emit` with `pou` (and `owner`, for its methods) as the POU a fault site names. */
+  private withFaultPou(
+    pou: string,
+    owner: string | undefined,
+    emit: () => void,
+  ): void {
+    const savedPou = this.faultPou;
+    const savedOwner = this.faultOwner;
+    this.faultPou = pou;
+    this.faultOwner = owner;
+    try {
+      emit();
+    } finally {
+      this.faultPou = savedPou;
+      this.faultOwner = savedOwner;
+    }
   }
 
   /** `strucpp::iec_site{"POU", line}` for a fault raised at `node`. */
   protected faultSite(node: { sourceSpan: SourceSpan }): string {
     const pou =
+      this.faultPou ??
       this.currentFunctionName ??
       this.currentFBName ??
       this.currentProgramName ??
@@ -2042,6 +2065,12 @@ export class CodeGenerator {
    * complete, so it is emitted after the FB classes and late types.
    */
   private emitGvlGlobals(ast: CompilationUnit, late: boolean): void {
+    this.withFaultPou("VAR_GLOBAL", undefined, () =>
+      this.emitGvlGlobalsBody(ast, late),
+    );
+  }
+
+  private emitGvlGlobalsBody(ast: CompilationUnit, late: boolean): void {
     const holdsFB = (typeRef: TypeReference): boolean =>
       typeNamesHeldByValue(typeRef).some((n) => {
         const upper = n.toUpperCase();
@@ -2988,6 +3017,17 @@ export class CodeGenerator {
     method: MethodDeclaration,
     className: string,
   ): void {
+    this.withFaultPou(
+      `${this.faultOwner ?? className}.${method.name}`,
+      this.faultOwner,
+      () => this.generateMethodImplementationBody(method, className),
+    );
+  }
+
+  private generateMethodImplementationBody(
+    method: MethodDeclaration,
+    className: string,
+  ): void {
     const isIfaceReturn =
       method.returnType && this.isInterfaceType(method.returnType.name);
     const returnType = method.returnType
@@ -3083,6 +3123,17 @@ export class CodeGenerator {
     prop: PropertyDeclaration,
     className: string,
   ): void {
+    this.withFaultPou(
+      `${this.faultOwner ?? className}.${prop.name}`,
+      this.faultOwner,
+      () => this.generatePropertyImplementationBody(prop, className),
+    );
+  }
+
+  private generatePropertyImplementationBody(
+    prop: PropertyDeclaration,
+    className: string,
+  ): void {
     const type = this.mapTypeRefToCpp(prop.type);
 
     // Getter
@@ -3133,6 +3184,14 @@ export class CodeGenerator {
    * Generate implementation for a program.
    */
   private generateProgramImplementation(
+    prog: CompilationUnit["programs"][0],
+  ): void {
+    this.withFaultPou(prog.name, prog.name, () =>
+      this.generateProgramImplementationBody(prog),
+    );
+  }
+
+  private generateProgramImplementationBody(
     prog: CompilationUnit["programs"][0],
   ): void {
     // Constructor
@@ -3198,6 +3257,15 @@ export class CodeGenerator {
     prog: CompilationUnit["programs"][0],
     externals: ReadonlyArray<{ name: string; typeName: string }>,
   ): void {
+    this.withFaultPou(prog.name, prog.name, () =>
+      this.generateProgramMethodImplementationsBody(prog, externals),
+    );
+  }
+
+  private generateProgramMethodImplementationsBody(
+    prog: CompilationUnit["programs"][0],
+    externals: ReadonlyArray<{ name: string; typeName: string }>,
+  ): void {
     if (prog.methods.length === 0) return;
     this.currentFBName = prog.name;
     this.currentFBExtends = undefined;
@@ -3230,6 +3298,14 @@ export class CodeGenerator {
    * Generate implementation for a function block.
    */
   private generateFBImplementation(
+    fb: CompilationUnit["functionBlocks"][0],
+  ): void {
+    this.withFaultPou(fb.name, fb.name, () =>
+      this.generateFBImplementationBody(fb),
+    );
+  }
+
+  private generateFBImplementationBody(
     fb: CompilationUnit["functionBlocks"][0],
   ): void {
     this.currentFBName = fb.name;
@@ -3384,6 +3460,14 @@ export class CodeGenerator {
    * Generate implementation for a function.
    */
   private generateFunctionImplementation(
+    func: CompilationUnit["functions"][0],
+  ): void {
+    this.withFaultPou(func.name, undefined, () =>
+      this.generateFunctionImplementationBody(func),
+    );
+  }
+
+  private generateFunctionImplementationBody(
     func: CompilationUnit["functions"][0],
   ): void {
     const params = this.generateFunctionParams(func);
@@ -3697,6 +3781,12 @@ export class CodeGenerator {
    * Generate implementation for a program from the project model.
    */
   private generateProgramImplementationFromModel(prog: ProgramDecl): void {
+    this.withFaultPou(prog.name, prog.name, () =>
+      this.generateProgramImplementationFromModelBody(prog),
+    );
+  }
+
+  private generateProgramImplementationFromModelBody(prog: ProgramDecl): void {
     // Look up AST program for source span
     const astProg = this.ast?.programs.find(
       (p) => p.name.toUpperCase() === prog.name.toUpperCase(),
@@ -3967,6 +4057,15 @@ export class CodeGenerator {
     prog: ProgramDecl,
     astProg: CompilationUnit["programs"][0] | undefined,
   ): void {
+    this.withFaultPou(prog.name, prog.name, () =>
+      this.emitProgramFbInitBody(prog, astProg),
+    );
+  }
+
+  private emitProgramFbInitBody(
+    prog: ProgramDecl,
+    astProg: CompilationUnit["programs"][0] | undefined,
+  ): void {
     if (!this.fbInitPlan) return;
     if (this.fbInitGlobalsEmitted) this.emit("    __fb_init_globals();");
     if (!astProg) return;
@@ -4097,10 +4196,17 @@ export class CodeGenerator {
   }
 
   private emitFileScopeGlobals(): void {
+    this.withFaultPou("VAR_GLOBAL", undefined, () =>
+      this.emitFileScopeGlobalsBody(),
+    );
+  }
+
+  private emitFileScopeGlobalsBody(): void {
     if (!this.projectModel) return;
     const seen = new Set<string>();
     let emittedAny = false;
     for (const config of this.projectModel.configurations) {
+      this.faultPou = config.name;
       this.configGlobalInitNames = new Set(
         config.globalVars.map((g) => g.name.toUpperCase()),
       );
@@ -5914,7 +6020,11 @@ export class CodeGenerator {
     // A REFERENCE TO STRING / WSTRING read as a value: the bound variable, so
     // the string functions' templates see a string (no conversion deduced).
     if (!this.keepReferenceWrapper && this.isPlainStringReference(expr)) {
-      return `${this.resolveVariableBaseName(expr.name)}.target()`;
+      return this.refTarget(
+        this.resolveVariableBaseName(expr.name),
+        expr.name,
+        expr,
+      );
     }
 
     // `PRG_A.x`: a member of a reached program's one shared instance.
@@ -6147,7 +6257,12 @@ export class CodeGenerator {
       }
     }
 
-    if (this.reachesThroughReference(expr)) result = `${result}.target()`;
+    if (this.reachesThroughReference(expr)) {
+      result = this.refTarget(result, expr.name, expr);
+    } else if (!this.keepReferenceWrapper && this.isPlainReference(expr)) {
+      // A REFERENCE TO read or written: its target, an unbound one a fault
+      return this.refTarget(result, expr.name, expr);
+    }
     return this.renderAccessTail(result, expr, nameUpper);
   }
 
@@ -6205,8 +6320,41 @@ export class CodeGenerator {
     return this.memberMangledNames.get(name.toUpperCase()) ?? name;
   }
 
+  /** The object a REFERENCE TO `base` (named `name`) is bound to; unbound, a fault naming the site. */
+  private refTarget(
+    base: string,
+    name: string,
+    node: { sourceSpan: SourceSpan },
+  ): string {
+    // Already the checked target (a plain reference renders as one)
+    if (base.startsWith("strucpp::iec_ref(")) return base;
+    return `strucpp::iec_ref(${base}, "${name.toUpperCase()}", ${this.faultSite(node)})`;
+  }
+
+  /** A REFERENCE TO itself, from its checked target: what binds another reference to the same object. */
+  private refWrapper(generated: string): string {
+    const m =
+      /^strucpp::iec_ref\((.*), "[^"]*", strucpp::iec_site\{"[^"]*", \d+\}\)$/.exec(
+        generated,
+      );
+    return m === null ? generated : m[1]!;
+  }
+
   /** Set while a REF= target is generated: it names the reference itself. */
   private keepReferenceWrapper = false;
+
+  /** `rr`, a REFERENCE TO variable of the scope, with no access. */
+  private isPlainReference(expr: VariableExpression): boolean {
+    const upper = expr.name.toUpperCase();
+    return (
+      this.currentScopeVarRefKinds.get(upper) === "reference_to" &&
+      !this.isCurrentFunctionResult(upper) &&
+      !expr.isDereference &&
+      expr.fieldAccess.length === 0 &&
+      expr.subscripts.length === 0 &&
+      (expr.accessChain?.length ?? 0) === 0
+    );
+  }
 
   /** `rr`, a REFERENCE TO STRING / WSTRING variable of the scope, with no access. */
   private isPlainStringReference(expr: VariableExpression): boolean {
@@ -6317,6 +6465,7 @@ export class CodeGenerator {
         nameUpper,
         baseType,
         expr.namedBitIndex === true,
+        expr,
       );
     }
 
@@ -6374,9 +6523,9 @@ export class CodeGenerator {
       }
     }
 
-    // Dereference (^ operator → pointer dereference)
+    // Dereference (^ operator): a NULL pointer is a fault naming the site
     if (expr.isDereference) {
-      result = `(*${result})`;
+      result = `strucpp::iec_deref(${result}, ${this.faultSite(expr)})`;
     }
 
     return result;
@@ -6435,6 +6584,7 @@ export class CodeGenerator {
     baseNameUpper: string,
     baseType?: string,
     namedBit = false,
+    site?: { sourceSpan: SourceSpan },
   ): string {
     let result = base;
     let currentType = baseType ?? this.rootVariableType(baseNameUpper);
@@ -6490,7 +6640,11 @@ export class CodeGenerator {
           break;
         }
         case "dereference": {
-          result = `(*${result})`;
+          // A NULL pointer is a fault naming the site
+          result =
+            site !== undefined
+              ? `strucpp::iec_deref(${result}, ${this.faultSite(site)})`
+              : `(*${result})`;
           break;
         }
       }
@@ -6876,7 +7030,11 @@ export class CodeGenerator {
       expr.subscripts.length === 0 &&
       (expr.accessChain?.length ?? 0) === 0
     ) {
-      return `${this.resolveVariableBaseName(expr.name)}.target()`;
+      return this.refTarget(
+        this.resolveVariableBaseName(expr.name),
+        expr.name,
+        expr,
+      );
     }
     return generated;
   }
@@ -7585,7 +7743,7 @@ export class CodeGenerator {
                 ? instance()
                 : this.currentScopeVarRefKinds.get(prefix.toUpperCase()) ===
                     "reference_to"
-                  ? `${instance()}.target()`
+                  ? this.refTarget(instance(), prefix, expr)
                   : prefix;
         return `${receiver}.${resolvedMethod}(${args.join(", ")})`;
       }
@@ -7637,6 +7795,21 @@ export class CodeGenerator {
           this.keepReferenceWrapper = kept;
         }
         return vendorOperatorCpp(expr.vendorOperator, arg);
+      }
+      // DIV(a, b) of integers faults on a zero divisor, as `a / b` does
+      if (nameUpper === "DIV" && expr.arguments.length === 2) {
+        const named = (n: string): Expression | undefined =>
+          expr.arguments.find((a) => a.name?.toUpperCase() === n)?.value;
+        const dividend = named("IN1") ?? expr.arguments[0]!.value;
+        const divisor = named("IN2") ?? expr.arguments[1]!.value;
+        if (
+          expr.arguments.every((a) => !a.isOutput) &&
+          this.isIntegerExpression(dividend) &&
+          this.isIntegerExpression(divisor) &&
+          !isNonZeroIntegerLiteral(divisor)
+        ) {
+          return `iec_div(${this.generateExpression(dividend)}, ${this.generateExpression(divisor)}, ${this.faultSite(expr)})`;
+        }
       }
 
       // 0. ADR(x) → &(x) (CODESYS address-of operator)
@@ -8039,7 +8212,7 @@ export class CodeGenerator {
       for (const decl of block.declarations) {
         for (let n = 0; n < decl.names.length; n++, index++) {
           if (index < args.length && isReferenceInput(block, decl)) {
-            args[index] = `ref_bind(${args[index]})`;
+            args[index] = `ref_bind(${this.refWrapper(args[index]!)})`;
           }
         }
       }
@@ -8191,7 +8364,7 @@ export class CodeGenerator {
       const refType = params[i]!.refInput;
       if (refType === undefined) continue;
       if (result[i] !== undefined) {
-        result[i] = `ref_bind(${result[i]})`;
+        result[i] = `ref_bind(${this.refWrapper(result[i]!)})`;
       } else if (params[i]!.defaultExpr === undefined) {
         result[i] = `${this.mapTypeRefToCpp(refType)}()`;
       }
@@ -9280,7 +9453,11 @@ export class CodeGenerator {
             ? this.generateExpression(this.dottedInstanceExpression(call))
             : this.currentScopeVarRefKinds.get(rawName.toUpperCase()) ===
                 "reference_to"
-              ? `${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName}.target()`
+              ? this.refTarget(
+                  this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName,
+                  rawName,
+                  call,
+                )
               : this.scopeInOutRefs.has(rawName.toUpperCase())
                 ? `(*${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName})`
                 : (this.memberMangledNames.get(rawName.toUpperCase()) ??
@@ -9520,7 +9697,11 @@ export class CodeGenerator {
       (value.accessChain?.length ?? 0) === 0 &&
       !value.isDereference
     ) {
-      return `${this.resolveVariableBaseName(value.name)}.target()`;
+      return this.refTarget(
+        this.resolveVariableBaseName(value.name),
+        value.name,
+        value,
+      );
     }
     const saved = this.inOutBindExprs.delete(value);
     const rendered = this.generateLvalue(value);
@@ -9608,7 +9789,7 @@ export class CodeGenerator {
     if (inout?.has(paramName.toUpperCase()) === true) return generated;
     const field = this.accessLookup.field(fbTypeName, paramName);
     return field?.type.referenceKind === "reference_to"
-      ? `ref_bind(${generated})`
+      ? `ref_bind(${this.refWrapper(generated)})`
       : generated;
   }
 

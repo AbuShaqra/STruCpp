@@ -99,6 +99,12 @@ constexpr std::nullptr_t IEC_NULL = nullptr;
 // =============================================================================
 
 template<typename T> class IEC_REF_TO;
+namespace detail {
+template<typename T>
+struct null_deref<IEC_REF_TO<T>> {
+    static constexpr const char* text = "Null reference dereference";
+};
+}  // namespace detail
 template<typename T> class IEC_REFERENCE_TO;
 template<typename T> class IEC_Ptr;
 
@@ -217,6 +223,7 @@ public:
      * Used by generated code for ^ operator and DREF() function
      */
     target_type& deref() {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (ptr_ == nullptr) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw NullReferenceException();
@@ -224,10 +231,14 @@ public:
             iec_runtime_fault(IecFault::NullReference);
 #endif
         }
+#else
+        (void)0;
+#endif
         return *ptr_;
     }
 
     const target_type& deref() const {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (ptr_ == nullptr) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw NullReferenceException();
@@ -235,6 +246,9 @@ public:
             iec_runtime_fault(IecFault::NullReference);
 #endif
         }
+#else
+        (void)0;
+#endif
         return *ptr_;
     }
 
@@ -242,6 +256,7 @@ public:
      * Dereference with context for better error messages
      */
     target_type& deref(const char* context) {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (ptr_ == nullptr) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw NullReferenceException(context);
@@ -249,10 +264,14 @@ public:
             iec_runtime_fault(IecFault::NullReference, context);
 #endif
         }
+#else
+        (void)context;
+#endif
         return *ptr_;
     }
 
     const target_type& deref(const char* context) const {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (ptr_ == nullptr) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw NullReferenceException(context);
@@ -260,6 +279,9 @@ public:
             iec_runtime_fault(IecFault::NullReference, context);
 #endif
         }
+#else
+        (void)context;
+#endif
         return *ptr_;
     }
 
