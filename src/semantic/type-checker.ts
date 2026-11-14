@@ -3778,6 +3778,8 @@ export class TypeChecker {
   ): boolean {
     const source = addressSource(value);
     if (source === undefined || typeName === undefined) return false;
+    // A user FUNCTION named ADR is called, not the operator.
+    if (source.op === "ADR" && this.findUserFunction("ADR")) return false;
     const fit = addressFit(typeName, this.ast?.types ?? []);
     if (source.op === "ADR" && !this.features.has("pointer_to")) {
       return fit !== undefined;

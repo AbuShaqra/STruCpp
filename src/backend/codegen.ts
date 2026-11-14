@@ -4663,7 +4663,8 @@ export class CodeGenerator {
       target.isDereference ||
       (target.accessChain?.length ?? 0) > 0 ||
       addressSource(valueExpr) === undefined ||
-      !this.ast
+      !this.ast ||
+      this.ast.functions.some((f) => f.name.toUpperCase() === "ADR")
     ) {
       return value;
     }
