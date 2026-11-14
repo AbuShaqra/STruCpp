@@ -62,7 +62,7 @@ u := GU(ADR(x));
 i := fb.M(w := ADR(x));
 END_PROGRAM
 `;
-    const tail = "use __XWORD, LWORD or ULINT";
+    const tail = "use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT";
     for (const opts of [
       {},
       { strict: true },
