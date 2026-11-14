@@ -35,25 +35,25 @@ import { extractTestVarDeclarations } from "../../shared/test-utils.js";
 // ---------------------------------------------------------------------------
 
 export const TOKEN_TYPES: string[] = [
-  "namespace",   // 0
-  "class",       // 1
-  "interface",   // 2
-  "type",        // 3
-  "enum",        // 4
-  "enumMember",  // 5
-  "function",    // 6
-  "method",      // 7
-  "property",    // 8
-  "variable",    // 9
-  "parameter",   // 10
-  "number",      // 11
-  "string",      // 12
+  "namespace", // 0
+  "class", // 1
+  "interface", // 2
+  "type", // 3
+  "enum", // 4
+  "enumMember", // 5
+  "function", // 6
+  "method", // 7
+  "property", // 8
+  "variable", // 9
+  "parameter", // 10
+  "number", // 11
+  "string", // 12
 ];
 
 export const TOKEN_MODIFIERS: string[] = [
-  "declaration",     // bit 0
-  "readonly",        // bit 1
-  "defaultLibrary",  // bit 2
+  "declaration", // bit 0
+  "readonly", // bit 1
+  "defaultLibrary", // bit 2
 ];
 
 const TYPE_IDX = Object.fromEntries(TOKEN_TYPES.map((t, i) => [t, i]));
@@ -67,8 +67,8 @@ const SYNTHETIC_TYPE_PREFIXES = ["__INLINE_ARRAY_", "__VLA_"];
 // ---------------------------------------------------------------------------
 
 interface RawToken {
-  line: number;   // 0-indexed (LSP coords)
-  col: number;    // 0-indexed
+  line: number; // 0-indexed (LSP coords)
+  col: number; // 0-indexed
   length: number;
   typeIdx: number;
   modBits: number;
@@ -87,8 +87,10 @@ export function getSemanticTokens(
   if (!ast || !symbolTables) return [];
 
   const tokens: RawToken[] = [];
-  const sourceLines = source?.split("\n") ?? [];
+  // Lines end as the lexer counts them: LF, CR LF, or a lone CR.
+  const sourceLines = source?.split(/\r\n|\r|\n/) ?? [];
   const varBlockMap = buildVarBlockMap(ast);
+  spanLines = sourceLines;
 
   walkAST(ast, (node) => {
     // Filter to only nodes in the requested file
@@ -96,31 +98,78 @@ export function getSemanticTokens(
 
     switch (node.kind) {
       case "ProgramDeclaration":
-        emitPOUName(tokens, node as ProgramDeclaration, "PROGRAM", TYPE_IDX.namespace, MOD_BIT.declaration, sourceLines);
+        emitPOUName(
+          tokens,
+          node as ProgramDeclaration,
+          "PROGRAM",
+          TYPE_IDX.namespace,
+          MOD_BIT.declaration,
+          sourceLines,
+        );
         break;
 
       case "FunctionDeclaration":
-        emitPOUName(tokens, node as FunctionDeclaration, "FUNCTION", TYPE_IDX.function, MOD_BIT.declaration, sourceLines);
+        emitPOUName(
+          tokens,
+          node as FunctionDeclaration,
+          "FUNCTION",
+          TYPE_IDX.function,
+          MOD_BIT.declaration,
+          sourceLines,
+        );
         break;
 
       case "FunctionBlockDeclaration":
-        emitPOUName(tokens, node as FunctionBlockDeclaration, "FUNCTION_BLOCK", TYPE_IDX.class, MOD_BIT.declaration, sourceLines);
+        emitPOUName(
+          tokens,
+          node as FunctionBlockDeclaration,
+          "FUNCTION_BLOCK",
+          TYPE_IDX.class,
+          MOD_BIT.declaration,
+          sourceLines,
+        );
         break;
 
       case "InterfaceDeclaration":
-        emitPOUName(tokens, node as InterfaceDeclaration, "INTERFACE", TYPE_IDX.interface, MOD_BIT.declaration, sourceLines);
+        emitPOUName(
+          tokens,
+          node as InterfaceDeclaration,
+          "INTERFACE",
+          TYPE_IDX.interface,
+          MOD_BIT.declaration,
+          sourceLines,
+        );
         break;
 
       case "MethodDeclaration":
-        emitPOUName(tokens, node as MethodDeclaration, "METHOD", TYPE_IDX.method, MOD_BIT.declaration, sourceLines);
+        emitPOUName(
+          tokens,
+          node as MethodDeclaration,
+          "METHOD",
+          TYPE_IDX.method,
+          MOD_BIT.declaration,
+          sourceLines,
+        );
         break;
 
       case "PropertyDeclaration":
-        emitPOUName(tokens, node as PropertyDeclaration, "PROPERTY", TYPE_IDX.property, MOD_BIT.declaration, sourceLines);
+        emitPOUName(
+          tokens,
+          node as PropertyDeclaration,
+          "PROPERTY",
+          TYPE_IDX.property,
+          MOD_BIT.declaration,
+          sourceLines,
+        );
         break;
 
       case "EnumMember":
-        emitName(tokens, node as EnumMember, TYPE_IDX.enumMember, MOD_BIT.declaration);
+        emitName(
+          tokens,
+          node as EnumMember,
+          TYPE_IDX.enumMember,
+          MOD_BIT.declaration,
+        );
         break;
 
       case "VarDeclaration":
@@ -128,7 +177,13 @@ export function getSemanticTokens(
         break;
 
       case "VariableExpression":
-        emitVariableExpression(tokens, node as VariableExpression, ast, symbolTables, fileName);
+        emitVariableExpression(
+          tokens,
+          node as VariableExpression,
+          ast,
+          symbolTables,
+          fileName,
+        );
         break;
 
       case "FunctionCallExpression":
@@ -149,6 +204,7 @@ export function getSemanticTokens(
     }
   });
 
+  spanLines = [];
   return deltaEncode(tokens);
 }
 
@@ -157,6 +213,36 @@ export function getSemanticTokens(
 // ---------------------------------------------------------------------------
 
 /** Push a token, converting 1-indexed compiler coords to 0-indexed LSP coords. */
+/** The source lines of the file getSemanticTokens is working on. */
+let spanLines: string[] = [];
+
+/** A character a name refuses: non-ASCII or a control (dropped from the name). */
+function refusedChar(ch: string): boolean {
+  const code = ch.charCodeAt(0);
+  return (code >= 0x7f || code < 0x20) && !/\s/.test(ch);
+}
+
+/**
+ * The source length of a token whose text has `length` characters once the
+ * characters a name refuses are left out: they are counted back in.
+ */
+function sourceLength(
+  startLine: number,
+  startCol: number,
+  length: number,
+): number {
+  const line = spanLines[startLine - 1];
+  if (line === undefined) return length;
+  let i = startCol - 1;
+  let counted = 0;
+  while (counted < length && i < line.length) {
+    if (!refusedChar(line.charAt(i))) counted++;
+    i++;
+  }
+  while (i < line.length && refusedChar(line.charAt(i))) i++;
+  return i - (startCol - 1);
+}
+
 function pushToken(
   tokens: RawToken[],
   startLine: number,
@@ -164,11 +250,13 @@ function pushToken(
   length: number,
   typeIdx: number,
   modBits: number,
+  /** The length is the source text's already (a literal's span). */
+  exact = false,
 ): void {
   tokens.push({
     line: startLine - 1,
     col: startCol - 1,
-    length,
+    length: exact ? length : sourceLength(startLine, startCol, length),
     typeIdx,
     modBits,
   });
@@ -187,9 +275,21 @@ function emitPOUName(
   sourceLines: string[],
 ): void {
   if (!node.sourceSpan) return;
-  const col = findNameCol(sourceLines, node.sourceSpan.startLine, node.name, keyword);
+  const col = findNameCol(
+    sourceLines,
+    node.sourceSpan.startLine,
+    node.name,
+    keyword,
+  );
   if (col < 0) return;
-  pushToken(tokens, node.sourceSpan.startLine, col, node.name.length, typeIdx, modBits);
+  pushToken(
+    tokens,
+    node.sourceSpan.startLine,
+    col,
+    node.name.length,
+    typeIdx,
+    modBits,
+  );
 }
 
 /** Emit a token for nodes where sourceSpan already points at the name (e.g. EnumMember). */
@@ -200,7 +300,14 @@ function emitName(
   modBits: number,
 ): void {
   if (!node.sourceSpan) return;
-  pushToken(tokens, node.sourceSpan.startLine, node.sourceSpan.startCol, node.name.length, typeIdx, modBits);
+  pushToken(
+    tokens,
+    node.sourceSpan.startLine,
+    node.sourceSpan.startCol,
+    node.name.length,
+    typeIdx,
+    modBits,
+  );
 }
 
 /**
@@ -216,7 +323,9 @@ function emitVarDeclaration(
 
   // Find parent VarBlock to determine block type
   const parentBlock = varBlockMap.get(vd);
-  const isInput = parentBlock?.blockType === "VAR_INPUT" || parentBlock?.blockType === "VAR_IN_OUT";
+  const isInput =
+    parentBlock?.blockType === "VAR_INPUT" ||
+    parentBlock?.blockType === "VAR_IN_OUT";
   const isConstant = parentBlock?.isConstant ?? false;
 
   const typeIdx = isInput ? TYPE_IDX.parameter : TYPE_IDX.variable;
@@ -225,11 +334,25 @@ function emitVarDeclaration(
 
   // For single-name declarations, use the sourceSpan directly
   if (vd.names.length === 1) {
-    pushToken(tokens, vd.sourceSpan.startLine, vd.sourceSpan.startCol, vd.names[0].length, typeIdx, modBits);
+    pushToken(
+      tokens,
+      vd.sourceSpan.startLine,
+      vd.sourceSpan.startCol,
+      vd.names[0].length,
+      typeIdx,
+      modBits,
+    );
   } else {
     // Multi-name: emit only the first name reliably from sourceSpan.
     // Additional names in multi-declarations are tricky without source text.
-    pushToken(tokens, vd.sourceSpan.startLine, vd.sourceSpan.startCol, vd.names[0].length, typeIdx, modBits);
+    pushToken(
+      tokens,
+      vd.sourceSpan.startLine,
+      vd.sourceSpan.startCol,
+      vd.names[0].length,
+      typeIdx,
+      modBits,
+    );
   }
 }
 
@@ -242,7 +365,12 @@ function emitVariableExpression(
 ): void {
   if (!ve.sourceSpan) return;
 
-  const scope = findEnclosingPOU(ast, fileName, ve.sourceSpan.startLine, ve.sourceSpan.startCol);
+  const scope = findEnclosingPOU(
+    ast,
+    fileName,
+    ve.sourceSpan.startLine,
+    ve.sourceSpan.startCol,
+  );
   const lookupScope = getScopeForContext(symbolTables, scope);
   const symbol = lookupScope?.lookup(ve.name);
 
@@ -260,7 +388,14 @@ function emitVariableExpression(
     }
   }
 
-  pushToken(tokens, ve.sourceSpan.startLine, ve.sourceSpan.startCol, ve.name.length, typeIdx, modBits);
+  pushToken(
+    tokens,
+    ve.sourceSpan.startLine,
+    ve.sourceSpan.startCol,
+    ve.name.length,
+    typeIdx,
+    modBits,
+  );
 }
 
 function emitFunctionCall(
@@ -268,13 +403,17 @@ function emitFunctionCall(
   fce: FunctionCallExpression,
 ): void {
   if (!fce.sourceSpan) return;
-  pushToken(tokens, fce.sourceSpan.startLine, fce.sourceSpan.startCol, fce.functionName.length, TYPE_IDX.function, 0);
+  pushToken(
+    tokens,
+    fce.sourceSpan.startLine,
+    fce.sourceSpan.startCol,
+    fce.functionName.length,
+    TYPE_IDX.function,
+    0,
+  );
 }
 
-function emitMethodCall(
-  tokens: RawToken[],
-  mce: MethodCallExpression,
-): void {
+function emitMethodCall(tokens: RawToken[], mce: MethodCallExpression): void {
   // The method name position: we need to find it.
   // MethodCallExpression sourceSpan covers the whole "obj.method(args)".
   // The methodName starts after the dot. We approximate: use obj sourceSpan end + 2 (dot + 1)
@@ -295,39 +434,74 @@ function emitTypeReference(
   if (tr.isReference) return;
   // Synthesised array names have no source text to cover. Match the two prefixes
   // exactly: `__XWORD` is a real elementary type and must keep its token.
-  if (SYNTHETIC_TYPE_PREFIXES.some((prefix) => tr.name.startsWith(prefix))) return;
+  if (SYNTHETIC_TYPE_PREFIXES.some((prefix) => tr.name.startsWith(prefix)))
+    return;
 
   const upperName = tr.name.toUpperCase();
 
   // Elementary types
   if (upperName in ELEMENTARY_TYPES) {
-    pushToken(tokens, tr.sourceSpan.startLine, tr.sourceSpan.startCol, tr.name.length, TYPE_IDX.type, MOD_BIT.defaultLibrary);
+    pushToken(
+      tokens,
+      tr.sourceSpan.startLine,
+      tr.sourceSpan.startCol,
+      tr.name.length,
+      TYPE_IDX.type,
+      MOD_BIT.defaultLibrary,
+    );
     return;
   }
 
   // FB type
   const fbSym = symbolTables.lookupFunctionBlock(tr.name);
   if (fbSym) {
-    pushToken(tokens, tr.sourceSpan.startLine, tr.sourceSpan.startCol, tr.name.length, TYPE_IDX.class, 0);
+    pushToken(
+      tokens,
+      tr.sourceSpan.startLine,
+      tr.sourceSpan.startCol,
+      tr.name.length,
+      TYPE_IDX.class,
+      0,
+    );
     return;
   }
 
   // User-defined type (struct, enum, alias)
-  pushToken(tokens, tr.sourceSpan.startLine, tr.sourceSpan.startCol, tr.name.length, TYPE_IDX.type, 0);
+  pushToken(
+    tokens,
+    tr.sourceSpan.startLine,
+    tr.sourceSpan.startCol,
+    tr.name.length,
+    TYPE_IDX.type,
+    0,
+  );
 }
 
-function emitLiteral(
-  tokens: RawToken[],
-  lit: LiteralExpression,
-): void {
+function emitLiteral(tokens: RawToken[], lit: LiteralExpression): void {
   if (!lit.sourceSpan) return;
   const length = lit.sourceSpan.endCol - lit.sourceSpan.startCol + 1;
   if (length <= 0) return;
 
   if (lit.literalType === "STRING") {
-    pushToken(tokens, lit.sourceSpan.startLine, lit.sourceSpan.startCol, length, TYPE_IDX.string, 0);
+    pushToken(
+      tokens,
+      lit.sourceSpan.startLine,
+      lit.sourceSpan.startCol,
+      length,
+      TYPE_IDX.string,
+      0,
+      true,
+    );
   } else if (lit.literalType === "INT" || lit.literalType === "REAL") {
-    pushToken(tokens, lit.sourceSpan.startLine, lit.sourceSpan.startCol, length, TYPE_IDX.number, 0);
+    pushToken(
+      tokens,
+      lit.sourceSpan.startLine,
+      lit.sourceSpan.startCol,
+      length,
+      TYPE_IDX.number,
+      0,
+      true,
+    );
   }
 }
 
@@ -480,8 +654,11 @@ export function getTestFileSemanticTokens(
       // Check elementary types (INT, REAL, BOOL, etc.)
       if (upper in ELEMENTARY_TYPES) {
         tokens.push({
-          line: lineIdx, col, length: name.length,
-          typeIdx: TYPE_IDX.type, modBits: MOD_BIT.defaultLibrary,
+          line: lineIdx,
+          col,
+          length: name.length,
+          typeIdx: TYPE_IDX.type,
+          modBits: MOD_BIT.defaultLibrary,
         });
         continue;
       }
@@ -490,16 +667,26 @@ export function getTestFileSemanticTokens(
       const typeSym = symbolTables.lookupType(upper);
       if (typeSym) {
         const def = typeSym.declaration?.definition;
-        const idx = def?.kind === "EnumDefinition" ? TYPE_IDX.enum : TYPE_IDX.type;
-        tokens.push({ line: lineIdx, col, length: name.length, typeIdx: idx, modBits: 0 });
+        const idx =
+          def?.kind === "EnumDefinition" ? TYPE_IDX.enum : TYPE_IDX.type;
+        tokens.push({
+          line: lineIdx,
+          col,
+          length: name.length,
+          typeIdx: idx,
+          modBits: 0,
+        });
         continue;
       }
 
       // Check function block names
       if (symbolTables.lookupFunctionBlock(upper)) {
         tokens.push({
-          line: lineIdx, col, length: name.length,
-          typeIdx: TYPE_IDX.class, modBits: 0,
+          line: lineIdx,
+          col,
+          length: name.length,
+          typeIdx: TYPE_IDX.class,
+          modBits: 0,
         });
         continue;
       }
@@ -508,15 +695,21 @@ export function getTestFileSemanticTokens(
       const globalSym = symbolTables.globalScope.lookup(upper);
       if (globalSym?.kind === "function") {
         tokens.push({
-          line: lineIdx, col, length: name.length,
-          typeIdx: TYPE_IDX.function, modBits: 0,
+          line: lineIdx,
+          col,
+          length: name.length,
+          typeIdx: TYPE_IDX.function,
+          modBits: 0,
         });
         continue;
       }
       if (globalSym?.kind === "enumValue") {
         tokens.push({
-          line: lineIdx, col, length: name.length,
-          typeIdx: TYPE_IDX.enumMember, modBits: 0,
+          line: lineIdx,
+          col,
+          length: name.length,
+          typeIdx: TYPE_IDX.enumMember,
+          modBits: 0,
         });
         continue;
       }
@@ -524,8 +717,11 @@ export function getTestFileSemanticTokens(
       // Check enum members from type definitions (may not be in global scope)
       if (enumMembers.has(upper)) {
         tokens.push({
-          line: lineIdx, col, length: name.length,
-          typeIdx: TYPE_IDX.enumMember, modBits: 0,
+          line: lineIdx,
+          col,
+          length: name.length,
+          typeIdx: TYPE_IDX.enumMember,
+          modBits: 0,
         });
         continue;
       }
@@ -533,8 +729,11 @@ export function getTestFileSemanticTokens(
       // Check locally declared variables
       if (localVars.has(upper)) {
         tokens.push({
-          line: lineIdx, col, length: name.length,
-          typeIdx: TYPE_IDX.variable, modBits: 0,
+          line: lineIdx,
+          col,
+          length: name.length,
+          typeIdx: TYPE_IDX.variable,
+          modBits: 0,
         });
         continue;
       }
@@ -543,5 +742,3 @@ export function getTestFileSemanticTokens(
 
   return deltaEncode(tokens);
 }
-
-
