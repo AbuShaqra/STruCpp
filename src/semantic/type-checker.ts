@@ -3715,9 +3715,12 @@ export class TypeChecker {
         this.validateInOutMemberWrite(stmt.target, scope);
         if (this.isAddressIntoPointer(stmt.target, valueType, scope)) break;
         if (this.isZeroIntoPointer(stmt.target, stmt.value, scope)) break;
-        // `v := ADR(x)` into an integer narrower than an address.
+        // `v := ADR(x)` into an integer narrower than an address (an invalid
+        // ADR operand, or ADR with the feature off, is refused on its own).
         if (
           isAddressOf(stmt.value) &&
+          this.features.has("pointer_to") &&
+          stmt.value.arguments[0]?.value.kind === "VariableExpression" &&
           this.refuseNarrowAddress(
             targetType?.typeKind === "elementary"
               ? (targetType as ElementaryType).name
