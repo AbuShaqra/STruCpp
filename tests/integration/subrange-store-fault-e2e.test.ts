@@ -202,4 +202,71 @@ END_PROGRAM
       "5:70 The initial value 42 of 'A' is outside its subrange 0..10",
     ]);
   });
+
+  it("checks a typed based literal by its signed value, and a field of a FUNCTION result", () => {
+    const result = compile(
+      `TYPE SR : INT (0..10); END_TYPE
+TYPE SH : INT (100..300); END_TYPE
+TYPE ST : STRUCT f : SR; END_STRUCT END_TYPE
+FUNCTION FS : ST
+VAR_INPUT a : INT; END_VAR
+FS.f := a;
+END_FUNCTION
+PROGRAM Main
+VAR x : SH := 200; t : ST; v : INT := 42; k : INT; END_VAR
+CASE k OF
+1: x := SINT#16#FF;
+2: t := FS(v);
+END_CASE;
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "subrange_typed_and_result_field",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::strucpp_set_current_task("T");
+    for (int k = 1; k <= 2; ++k) {
+        try { strucpp::Program_MAIN p; p.K = k; p.run(); std::cout << k << " ok|"; }
+        catch (const std::exception& e) { std::cout << k << " " << e.what() << "|"; }
+    }
+    std::cout << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout.split("|").filter((l) => l !== "")).toEqual([
+      "1 Value -1 outside 100..300 stored in X in MAIN, line 11, task T",
+      "2 Value 42 outside 0..10 stored in FS.F in FS, line 6, task T",
+    ]);
+  });
+
+  it("refuses an initial value inside a STRUCT initialiser, a nested default, a multi-dimensional ARRAY and an ARRAY OF STRUCT; reads a typed based literal signed", () => {
+    const result = compile(`TYPE SR : INT (0..10); END_TYPE
+TYPE S8 : SINT (-10..10); END_TYPE
+TYPE SH : INT (100..300); END_TYPE
+TYPE ST : STRUCT f : SR; END_STRUCT END_TYPE
+TYPE ST2 : STRUCT s : ST := (f := 42); END_STRUCT END_TYPE
+PROGRAM Main
+VAR t : ST := (f := 42); t2 : ST2; m : ARRAY[1..2, 1..2] OF SR := [[42, 1], [1, 1]];
+  as : ARRAY[1..2] OF ST := [(f := 42), (f := 1)]; z : S8 := SINT#16#FF; h : SH := SINT#16#FF; ok : ST := (f := 3); END_VAR
+END_PROGRAM
+`);
+    expect(
+      result.errors.map((e) => `${e.line}:${e.column} ${e.message}`).sort(),
+    ).toEqual([
+      "5:35 The initial value 42 of 'S.F' is outside its subrange 0..10",
+      "7:21 The initial value 42 of 'T.F' is outside its subrange 0..10",
+      "7:69 The initial value 42 of 'M' is outside its subrange 0..10",
+      "8:36 The initial value 42 of 'AS.F' is outside its subrange 0..10",
+      "8:84 The initial value -1 of 'H' is outside its subrange 100..300",
+    ]);
+  });
 });

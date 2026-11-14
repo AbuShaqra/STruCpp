@@ -4806,11 +4806,10 @@ export class CodeGenerator {
       target.fieldAccess.length > 0 ||
       target.isDereference ||
       (target.accessChain !== undefined && target.accessChain.length > 0);
-    // A local or member, else the result of the FUNCTION or METHOD, else a global
+    // A local or member, else the result of the FUNCTION or METHOD (or a field of it), else a global
     const root =
       this.currentScopeVarTypeRefs.get(upper) ??
-      (!hasAccess &&
-      this.currentFunctionName?.toUpperCase() === upper &&
+      (this.currentFunctionName?.toUpperCase() === upper &&
       this.currentFunctionResultType !== undefined
         ? {
             name: this.currentFunctionResultType,

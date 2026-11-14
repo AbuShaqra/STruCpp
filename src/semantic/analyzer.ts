@@ -5377,20 +5377,63 @@ export class SemanticAnalyzer {
         value.sourceSpan.file,
       );
     };
-    const checkDecl = (decl: VarDeclaration): void => {
-      const value = decl.initialValue;
-      if (value === undefined) return;
-      const owner = decl.names.join(", ");
+    // Into STRUCT initialisers and ARRAY literals, nested ones included
+    const checkValue = (
+      value: Expression,
+      type: TypeReference | undefined,
+      typeName: string | undefined,
+      owner: string,
+    ): void => {
       if (value.kind === "ArrayLiteralExpression") {
-        const element = elementOf(decl.type);
-        for (const e of value.elements) check(e, element, owner);
-      } else if (decl.type.arrayDimensions === undefined) {
-        check(value, decl.type.name, owner);
+        const element =
+          type !== undefined
+            ? elementOf(type)
+            : typeName === undefined
+              ? undefined
+              : elementOfName(typeName);
+        for (const e of value.elements) {
+          // A nested literal of a multi-dimensional ARRAY has the same elements
+          if (e.kind === "ArrayLiteralExpression") {
+            checkValue(e, type, typeName, owner);
+          } else {
+            checkValue(e, undefined, element, owner);
+          }
+        }
+      } else if (value.kind === "StructInitializerExpression") {
+        for (const el of value.elements) {
+          const field =
+            typeName === undefined
+              ? undefined
+              : resolveFieldDeclaration(typeName, el.name, ast);
+          if (field !== undefined) {
+            checkValue(
+              el.value,
+              field.type,
+              field.type.name,
+              `${owner}.${el.name}`,
+            );
+          }
+        }
+      } else if (type === undefined || type.arrayDimensions === undefined) {
+        check(value, typeName, owner);
       }
+    };
+    const elementOfName = (name: string): string | undefined => {
+      const def = types.get(name.toUpperCase())?.definition;
+      return def?.kind === "ArrayDefinition" ? def.elementType.name : undefined;
+    };
+    const checkDecl = (decl: VarDeclaration): void => {
+      if (decl.initialValue === undefined) return;
+      checkValue(
+        decl.initialValue,
+        decl.type,
+        decl.type.arrayDimensions === undefined ? decl.type.name : undefined,
+        decl.names.join(", "),
+      );
     };
     for (const type of ast.types) {
       if (type.defaultValue !== undefined) {
-        check(type.defaultValue, type.name, type.name);
+        checkValue(type.defaultValue, undefined, type.name, type.name);
       }
     }
     walkAST(ast, (node) => {
