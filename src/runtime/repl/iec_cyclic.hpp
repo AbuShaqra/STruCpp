@@ -37,9 +37,10 @@ inline void cyclic_signal_handler(int) {
  * Each program executes at its configured task interval.
  * When print_vars is true, variable state is printed every `status_cycles` ticks.
  */
-inline void cyclic_run(ProgramDescriptor* programs, size_t program_count,
-                       bool print_vars = false, int status_cycles = 50) {
-    if (program_count == 0) return;
+/** Runs the tasks until stopped; returns 1 when a task faulted, else 0. */
+inline int cyclic_run(ProgramDescriptor* programs, size_t program_count,
+                      bool print_vars = false, int status_cycles = 50) {
+    if (program_count == 0) return 0;
 
     // Default 0 intervals to 20ms (same as REPL)
     for (size_t i = 0; i < program_count; ++i) {
@@ -65,6 +66,7 @@ inline void cyclic_run(ProgramDescriptor* programs, size_t program_count,
     fflush(stdout);
 
     unsigned long long cycle_count = 0;
+    bool faulted = false;
     auto next_tick = std::chrono::steady_clock::now();
 
     while (g_cyclic_running) {
@@ -76,11 +78,13 @@ inline void cyclic_run(ProgramDescriptor* programs, size_t program_count,
         for (size_t i = 0; i < program_count; ++i) {
             int64_t divisor = programs[i].interval_ns / common_ticktime;
             if (divisor <= 0 || (cycle_count % static_cast<unsigned long long>(divisor)) == 0) {
-                strucpp_set_current_task(programs[i].task);
-                programs[i].instance->run();
-                strucpp_set_current_task(nullptr);
+                if (!run_program_cycle(programs, program_count, i)) faulted = true;
             }
         }
+        // Every task faulted: nothing is left to run
+        bool any_running = false;
+        for (size_t i = 0; i < program_count; ++i) any_running = any_running || !programs[i].stopped;
+        if (!any_running) break;
 
         // Periodic status output (only when --print-vars is passed)
         if (print_vars && status_cycles > 0 && (cycle_count % static_cast<unsigned long long>(status_cycles)) == 0) {
@@ -109,6 +113,7 @@ inline void cyclic_run(ProgramDescriptor* programs, size_t program_count,
 
     fprintf(stdout, "\nStopped after %llu cycles.\n", cycle_count);
     fflush(stdout);
+    return faulted ? 1 : 0;
 }
 
 } // namespace strucpp

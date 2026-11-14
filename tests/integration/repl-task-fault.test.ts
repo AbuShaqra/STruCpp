@@ -54,40 +54,66 @@ describe.skipIf(!(hasGpp && hasCc))(
     });
     afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
-    it("reports the second task when its program divides by zero", () => {
+    const build = (source: string, name: string): string => {
       const pchPath = createPCH(tempDir);
       const isoclineObj = precompileIsocline(tempDir);
-      const result = compile(SOURCE, { headerFileName: "generated.hpp" });
+      const result = compile(source, { headerFileName: "generated.hpp" });
       expect(result.errors).toEqual([]);
       const mainCpp = generateReplMain(result.ast!, result.projectModel!, {
         headerFileName: "generated.hpp",
-        stSource: SOURCE,
+        stSource: source,
         cppCode: result.cppCode,
         headerCode: result.headerCode,
         lineMap: result.lineMap,
         headerLineMap: result.headerLineMap,
       });
-      expect(mainCpp).toMatch(/"OK1",[^\n]*, "FAST"\}/);
-      expect(mainCpp).toMatch(/"BAD1",[^\n]*, "SLOW"\}/);
-      fs.writeFileSync(path.join(tempDir, "generated.hpp"), result.headerCode);
-      const cppPath = path.join(tempDir, "generated.cpp");
-      const mainPath = path.join(tempDir, "main.cpp");
-      const binPath = path.join(tempDir, "repl");
+      const dir = path.join(tempDir, name);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "generated.hpp"), result.headerCode);
+      const cppPath = path.join(dir, "generated.cpp");
+      const mainPath = path.join(dir, "main.cpp");
+      const binPath = path.join(dir, "repl");
       fs.writeFileSync(cppPath, result.cppCode);
       fs.writeFileSync(mainPath, mainCpp);
       execSync(
-        `g++ -std=${CXX_STD} -include "${pchPath}" -I"${RUNTIME_INCLUDE_PATH}" -I"${REPL_PATH}" -I"${tempDir}" "${mainPath}" "${cppPath}" "${isoclineObj}" -o "${binPath}" 2>&1`,
+        `g++ -std=${CXX_STD} -include "${pchPath}" -I"${RUNTIME_INCLUDE_PATH}" -I"${REPL_PATH}" -I"${dir}" "${mainPath}" "${cppPath}" "${isoclineObj}" -o "${binPath}" 2>&1`,
         { encoding: "utf-8", env: cxxEnv },
       );
+      return binPath;
+    };
+
+    it("reports the faulting task, stops it and keeps the others running", () => {
+      const binPath = build(SOURCE, "two");
       const run = spawnSync(binPath, [], {
-        input: "run 1\nquit\n",
+        input: "run 2\nget OK1.N\nquit\n",
         encoding: "utf-8",
         timeout: 10000,
       });
-      expect(run.status).not.toBe(0);
-      expect(`${run.stdout}${run.stderr}`).toContain(
-        "Division by zero in FB, line 4, task SLOW",
+      const out = `${run.stdout}${run.stderr}`;
+      expect(out).toContain("Fault: Division by zero in FB, line 4, task SLOW");
+      expect(out).toContain("Stopped task SLOW");
+      // FAST still ran both cycles, and the session went on to `get`
+      expect(out).toMatch(/OK1\.N : INT = 2/);
+      expect(out).not.toContain("terminate called");
+      expect(run.status).toBe(1);
+    });
+
+    it("ends the cyclic runner with status 1 once every task has faulted", () => {
+      const binPath = build(
+        SOURCE.replace(/TASK Fast[^\n]*\n/, "").replace(
+          /PROGRAM ok1 WITH Fast : Ok;\n/,
+          "",
+        ),
+        "one",
       );
+      const run = spawnSync(binPath, ["--cyclic"], {
+        encoding: "utf-8",
+        timeout: 10000,
+      });
+      const out = `${run.stdout}${run.stderr}`;
+      expect(out).toContain("Fault: Division by zero in FB, line 4, task SLOW");
+      expect(out).not.toContain("terminate called");
+      expect(run.status).toBe(1);
     });
   },
 );
