@@ -310,16 +310,15 @@ function emitProgramDescriptorsAndMain(
   );
   lines.push("    }");
   lines.push("");
+  // The exit status is 1 when a task faulted
   lines.push("    if (cyclic) {");
   lines.push(
-    `        strucpp::cyclic_run(programs, ${programs.length}, print_vars);`,
-  );
-  lines.push("    } else {");
-  lines.push(
-    `        strucpp::repl_run(programs, ${programs.length}, g_st_source, g_cpp_source, g_line_map, g_line_map_count);`,
+    `        return strucpp::cyclic_run(programs, ${programs.length}, print_vars);`,
   );
   lines.push("    }");
-  lines.push("    return 0;");
+  lines.push(
+    `    return strucpp::repl_run(programs, ${programs.length}, g_st_source, g_cpp_source, g_line_map, g_line_map_count);`,
+  );
   lines.push("}");
   lines.push("");
 }

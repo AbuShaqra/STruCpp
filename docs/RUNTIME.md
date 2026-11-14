@@ -312,12 +312,19 @@ IEC arrays use 1-based (or arbitrary-based) indexing. The template parameters en
 
 ## Run-time faults with a site
 
-A fault the compiler can place names where it happened. Integer division by zero (`iec_div`) raises
-`strucpp::IecSiteFault` (a `std::runtime_error`) on a hosted target, with the message
-`Division by zero in <POU>, line <n>, task <task>`, and calls `iec_runtime_fault(IecFault::DivideByZero, ...)`
-on a target without exceptions. The POU and line come from the call site (`strucpp::iec_site{"MAIN", 12}`).
-The task is the one the runtime named on this thread with `strucpp_set_current_task(name)` before running
-it (thread-local under `STRUCPP_THREADED`); it is left out when none is set.
+A fault the compiler can place names where it happened, in one format: `<what> in <POU>, line <n>, task <task>`,
+for example `Division by zero in MAIN, line 12, task FAST`. Integer division by zero (`a / b` and `DIV(a, b)`
+on every integer and bit string type, through `iec_div`) is such a fault. `MOD` by zero is not: it gives 0
+(Table 29, note e).
+
+Every fault goes through `strucpp::iec_raise_fault`, which builds the message in a fixed buffer, with no
+allocation. On a hosted target it throws `strucpp::IecSiteFault` (a `std::runtime_error`, whose `reason()`
+is the `IecFault`); on a target without exceptions it calls `iec_runtime_fault(reason, message)` with the
+same message. The POU and line come from the call site (`strucpp::iec_site{"MAIN", 12}`): the POU is the
+PROGRAM, FUNCTION_BLOCK or FUNCTION, `FB.M` for a METHOD, PROPERTY or ACTION, and the POU whose variable
+it is for an initial value (`VAR_GLOBAL`, or the CONFIGURATION's name, for a global). The task is the one the
+runtime named on this thread with `strucpp_set_current_task(name)` before running it (thread-local under
+`STRUCPP_THREADED`); it is left out when none is set.
 
 A store into a subrange variable goes through `iec_subrange_store`, which raises the same fault
 (`IecFault::Subrange`) with `Value <v> outside <lo>..<hi> stored in <variable>` when the value is outside the range.
@@ -328,6 +335,10 @@ Where the fork dispatches the programs itself, it names the task:
   cycle and clear it after; a program bound to a task in a CONFIGURATION carries that task's name, and a
   program run without a CONFIGURATION carries none;
 - the `--test` runner names each test case as its task, as `TEST '<name>'`.
+
+The REPL and the cyclic runner catch a fault: they print it (`Fault: Division by zero in FB, line 4, task SLOW`),
+stop every program of the faulting task (`Stopped task SLOW`) and keep the other tasks running. The cyclic
+runner ends when no task is left; both exit with status 1 after a fault.
 
 A runtime that runs the generated programs itself (an embedding scheduler, the threaded runtime of a host
 such as OpenPLC) has no dispatcher in the fork. It must call `strucpp::strucpp_set_current_task(name)` on
