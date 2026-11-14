@@ -16,9 +16,10 @@ VAR_IN_OUT n : INT; END_VAR
 n := n + 1; Count := n;
 END_FUNCTION
 PROGRAM Main
-VAR n, r, m : INT; END_VAR
+VAR n, r, m, k, e : INT; ok : BOOL := TRUE; END_VAR
 r := SEL(TRUE, Count(n), 7);
 m := MUX(0, 5, Count(n), Count(n));
+e := SEL(EN := FALSE, G := TRUE, IN0 := Count(k), IN1 := Count(k), ENO => ok);
 END_PROGRAM
 `;
 
@@ -31,7 +32,7 @@ describe.skipIf(!hasGpp)("SEL and MUX evaluate every input — g++ e2e", () => {
   });
   afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
-  it("runs the input not selected too", () => {
+  it("runs the input not selected too, and none with EN := FALSE", () => {
     const result = compile(SOURCE, { headerFileName: "generated.hpp" });
     expect(result.errors).toEqual([]);
     const stdout = compileAndRunStandalone({
@@ -45,11 +46,12 @@ describe.skipIf(!hasGpp)("SEL and MUX evaluate every input — g++ e2e", () => {
 int main() {
     static strucpp::Program_MAIN p;
     p.run();
-    std::cout << p.N.get() << " " << p.R.get() << " " << p.M.get() << std::endl;
+    std::cout << p.N.get() << " " << p.R.get() << " " << p.M.get() << " "
+              << p.K.get() << " " << p.OK.get() << std::endl;
     return 0;
 }
 `,
     });
-    expect(stdout).toBe("3 7 5");
+    expect(stdout).toBe("3 7 5 0 0");
   });
 });
