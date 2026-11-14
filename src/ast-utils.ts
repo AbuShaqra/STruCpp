@@ -107,6 +107,8 @@ export function walkAST(
   if (result === false) return;
 
   for (const child of getChildren(node)) {
+    // A part the parser could not recover (`IF := 1;`) is missing.
+    if (child === undefined || child === null) continue;
     walkAST(child, visitor);
   }
 }

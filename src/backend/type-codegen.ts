@@ -19,6 +19,7 @@ import type {
   VariableExpression,
   BinaryExpression,
   UnaryExpression,
+  FunctionCallExpression,
   ElementaryType,
 } from "../frontend/ast.js";
 import { charLiteralUnits } from "../literal-utils.js";
@@ -29,6 +30,7 @@ import {
   formatIntegerLiteral,
   isComparison,
   isComparisonExpr,
+  literalStringComparison,
   isNonZeroIntegerLiteral,
   literalTemporalType,
   translateIECString,
@@ -87,6 +89,8 @@ export interface TypeCodeGenOptions {
   shadowingNames?: ReadonlySet<string> | undefined;
   /** Whether a type name is an INTERFACE: a field or element of one holds a reference (`IEC_ITF`). */
   isInterfaceType?: ((typeName: string) => boolean) | undefined;
+  /** The C++ of a call in a STRUCT default, as a body would emit it (`INT_TO_REAL(3)` as `TO_REAL(3)`). */
+  callToCpp?: ((call: FunctionCallExpression) => string) | undefined;
 }
 
 /**
@@ -936,7 +940,16 @@ export class TypeCodeGenerator {
             );
           }
         }
-        return `${expr.functionName}()`;
+        // The body's emission maps the name (a conversion, LEN) and its arguments
+        if (this.options.callToCpp !== undefined) {
+          return this.options.callToCpp(expr);
+        }
+        // Positional arguments are kept (`LEN('abc')`)
+        return expr.arguments.some((a) => a.name !== undefined || a.isOutput)
+          ? `${expr.functionName}()`
+          : `${expr.functionName}(${expr.arguments
+              .map((a) => this.expressionToCpp(a.value))
+              .join(", ")})`;
       default:
         return "0";
     }
@@ -1079,6 +1092,8 @@ export class TypeCodeGenerator {
     }
     // Parenthesise a comparison nested in a comparison (a chain).
     if (isComparison(expr.operator)) {
+      const texts = literalStringComparison(expr.left, expr.right, left, right);
+      if (texts !== undefined) return `${texts[0]} ${cppOp} ${texts[1]}`;
       const l = isComparisonExpr(expr.left) ? `(${left})` : left;
       const r = isComparisonExpr(expr.right) ? `(${right})` : right;
       return `${l} ${cppOp} ${r}`;

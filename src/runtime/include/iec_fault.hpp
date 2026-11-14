@@ -39,6 +39,12 @@
 #include <stdexcept>
 #endif
 
+#if defined(__GNUC__)
+#  define STRUCPP_FAULT_PATH __attribute__((noinline, cold))
+#else
+#  define STRUCPP_FAULT_PATH
+#endif
+
 namespace strucpp {
 
 /**
@@ -50,7 +56,35 @@ enum class IecFault : uint8_t {
     NullReference = 0,  ///< Dereferenced a NULL IEC pointer/reference.
     ArrayBounds   = 1,  ///< IEC array index out of bounds.
     BadLocation   = 2,  ///< Invalid located-variable area/size character.
+    DivideByZero  = 3,  ///< Integer division by zero.
 };
+
+/** Where a fault happened: the POU and the line of its source, as compiled. */
+struct iec_site {
+    const char* pou;
+    int line;
+};
+
+/**
+ * The task running on this thread, named in a fault; nullptr outside a task.
+ * A runtime that dispatches tasks sets it with strucpp_set_current_task().
+ */
+#ifdef STRUCPP_THREADED
+inline const char*& iec_current_task_slot() noexcept {
+    static thread_local const char* task = nullptr;
+    return task;
+}
+#else
+inline const char*& iec_current_task_slot() noexcept {
+    static const char* task = nullptr;
+    return task;
+}
+#endif
+
+/** Name the task now running on this thread (nullptr: none). */
+inline void strucpp_set_current_task(const char* name) noexcept {
+    iec_current_task_slot() = name;
+}
 
 /**
  * Unrecoverable-fault handler for targets compiled WITHOUT exceptions — the
@@ -67,6 +101,88 @@ enum class IecFault : uint8_t {
  * @param context optional human-readable context; may be nullptr
  */
 [[noreturn]] void iec_runtime_fault(IecFault reason, const char* context = nullptr) noexcept;
+
+#if STRUCPP_HAS_EXCEPTIONS
+/** A run-time fault at a known site: what happened, the POU, line and task. */
+class IecSiteFault : public std::runtime_error {
+public:
+    IecSiteFault(IecFault reason, const char* message)
+        : std::runtime_error(message), reason_(reason) {}
+    IecFault reason() const noexcept { return reason_; }
+private:
+    IecFault reason_;
+};
+#endif
+
+namespace detail {
+
+/** A fault message in a fixed buffer: no allocation, so a target without exceptions builds it too. */
+class fault_text {
+public:
+    fault_text() noexcept { buf_[0] = '\0'; }
+    fault_text& add(const char* s) noexcept {
+        while (s != nullptr && *s != '\0' && len_ + 1 < sizeof(buf_)) buf_[len_++] = *s++;
+        buf_[len_] = '\0';
+        return *this;
+    }
+    fault_text& add_unsigned(unsigned long long v) noexcept {
+        char digits[24];
+        unsigned n = 0;
+        do {
+            digits[n++] = static_cast<char>('0' + v % 10);
+            v /= 10;
+        } while (v != 0);
+        while (n > 0 && len_ + 1 < sizeof(buf_)) buf_[len_++] = digits[--n];
+        buf_[len_] = '\0';
+        return *this;
+    }
+    fault_text& add_signed(long long v) noexcept {
+        if (v >= 0) return add_unsigned(static_cast<unsigned long long>(v));
+        add("-");
+        return add_unsigned(0ULL - static_cast<unsigned long long>(v));
+    }
+    /** An integer value as written, unsigned ones above 2^63 included. */
+    template<typename T>
+    fault_text& add_number(T v) noexcept {
+        return v < static_cast<T>(0) ? add_signed(static_cast<long long>(v))
+                                     : add_unsigned(static_cast<unsigned long long>(v));
+    }
+    const char* c_str() const noexcept { return buf_; }
+    bool empty() const noexcept { return len_ == 0; }
+    char back() const noexcept { return len_ == 0 ? '\0' : buf_[len_ - 1]; }
+private:
+    char buf_[224];
+    unsigned len_ = 0;
+};
+
+}  // namespace detail
+
+/**
+ * Raise `reason`: `text` (what happened), then " in <POU>, line <n>, task <T>".
+ * A hosted target throws IecSiteFault; one without exceptions passes the same
+ * text to iec_runtime_fault().
+ */
+[[noreturn]] STRUCPP_FAULT_PATH inline void iec_raise_fault(
+    IecFault reason, detail::fault_text& text, iec_site site) {
+    text.add(" in ").add(site.pou != nullptr ? site.pou : "?").add(", line ");
+    text.add_signed(site.line);
+    if (iec_current_task_slot() != nullptr) {
+        text.add(", task ").add(iec_current_task_slot());
+    }
+#if STRUCPP_HAS_EXCEPTIONS
+    throw IecSiteFault(reason, text.c_str());
+#else
+    iec_runtime_fault(reason, text.c_str());
+#endif
+}
+
+/** Raise `reason` at `site`, with `what` describing it ("Division by zero"). */
+[[noreturn]] STRUCPP_FAULT_PATH inline void iec_site_fault(
+    IecFault reason, const char* what, iec_site site) {
+    detail::fault_text text;
+    text.add(what);
+    iec_raise_fault(reason, text, site);
+}
 
 /** An Ed. 3 `s[i]` outside the string's current length (1..LEN). */
 [[noreturn]] inline void iec_string_index_fault() {
