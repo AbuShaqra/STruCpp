@@ -89,7 +89,11 @@ import {
   libraryFunctionDeclaration,
   libraryMethodDeclarations,
 } from "../library/library-methods.js";
-import { TypeCodeGenerator, IEC_TO_CPP_VAR_TYPE } from "./type-codegen.js";
+import {
+  TypeCodeGenerator,
+  IEC_TO_CPP_VAR_TYPE,
+  sizeOfTypeCpp,
+} from "./type-codegen.js";
 import {
   dateArithmeticCpp,
   formatArrayType,
@@ -1033,6 +1037,28 @@ export class CodeGenerator {
         : name;
     }
     return this.typeCodeGen.mapTypeToCpp(name);
+  }
+
+  /**
+   * `SIZEOF(T)` / `XSIZEOF(T)` whose operand the analyzer marked as naming a
+   * type: the size of the type. Undefined for any other operand.
+   */
+  private sizeofTypeOperand(value: Expression): string | undefined {
+    if (value.kind !== "VariableExpression" || value.namesType !== true) {
+      return undefined;
+    }
+    const upper = value.name.toUpperCase();
+    const declared = this.ast?.types.find(
+      (t) => t.name.toUpperCase() === upper,
+    );
+    const classKey =
+      declared?.definition.kind === "StructDefinition"
+        ? "struct"
+        : this.knownFBTypes.has(upper)
+          ? "class"
+          : undefined;
+    // The size of the type itself: no value is built (an ABSTRACT FB has none)
+    return sizeOfTypeCpp(this.mapTypeRefToCpp({ name: value.name }), classKey);
   }
 
   protected mapTypeRefToCpp(typeRef: TypeShape): string {
@@ -7567,6 +7593,13 @@ export class CodeGenerator {
     if (!userFunction && expr.libraryFunction === undefined) {
       // A built-in operator the type checker resolved (__ISVALIDREF, XSIZEOF).
       if (expr.vendorOperator !== undefined && expr.arguments.length === 1) {
+        const sizedType =
+          expr.vendorOperator === "XSIZEOF"
+            ? this.sizeofTypeOperand(expr.arguments[0]!.value)
+            : undefined;
+        if (sizedType !== undefined) {
+          return `static_cast<IEC_ULINT>(${sizedType})`;
+        }
         const kept = this.keepReferenceWrapper;
         this.keepReferenceWrapper = expr.vendorOperator === "__ISVALIDREF";
         let arg: string;
@@ -7640,6 +7673,11 @@ export class CodeGenerator {
 
       // 2. Check for standard function (may have different cppName)
       const stdFunc = this.stdRegistry.lookup(nameUpper);
+      const sizedType =
+        nameUpper === "SIZEOF" && expr.arguments.length === 1
+          ? this.sizeofTypeOperand(expr.arguments[0]!.value)
+          : undefined;
+      if (sizedType !== undefined) return sizedType;
       if (stdFunc) {
         const args = expr.arguments.map((arg, idx) => {
           let generated = this.generateExpression(arg.value);

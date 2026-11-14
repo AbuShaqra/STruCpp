@@ -933,6 +933,8 @@ export interface VariableExpression extends TypedNode {
   enumType?: string;
   /** Set by the type checker on `s[i]`, a character of a STRING or WSTRING. */
   stringElement?: true;
+  /** Set by the analyzer on the operand of `SIZEOF(T)` / `XSIZEOF(T)` when it names a type, not a value in scope. */
+  namesType?: true;
 }
 
 /**
