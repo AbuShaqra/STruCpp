@@ -600,6 +600,24 @@ inline IEC_REF_TO<IEC_Ptr<T>> REF(IEC_Ptr<T>& ptr) noexcept {
 }
 
 /**
+ * The address an ADR, REF or POINTER TO value holds, as an integer: an
+ * address stored in a 64-bit TYPE alias or subrange, which C++ holds as a
+ * plain integer, or a REF stored in any 64-bit integer.
+ */
+template<typename T>
+inline std::uintptr_t address_bits(T* p) noexcept {
+    return reinterpret_cast<std::uintptr_t>(p);
+}
+template<typename T>
+inline std::uintptr_t address_bits(const IEC_REF_TO<T>& r) noexcept {
+    return reinterpret_cast<std::uintptr_t>(r.get());
+}
+template<typename T>
+inline std::uintptr_t address_bits(const IEC_Ptr<T>& p) noexcept {
+    return p.to_addr();
+}
+
+/**
  * REF() of a STRUCT or function block variable, which holds the value itself.
  */
 template<typename T, typename std::enable_if<detail::stored_directly<T>::value, int>::type = 0>
