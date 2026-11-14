@@ -102,7 +102,7 @@ import {
   iecBaseToCppLiteral,
   isComparison,
   isComparisonExpr,
-  literalStringComparison,
+  stringComparisonCpp,
   isNonZeroIntegerLiteral,
   literalTemporalType,
   translateIECString,
@@ -6777,6 +6777,22 @@ export class CodeGenerator {
     ">=": ">=",
   };
 
+  /** A type name through the unit's aliases, upper case. */
+  private stringAliasBase(name: string): string {
+    let upper = name.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const current = upper;
+      const def = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === current,
+      )?.definition;
+      if (def?.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+        return upper;
+      }
+      upper = def.name.toUpperCase();
+    }
+    return upper;
+  }
+
   /**
    * Generate C++ for a binary expression.
    */
@@ -6834,14 +6850,19 @@ export class CodeGenerator {
     // A comparison nested directly in a comparison comes from a chain such
     // as `a < b = c`; parenthesise it so C++ keeps the ST grouping.
     if (isComparison(expr.operator)) {
-      const texts = literalStringComparison(
-        expr.left,
-        expr.right,
-        left,
-        right,
-        expr.operator,
-      );
-      if (texts !== undefined) return `${texts[0]} ${cppOp} ${texts[1]}`;
+      // A POINTER TO or REF_TO STRING compared itself is no text comparison
+      const texts =
+        expr.comparesReferences === true
+          ? undefined
+          : stringComparisonCpp(
+              expr.left,
+              expr.right,
+              left,
+              right,
+              cppOp,
+              (name) => this.stringAliasBase(name),
+            );
+      if (texts !== undefined) return texts;
       const l = isComparisonExpr(expr.left) ? `(${left})` : left;
       const r = isComparisonExpr(expr.right) ? `(${right})` : right;
       return `${l} ${cppOp} ${r}`;
