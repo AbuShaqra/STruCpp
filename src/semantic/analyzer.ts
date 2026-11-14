@@ -1001,6 +1001,8 @@ export class SemanticAnalyzer {
     for (const ifaceName of fb.implements) {
       const required = this.collectInterfaceProperties(ifaceName, ifaceDecls);
       for (const [key, req] of required) {
+        // An unnamed property prototype is refused by the parser already.
+        if (req.name === "") continue;
         const own = provided.get(key);
         if (!own) {
           this.addError(
@@ -3376,7 +3378,8 @@ export class SemanticAnalyzer {
             }),
           );
           for (const reqMethod of requiredMethods) {
-            if (!fbMethodNames.has(reqMethod)) {
+            // An unnamed method prototype is refused by the parser already.
+            if (reqMethod !== "" && !fbMethodNames.has(reqMethod)) {
               this.addError(
                 `FUNCTION_BLOCK '${fb.name}' implements '${ifaceName}' but does not provide method '${reqMethod}'.`,
                 fb.sourceSpan.startLine,
@@ -5094,6 +5097,8 @@ export class SemanticAnalyzer {
 
     // For inline arrays, validate the element type instead
     const nameToCheck = typeRef.elementTypeName ?? typeRef.name;
+    // A name the parser could not read (`ARRAY[0..2] OF ;`) is refused already.
+    if (nameToCheck === "") return;
 
     // A platform type is lowered where its feature is on.
     if (
@@ -5108,8 +5113,10 @@ export class SemanticAnalyzer {
       return;
     }
     if (!this.isKnownType(nameToCheck)) {
+      // A POU the parser left unnamed is not named in the message.
+      const where = context.includes("''") ? "" : context;
       this.addError(
-        `Undefined type '${nameToCheck}'${context ? " in " + context : ""}`,
+        `Undefined type '${nameToCheck}'${where ? " in " + where : ""}`,
         typeRef.sourceSpan.startLine,
         typeRef.sourceSpan.startCol,
         typeRef.sourceSpan.file,
@@ -5164,7 +5171,7 @@ export class SemanticAnalyzer {
       validateVarBlocks(fb.varBlocks, `FUNCTION_BLOCK '${fb.name}'`);
 
       // EXTENDS clause
-      if (fb.extends) {
+      if (fb.extends !== undefined && fb.extends !== "") {
         if (!this.isKnownType(fb.extends)) {
           this.addError(
             `Undefined type '${fb.extends}' in EXTENDS clause of FUNCTION_BLOCK '${fb.name}'`,
@@ -5178,7 +5185,7 @@ export class SemanticAnalyzer {
       // IMPLEMENTS clause
       if (fb.implements) {
         for (const ifaceName of fb.implements) {
-          if (!this.isKnownType(ifaceName)) {
+          if (ifaceName !== "" && !this.isKnownType(ifaceName)) {
             this.addError(
               `Undefined type '${ifaceName}' in IMPLEMENTS clause of FUNCTION_BLOCK '${fb.name}'`,
               fb.sourceSpan.startLine,
@@ -5216,7 +5223,7 @@ export class SemanticAnalyzer {
     for (const iface of ast.interfaces) {
       if (iface.extends) {
         for (const baseName of iface.extends) {
-          if (!this.isKnownType(baseName)) {
+          if (baseName !== "" && !this.isKnownType(baseName)) {
             this.addError(
               `Undefined type '${baseName}' in EXTENDS clause of INTERFACE '${iface.name}'`,
               iface.sourceSpan.startLine,

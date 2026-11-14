@@ -326,9 +326,11 @@ export function getScopeForContext(
 ): Scope | undefined {
   switch (scope.kind) {
     case "method":
+      // A METHOD the parser could not place (unclosed, unnamed) has no owner.
+      if (scope.parentName === undefined) return symbolTables.globalScope;
       return (
-        symbolTables.getMethodScope(scope.parentName!, scope.name) ??
-        symbolTables.getFBScope(scope.parentName!) ??
+        symbolTables.getMethodScope(scope.parentName, scope.name) ??
+        symbolTables.getFBScope(scope.parentName) ??
         symbolTables.globalScope
       );
     case "functionBlock":

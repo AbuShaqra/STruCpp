@@ -912,8 +912,11 @@ export class ProjectModelBuilder {
     for (const instance of resource.programInstances) {
       const instanceDecl = this.processProgramInstance(instance, configName);
 
-      // Validate program type exists
-      if (!this.programs.has(instance.programType.toUpperCase())) {
+      // Validate program type exists (a name the parser could not read is refused already)
+      if (
+        instance.programType !== "" &&
+        !this.programs.has(instance.programType.toUpperCase())
+      ) {
         this.addError(
           `Unknown program type '${instance.programType}' in program instance '${instance.instanceName}'`,
           instance.sourceSpan.startLine,
@@ -938,11 +941,13 @@ export class ProjectModelBuilder {
         const firstTask = tasks[0];
         if (firstTask !== undefined) {
           firstTask.programInstances.push(instanceDecl);
-          this.addWarning(
-            `Program instance '${instance.instanceName}' has no task assignment, assigned to '${firstTask.name}'`,
-            instance.sourceSpan.startLine,
-            instance.sourceSpan.startCol,
-          );
+          if (instance.instanceName !== "") {
+            this.addWarning(
+              `Program instance '${instance.instanceName}' has no task assignment, assigned to '${firstTask.name}'`,
+              instance.sourceSpan.startLine,
+              instance.sourceSpan.startCol,
+            );
+          }
         }
       }
     }

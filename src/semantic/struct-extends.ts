@@ -116,7 +116,8 @@ export function flattenStructExtends(
     const def = decl.definition;
     if (def.kind !== "StructDefinition") return false;
     const base = decl.extends;
-    if (!base) {
+    // A base the parser could not read is refused already: no base.
+    if (!base || base.name === "") {
       ownOrigins(decl, def);
       return true;
     }
