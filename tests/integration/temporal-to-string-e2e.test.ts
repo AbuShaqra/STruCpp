@@ -83,4 +83,42 @@ int main() {
       );
     });
   }
+
+  it("reads its own text back: a negative interval and a fraction of a second", () => {
+    const result = compile(
+      `PROGRAM Main
+VAR t : TIME := T#-1s500ms; lt : LTIME := LTIME#-1d1ns; dt : DT := DT#1969-12-31-23:59:59.5;
+  ldt : LDT := LDT#2000-01-01-00:00:00.000000001; p : TIME := T#1h2m3s4ms;
+  rt, rp : TIME; rl : LTIME; rdt : DT; rldt : LDT; a, b, c, d, e : STRING; END_VAR
+rt := STRING_TO_TIME(TIME_TO_STRING(t)); a := TIME_TO_STRING(rt);
+rl := STRING_TO_LTIME(LTIME_TO_STRING(lt)); b := LTIME_TO_STRING(rl);
+rdt := STRING_TO_DT(DT_TO_STRING(dt)); c := DT_TO_STRING(rdt);
+rldt := STRING_TO_LDT(LDT_TO_STRING(ldt)); d := LDT_TO_STRING(rldt);
+rp := STRING_TO_TIME(TIME_TO_STRING(p)); e := TIME_TO_STRING(rp);
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "temporal_round_trip",
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.A.get().c_str() << "|" << p.B.get().c_str() << "|" << p.C.get().c_str() << "|"
+              << p.D.get().c_str() << "|" << p.E.get().c_str() << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe(
+      "T#-1s500ms|LTIME#-1d1ns|DT#1969-12-31-23:59:59.5|LDT#2000-01-01-00:00:00.000000001|T#1h2m3s4ms",
+    );
+  });
 });

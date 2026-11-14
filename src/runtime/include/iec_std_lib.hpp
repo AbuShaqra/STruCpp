@@ -1042,6 +1042,12 @@ inline const char* skip_literal_prefix(const char* s) noexcept {
 
 inline int64_t parse_time_ns(const char* s) noexcept {
     s = skip_literal_prefix(s);
+    // A sign applies to the whole interval: T#-1s500ms is -1500 ms
+    bool negative = false;
+    if (*s == '-' || *s == '+') {
+        negative = *s == '-';
+        ++s;
+    }
     int64_t total = 0;
     while (*s) {
         char* end = nullptr;
@@ -1061,7 +1067,7 @@ inline int64_t parse_time_ns(const char* s) noexcept {
         else if (u0 == 's') { mult = 1000000000LL; s += 1; }
         total += static_cast<int64_t>(val * static_cast<double>(mult));
     }
-    return total;
+    return negative ? -total : total;
 }
 
 inline void read_int(const char*& s, long long& out) noexcept {
@@ -1110,8 +1116,19 @@ inline int64_t parse_dt_ns(const char* s) noexcept {
     if (*s == '-') { ++s; read_int(s, hh); }
     if (*s == ':') { ++s; read_int(s, mm); }
     if (*s == ':') { ++s; read_int(s, ss); }
+    // A fraction of a second, to the nanosecond: DT#1969-12-31-23:59:59.5
+    long long frac_ns = 0;
+    if (*s == '.') {
+        ++s;
+        long long scale = 100000000LL;
+        while (*s >= '0' && *s <= '9') {
+            frac_ns += (*s - '0') * scale;
+            scale /= 10;
+            ++s;
+        }
+    }
     return days_from_civil(y, mo ? mo : 1, d ? d : 1) * 86400000000000LL +
-           hh * 3600000000000LL + mm * 60000000000LL + ss * 1000000000LL;
+           hh * 3600000000000LL + mm * 60000000000LL + ss * 1000000000LL + frac_ns;
 }
 
 } // namespace iec_strparse
