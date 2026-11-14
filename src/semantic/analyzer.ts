@@ -547,11 +547,12 @@ export class SemanticAnalyzer {
       for (const fb of ast.functionBlocks) {
         for (const m of fb.methods) {
           if (m.name.toUpperCase() !== "FB_EXIT") continue;
+          const at = m.nameSpan ?? m.sourceSpan;
           this.addWarning(
             `FB_exit of '${fb.name}' is never called: an instance is not torn down`,
-            m.sourceSpan.startLine,
-            m.sourceSpan.startCol,
-            m.sourceSpan.file,
+            at.startLine,
+            at.startCol,
+            at.file,
           );
         }
       }

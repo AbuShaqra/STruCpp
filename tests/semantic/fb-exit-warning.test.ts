@@ -4,7 +4,7 @@ import { compile } from "../../src/index.js";
 
 const SOURCE = `FUNCTION_BLOCK FB
 VAR_OUTPUT n : INT; END_VAR
-METHOD FB_exit : BOOL
+METHOD PUBLIC FB_exit : BOOL
 VAR_INPUT bInCopyCode : BOOL; END_VAR
 n := 99; FB_exit := TRUE;
 END_METHOD
@@ -18,7 +18,7 @@ describe("FB_exit", () => {
     const r = compile(SOURCE, { features: ["+fb_init"] });
     expect(r.errors).toEqual([]);
     expect(r.warnings.map((w) => `${w.line}:${w.column} ${w.message}`)).toEqual(
-      ["3:1 FB_exit of 'FB' is never called: an instance is not torn down"],
+      ["3:15 FB_exit of 'FB' is never called: an instance is not torn down"],
     );
   });
 
