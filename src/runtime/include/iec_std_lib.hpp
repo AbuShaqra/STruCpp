@@ -1209,6 +1209,12 @@ inline IECString<254> TO_STRING(const char16_t* src) noexcept {
 inline IECWString<254> TO_WSTRING(const char* src) noexcept {
     return STRING_TO_WSTRING(IECString<254>(src));
 }
+inline IECString<254> TO_STRING(const char* src) noexcept {
+    return IECString<254>(src);
+}
+inline IECWString<254> TO_WSTRING(const char16_t* src) noexcept {
+    return IECWString<254>(src);
+}
 
 // A CHAR is the one-character STRING of it, a WCHAR the one-unit WSTRING.
 inline IECString<254> TO_STRING(CHAR_t c) noexcept {
