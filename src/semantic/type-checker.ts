@@ -75,6 +75,11 @@ import {
   orderGlobals,
 } from "./global-order.js";
 import { stripEnEno, walkAST } from "../ast-utils.js";
+import {
+  addressFit,
+  addressSource,
+  narrowAddressMessage,
+} from "./address-store.js";
 import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
 import { structExtends } from "./struct-extends.js";
 import { bindStdFunctionArguments } from "./std-function-args.js";
@@ -303,11 +308,6 @@ function isAddressOf(expr: Expression): expr is FunctionCallExpression {
     expr.functionName.toUpperCase() === "ADR" &&
     expr.instance === undefined
   );
-}
-
-/** An elementary integer or bit-string type name (not BOOL). */
-function isIntegerOrBitStringName(name: string): boolean {
-  return /^(U?S?INT|U?DINT|U?LINT|BYTE|WORD|DWORD|LWORD)$/i.test(name);
 }
 
 /** An untyped integer literal 0 (`0`, `16#0`), not `INT#0`. */
@@ -539,6 +539,54 @@ export class TypeChecker {
   }
 
   /**
+   * The address stores of a test file's VAR blocks and statements (see
+   * checkAddressStore): initial values, assignments and call arguments.
+   */
+  checkTestAddressStores(
+    varBlocks: readonly VarBlock[],
+    roots: readonly ASTNode[],
+    scope: Scope,
+    ast: CompilationUnit | undefined,
+  ): { errors: CompileError[]; warnings: CompileError[] } {
+    this.errors = [];
+    this.warnings = [];
+    this.ast = ast;
+    for (const block of varBlocks) {
+      for (const decl of block.declarations) {
+        if (decl.initialValue === undefined) continue;
+        if ((decl.type.referenceKind ?? "none") !== "none") continue;
+        this.refuseNarrowAddressNested(decl.type, decl.initialValue);
+      }
+    }
+    for (const root of roots) {
+      walkAST(root, (node) => {
+        if (node.kind === "AssignmentStatement") {
+          const stmt = node as AssignmentStatement;
+          const target = this.resolveExprType(stmt.target, scope);
+          if (
+            this.reachesThroughDereference(stmt.target) ||
+            (this.declaredReferenceShape(stmt.target, scope)?.chain.length ??
+              0) === 0
+          ) {
+            this.checkAddressStore(
+              target !== undefined
+                ? typeNameUtil(target)
+                : this.accessedTypeName(stmt.target, scope),
+              stmt.value,
+            );
+          }
+        } else if (node.kind === "FunctionCallExpression") {
+          this.refuseNarrowAddressArguments(
+            node as FunctionCallExpression,
+            scope,
+          );
+        }
+      });
+    }
+    return { errors: [...this.errors], warnings: [...this.warnings] };
+  }
+
+  /**
    * Check types for a complete compilation unit.
    * Walks all POUs, resolves expression types, and validates type rules.
    */
@@ -549,6 +597,7 @@ export class TypeChecker {
     this.errors = [];
     this.warnings = [];
     this.strictReported.clear();
+    this.addressStoresReported.clear();
     this.ast = ast;
     this.writeTargets = new Set();
     walkAST(ast, (node) => {
@@ -3434,21 +3483,19 @@ export class TypeChecker {
           );
           continue;
         }
-        // An address does not fit an integer narrower than the address width.
-        if (
-          (outerKind ?? "none") === "none" &&
-          isAddressOf(decl.initialValue) &&
-          this.refuseNarrowAddress(decl.type.name, decl.initialValue)
-        ) {
-          continue;
-        }
-        // The same for ADR inside an array literal or structure initializer.
-        if (
-          (outerKind ?? "none") === "none" &&
-          (decl.initialValue.kind === "ArrayLiteralExpression" ||
-            decl.initialValue.kind === "StructInitializerExpression")
-        ) {
-          this.refuseNarrowAddressNested(decl.type, decl.initialValue);
+        // An address stored in an integer, also in an array literal or
+        // structure initializer at any depth.
+        if ((outerKind ?? "none") === "none") {
+          if (
+            decl.initialValue.kind === "ArrayLiteralExpression" ||
+            decl.initialValue.kind === "StructInitializerExpression"
+          ) {
+            this.refuseNarrowAddressNested(decl.type, decl.initialValue);
+          } else if (
+            this.checkAddressStore(decl.type.name, decl.initialValue)
+          ) {
+            continue;
+          }
         }
         // `p : POINTER TO T := ADR(x);` takes an address of any target type.
         if (outerKind === "pointer_to" && isAddressOf(decl.initialValue)) {
@@ -3714,32 +3761,79 @@ export class TypeChecker {
     }
   }
 
+  /** Positions already refused by checkAddressStore (a repeated literal element is one). */
+  private addressStoresReported = new Set<string>();
+
   /**
-   * `ADR(x)` stored in an integer narrower than the 64-bit address width (an
-   * initial value, a FUNCTION or METHOD argument) would lose the address's
-   * high bits. True when it was refused.
+   * The one check of an address (`ADR(x)`, `ADR(x) ± n`, `REF(x)`) stored into
+   * a value of type `typeName`: refused when the type, through aliases and
+   * subranges, is an integer narrower than 64 bits. With pointer_to off, or an
+   * operand that is not a variable, the refusal of the ADR itself is the only
+   * one. True when the store was decided here (refused, or an address into a
+   * 64-bit integer), so the caller adds no other type error.
    */
-  private refuseNarrowAddress(
-    typeName: string,
-    value: FunctionCallExpression,
+  private checkAddressStore(
+    typeName: string | undefined,
+    value: Expression,
   ): boolean {
-    const type = ELEMENTARY_TYPES[typeName.toUpperCase()];
-    if (
-      type === undefined ||
-      !("sizeBits" in type) ||
-      typeof type.sizeBits !== "number" ||
-      type.sizeBits >= 64 ||
-      !isIntegerOrBitStringName(typeName)
-    ) {
-      return false;
+    const source = addressSource(value);
+    if (source === undefined || typeName === undefined) return false;
+    const fit = addressFit(typeName, this.ast?.types ?? []);
+    if (source.op === "ADR" && !this.features.has("pointer_to")) {
+      return fit !== undefined;
     }
+    const span = source.node.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+    if (source.operand?.kind !== "VariableExpression") {
+      if (fit !== undefined && !this.addressStoresReported.has(key)) {
+        this.addressStoresReported.add(key);
+        this.addError(
+          `${source.op}() requires a variable reference, not an expression`,
+          span.startLine,
+          span.startCol,
+          span.file,
+        );
+      }
+      return fit !== undefined;
+    }
+    if (fit === undefined) return false;
+    if (fit === "wide") return true;
+    if (this.addressStoresReported.has(key)) return true;
+    this.addressStoresReported.add(key);
     this.addError(
-      `ADR gives a 64-bit address, which ${typeName.toUpperCase()} cannot hold; use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT`,
-      value.sourceSpan.startLine,
-      value.sourceSpan.startCol,
-      value.sourceSpan.file,
+      narrowAddressMessage(source.op, fit.narrow),
+      span.startLine,
+      span.startCol,
+      span.file,
     );
     return true;
+  }
+
+  /** The declared type a variable access reaches (`pu^`, `s.pu^`), when it is no reference. */
+  private accessedTypeName(
+    target: Expression,
+    scope: Scope,
+  ): string | undefined {
+    if (target.kind !== "VariableExpression") return undefined;
+    const sym = scope.lookup(target.name);
+    const declared =
+      sym?.kind === "variable"
+        ? (sym.declaration as VarDeclaration | undefined)?.type
+        : undefined;
+    if (declared === undefined) return undefined;
+    const reached = resolveAccessType(declared, target, this.accessLookup);
+    return reached !== undefined && (reached.referenceKind ?? "none") === "none"
+      ? reached.name
+      : undefined;
+  }
+
+  /** `p^`, `s.p^`, `p^.x`: a store that reaches through a dereference. */
+  private reachesThroughDereference(target: Expression): boolean {
+    return (
+      target.kind === "VariableExpression" &&
+      (target.isDereference ||
+        target.accessChain?.some((st) => st.kind === "dereference") === true)
+    );
   }
 
   /** The declared result type name when `target` is the bare FUNCTION or METHOD result. */
@@ -3792,8 +3886,8 @@ export class TypeChecker {
         const field = this.lookupMember(type.name, el.name);
         if (field) this.refuseNarrowAddressNested(field.type, el.value);
       }
-    } else if (isAddressOf(value)) {
-      this.refuseNarrowAddress(type.name, value);
+    } else {
+      this.checkAddressStore(type.name, value);
     }
   }
 
@@ -3834,25 +3928,74 @@ export class TypeChecker {
     }
   }
 
-  /** `F(ADR(x))`, `fb.M(ADR(x))` and `fb(d := ADR(x))` into an input narrower than an address. */
+  /**
+   * An address passed to an input (`F(ADR(x))`, `fb.M(ADR(x))`,
+   * `fb(d := ADR(x))`) and a POINTER TO or REF_TO output captured
+   * (`fb(o => u)`), each stored through checkAddressStore's rule.
+   */
   private refuseNarrowAddressArguments(
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
+    const args = stripEnEno(expr.arguments);
     const inputs =
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope);
-    if (!inputs) return;
-    stripEnEno(expr.arguments).forEach((arg, i) => {
-      if (arg.isOutput || !isAddressOf(arg.value)) return;
-      const argName = arg.name?.toUpperCase();
-      const input =
-        argName === undefined
-          ? inputs[i]
-          : inputs.find((p) => p.name.toUpperCase() === argName);
-      if (input === undefined || input.type.referenceKind !== "none") return;
-      this.refuseNarrowAddress(input.type.name, arg.value);
-    });
+    if (inputs) {
+      let positional = 0;
+      for (const arg of args) {
+        if (arg.isOutput) continue;
+        const argName = arg.name?.toUpperCase();
+        const input =
+          argName === undefined
+            ? inputs[positional++]
+            : inputs.find((p) => p.name.toUpperCase() === argName);
+        if (input === undefined) continue;
+        if ((input.type.referenceKind ?? "none") !== "none") continue;
+        this.checkAddressStore(input.type.name, arg.value);
+      }
+    }
+    if (!args.some((a) => a.isOutput) || !this.ast) return;
+    const fbType = this.calledFbType(expr, scope);
+    const outputs =
+      fbType !== undefined
+        ? this.fbOutputsOf(fbType).map((o) => ({
+            name: o.name,
+            kind: o.referenceKind ?? "none",
+          }))
+        : (this.calledFunctionParameters(expr.functionName) ?? [])
+            .filter((p) => p.output)
+            .map((p) => ({
+              name: p.name,
+              kind: p.type.referenceKind ?? "none",
+            }));
+    for (const arg of args) {
+      if (!arg.isOutput || arg.name === undefined) continue;
+      const out = outputs.find(
+        (o) => o.name.toUpperCase() === arg.name!.toUpperCase(),
+      );
+      if (
+        out === undefined ||
+        (out.kind !== "pointer_to" && out.kind !== "ref_to")
+      ) {
+        continue;
+      }
+      const target = this.resolveExprType(arg.value, scope);
+      const fit =
+        target === undefined
+          ? undefined
+          : addressFit(typeNameUtil(target), this.ast.types);
+      if (fit === undefined || fit === "wide") continue;
+      this.addError(
+        narrowAddressMessage(
+          `The output '${out.name.toUpperCase()}'`,
+          fit.narrow,
+        ),
+        arg.value.sourceSpan.startLine,
+        arg.value.sourceSpan.startCol,
+        arg.value.sourceSpan.file,
+      );
+    }
   }
 
   /**
@@ -3947,23 +4090,24 @@ export class TypeChecker {
           );
         }
         this.validateInOutMemberWrite(stmt.target, scope);
-        if (this.isAddressIntoPointer(stmt.target, valueType, scope)) break;
-        if (this.isZeroIntoPointer(stmt.target, stmt.value, scope)) break;
-        // `v := ADR(x)` into an integer narrower than an address (an invalid
-        // ADR operand, or ADR with the feature off, is refused on its own).
+        // An address stored in an integer, also through a dereference (a
+        // POINTER TO or reference target takes it whole).
         if (
-          isAddressOf(stmt.value) &&
-          this.features.has("pointer_to") &&
-          stmt.value.arguments[0]?.value.kind === "VariableExpression" &&
-          this.refuseNarrowAddress(
-            targetType?.typeKind === "elementary"
-              ? (targetType as ElementaryType).name
-              : (this.resultTargetType(stmt.target) ?? ""),
+          (this.reachesThroughDereference(stmt.target) ||
+            (this.declaredReferenceShape(stmt.target, scope)?.chain.length ??
+              0) === 0) &&
+          this.checkAddressStore(
+            targetType !== undefined
+              ? typeNameUtil(targetType)
+              : (this.resultTargetType(stmt.target) ??
+                  this.accessedTypeName(stmt.target, scope)),
             stmt.value,
           )
         ) {
           break;
         }
+        if (this.isAddressIntoPointer(stmt.target, valueType, scope)) break;
+        if (this.isZeroIntoPointer(stmt.target, stmt.value, scope)) break;
         if (this.checkArrayScalarAssignment(stmt.target, stmt.value, scope)) {
           break;
         }
@@ -7520,6 +7664,13 @@ export class TypeChecker {
   ): CallInput[] | undefined {
     const parts = functionName.split(".");
     if (parts.length !== 2) return undefined;
+    // `THIS^.M(...)`: a method of this FB or its bases.
+    if (
+      parts[0]!.toUpperCase() === "THIS" &&
+      this.currentFBName !== undefined
+    ) {
+      return this.methodInputsOf(this.currentFBName, parts[1]!);
+    }
     const sym = scope.lookup(parts[0]!);
     if (sym?.kind === "program" && this.features.has("program_methods")) {
       return this.methodInputsOf(sym.name, parts[1]!);

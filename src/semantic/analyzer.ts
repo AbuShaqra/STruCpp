@@ -6667,9 +6667,16 @@ export class SemanticAnalyzer {
         testFile.setup?.body ?? [],
       );
       this.checkTestOutputBindings(tc.body, testScope, sourceAst);
+      this.checkTestAddressStores(tc.varBlocks, tc.body, testScope, sourceAst);
     }
     if (testFile.setup) {
       this.checkTestOutputBindings(
+        [...testFile.setup.body, ...(testFile.teardown?.body ?? [])],
+        setupScope,
+        sourceAst,
+      );
+      this.checkTestAddressStores(
+        testFile.setup.varBlocks,
         [...testFile.setup.body, ...(testFile.teardown?.body ?? [])],
         setupScope,
         sourceAst,
@@ -6678,6 +6685,29 @@ export class SemanticAnalyzer {
 
     this.testTypeNames.clear();
     return { errors: [...this.errors], warnings: [...this.warnings] };
+  }
+
+  /** Addresses stored in narrow integers in a test's VARs and statements. */
+  private checkTestAddressStores(
+    varBlocks: readonly VarBlock[],
+    stmts: readonly TestStatement[],
+    scope: Scope,
+    sourceAst: CompilationUnit | undefined,
+  ): void {
+    const checker = new TypeChecker(
+      this.symbolTables,
+      this.stdRegistry,
+      false,
+      this.testFileDialect?.features ?? DEFAULT_FEATURES,
+    );
+    const found = checker.checkTestAddressStores(
+      varBlocks,
+      stmts as readonly ASTNode[],
+      scope,
+      sourceAst,
+    );
+    this.errors.push(...found.errors);
+    this.warnings.push(...found.warnings);
   }
 
   /** Output bindings in test bodies: checked as assignments, copied out where needed. */

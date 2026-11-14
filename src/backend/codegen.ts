@@ -94,6 +94,7 @@ import {
   IEC_TO_CPP_VAR_TYPE,
   sizeOfTypeCpp,
 } from "./type-codegen.js";
+import { addressFit, addressSource } from "../semantic/address-store.js";
 import {
   dateArithmeticCpp,
   formatArrayType,
@@ -4626,7 +4627,11 @@ export class CodeGenerator {
     }
 
     const target = this.generateLvalue(stmt.target);
-    const value = this.generateExpression(stmt.value);
+    const value = this.addressIntoAlias(
+      stmt.target,
+      stmt.value,
+      this.generateExpression(stmt.value),
+    );
 
     // For interface-returning methods, convert assignment to result var into return statement
     if (
@@ -4639,6 +4644,41 @@ export class CodeGenerator {
     }
 
     this.emit(`${indent}${target} = ${value};`);
+  }
+
+  /**
+   * An address stored in a variable whose type is a TYPE alias of a 64-bit
+   * integer (`TYPE T_L : LWORD`), held as the plain integer: the address
+   * converted to it. Otherwise `value` unchanged.
+   */
+  private addressIntoAlias(
+    target: Expression,
+    valueExpr: Expression,
+    value: string,
+  ): string {
+    if (
+      target.kind !== "VariableExpression" ||
+      target.fieldAccess.length > 0 ||
+      target.subscripts.length > 0 ||
+      target.isDereference ||
+      (target.accessChain?.length ?? 0) > 0 ||
+      addressSource(valueExpr) === undefined ||
+      !this.ast
+    ) {
+      return value;
+    }
+    const typeName = this.rootVariableType(target.name.toUpperCase());
+    const alias = this.ast.types.find(
+      (t) => t.name.toUpperCase() === typeName?.toUpperCase(),
+    );
+    if (
+      alias === undefined ||
+      alias.definition.kind !== "TypeReference" ||
+      addressFit(alias.name, this.ast.types) !== "wide"
+    ) {
+      return value;
+    }
+    return `static_cast<${alias.name}>(reinterpret_cast<std::uintptr_t>(${value}))`;
   }
 
   /**
@@ -7111,7 +7151,12 @@ export class CodeGenerator {
       ) {
         for (const decl of block.declarations) {
           for (let i = 0; i < decl.names.length; i++) {
-            types.push(decl.type.name.toUpperCase());
+            // A POINTER TO or reference parameter takes no elementary cast.
+            types.push(
+              (decl.type.referenceKind ?? "none") === "none"
+                ? decl.type.name.toUpperCase()
+                : "",
+            );
           }
         }
       }
@@ -7135,7 +7180,7 @@ export class CodeGenerator {
       const argType = this.inferExprType(expr);
       if (!argType) continue;
       const paramType = paramTypes[i]!;
-      if (argType === paramType) continue;
+      if (paramType === "" || argType === paramType) continue;
       // Bare literals (no typePrefix) are untyped — always castable to param type
       if (
         this.isBareLiteral(expr) ||
