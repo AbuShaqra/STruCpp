@@ -345,3 +345,13 @@ describe("two-pass positions (recheck 5)", () => {
     expect([err?.column, err?.endColumn]).toEqual([6, 8]);
   });
 });
+
+describe("two-pass error spans (recheck 6)", () => {
+  it("spans a second-pass error over the refused characters inside it", async () => {
+    const { tokenize } = await import("../../src/frontend/lexer.js");
+    const src = "x := 1 ?\u00e4? 2;";
+    const err = tokenize(src).errors.find((e) => e.message.includes("?"));
+    expect(err?.offset).toBe(src.indexOf("?"));
+    expect(err?.length).toBe(3);
+  });
+});

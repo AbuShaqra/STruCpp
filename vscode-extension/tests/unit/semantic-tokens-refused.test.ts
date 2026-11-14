@@ -42,3 +42,22 @@ describe("names holding refused characters", () => {
     });
   });
 });
+
+describe("names on lines ended by a lone CR", () => {
+  it("keeps an ASCII name's length after a comment holding a CR", () => {
+    const src =
+      "PROGRAM P\nVAR abcdefghijkl : INT; END_VAR\n(* a\rb *) abcdefghijkl := 1;\nEND_PROGRAM\n";
+    const tokens = decode(
+      getSemanticTokens(analyze(src, { fileName: "main.st" }), "main.st", src),
+    );
+    expect(tokens).toContainEqual([3, 5, 12]);
+  });
+
+  it("counts refused characters back in a CR-only file", () => {
+    const src = `PROGRAM P\rVAR\r  x${A}a : INT;\rEND_VAR\rEND_PROGRAM\r`;
+    const tokens = decode(
+      getSemanticTokens(analyze(src, { fileName: "main.st" }), "main.st", src),
+    );
+    expect(tokens).toContainEqual([2, 2, 3]);
+  });
+});

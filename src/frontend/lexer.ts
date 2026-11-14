@@ -1640,6 +1640,9 @@ function lexWithoutRefused<R extends ILexingResult>(
   for (const e of second.errors) {
     const stripped = e.offset;
     e.offset = at[e.offset] ?? e.offset;
+    // The span ends after its last character, refused ones inside it counted.
+    const last = at[stripped + e.length - 1];
+    if (last !== undefined) e.length = last + 1 - e.offset;
     if (e.line !== undefined) e.column = column(e.offset, e.line);
     e.message = e.message.replace(
       `at offset: ${stripped},`,
