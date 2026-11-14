@@ -47,6 +47,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
+#include <new>
 
 // Undefine AVR `<time.h>` macros that collide with common IEC
 // identifiers.  `<chrono>` above pulls in `<ctime>` → `<time.h>`,
@@ -700,6 +701,31 @@ inline IEC_BOOL NE(A a, B b, C c, Rest... rest) noexcept {
 }
 
 // =============================================================================
+// VAR_TEMP reset
+// =============================================================================
+
+/**
+ * Rebuild `x` in place as a fresh object (a VAR_TEMP holding a function block
+ * instance), so a member that refers to another of its members (a POINTER TO
+ * set at construction) refers to `x`'s own, not to a destroyed temporary.
+ */
+template<typename T>
+inline void iec_reset_in_place(T& x) {
+    x.~T();
+    new (&x) T();
+}
+
+/**
+ * Ends `x`'s lifetime and returns its storage, for `new (iec_destroyed(x)) T(init)`:
+ * the initial value is built in that storage, not copied from a temporary.
+ */
+template<typename T>
+inline void* iec_destroyed(T& x) noexcept {
+    x.~T();
+    return static_cast<void*>(&x);
+}
+
+// =============================================================================
 // Bit Shift Functions (ANY_BIT -> ANY_BIT)
 // =============================================================================
 
@@ -1199,6 +1225,21 @@ inline auto TO_WSTRING(const T& src) noexcept -> decltype(STRING_TO_WSTRING(src)
 template<typename T>
 inline auto TO_STRING(const T& src) noexcept -> decltype(WSTRING_TO_STRING(src)) {
     return WSTRING_TO_STRING(src);
+}
+
+// A WSTRING or STRING literal (a C++ string literal) converts as its text,
+// not as a pointer taken for a BOOL.
+inline IECString<254> TO_STRING(const char16_t* src) noexcept {
+    return WSTRING_TO_STRING(IECWString<254>(src));
+}
+inline IECWString<254> TO_WSTRING(const char* src) noexcept {
+    return STRING_TO_WSTRING(IECString<254>(src));
+}
+inline IECString<254> TO_STRING(const char* src) noexcept {
+    return IECString<254>(src);
+}
+inline IECWString<254> TO_WSTRING(const char16_t* src) noexcept {
+    return IECWString<254>(src);
 }
 
 // A CHAR is the one-character STRING of it, a WCHAR the one-unit WSTRING.
