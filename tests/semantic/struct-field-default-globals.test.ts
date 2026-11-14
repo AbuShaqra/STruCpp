@@ -33,7 +33,9 @@ TYPE ST : STRUCT a : INT := K * 2; b : INT := a; END_STRUCT END_TYPE`),
           { ...options, headerFileName: "generated.hpp" },
         );
         expect(before.errors).toEqual([]);
-        expect(before.headerCode).toContain("IEC_INT A = (4) * 2;");
+        expect(before.headerCode).toContain(
+          "IEC_INT A = static_cast<IEC_INT>(4) * 2;",
+        );
         expect(before.headerCode).toContain("IEC_INT B = A;");
         const after = compile(
           program(`TYPE ST : STRUCT a : INT := K + J; END_STRUCT END_TYPE
@@ -41,7 +43,9 @@ VAR_GLOBAL CONSTANT K : INT := J * 2; J : INT := 3; END_VAR`),
           { ...options, headerFileName: "generated.hpp" },
         );
         expect(after.errors).toEqual([]);
-        expect(after.headerCode).toContain("IEC_INT A = ((3) * 2) + (3);");
+        expect(after.headerCode).toContain(
+          "IEC_INT A = static_cast<IEC_INT>(static_cast<IEC_INT>(3) * 2) + static_cast<IEC_INT>(3);",
+        );
       });
 
       it("refuses a global variable", () => {
@@ -108,6 +112,8 @@ TYPE ST : STRUCT r : REFERENCE TO INT := REF(G); END_STRUCT END_TYPE`),
       },
     );
     expect(result.errors).toEqual([]);
-    expect(result.headerCode).toContain("IEC_INT A = (41) + 1;");
+    expect(result.headerCode).toContain(
+      "IEC_INT A = static_cast<IEC_INT>(41) + 1;",
+    );
   });
 });
