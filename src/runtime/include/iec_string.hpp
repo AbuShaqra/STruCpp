@@ -869,9 +869,12 @@ inline IECString<254> TO_STRING(T v) noexcept {
     return IECString<254>(buf);
 }
 
-// BOOL → STRING
+// BOOL → STRING; a plain bool (the literal TRUE) too, ahead of the integral template
 inline IECString<254> TO_STRING(IECVar<bool> v) noexcept {
     return IECString<254>(iec_unwrap(v) ? "TRUE" : "FALSE");
+}
+inline IECString<254> TO_STRING(bool v) noexcept {
+    return IECString<254>(v ? "TRUE" : "FALSE");
 }
 
 // IECString → STRING (identity / cross-size copy)

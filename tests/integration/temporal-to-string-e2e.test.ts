@@ -16,10 +16,11 @@ VAR t : TIME := T#1h2m3s4ms; lt : LTIME := LTIME#1d2h; d : DATE := D#2024-03-05;
   dt : DT := DT#2024-03-05-12:34:56; b : BOOL := TRUE; ld : LDATE := LDATE#2024-03-05; z : TIME := T#0s;
   ng : TIME := T#-1500ms; ltod : LTOD := LTOD#01:02:03.000456; ldt : LDT := LDT#2000-01-01-00:00:00.5;
   old : DATE := D#1969-12-31;
-  s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12 : STRING; END_VAR
+  s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15 : STRING; END_VAR
 s1 := TIME_TO_STRING(t); s2 := LTIME_TO_STRING(lt); s3 := DATE_TO_STRING(d); s4 := TOD_TO_STRING(tod);
 s5 := DT_TO_STRING(dt); s6 := BOOL_TO_STRING(b); s7 := LDATE_TO_STRING(ld); s8 := TIME_TO_STRING(z);
 s9 := TO_STRING(ng); s10 := LTOD_TO_STRING(ltod); s11 := LDT_TO_STRING(ldt); s12 := DATE_TO_STRING(old);
+s13 := BOOL_TO_STRING(TRUE); s14 := TO_STRING(FALSE); s15 := TIME_TO_STRING(T#1h2m3s4ms);
 END_PROGRAM
 `;
 
@@ -56,6 +57,9 @@ describe.skipIf(!hasGpp)("date and time to STRING — g++ e2e", () => {
         "S10",
         "S11",
         "S12",
+        "S13",
+        "S14",
+        "S15",
       ];
       const stdout = compileAndRunStandalone({
         tempDir,
@@ -75,7 +79,7 @@ int main() {
 `,
       });
       expect(stdout).toBe(
-        "T#1h2m3s4ms|LTIME#1d2h|D#2024-03-05|TOD#12:34:56.789|DT#2024-03-05-12:34:56|TRUE|LDATE#2024-03-05|T#0ms|T#-1s500ms|LTOD#01:02:03.000456|LDT#2000-01-01-00:00:00.5|D#1969-12-31|",
+        "T#1h2m3s4ms|LTIME#1d2h|D#2024-03-05|TOD#12:34:56.789|DT#2024-03-05-12:34:56|TRUE|LDATE#2024-03-05|T#0ms|T#-1s500ms|LTOD#01:02:03.000456|LDT#2000-01-01-00:00:00.5|D#1969-12-31|TRUE|FALSE|T#1h2m3s4ms|",
       );
     });
   }
