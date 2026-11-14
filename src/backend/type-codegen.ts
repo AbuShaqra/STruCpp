@@ -1075,6 +1075,10 @@ export class TypeCodeGenerator {
     const cppOp = opMap[expr.operator] ?? expr.operator;
     // AND/OR/XOR are bitwise, as in a POU body (BOOL operands included).
     if (["AND", "OR", "XOR"].includes(expr.operator)) {
+      if (expr.computeAs !== undefined) {
+        const t = `${expr.computeAs}_t`;
+        return `static_cast<${t}>(${left}) ${cppOp} static_cast<${t}>(${right})`;
+      }
       return `(${left}) ${cppOp} (${right})`;
     }
     // Parenthesise a comparison nested in a comparison (a chain).

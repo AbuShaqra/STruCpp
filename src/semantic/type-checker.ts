@@ -1824,6 +1824,7 @@ export class TypeChecker {
     // Logical operators return BOOL
     else if (["AND", "OR", "XOR"].includes(expr.operator)) {
       this.refuseIntegerBitwise(expr, leftType, rightType);
+      delete expr.computeAs;
       // Untyped constants only: typed by context, as before (BOOL here)
       // An untyped constant takes the type of the other operand when that is
       // an integer or a bit string (BOOL included); otherwise as before
@@ -1840,6 +1841,14 @@ export class TypeChecker {
             ? leftType
             : (this.bitwiseResultType(leftType, rightType) ??
               ELEMENTARY_TYPES["BOOL"]);
+      // Mixed signedness: C++ computes in the widened type, not by its promotion
+      const widened =
+        this.isIntegerType(leftType) && this.isIntegerType(rightType)
+          ? this.mixedSignCommonType(leftType, rightType)
+          : undefined;
+      if (widened !== undefined && type === widened) {
+        expr.computeAs = (widened as ElementaryType).name.toUpperCase();
+      }
       const names = [leftType, rightType].map((t) =>
         t.typeKind === "elementary"
           ? this.aliasBase((t as ElementaryType).name)

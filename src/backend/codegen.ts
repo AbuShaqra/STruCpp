@@ -6536,6 +6536,10 @@ export class CodeGenerator {
       expr.operator === "OR" ||
       expr.operator === "XOR"
     ) {
+      if (expr.computeAs !== undefined) {
+        const t = `${expr.computeAs}_t`;
+        return `static_cast<${t}>(${left}) ${cppOp} static_cast<${t}>(${right})`;
+      }
       return `(${left}) ${cppOp} (${right})`;
     }
 
