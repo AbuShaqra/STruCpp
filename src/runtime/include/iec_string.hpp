@@ -581,6 +581,36 @@ inline bool operator>(const IECStringVar<Len1>& a, const IECString<Len2>& b) noe
     return b < a;
 }
 
+template<size_t Len1, size_t Len2>
+inline bool operator<=(const IECStringVar<Len1>& a, const IECStringVar<Len2>& b) noexcept {
+    return !(b < a);
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator<=(const IECString<Len1>& a, const IECStringVar<Len2>& b) noexcept {
+    return !(b < a);
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator<=(const IECStringVar<Len1>& a, const IECString<Len2>& b) noexcept {
+    return !(b < a);
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator>=(const IECStringVar<Len1>& a, const IECStringVar<Len2>& b) noexcept {
+    return !(a < b);
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator>=(const IECString<Len1>& a, const IECStringVar<Len2>& b) noexcept {
+    return !(a < b);
+}
+
+template<size_t Len1, size_t Len2>
+inline bool operator>=(const IECStringVar<Len1>& a, const IECString<Len2>& b) noexcept {
+    return !(a < b);
+}
+
 // Non-template alias for codegen: IEC_STRING = IECStringVar<254>
 // For parameterized STRING(N), codegen emits IECStringVar<N> directly
 using IEC_STRING = IECStringVar<254>;

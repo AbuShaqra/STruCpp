@@ -28,6 +28,8 @@ interface Globals {
   variables: Set<string>;
   /** Upper-case names of the global variable lists. */
   lists: Set<string>;
+  /** Upper-case names of the unit's FUNCTIONs. */
+  functions: Set<string>;
 }
 
 function collect(blocks: readonly VarBlock[], into: Globals): void {
@@ -99,6 +101,19 @@ class Folder {
           right: this.fold(expr.right, field),
         };
       case "FunctionCallExpression":
+        // A FUNCTION call is no constant expression (its body runs at run time)
+        if (this.globals.functions.has(expr.functionName.toUpperCase())) {
+          this.errors.push({
+            message: `The default of STRUCT field '${field}' must be a constant expression: '${expr.functionName}' is a FUNCTION call`,
+            line: expr.sourceSpan.startLine,
+            column: expr.sourceSpan.startCol,
+            severity: "error",
+            ...(expr.sourceSpan.file !== undefined
+              ? { file: expr.sourceSpan.file }
+              : {}),
+          });
+          return expr;
+        }
         return {
           ...expr,
           arguments: expr.arguments.map((a) => ({
@@ -198,6 +213,7 @@ export function foldStructFieldDefaults(
     constants: new Map(),
     variables: new Set(),
     lists: new Set(),
+    functions: new Set(unit.functions.map((f) => f.name.toUpperCase())),
   };
   collect(unit.globalVarBlocks, globals);
   for (const config of unit.configurations) collect(config.varBlocks, globals);
