@@ -3417,6 +3417,7 @@ export class TypeChecker {
           this.checkFbInitArguments(decl, argumentScope);
         }
         if (!decl.initialValue) continue;
+        if (this.refuseInOutInInitialValue(blocks, decl, scope)) continue;
         const outerKind = decl.type.referenceKind;
         if (
           (outerKind === "ref_to" || outerKind === "pointer_to") &&
@@ -3521,6 +3522,39 @@ export class TypeChecker {
       value.sourceSpan.startLine,
       value.sourceSpan.startCol,
       value.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /**
+   * An FB member's initial value is evaluated when the FB is created, before
+   * any call binds its VAR_IN_OUT: one that reads or addresses it is refused
+   * (`REF(io)` is refused by checkReferenceToInitializer). True when refused.
+   */
+  private refuseInOutInInitialValue(
+    blocks: readonly VarBlock[],
+    decl: VarDeclaration,
+    scope: Scope,
+  ): boolean {
+    const value = decl.initialValue;
+    if (value === undefined || value.kind === "RefExpression") return false;
+    const fb = this.ast?.functionBlocks.find(
+      (f) => f.name.toUpperCase() === this.currentFBName?.toUpperCase(),
+    );
+    if (fb === undefined || fb.varBlocks !== blocks) return false;
+    let found: VariableExpression | undefined;
+    walkAST(value, (node) => {
+      if (found !== undefined || node.kind !== "VariableExpression") return;
+      const v = node as VariableExpression;
+      const sym = scope.lookup(v.name);
+      if (sym?.kind === "variable" && sym.isInOut) found = v;
+    });
+    if (found === undefined) return false;
+    this.addError(
+      `The initial value of '${(decl.names[0] ?? "").toUpperCase()}' cannot use the VAR_IN_OUT '${found.name.toUpperCase()}': it is bound only by a call; assign it in the body`,
+      found.sourceSpan.startLine,
+      found.sourceSpan.startCol,
+      found.sourceSpan.file,
     );
     return true;
   }
@@ -5235,7 +5269,20 @@ export class TypeChecker {
       !this.findUserFunction(name) &&
       args.length > 0
     ) {
-      this.refuseBitMember(args[0]!.value, `${name}() cannot take`, scope);
+      const operand = args[0]!.value;
+      if (
+        operand.kind === "VariableExpression" &&
+        scope.lookup(operand.name)?.kind === "constant"
+      ) {
+        this.addError(
+          `${name}() cannot take the constant '${operand.name.toUpperCase()}': a constant has no storage to write through`,
+          operand.sourceSpan.startLine,
+          operand.sourceSpan.startCol,
+          operand.sourceSpan.file,
+        );
+        return;
+      }
+      this.refuseBitMember(operand, `${name}() cannot take`, scope);
       return;
     }
     const inputs =

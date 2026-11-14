@@ -181,6 +181,27 @@ ${prog("FB_PP")}`,
     ).toEqual(["13", "23", "12"]);
   });
 
+  it("rebinds a member typed by a REFERENCE TO alias in a copy (recheck 3 #6)", () => {
+    expect(
+      run(
+        `TYPE T_R : REFERENCE TO INT; END_TYPE
+TYPE T_R2 : T_R; END_TYPE
+FUNCTION_BLOCK FB
+VAR_INPUT y : INT := 3; END_VAR
+VAR r : T_R := REF(y); r2 : T_R2 := REF(y); END_VAR
+r := r + 10;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR a, b : FB; fa : ARRAY[0..1] OF FB := [(y := 1), (y := 2)]; END_VAR
+a(); b := a; b(); fa[1]();
+END_PROGRAM
+`,
+        "cfgrev_alias_copy",
+        `Program_MAIN m; m.run(); ${["m.A.Y.get()", "m.B.Y.get()", "m.FA.at(1).Y.get()", "&m.B.R2.target() == &m.B.Y"].map(p).join(" ")}`,
+      ),
+    ).toEqual(["13", "23", "12", "1"]);
+  });
+
   it("reads an FB's VAR_EXTERNAL in its initial values (recheck #2)", () => {
     expect(
       run(
@@ -373,5 +394,36 @@ END_CONFIGURATION
       },
     );
     expect(r.errors).toEqual([]);
+  });
+});
+
+describe("initial values: recheck 3 refusals", () => {
+  it("refuses an FB initial value that reads or addresses its VAR_IN_OUT (#7)", () => {
+    expect(
+      errors(`FUNCTION_BLOCK FB_A
+VAR_IN_OUT io : INT; END_VAR
+VAR p : POINTER TO INT := ADR(io); v : INT := io + 1; END_VAR
+END_FUNCTION_BLOCK
+PROGRAM Main VAR fb : FB_A; v : INT := 3; END_VAR fb(io := v); END_PROGRAM
+`),
+    ).toEqual([
+      "3:31: The initial value of 'P' cannot use the VAR_IN_OUT 'IO': it is bound only by a call; assign it in the body",
+      "3:47: The initial value of 'V' cannot use the VAR_IN_OUT 'IO': it is bound only by a call; assign it in the body",
+    ]);
+  });
+
+  it("refuses ADR of a constant, as an initial value and in a body (#8)", () => {
+    expect(
+      errors(`PROGRAM MAIN
+VAR CONSTANT k : INT := 3; END_VAR
+VAR p : POINTER TO INT := ADR(k); p2 : POINTER TO INT; x : INT; END_VAR
+p2 := ADR(k);
+p^ := 7; x := k;
+END_PROGRAM
+`),
+    ).toEqual([
+      "3:31: ADR() cannot take the constant 'K': a constant has no storage to write through",
+      "4:11: ADR() cannot take the constant 'K': a constant has no storage to write through",
+    ]);
   });
 });

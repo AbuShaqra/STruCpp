@@ -2670,6 +2670,7 @@ export class CodeGenerator {
         // A pointer or reference at any level, or an ARRAY OF POINTER TO.
         const levels = [
           kind,
+          ...this.aliasReferenceLevels(decl.type.name),
           ...(decl.type.referenceChain ?? []),
           ...(decl.type.arrayDimensions !== undefined
             ? (decl.type.elementReferenceChain ?? [])
@@ -9977,6 +9978,25 @@ export class CodeGenerator {
       stTypeName,
       this.getStructInitEmitter(),
     );
+  }
+
+  /** The reference levels a TYPE alias (through aliases) adds: `T_R : REFERENCE TO INT`. */
+  private aliasReferenceLevels(name: string | undefined): string[] {
+    let upper = name?.toUpperCase();
+    for (
+      let depth = 0;
+      depth < 16 && upper !== undefined && this.ast;
+      depth++
+    ) {
+      const def = this.ast.types.find(
+        (t) => t.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference") return [];
+      const kind = def.referenceKind ?? "none";
+      if (kind !== "none") return [kind, ...(def.referenceChain ?? [])];
+      upper = def.name.toUpperCase();
+    }
+    return [];
   }
 
   /** A TYPE alias (through aliases) of a REFERENCE TO. */
