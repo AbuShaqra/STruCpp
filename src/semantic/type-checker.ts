@@ -80,7 +80,10 @@ import { structExtends } from "./struct-extends.js";
 import { bindStdFunctionArguments } from "./std-function-args.js";
 import { STD_FUNCTIONS_LIBRARY } from "../library/library-manifest.js";
 import { libraryOverloadFor } from "./library-overload.js";
-import { charLiteralUnits } from "../literal-utils.js";
+import {
+  charLiteralUnits,
+  exactIntegerLiteralValue,
+} from "../literal-utils.js";
 import {
   vendorOperatorArgumentError,
   vendorOperatorFeature,
@@ -1793,6 +1796,9 @@ export class TypeChecker {
       return this.inferCharBinaryType(expr, leftType, rightType);
     }
 
+    if (expr.operator === "+" || expr.operator === "-") {
+      this.refuseMisalignedPointerMove(expr, scope);
+    }
     if (this.strict && STRICT_ARITHMETIC_OPS.has(expr.operator)) {
       this.checkStrictArithmetic(expr, leftType, rightType);
     }
@@ -1952,6 +1958,49 @@ export class TypeChecker {
       );
       return;
     }
+  }
+
+  /**
+   * `p + n` / `p - n` moves a POINTER TO by n bytes: by a constant that is not
+   * a multiple of the size of the type it points to, a dereference would be a
+   * misaligned access, so it is refused.
+   */
+  private refuseMisalignedPointerMove(
+    expr: BinaryExpression,
+    scope: Scope,
+  ): void {
+    const left = expr.left;
+    if (
+      left.kind !== "VariableExpression" ||
+      left.isDereference ||
+      left.fieldAccess.length > 0 ||
+      left.subscripts.length > 0 ||
+      (left.accessChain?.length ?? 0) > 0
+    ) {
+      return;
+    }
+    const symbol = scope.lookup(left.name);
+    const declared =
+      symbol?.kind === "variable" ? symbol.declaration?.type : undefined;
+    if (declared?.referenceKind !== "pointer_to") return;
+    const name = declared.name.toUpperCase();
+    const bits = ELEMENTARY_TYPES[name]?.sizeBits;
+    if (bits === undefined) return;
+    const size = BigInt(Math.max(1, Math.floor(bits / 8)));
+    const right = expr.right;
+    const bytes =
+      right.kind === "LiteralExpression" &&
+      right.literalType === "INT" &&
+      !right.rawValue.includes("#")
+        ? exactIntegerLiteralValue(right.rawValue)
+        : undefined;
+    if (size <= 1n || bytes === undefined || bytes % size === 0n) return;
+    this.addError(
+      `Moving a POINTER TO ${name} by ${bytes} byte(s) would make its dereference misaligned; move it by a multiple of ${size} bytes`,
+      expr.right.sourceSpan.startLine,
+      expr.right.sourceSpan.startCol,
+      expr.right.sourceSpan.file,
+    );
   }
 
   /**

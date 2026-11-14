@@ -329,8 +329,17 @@ public:
 Supports CODESYS-style `POINTER TO` declarations with dereference via `^` operator.
 
 Pointer arithmetic counts bytes, as on a PLC: `p + n` and `p - n` move the address by `n` bytes
-whatever the pointer's target type is (`p + 2` on a `POINTER TO INT` is the next INT, not the third),
-and so does `ADR(x) + n` (emitted as `strucpp::iec_addr_offset(&(x), n)`).
+whatever the pointer's target type is (`p + 2` on a `POINTER TO INT` is the next INT, not the third).
+So does every `+` / `-` of a chain that holds `ADR(x)`, parenthesised or not, stored into a POINTER TO,
+an LWORD or any other target: it is computed on the address as an integer (`strucpp::iec_byte_addr`,
+`strucpp::iec_byte_offset`) and converted back to the address's type, so `ADR(a) + 2 + 2` is 4 bytes
+after `a`. `ADR(a) - ADR(b)` is the signed count of bytes between them.
+
+A dereference needs the address aligned for its target type: the access through a pointer is a plain
+C++ access, which is undefined behaviour when misaligned (x86 tolerates it; a strict-alignment target
+faults). Moving a POINTER TO a multi-byte elementary type by a constant that is not a multiple of its
+size is therefore an error (`Moving a POINTER TO DINT by 1 byte(s) would make its dereference
+misaligned; move it by a multiple of 4 bytes`); an offset known only at run time is not checked.
 
 ### REF_TO and REFERENCE_TO (`iec_ptr.hpp`)
 

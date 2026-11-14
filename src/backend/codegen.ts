@@ -1061,6 +1061,70 @@ export class CodeGenerator {
     return sizeOfTypeCpp(this.mapTypeRefToCpp({ name: value.name }), classKey);
   }
 
+  /** `ADR(x)` of the standard function, not a user FUNCTION of that name. */
+  private isAdrCall(e: Expression): e is FunctionCallExpression {
+    return (
+      e.kind === "FunctionCallExpression" &&
+      e.functionName.toUpperCase() === "ADR" &&
+      e.libraryFunction === undefined &&
+      this.ast?.functions.some((f) => f.name.toUpperCase() === "ADR") !== true
+    );
+  }
+
+  /**
+   * A + / - chain holding ADR(x) terms, computed in bytes: the address as an
+   * integer (`iec_byte_addr`), every other operand a byte offset. With one
+   * address left over, the total is that address's pointer type again; with none
+   * (`ADR(a) - ADR(b)`), it is the signed count of bytes. Undefined when the
+   * chain holds no ADR, or adds addresses together.
+   */
+  private adrArithmetic(expr: BinaryExpression): string | undefined {
+    if (!this.holdsAdrTerm(expr)) return undefined;
+    let net = 0;
+    let proto: string | undefined;
+    const render = (e: Expression, sign: number): string => {
+      if (this.isAdrCall(e)) {
+        const address = this.generateExpression(e);
+        net += sign;
+        if (sign > 0 && proto === undefined) proto = address;
+        return `strucpp::iec_byte_addr(${address})`;
+      }
+      if (e.kind === "ParenthesizedExpression" && this.holdsAdrTerm(e)) {
+        return `(${render(e.expression, sign)})`;
+      }
+      if (
+        e.kind === "BinaryExpression" &&
+        (e.operator === "+" || e.operator === "-") &&
+        this.holdsAdrTerm(e)
+      ) {
+        const left = render(e.left, sign);
+        const right = render(e.right, e.operator === "-" ? -sign : sign);
+        return `${left} ${e.operator} ${right}`;
+      }
+      return `strucpp::iec_byte_offset(${this.generateExpression(e)})`;
+    };
+    const total = render(expr, 1);
+    if (net === 1 && proto !== undefined) {
+      // decltype: the address is not evaluated a second time
+      return `reinterpret_cast<decltype(${proto})>(${total})`;
+    }
+    if (net === 0) return `static_cast<std::intptr_t>(${total})`;
+    return undefined;
+  }
+
+  /** An ADR(x) term of a + / - chain, through parentheses. */
+  private holdsAdrTerm(e: Expression): boolean {
+    if (this.isAdrCall(e)) return true;
+    if (e.kind === "ParenthesizedExpression") {
+      return this.holdsAdrTerm(e.expression);
+    }
+    return (
+      e.kind === "BinaryExpression" &&
+      (e.operator === "+" || e.operator === "-") &&
+      (this.holdsAdrTerm(e.left) || this.holdsAdrTerm(e.right))
+    );
+  }
+
   protected mapTypeRefToCpp(typeRef: TypeShape): string {
     let baseType: string;
 
@@ -6547,19 +6611,10 @@ export class CodeGenerator {
       return `${l} ${cppOp} ${r}`;
     }
 
-    // `ADR(x) + n`: an address moves by bytes, as on a PLC
-    const isAdr = (e: Expression): boolean =>
-      e.kind === "FunctionCallExpression" &&
-      e.functionName.toUpperCase() === "ADR" &&
-      e.libraryFunction === undefined &&
-      this.ast?.functions.some((f) => f.name.toUpperCase() === "ADR") !== true;
+    // ADR arithmetic counts bytes, as on a PLC, through the whole + / - chain
     if (expr.operator === "+" || expr.operator === "-") {
-      if (isAdr(expr.left)) {
-        return `strucpp::iec_addr_offset(${left}, ${expr.operator === "-" ? "-" : ""}(${right}))`;
-      }
-      if (expr.operator === "+" && isAdr(expr.right)) {
-        return `strucpp::iec_addr_offset(${right}, (${left}))`;
-      }
+      const bytes = this.adrArithmetic(expr);
+      if (bytes !== undefined) return bytes;
     }
 
     // MOD by a divisor that may be 0 gives 0 (Table 29, note e)

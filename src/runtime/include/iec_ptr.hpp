@@ -147,8 +147,8 @@ public:
     }
     void* get_void() const noexcept { return ptr_; }
 
-    // Pointer arithmetic counts bytes, as on a PLC (`p + 2` moves 2 bytes,
-    // whatever T is). Use templates to directly match any arithmetic type,
+    // Pointer arithmetic counts bytes, as on a PLC: `p + 2` moves 2 bytes,
+    // whatever T is. Use templates to directly match any arithmetic type,
     // avoiding ambiguity with the integral conversion operator.
     template<typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
     IEC_Ptr operator+(N n) const noexcept {
@@ -304,12 +304,20 @@ bool operator!=(std::nullptr_t, IEC_Ptr<T> p) noexcept { return p != nullptr; }
 template<typename T>
 IEC_Ptr<T> operator+(std::ptrdiff_t n, IEC_Ptr<T> p) noexcept { return p + n; }
 
-/** `ADR(x) + n`: the address `n` bytes after `p`, as a PLC adds to an address. */
-template<typename T, typename N>
-inline T* iec_addr_offset(T* p, N n) noexcept {
-    return reinterpret_cast<T*>(
-        reinterpret_cast<char*>(const_cast<std::remove_const_t<T>*>(p)) +
-        static_cast<std::ptrdiff_t>(n));
+// ADR arithmetic counts bytes, as on a PLC: `ADR(x) + 2 + 2` is 4 bytes after x,
+// `ADR(a) - ADR(b)` the bytes between them. The code generator works on the
+// address as an integer and converts the total back.
+
+/** An address, as a count of bytes. */
+template<typename T>
+inline std::uintptr_t iec_byte_addr(T* p) noexcept {
+    return reinterpret_cast<std::uintptr_t>(p);
+}
+
+/** A byte offset added to or taken from an address. */
+template<typename N>
+inline std::uintptr_t iec_byte_offset(const N& n) noexcept {
+    return static_cast<std::uintptr_t>(static_cast<std::intptr_t>(n));
 }
 
 } // namespace strucpp
