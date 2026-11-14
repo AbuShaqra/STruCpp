@@ -326,15 +326,6 @@ it is for an initial value (`VAR_GLOBAL`, or the CONFIGURATION's name, for a glo
 runtime named on this thread with `strucpp_set_current_task(name)` before running it (thread-local under
 `STRUCPP_THREADED`); it is left out when none is set.
 
-A store into a subrange variable goes through `iec_subrange_store`, which raises the same fault
-(`IecFault::Subrange`) with `Value <v> outside <lo>..<hi> stored in <variable>` when the value is outside the range,
-each number as written (a ULINT above 2^63 too). Every store is checked: an assignment (to a local, a member, a
-FUNCTION or METHOD result, a global, a CONFIGURATION global through VAR_EXTERNAL, an ARRAY element, a STRUCT
-field), an FB input passed at the call (`f(i := v)`), an output or in-out copied back (`f(o => x)`). A FUNCTION or
-METHOD input is checked on entry, so its fault names the callee and the line of its VAR_INPUT. An integer literal
-inside the range is stored with no check. Defining `STRUCPP_NO_BOUNDS_CHECK` leaves the check out, as it does the
-index check.
-
 Where the fork dispatches the programs itself, it names the task:
 
 - the REPL and the cyclic runner (`repl_run`, `cyclic_run`) set the task of each program before its
@@ -351,6 +342,15 @@ such as OpenPLC) has no dispatcher in the fork. It must call `strucpp::strucpp_s
 the thread that runs a task, before that task's programs run in each cycle, and
 `strucpp::strucpp_set_current_task(nullptr)` after them. The name is not copied: pass a string that
 outlives the call, such as a literal.
+
+A store into a subrange variable goes through `iec_subrange_store`, which raises the same fault
+(`IecFault::Subrange`) with `Value <v> outside <lo>..<hi> stored in <variable>` when the value is outside the range,
+each number as written (a ULINT above 2^63 too). Every store is checked: an assignment (to a local, a member, a
+FUNCTION or METHOD result, a global, a CONFIGURATION global through VAR_EXTERNAL, an ARRAY element, a STRUCT
+field), an output or in-out copied back (`f(o => x)`). An input of a FUNCTION_BLOCK, FUNCTION or METHOD is
+checked on entry, so its fault names the callee and the line of its VAR_INPUT. An integer literal
+inside the range is stored with no check. Defining `STRUCPP_NO_BOUNDS_CHECK` leaves the check out, as it does the
+index check.
 
 ## Pointer and Reference Types
 

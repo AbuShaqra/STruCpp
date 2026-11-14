@@ -126,7 +126,7 @@ int main() {
 
   it("checks FB inputs and outputs, FUNCTION inputs and results, globals; qualifies the bounds; compares ULINT exactly", () => {
     expect(runPaths("subrange_paths", [])).toEqual([
-      "1 Value 42 outside 0..10 stored in I in MAIN, line 20, task T",
+      "1 Value 42 outside 0..10 stored in I in FB, line 4, task T",
       "2 Value 42 outside 0..10 stored in X in MAIN, line 21, task T",
       "3 Value 42 outside 0..10 stored in FR in FR, line 10, task T",
       "4 Value 42 outside 0..10 stored in A in FI, line 13, task T",

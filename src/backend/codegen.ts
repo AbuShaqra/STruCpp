@@ -3395,6 +3395,7 @@ export class CodeGenerator {
       this.emit("    if (__mocked_) { __mock_state_.call_count++; return; }");
     }
     this.enterScope(fb.varBlocks);
+    this.emitSubrangeInputChecks(fb.varBlocks);
     if (fb.body.length > 0) {
       this.generateStatements(fb.body);
     } else if (this.options.sourceComments) {
@@ -4826,22 +4827,23 @@ export class CodeGenerator {
   }
 
   /**
-   * A VAR_INPUT of a subrange type, checked on entry to the FUNCTION or METHOD:
-   * the caller stored its argument into it.
+   * A VAR_INPUT of a subrange type, checked on entry to the FUNCTION, METHOD or
+   * FUNCTION_BLOCK: the caller stored its argument into it.
    */
   private emitSubrangeInputChecks(blocks: readonly VarBlock[]): void {
     for (const block of blocks) {
       if (block.blockType !== "VAR_INPUT") continue;
       for (const decl of block.declarations) {
         for (const name of decl.names) {
+          const member = this.localCppName(name);
           const checked = this.subrangeChecked(
             decl.type,
-            name,
+            member,
             undefined,
             name,
             decl,
           );
-          if (checked !== undefined) this.emit(`    ${name} = ${checked};`);
+          if (checked !== undefined) this.emit(`    ${member} = ${checked};`);
         }
       }
     }
@@ -9872,13 +9874,9 @@ export class CodeGenerator {
     const inout = this.fbInoutParams.get(fbTypeName.toUpperCase());
     if (inout?.has(paramName.toUpperCase()) === true) return generated;
     const field = this.accessLookup.field(fbTypeName, paramName);
-    if (field?.type.referenceKind === "reference_to") {
-      return `ref_bind(${generated})`;
-    }
-    return (
-      this.subrangeChecked(field?.type, generated, value, paramName, value) ??
-      generated
-    );
+    return field?.type.referenceKind === "reference_to"
+      ? `ref_bind(${generated})`
+      : generated;
   }
 
   /**
