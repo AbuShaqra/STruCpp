@@ -919,6 +919,27 @@ export class TypeCodeGenerator {
           const arg = expr.arguments[0]!.value;
           return this.notToCpp(arg, `(${this.expressionToCpp(arg)})`);
         }
+        {
+          // SIZEOF(T) / XSIZEOF(T) of a type: its size, as in a body
+          const name = expr.functionName.toUpperCase();
+          const arg = expr.arguments[0]?.value;
+          if (
+            (name === "SIZEOF" || name === "XSIZEOF") &&
+            expr.arguments.length === 1 &&
+            arg?.kind === "VariableExpression" &&
+            arg.namesType === true
+          ) {
+            const declared = this.typesByName.get(arg.name.toUpperCase());
+            return sizeOfTypeCpp(
+              this.options.isInterfaceType?.(arg.name) === true
+                ? `IEC_ITF<${arg.name}>`
+                : this.mapTypeToCpp(arg.name),
+              declared?.definition.kind === "StructDefinition"
+                ? "struct"
+                : undefined,
+            );
+          }
+        }
         // The body's emission maps the name (a conversion, LEN) and its arguments
         if (this.options.callToCpp !== undefined) {
           return this.options.callToCpp(expr);
@@ -1180,4 +1201,25 @@ export function generateTypeCode(
 ): string {
   const generator = new TypeCodeGenerator(options);
   return generator.generateFromRegistry(registry);
+}
+
+/**
+ * `iec_size_of_type<T>::value`, with `T` spelt so that no member, FUNCTION,
+ * METHOD or ACTION of the same name hides it. `classKey` names a STRUCT
+ * (`struct`) or a FUNCTION_BLOCK (`class`).
+ */
+export function sizeOfTypeCpp(
+  cppType: string,
+  classKey: "struct" | "class" | undefined,
+): string {
+  const itf = /^IEC_ITF<(\w+)>$/.exec(cppType);
+  const spelt =
+    itf !== null
+      ? `::strucpp::IEC_ITF<class ::strucpp::${itf[1]}>`
+      : classKey !== undefined
+        ? `${classKey} ::strucpp::${cppType}`
+        : /^\w+$/.test(cppType)
+          ? `::strucpp::${cppType}`
+          : cppType;
+  return `strucpp::iec_size_of_type<${spelt}>::value`;
 }
