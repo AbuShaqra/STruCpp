@@ -466,11 +466,26 @@ describe("refusal text per entry point", () => {
 });
 
 describe("length-changing upper case before a directive", () => {
-  it("keeps the active statement after the directive", () => {
+  it("refuses such a character in a name, at its column", () => {
     const src = [
       "PROGRAM Main",
       "VAR",
       "  maß : INT := 5;",
+      "END_VAR",
+      "END_PROGRAM",
+      "",
+    ].join("\n");
+    const r = compile(src, { features: ["+conditional_pragmas"] });
+    expect(r.errors.map((e) => `${e.line}:${e.column}: ${e.message}`)).toEqual([
+      "3:5: 'ß' (U+00DF) is not allowed in a name: identifiers use A–Z, digits and _",
+    ]);
+  });
+
+  it("keeps the active statement after the directive", () => {
+    const src = [
+      "PROGRAM Main",
+      "{info maß ﬁ}",
+      "VAR",
       "  x : INT;",
       "  y : INT;",
       "END_VAR",

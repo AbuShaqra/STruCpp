@@ -25,6 +25,7 @@
 #include "isocline.h"
 #include <string>
 #include <cstring>
+#include <exception>
 #include <cstdlib>
 #include <cstdio>
 #include <cinttypes>
@@ -71,7 +72,37 @@ struct ProgramDescriptor {
     VarDescriptor* vars;
     size_t var_count;
     int64_t interval_ns;  // Task interval in nanoseconds (0 = default 20ms)
+    const char* task = nullptr;  // The task that runs it, named in a run-time fault
+    bool stopped = false;        // Its task faulted: it no longer runs
 };
+
+/**
+ * Run program `i` for one cycle of its task. A run-time fault is caught and
+ * reported, and every program of that task is stopped, as a PLC stops a
+ * faulted task; the other tasks keep running. Returns false on a fault.
+ */
+inline bool run_program_cycle(ProgramDescriptor* programs, size_t count, size_t i) {
+    ProgramDescriptor& prog = programs[i];
+    if (prog.stopped) return true;
+    strucpp_set_current_task(prog.task);
+    try {
+        prog.instance->run();
+    } catch (const std::exception& e) {
+        strucpp_set_current_task(nullptr);
+        for (size_t k = 0; k < count; ++k) {
+            const bool same_task = prog.task != nullptr && programs[k].task != nullptr &&
+                                   std::strcmp(programs[k].task, prog.task) == 0;
+            if (k == i || same_task) programs[k].stopped = true;
+        }
+        fprintf(stdout, "Fault: %s\n", e.what());
+        fprintf(stdout, "Stopped %s %s\n", prog.task != nullptr ? "task" : "program",
+                prog.task != nullptr ? prog.task : prog.name);
+        fflush(stdout);
+        return false;
+    }
+    strucpp_set_current_task(nullptr);
+    return true;
+}
 
 struct STLineMap {
     int st_line;
@@ -672,11 +703,12 @@ inline int64_t repl_gcd(int64_t a, int64_t b) {
 // REPL Entry Point
 // =============================================================================
 
-inline void repl_run(ProgramDescriptor* programs, size_t program_count,
-                     const char* st_source = nullptr,
-                     const char* cpp_source = nullptr,
-                     const STLineMap* line_map = nullptr,
-                     size_t line_map_count = 0) {
+/** Runs the REPL; returns 1 when a task faulted, else 0. */
+inline int repl_run(ProgramDescriptor* programs, size_t program_count,
+                    const char* st_source = nullptr,
+                    const char* cpp_source = nullptr,
+                    const STLineMap* line_map = nullptr,
+                    size_t line_map_count = 0) {
     // Resolve default intervals and calculate common tick time
     constexpr int64_t DEFAULT_INTERVAL_NS = 20000000LL; // 20ms
     for (size_t i = 0; i < program_count; ++i) {
@@ -754,6 +786,7 @@ inline void repl_run(ProgramDescriptor* programs, size_t program_count,
     ic_println("");
 
     unsigned long long cycle_count = 0;
+    bool faulted = false;
 
     while (true) {
         // Build prompt with cycle count
@@ -836,7 +869,7 @@ inline void repl_run(ProgramDescriptor* programs, size_t program_count,
                 for (size_t i = 0; i < program_count; ++i) {
                     int64_t divisor = programs[i].interval_ns / common_ticktime;
                     if (divisor <= 0 || (cycle_count % static_cast<unsigned long long>(divisor)) == 0) {
-                        programs[i].instance->run();
+                        if (!run_program_cycle(programs, program_count, i)) faulted = true;
                     }
                 }
                 cycle_count++;
@@ -1089,6 +1122,7 @@ inline void repl_run(ProgramDescriptor* programs, size_t program_count,
     }
 
     g_comp_state = nullptr;
+    return faulted ? 1 : 0;
 }
 
 } // namespace strucpp
