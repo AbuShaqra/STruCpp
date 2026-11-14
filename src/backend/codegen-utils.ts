@@ -47,7 +47,7 @@ export function isNonZeroIntegerLiteral(expr: Expression): boolean {
  * A comparison with a STRING (or WSTRING) literal: each literal emitted
  * wrapped as a string value, so C++ compares the text, not pointers. Two
  * literals, or a literal and an operand of the same string type (for `=` and
- * `<>` only when that operand is no plain variable, which already compares).
+ * `<>` only a literal on the left of an operand that is no plain variable).
  * Undefined for any other comparison.
  */
 export function literalStringComparison(
@@ -86,9 +86,11 @@ export function literalStringComparison(
   if (kind === undefined) return undefined;
   const other = lk !== undefined ? right : left;
   if (stringKindOf(other) !== kind) return undefined;
+  // `=` / `<>` with the literal on the right, or against a variable, already
+  // compares the text
   if (
     (operator === "=" || operator === "<>") &&
-    other.kind === "VariableExpression"
+    (rk !== undefined || other.kind === "VariableExpression")
   ) {
     return undefined;
   }
