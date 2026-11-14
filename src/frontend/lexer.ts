@@ -733,7 +733,7 @@ export const DirectAddress = createToken({
 /**
  * A name's characters: A–Z, a–z, digits and _, and any non-ASCII character
  * but whitespace, so a word holding one lexes as one Identifier and each such
- * character is then refused by name (see nameLetterErrors).
+ * character is then refused by name (see collectRefused).
  */
 /** Control characters a character class names as range ends (not written literally). */
 const TAB = String.fromCharCode(0x09);
@@ -743,7 +743,7 @@ const CR = String.fromCharCode(0x0d);
  * A name's characters: A–Z, a–z, digits and _, and any other character but
  * whitespace and ASCII punctuation (non-ASCII, and control characters), so a
  * word holding one lexes as one Identifier and each such character is then
- * refused (see nameLetterErrors).
+ * refused (see collectRefused).
  */
 export const Identifier = createToken({
   name: "Identifier",
@@ -1517,43 +1517,46 @@ function refused(ch: string): boolean {
   return code >= 0x7f || code < 0x20;
 }
 
-/** The keyword token a whole word lexes as, if any. */
-function keywordToken(word: string): IToken | undefined {
-  const lexed = STLexer.tokenize(word);
-  const only = lexed.tokens[0];
-  return lexed.errors.length === 0 &&
-    lexed.tokens.length === 1 &&
-    only !== undefined &&
-    only.tokenType !== Identifier &&
-    only.image === word
-    ? only
-    : undefined;
+/** The refusals of one lexing pass, and the code-unit ranges they remove. */
+interface Refusals {
+  errors: ILexingError[];
+  ranges: Array<[number, number]>;
 }
 
 /**
- * A name allows A–Z, digits and _ only. For each Identifier holding other
- * characters: each grapheme cluster holding one is refused once, at its
- * first character, quoted with its base (a mark glued to the token before
- * takes that token's last character); the refused characters are stripped
- * from the image, positions kept. Nothing left drops the token; a keyword
- * before the first refused character (`END_IFäx`) is split off as that
- * keyword, the rest staying a name.
+ * A name allows A–Z, digits and _ only. Every grapheme cluster of an
+ * Identifier holding another character (non-ASCII, or a control) is refused
+ * once, at its first character, quoted with its base (a mark glued to the
+ * token before takes that token's last character); a character the lexer
+ * skipped is refused the same way. Returns the refusals and the ranges of
+ * the refused characters, which the second pass lexes without.
  */
-function nameLetterErrors(
+function collectRefused(
   result: { tokens: IToken[]; errors: ILexingError[] },
   source: string,
-): void {
+): Refusals {
+  const errors: ILexingError[] = [];
+  const ranges: Array<[number, number]> = [];
+  const refuseRange = (from: number, to: number): void => {
+    for (let k = from; k < to; ) {
+      const ch = String.fromCodePoint(source.codePointAt(k) ?? 0);
+      if (refused(ch)) ranges.push([k, k + ch.length]);
+      k += ch.length;
+    }
+  };
   for (const error of result.errors) {
     const ch = String.fromCodePoint(source.codePointAt(error.offset) ?? 0);
     if (error.offset < source.length && refused(ch) && !/^\s$/.test(ch)) {
       const cluster = clusters(source, error.offset, error.offset + ch.length);
-      error.message = nameLetterMessage(cluster[0]?.text ?? ch);
+      errors.push({
+        ...error,
+        message: nameLetterMessage(cluster[0]?.text ?? ch),
+      });
+      ranges.push([error.offset, error.offset + ch.length]);
     }
   }
-  const kept: IToken[] = [];
   for (const token of result.tokens) {
     if (token.tokenType !== Identifier || /^\w*$/.test(token.image)) {
-      kept.push(token);
       continue;
     }
     const start = token.startOffset;
@@ -1570,7 +1573,7 @@ function nameLetterErrors(
         : 0;
     for (const c of clusters(source, start - back, end)) {
       if (![...c.text].some(refused)) continue;
-      result.errors.push({
+      errors.push({
         offset: c.offset,
         line: token.startLine,
         column: startCol + (c.offset - start),
@@ -1578,36 +1581,65 @@ function nameLetterErrors(
         message: nameLetterMessage(c.text),
       });
     }
-    // The image without the refused characters, and where the first one was.
-    let stripped = "";
-    let firstRefused = -1;
-    for (const ch of token.image) {
-      if (refused(ch)) {
-        if (firstRefused < 0) firstRefused = stripped.length;
-      } else {
-        stripped += ch;
-      }
-    }
-    if (stripped === "") continue;
-    const keyword =
-      firstRefused > 0
-        ? keywordToken(stripped.slice(0, firstRefused))
-        : undefined;
-    if (keyword === undefined) {
-      kept.push({ ...token, image: stripped });
-      continue;
-    }
-    kept.push({
-      ...token,
-      image: keyword.image,
-      tokenType: keyword.tokenType,
-      tokenTypeIdx: keyword.tokenTypeIdx,
-    });
-    const rest = stripped.slice(firstRefused);
-    if (rest !== "") kept.push({ ...token, image: rest });
+    refuseRange(start, end);
   }
-  result.tokens = kept;
-  result.errors.sort((a, b) => a.offset - b.offset);
+  ranges.sort((a, b) => a[0] - b[0]);
+  return { errors, ranges };
+}
+
+/**
+ * Lexes `source` as if its refused characters were not there: a first pass
+ * finds and refuses them, a second lexes the text without them, its tokens
+ * and errors mapped back to the source's offsets, lines and columns.
+ */
+function lexWithoutRefused<R extends ILexingResult>(
+  source: string,
+  lexOnce: (text: string) => R,
+): R {
+  const first = lexOnce(source);
+  const refusals = collectRefused(first, source);
+  if (refusals.ranges.length === 0) return first;
+  // The text without the refused characters; at[i] is the source offset of
+  // its i-th code unit (at[length] the end).
+  let text = "";
+  const at: number[] = [];
+  let k = 0;
+  for (const [from, to] of refusals.ranges) {
+    if (from < k) continue;
+    text += source.slice(k, from);
+    for (let i = k; i < from; i++) at.push(i);
+    k = to;
+  }
+  text += source.slice(k);
+  for (let i = k; i < source.length; i++) at.push(i);
+  at.push(source.length);
+  const lineStart: number[] = [0];
+  for (let i = 0; i < source.length; i++) {
+    if (source.charCodeAt(i) === 0x0a) lineStart.push(i + 1);
+  }
+  const column = (offset: number, line: number | undefined): number =>
+    offset - (lineStart[(line ?? 1) - 1] ?? 0) + 1;
+  const second = lexOnce(text);
+  const move = (t: IToken): void => {
+    const end = t.endOffset;
+    t.startOffset = at[t.startOffset] ?? t.startOffset;
+    t.startColumn = column(t.startOffset, t.startLine);
+    if (end !== undefined) {
+      t.endOffset = at[end] ?? end;
+      t.endColumn = column(t.endOffset, t.endLine);
+    }
+  };
+  for (const t of second.tokens) move(t);
+  for (const group of Object.values(second.groups)) {
+    for (const t of group) move(t);
+  }
+  for (const e of second.errors) {
+    e.offset = at[e.offset] ?? e.offset;
+    if (e.line !== undefined) e.column = column(e.offset, e.line);
+  }
+  second.errors.push(...refusals.errors);
+  second.errors.sort((a, b) => a.offset - b.offset);
+  return second;
 }
 
 /**
@@ -1617,13 +1649,21 @@ function nameLetterErrors(
  * @returns Lexer result with tokens and any lexing errors
  */
 export function tokenize(source: string): ReturnType<typeof STLexer.tokenize> {
+  return lexWithoutRefused(source, (text) => lexOnce(text, STLexer));
+}
+
+/** One lexing pass: upper-cased copy, unclosed comments, pragma checks. */
+function lexOnce(
+  source: string,
+  lexer: typeof STLexer,
+): ReturnType<typeof STLexer.tokenize> {
   // Normalize to uppercase for case-insensitive matching (preserves string/comment contents)
   const upperSource = uppercaseSource(source);
 
   // Check for unclosed block comments first
   const unclosedComment = findUnclosedBlockComment(upperSource);
 
-  const result = STLexer.tokenize(upperSource);
+  const result = lexer.tokenize(upperSource);
 
   if (unclosedComment) {
     result.errors.push({
@@ -1636,7 +1676,6 @@ export function tokenize(source: string): ReturnType<typeof STLexer.tokenize> {
   }
 
   checkPragmas(result, source, upperSource);
-  nameLetterErrors(result, source);
   return result;
 }
 
@@ -1650,24 +1689,5 @@ export function tokenize(source: string): ReturnType<typeof STLexer.tokenize> {
 export function tokenizeTest(
   source: string,
 ): ReturnType<typeof TestLexer.tokenize> {
-  // Normalize to uppercase for case-insensitive matching (preserves string/comment contents)
-  const upperSource = uppercaseSource(source);
-
-  const unclosedComment = findUnclosedBlockComment(upperSource);
-
-  const result = TestLexer.tokenize(upperSource);
-
-  if (unclosedComment) {
-    result.errors.push({
-      offset: unclosedComment.offset,
-      line: unclosedComment.line,
-      column: unclosedComment.column,
-      length: 2,
-      message: "Unclosed block comment",
-    });
-  }
-
-  checkPragmas(result, source, upperSource);
-  nameLetterErrors(result, source);
-  return result;
+  return lexWithoutRefused(source, (text) => lexOnce(text, TestLexer));
 }

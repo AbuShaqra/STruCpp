@@ -233,13 +233,21 @@ describe("names: one rule for refused characters (recheck 3)", () => {
   it("keeps the ASCII letters after a refused run (#2, #6)", () => {
     expect(body("x := 1;äy := qq;")).toEqual([msg("3:8", "ä"), und(14)]);
     expect(body("x := 1 +äy; y := qq;")).toEqual([msg("3:9", "ä"), und(18)]);
-    expect(body("IF TRUE THEN x := 1; END_IFäx := qq;")).toEqual([
-      msg("3:28", "ä"),
-      und(34),
+    // Without the refused character END_IF and x join: one undeclared name.
+    expect(body("END_IFäx := qq;")).toEqual([
+      msg("3:7", "ä"),
+      "3:1: Undeclared variable 'END_IFX'",
+      und(13),
     ]);
     expect(body("x :=äb;")).toEqual([msg("3:5", "ä")]);
     expect(body("x := ABS(äb);")).toEqual([msg("3:10", "ä")]);
-    expect(body("x := b ANDäc;")).toEqual([msg("3:11", "ä")]);
+    // Without the refused character AND and c join into the name ANDC.
+    expect(body("x := b ANDäc;")).toEqual([
+      msg("3:11", "ä"),
+      "3:8: Expected `Semicolon`, found identifier `ANDC`.",
+      "3:8: Unexpected identifier `ANDC` after identifier `B` while parsing a statement.",
+      "3:8: Expected `END_PROGRAM`, found identifier `ANDC`.",
+    ]);
   });
 
   it("names the variable without the refused character (#3)", () => {
@@ -262,5 +270,51 @@ describe("names: one rule for refused characters (recheck 3)", () => {
     expect(
       errors("PROGRAM P\nVAR x : INT; END_VAR\nx := 1;\nEND_PROGRAḾ"),
     ).toEqual([msg("4:11", "Ḿ")]);
+  });
+});
+
+describe("names: lexed as if the refused characters were not there (recheck 4)", () => {
+  const msg = (at: string, ch: string): string =>
+    `${at}: ${nameText(ch)} is not allowed in a name: identifiers use A–Z, digits and _`;
+  const checked = (src: string): string[] =>
+    analyze(src).errors.map((e) => `${e.line}:${e.column}: ${e.message}`);
+  const body = (stmt: string): string[] =>
+    checked(
+      `PROGRAM P\nVAR x : INT; y : INT; r : REAL; t : TIME; b : INT; END_VAR\n${stmt}\nEND_PROGRAM\n`,
+    );
+
+  it("lexes a keyword split by a refused character as the keyword (#1)", () => {
+    expect(body("IäF TRUE THEN x := 1; END_IF;")).toEqual([msg("3:2", "ä")]);
+    expect(body("IF TRUE THEN x := 1; ENDä_IF;")).toEqual([msg("3:25", "ä")]);
+    expect(body("x := b MäOD 2;")).toEqual([msg("3:9", "ä")]);
+  });
+
+  it("lexes a literal split by a refused character as the literal (#2)", () => {
+    expect(body("x := 1ä2;")).toEqual([msg("3:7", "ä")]);
+    expect(body("x := 16#FäF;")).toEqual([msg("3:10", "ä")]);
+    expect(body("r := 1.ä5;")).toEqual([msg("3:8", "ä")]);
+    expect(body("t := T#1äs;")).toEqual([msg("3:9", "ä")]);
+    expect(body("x := äb;")).toEqual([msg("3:6", "ä")]);
+  });
+
+  it("gives a name after the refused character its own column (#3, #6)", () => {
+    expect(body("IF TRUE THEN x := 1; END_IF; äqq := 2;")).toEqual([
+      msg("3:30", "ä"),
+      "3:31: Undeclared variable 'QQ'",
+    ]);
+  });
+
+  it("lexes the digits left after a refused character as a number (#7)", () => {
+    expect(body("x := ä1;")).toEqual([msg("3:6", "ä")]);
+    expect(body("x := INT#ä5; y := 2;")).toEqual([msg("3:10", "ä")]);
+  });
+
+  it("re-lexes a test file with the test lexer (#4)", async () => {
+    const { tokenizeTest } = await import("../../src/frontend/lexer.js");
+    const r = tokenizeTest("TEST 't'\n  x := 1;\nEND_TESTä\n");
+    expect(r.errors.map((e) => e.message)).toEqual([
+      `${nameText("ä")} is not allowed in a name: identifiers use A–Z, digits and _`,
+    ]);
+    expect(r.tokens.map((t) => t.tokenType.name)).toContain("END_TEST");
   });
 });
