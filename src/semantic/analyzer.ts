@@ -6561,7 +6561,8 @@ export class SemanticAnalyzer {
       return;
     }
 
-    // 7. Not found
+    // 7. Not found (a name the parser could not read is refused already)
+    if (name === "") return;
     this.addError(
       `Undeclared variable '${name}'`,
       sourceSpan.startLine,
