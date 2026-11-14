@@ -5427,7 +5427,10 @@ export class CodeGenerator {
     } finally {
       this.keepReferenceWrapper = false;
     }
-    const source = this.addressedOperand(stmt.source, "REF=", stmt);
+    // Bound from another REFERENCE TO: the reference itself, unchecked
+    const source = this.refWrapper(
+      this.addressedOperand(stmt.source, "REF=", stmt),
+    );
     const targetKind =
       stmt.target.kind === "VariableExpression"
         ? this.refAssignTargetKind(stmt.target)
@@ -6263,7 +6266,16 @@ export class CodeGenerator {
       // A REFERENCE TO read or written: its target, an unbound one a fault
       return this.refTarget(result, expr.name, expr);
     }
-    return this.renderAccessTail(result, expr, nameUpper);
+    const rendered = this.renderAccessTail(result, expr, nameUpper);
+    // A REFERENCE TO reached as a member, an element or another FB's input
+    if (!this.keepReferenceWrapper && this.accessEndsInReference(expr)) {
+      return this.refTarget(
+        rendered,
+        [expr.name, ...expr.fieldAccess].join("."),
+        expr,
+      );
+    }
+    return rendered;
   }
 
   /**
@@ -6342,6 +6354,19 @@ export class CodeGenerator {
 
   /** Set while a REF= target is generated: it names the reference itself. */
   private keepReferenceWrapper = false;
+
+  /** `s.r`, `a[i]`, `f.r`: an access that ends in a REFERENCE TO member or element. */
+  private accessEndsInReference(expr: VariableExpression): boolean {
+    const hasAccess =
+      expr.fieldAccess.length > 0 ||
+      expr.subscripts.length > 0 ||
+      (expr.accessChain?.length ?? 0) > 0;
+    if (!hasAccess || expr.isDereference) return false;
+    const root = this.currentScopeVarTypeRefs.get(expr.name.toUpperCase());
+    if (root === undefined) return false;
+    const type = resolveAccessType(root, expr, this.accessLookup);
+    return type?.referenceKind === "reference_to";
+  }
 
   /** `rr`, a REFERENCE TO variable of the scope, with no access. */
   private isPlainReference(expr: VariableExpression): boolean {
@@ -6525,7 +6550,7 @@ export class CodeGenerator {
 
     // Dereference (^ operator): a NULL pointer is a fault naming the site
     if (expr.isDereference) {
-      result = `strucpp::iec_deref(${result}, ${this.faultSite(expr)})`;
+      result = `(*strucpp::iec_deref(${result}, ${this.faultSite(expr)}))`;
     }
 
     return result;
@@ -6643,7 +6668,7 @@ export class CodeGenerator {
           // A NULL pointer is a fault naming the site
           result =
             site !== undefined
-              ? `strucpp::iec_deref(${result}, ${this.faultSite(site)})`
+              ? `(*strucpp::iec_deref(${result}, ${this.faultSite(site)}))`
               : `(*${result})`;
           break;
         }
@@ -7787,7 +7812,10 @@ export class CodeGenerator {
           return `static_cast<IEC_ULINT>(${sizedType})`;
         }
         const kept = this.keepReferenceWrapper;
-        this.keepReferenceWrapper = expr.vendorOperator === "__ISVALIDREF";
+        // __ISVALIDREF and XSIZEOF of a REFERENCE TO read the reference itself
+        this.keepReferenceWrapper =
+          expr.vendorOperator === "__ISVALIDREF" ||
+          expr.vendorOperator === "XSIZEOF";
         let arg: string;
         try {
           arg = this.generateExpression(expr.arguments[0]!.value);
@@ -7882,6 +7910,8 @@ export class CodeGenerator {
       if (stdFunc) {
         const args = expr.arguments.map((arg, idx) => {
           let generated = this.generateExpression(arg.value);
+          // SIZEOF of a REFERENCE TO measures the reference: no binding needed
+          if (nameUpper === "SIZEOF") generated = this.refWrapper(generated);
           if (stdFunc.isConversion) {
             generated = this.bitConversionArg(arg.value, generated);
           }

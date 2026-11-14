@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <type_traits>
+#include <utility>
 
 // Are C++ exceptions available in this translation unit? GCC/Clang define
 // __cpp_exceptions / __EXCEPTIONS with -fexceptions (the hosted default) and
@@ -148,6 +149,36 @@ public:
         return v < static_cast<T>(0) ? add_signed(static_cast<long long>(v))
                                      : add_unsigned(static_cast<unsigned long long>(v));
     }
+    /**
+     * Append " in <pou>" and `tail` (", line <n>, task <T>"), which is always
+     * kept whole: a long POU name is shortened, marked with "…", and a long
+     * description before it is cut short if even that does not fit.
+     */
+    void finish(const char* pou, const fault_text& tail) noexcept {
+        static const char ellipsis[] = "\xE2\x80\xA6";
+        const unsigned cap = sizeof(buf_) - 1;
+        unsigned pl = 0;
+        while (pou[pl] != '\0') ++pl;
+        const unsigned fixed = 4 + tail.len_;  // " in " and the tail
+        if (len_ + fixed + pl > cap) {
+            const unsigned mark = sizeof(ellipsis) - 1;
+            const unsigned min_pou = 16;
+            if (len_ + fixed + mark + min_pou > cap) {
+                len_ = cap > fixed + mark + min_pou ? cap - fixed - mark - min_pou : 0;
+                buf_[len_] = '\0';
+            }
+            const unsigned room = cap - len_ - fixed - mark;
+            if (room < pl) {
+                add(" in ");
+                for (unsigned i = 0; i < room; ++i) buf_[len_++] = pou[i];
+                buf_[len_] = '\0';
+                add(ellipsis);
+                add(tail.c_str());
+                return;
+            }
+        }
+        add(" in ").add(pou).add(tail.c_str());
+    }
     const char* c_str() const noexcept { return buf_; }
     bool empty() const noexcept { return len_ == 0; }
     char back() const noexcept { return len_ == 0 ? '\0' : buf_[len_ - 1]; }
@@ -165,11 +196,12 @@ private:
  */
 [[noreturn]] STRUCPP_FAULT_PATH inline void iec_raise_fault(
     IecFault reason, detail::fault_text& text, iec_site site) {
-    text.add(" in ").add(site.pou != nullptr ? site.pou : "?").add(", line ");
-    text.add_signed(site.line);
+    detail::fault_text tail;
+    tail.add(", line ").add_signed(site.line);
     if (iec_current_task_slot() != nullptr) {
-        text.add(", task ").add(iec_current_task_slot());
+        tail.add(", task ").add(iec_current_task_slot());
     }
+    text.finish(site.pou != nullptr ? site.pou : "?", tail);
 #if STRUCPP_HAS_EXCEPTIONS
     throw IecSiteFault(reason, text.c_str());
 #else
@@ -204,12 +236,13 @@ inline const iec_site*& bounds_site() noexcept {
  * An index outside an array's bounds: `std::out_of_range`, to which iec_at
  * adds the site; without exceptions, the fault at the site iec_at noted.
  */
-[[noreturn]] STRUCPP_FAULT_PATH inline void bounds_fault() {
+[[noreturn]] STRUCPP_FAULT_PATH inline void bounds_fault(
+    const char* what = "Array index out of bounds") {
 #if STRUCPP_HAS_EXCEPTIONS
-    throw std::out_of_range("Array index out of bounds");
+    throw std::out_of_range(what);
 #else
     fault_text text;
-    text.add("Array index out of bounds");
+    text.add(what);
     if (bounds_site() == nullptr) iec_runtime_fault(IecFault::ArrayBounds, text.c_str());
     iec_raise_fault(IecFault::ArrayBounds, text, *bounds_site());
 #endif
@@ -279,17 +312,23 @@ inline decltype(auto) iec_at(C&& c, iec_site site, I... idx) {
 #endif
 }
 
-/** `*p` at a known site: a NULL POINTER TO or REF_TO is a fault naming the POU, line and task. */
+/**
+ * `p`, checked at a known site before `*` dereferences it: a NULL POINTER TO
+ * or REF_TO is a fault naming the POU, line and task. It returns the pointer,
+ * not `*p`, so the target type keeps its attributes (a may_alias target).
+ */
 template<typename P>
-inline decltype(auto) iec_deref(P&& p, iec_site site) {
+inline P&& iec_deref(P&& p, iec_site site) {
 #ifndef STRUCPP_NO_BOUNDS_CHECK
     if (!p) {
         detail::fault_text text;
         text.add(detail::null_deref<std::decay_t<P>>::text);
         iec_raise_fault(IecFault::NullReference, text, site);
     }
+#else
+    (void)site;
 #endif
-    return *p;
+    return std::forward<P>(p);
 }
 
 /** The object a REFERENCE TO is bound to; an unbound one is a fault naming the reference and the site. */
@@ -310,7 +349,7 @@ inline auto iec_ref(R& r, const char* name, iec_site site) -> decltype(r.target(
 #if STRUCPP_HAS_EXCEPTIONS
     throw std::out_of_range("String index out of bounds");
 #else
-    detail::bounds_fault();
+    detail::bounds_fault("String index out of bounds");
 #endif
 }
 

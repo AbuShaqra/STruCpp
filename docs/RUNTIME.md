@@ -318,7 +318,8 @@ on every integer and bit string type, through `iec_div`) is such a fault. `MOD` 
 (Table 29, note e).
 
 Every fault goes through `strucpp::iec_raise_fault`, which builds the message in a fixed buffer, with no
-allocation. On a hosted target it throws `strucpp::IecSiteFault` (a `std::runtime_error`, whose `reason()`
+allocation. A message too long for it keeps `line <n>, task <task>` whole and shortens the POU's name, marked
+with `…`. On a hosted target it throws `strucpp::IecSiteFault` (a `std::runtime_error`, whose `reason()`
 is the `IecFault`); on a target without exceptions it calls `iec_runtime_fault(reason, message)` with the
 same message. The POU and line come from the call site (`strucpp::iec_site{"MAIN", 12}`): the POU is the
 PROGRAM, FUNCTION_BLOCK or FUNCTION, `FB.M` for a METHOD, PROPERTY or ACTION, and the POU whose variable
@@ -347,7 +348,9 @@ Where the fork dispatches the programs itself, it names the task:
 
 The REPL and the cyclic runner catch a fault: they print it (`Fault: Division by zero in FB, line 4, task SLOW`),
 stop every program of the faulting task (`Stopped task SLOW`) and keep the other tasks running. The cyclic
-runner ends when no task is left; both exit with status 1 after a fault.
+runner ends when no task is left; both exit with status 1 after a fault. A fault in an initial value is
+raised while the program object is constructed, before any runner starts: it is not caught there, and it ends
+the process (`std::terminate` on a hosted target).
 
 A runtime that runs the generated programs itself (an embedding scheduler, the threaded runtime of a host
 such as OpenPLC) has no dispatcher in the fork. It must call `strucpp::strucpp_set_current_task(name)` on

@@ -253,4 +253,109 @@ int main() {
       "fault 1 Array index out of bounds in SUMV, line 5, task FAST",
     );
   });
+
+  const MEMBER_REFS = `TYPE S : STRUCT r : REFERENCE TO INT; v : INT; END_STRUCT END_TYPE
+FUNCTION_BLOCK FB
+VAR_INPUT r : REFERENCE TO INT; END_VAR
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR x : INT; y : INT; r1, r2 : REFERENCE TO INT; s : S; a : ARRAY[0..1] OF REFERENCE TO INT; f : FB; p : POINTER TO INT; k : INT; n : UDINT; END_VAR
+CASE k OF
+1: r1 REF= r2; IF __ISVALIDREF(r1) THEN y := 1; ELSE y := 2; END_IF;
+2: n := SIZEOF(r2);
+3: x := s.r;
+4: s.r := 5;
+5: x := a[0];
+6: f.r := 3;
+7: x := p^;
+END_CASE;
+END_PROGRAM
+`;
+
+  it("binds REF= from an unbound reference unchecked, and names a reference member, element and FB input (-Werror)", () => {
+    expect(
+      runCases(MEMBER_REFS, "member_refs", 7, ["-Wall", "-Werror"]),
+    ).toEqual([
+      "1 ok",
+      "2 ok",
+      "3 Unbound REFERENCE TO S.R in MAIN, line 10, task FAST",
+      "4 Unbound REFERENCE TO S.R in MAIN, line 11, task FAST",
+      "5 Unbound REFERENCE TO A in MAIN, line 12, task FAST",
+      "6 Unbound REFERENCE TO F.R in MAIN, line 13, task FAST",
+      "7 Null pointer dereference in MAIN, line 14, task FAST",
+    ]);
+  });
+
+  const LONG = "F" + "X".repeat(240);
+  const LONG_SOURCE = `FUNCTION_BLOCK ${LONG}
+VAR_INPUT z : DINT; END_VAR
+VAR_OUTPUT o : DINT; END_VAR
+o := 7 / z;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR f : ${LONG}; s : STRING := 'abc'; c : CHAR; i : INT := 7; k : INT; END_VAR
+IF k = 1 THEN f(z := 0); ELSE c := s[i]; END_IF;
+END_PROGRAM
+`;
+
+  it("keeps the line and task of a long message, shortening the POU", () => {
+    const result = compile(LONG_SOURCE, {
+      headerFileName: "generated.hpp",
+      dialect: "iec-3",
+    });
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "long_pou",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::strucpp_set_current_task("FAST_TASK");
+    try { strucpp::Program_MAIN p; p.K = 1; p.run(); }
+    catch (const std::exception& e) { std::cout << e.what() << std::endl; }
+    return 0;
+}
+`,
+    });
+    expect(stdout.startsWith("Division by zero in FXXX")).toBe(true);
+    expect(stdout.endsWith("…, line 4, task FAST_TASK")).toBe(true);
+    expect(Buffer.byteLength(stdout)).toBeLessThan(224);
+  });
+
+  it("keeps the STRING index text without exceptions", () => {
+    const result = compile(LONG_SOURCE, {
+      headerFileName: "generated.hpp",
+      dialect: "iec-3",
+    });
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "string_index_no_exceptions",
+      extraFlags: ["-fno-exceptions"],
+      mainCode: `
+#include <cstdio>
+#include <cstdlib>
+namespace strucpp {
+[[noreturn]] void iec_runtime_fault(IecFault reason, const char* context) noexcept {
+    std::printf("fault %d %s\\n", static_cast<int>(reason), context != nullptr ? context : "");
+    std::exit(0);
+}
+}
+int main() {
+    strucpp::strucpp_set_current_task("FAST");
+    static strucpp::Program_MAIN p;
+    p.run();
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe(
+      "fault 1 String index out of bounds in MAIN, line 8, task FAST",
+    );
+  });
 });

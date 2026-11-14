@@ -2,7 +2,7 @@
  * Generated C++ with the fault sites taken out, so assertions about an access
  * need not repeat the POU and line:
  * - `strucpp::iec_at(ARR, strucpp::iec_site{"MAIN", 4}, I)` reads `ARR.at(I)`;
- * - `strucpp::iec_deref(P, strucpp::iec_site{...})` reads `(*P)`;
+ * - `(*strucpp::iec_deref(P, strucpp::iec_site{...}))` reads `(*P)`;
  * - `strucpp::iec_ref(R, "R", strucpp::iec_site{...})` reads `R.target()`.
  */
 export function withoutSites(cpp: string): string {
@@ -11,7 +11,7 @@ export function withoutSites(cpp: string): string {
     const [container, , ...indices] = parts;
     return `${container}.at(${indices.join(", ")})`;
   });
-  out = rewriteCalls(out, "strucpp::iec_deref(", (parts) => `(*${parts[0]})`);
+  out = rewriteCalls(out, "strucpp::iec_deref(", (parts) => `${parts[0]}`);
   out = rewriteCalls(out, "strucpp::iec_ref(", (parts) => `${parts[0]}.target()`);
   return out;
 }
