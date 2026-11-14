@@ -156,8 +156,7 @@ own`, also for `REF=`), a constant (`REFERENCE TO 'RK' cannot be bound to the co
 and an FB's VAR_IN_OUT, which only a call binds (`... cannot be bound to the VAR_IN_OUT 'IO' in its initial
 value: it is bound only by a call; use REF= in the body`; any other FB initial value reading or addressing it
 is `The initial value of 'P' cannot use the VAR_IN_OUT 'IO': it is bound only by a call; assign it in the
-body`). `ADR` and `REF_LINK` of a constant are refused too (`ADR() cannot take the constant 'K': a constant
-has no storage to write through`). Two CONFIGURATIONs declaring a global of the same name are
+body`). Two CONFIGURATIONs declaring a global of the same name are
 refused (`Global 'X' of CONFIGURATION CFG2 is also declared in CONFIGURATION CFG; rename one of them`).
 
 A `REFERENCE TO` VAR_INPUT is bound to its argument at the call. Where `reference_to` is on, these

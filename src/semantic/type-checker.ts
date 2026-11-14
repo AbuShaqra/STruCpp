@@ -5269,20 +5269,7 @@ export class TypeChecker {
       !this.findUserFunction(name) &&
       args.length > 0
     ) {
-      const operand = args[0]!.value;
-      if (
-        operand.kind === "VariableExpression" &&
-        scope.lookup(operand.name)?.kind === "constant"
-      ) {
-        this.addError(
-          `${name}() cannot take the constant '${operand.name.toUpperCase()}': a constant has no storage to write through`,
-          operand.sourceSpan.startLine,
-          operand.sourceSpan.startCol,
-          operand.sourceSpan.file,
-        );
-        return;
-      }
-      this.refuseBitMember(operand, `${name}() cannot take`, scope);
+      this.refuseBitMember(args[0]!.value, `${name}() cannot take`, scope);
       return;
     }
     const inputs =

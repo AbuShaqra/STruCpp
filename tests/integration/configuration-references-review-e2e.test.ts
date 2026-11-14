@@ -202,6 +202,60 @@ END_PROGRAM
     ).toEqual(["13", "23", "12", "1"]);
   });
 
+  it("takes ADR of constants for reading, as on development (recheck 4)", () => {
+    const src = `TYPE ST_E : STRUCT a : INT; b : INT; END_STRUCT; END_TYPE
+VAR_GLOBAL CONSTANT
+  tab : ARRAY[0..1] OF ST_E := [(a := 10, b := 11), (a := 20, b := 21)];
+END_VAR
+FUNCTION_BLOCK FB_K
+VAR CONSTANT kk : INT := 4; END_VAR
+VAR pk : POINTER TO INT := ADR(kk); END_VAR
+VAR_OUTPUT o : INT; END_VAR
+o := pk^;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR CONSTANT
+  k : INT := 3;
+  arr : ARRAY[0..2] OF INT := [5, 6, 7];
+END_VAR
+VAR
+  p : POINTER TO INT := ADR(k);
+  pe : POINTER TO INT;
+  pt : POINTER TO ST_E;
+  copy : ARRAY[0..2] OF INT;
+  n : ULINT;
+  fb : FB_K;
+  o1, o2, o3, o4 : INT;
+END_VAR
+pe := ADR(arr[1]);
+pt := ADR(tab[1]);
+n := MEMCPY(ADR(copy), ADR(arr), SIZEOF(arr));
+fb();
+o1 := p^;
+o2 := pe^;
+o3 := pt^.b;
+o4 := copy[2] + fb.o;
+END_PROGRAM
+`;
+    const r = compile(src, {
+      headerFileName: "generated.hpp",
+      features: ["+pointer_to"],
+    });
+    expect(r.errors).toEqual([]);
+    expect(
+      compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: r.headerCode,
+        cppCode: r.cppCode,
+        testName: "cfgrev_adr_const",
+        mainCode: `#include <iostream>\nint main() {\n using namespace strucpp;\n Program_MAIN m; m.run();\n ${["m.O1.get()", "m.O2.get()", "m.O3.get()", "m.O4.get()"].map(p).join(" ")}\n return 0;\n}\n`,
+      })
+        .trim()
+        .split(/\s+/),
+    ).toEqual(["3", "6", "21", "11"]);
+  });
+
   it("reads an FB's VAR_EXTERNAL in its initial values (recheck #2)", () => {
     expect(
       run(
@@ -409,21 +463,6 @@ PROGRAM Main VAR fb : FB_A; v : INT := 3; END_VAR fb(io := v); END_PROGRAM
     ).toEqual([
       "3:31: The initial value of 'P' cannot use the VAR_IN_OUT 'IO': it is bound only by a call; assign it in the body",
       "3:47: The initial value of 'V' cannot use the VAR_IN_OUT 'IO': it is bound only by a call; assign it in the body",
-    ]);
-  });
-
-  it("refuses ADR of a constant, as an initial value and in a body (#8)", () => {
-    expect(
-      errors(`PROGRAM MAIN
-VAR CONSTANT k : INT := 3; END_VAR
-VAR p : POINTER TO INT := ADR(k); p2 : POINTER TO INT; x : INT; END_VAR
-p2 := ADR(k);
-p^ := 7; x := k;
-END_PROGRAM
-`),
-    ).toEqual([
-      "3:31: ADR() cannot take the constant 'K': a constant has no storage to write through",
-      "4:11: ADR() cannot take the constant 'K': a constant has no storage to write through",
     ]);
   });
 });
