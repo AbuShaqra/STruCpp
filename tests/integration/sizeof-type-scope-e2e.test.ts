@@ -180,6 +180,52 @@ END_PROGRAM
     expect(out).toBe("16");
   });
 
+  it("measures a type in a CONFIGURATION or global initial value, an INTERFACE in a STRUCT default", () => {
+    const out = run(
+      "global_initial_value",
+      `TYPE T_X : STRUCT a : LREAL; b : LREAL; END_STRUCT END_TYPE
+INTERFACE I_A
+METHOD M : INT
+END_METHOD
+END_INTERFACE
+TYPE ST_I : STRUCT i : UDINT := SIZEOF(I_A); END_STRUCT END_TYPE
+VAR_GLOBAL g1 : UDINT := SIZEOF(T_X); g4 : UDINT := SIZEOF(I_A); END_VAR
+PROGRAM Main
+VAR c, d, e : UDINT; s : ST_I; END_VAR
+c := g1; d := g4; e := s.i;
+END_PROGRAM
+CONFIGURATION C
+VAR_GLOBAL cg : UDINT := SIZEOF(T_X); ch : UDINT := SIZEOF(LREAL); END_VAR
+RESOURCE R ON PLC
+TASK t(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH t : Main;
+END_RESOURCE
+END_CONFIGURATION
+`,
+      ["C", "D", "E"],
+      {},
+      ` << strucpp::CG.value.get() << " " << strucpp::CH.value.get() << " " << sizeof(strucpp::IEC_ITF<strucpp::I_A>)`,
+    );
+    expect(out).toBe("16 8 8 16 8 8");
+  });
+
+  it("measures a platform type under platform_types", () => {
+    const types = ["XINT", "UXINT", "__XINT", "__UXINT", "XWORD", "PVOID"];
+    const out = run(
+      "platform",
+      `PROGRAM Main
+VAR
+${types.map((t, i) => `v${i} : ${t}; t${i}, s${i} : UDINT;`).join("\n")}
+END_VAR
+${types.map((t, i) => `t${i} := SIZEOF(${t}); s${i} := SIZEOF(v${i});`).join("\n")}
+END_PROGRAM
+`,
+      types.flatMap((_, i) => [`T${i}`, `S${i}`]),
+      { features: ["+platform_types"] },
+    );
+    expect(out).toBe("8 8 8 8 8 8 8 8 8 8 8 8");
+  });
+
   it("emits a library FB class measured only by SIZEOF", () => {
     const out = run(
       "library_fb_only",
@@ -220,20 +266,15 @@ describe("SIZEOF(T) in a STRUCT field default that cannot be measured there", ()
       libraries: LIBS,
     }).errors.map((e) => `${e.line}:${e.column} ${e.message}`);
   const ONLY =
-    "only an elementary type, or a TYPE of this unit that holds no function block, can be measured there";
+    "only an elementary type, an INTERFACE, or a TYPE of this unit that holds no function block, can be measured there";
 
-  it("refuses a FUNCTION_BLOCK, an INTERFACE and a library FB", () => {
+  it("refuses a FUNCTION_BLOCK and a library FB", () => {
     expect(
       errors(`FUNCTION_BLOCK FB1
 VAR a : DINT; END_VAR
 END_FUNCTION_BLOCK
-INTERFACE I_A
-METHOD M : INT
-END_METHOD
-END_INTERFACE
 TYPE ST_D : STRUCT
   n : UDINT := SIZEOF(FB1);
-  i : UDINT := SIZEOF(I_A);
   t : UDINT := SIZEOF(TON);
 END_STRUCT END_TYPE
 PROGRAM Main
@@ -241,9 +282,32 @@ VAR d : ST_D; END_VAR
 END_PROGRAM
 `),
     ).toEqual([
-      `9:23 SIZEOF(FB1) in the default of STRUCT field 'N': ${ONLY}`,
-      `10:23 SIZEOF(I_A) in the default of STRUCT field 'I': ${ONLY}`,
-      `11:23 SIZEOF(TON) in the default of STRUCT field 'T': ${ONLY}`,
+      `5:23 SIZEOF(FB1) in the default of STRUCT field 'N': ${ONLY}`,
+      `6:23 SIZEOF(TON) in the default of STRUCT field 'T': ${ONLY}`,
+    ]);
+  });
+
+  it("refuses a FUNCTION_BLOCK and a library FB in a global's initial value", () => {
+    expect(
+      errors(`FUNCTION_BLOCK FB_A
+VAR x : LREAL; END_VAR
+END_FUNCTION_BLOCK
+VAR_GLOBAL g3 : UDINT := SIZEOF(FB_A); END_VAR
+PROGRAM Main
+VAR a : UDINT; END_VAR
+a := g3;
+END_PROGRAM
+CONFIGURATION C
+VAR_GLOBAL g2 : UDINT := SIZEOF(TON); END_VAR
+RESOURCE R ON PLC
+TASK t(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH t : Main;
+END_RESOURCE
+END_CONFIGURATION
+`),
+    ).toEqual([
+      `4:33 SIZEOF(FB_A) in the initial value of global 'G3': ${ONLY}`,
+      `10:33 SIZEOF(TON) in the initial value of global 'G2': ${ONLY}`,
     ]);
   });
 

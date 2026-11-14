@@ -5303,6 +5303,23 @@ export class SemanticAnalyzer {
     };
     const global = this.symbolTables.globalScope;
     check(ast.globalVarBlocks, global, {});
+    // A CONFIGURATION global's `SIZEOF(T)` measures the type, as a plain global's
+    for (const config of ast.configurations) {
+      for (const block of config.varBlocks) {
+        for (const decl of block.declarations) {
+          if (decl.initialValue === undefined) continue;
+          walkAST(decl.initialValue, (node) => {
+            if (node.kind === "FunctionCallExpression") {
+              this.settleSizeofTypeOperand(
+                node as FunctionCallExpression,
+                global,
+                {},
+              );
+            }
+          });
+        }
+      }
+    }
     for (const prog of ast.programs) {
       const scope = this.symbolTables.getProgramScope(prog.name);
       check(prog.varBlocks, scope, { programName: prog.name });
@@ -5371,6 +5388,7 @@ export class SemanticAnalyzer {
       }
     }
     this.validateStructDefaultSizeofs(ast);
+    this.validateGlobalSizeofs(ast);
   }
 
   /**
@@ -5385,6 +5403,7 @@ export class SemanticAnalyzer {
     const typesByName = new Map(
       ast.types.map((t) => [t.name.toUpperCase(), t]),
     );
+    const interfaces = new Set(ast.interfaces.map((i) => i.name.toUpperCase()));
     const registry = new TypeRegistry();
     registry.registerTypes(ast.types);
     const dependsOn = (from: string, target: string): boolean => {
@@ -5419,13 +5438,9 @@ export class SemanticAnalyzer {
           if (isElementaryType(upper)) return;
           const where = `SIZEOF(${operand.name}) in the default of STRUCT field '${field.names.join(", ")}'`;
           const span = operand.sourceSpan;
+          if (interfaces.has(upper)) return;
           if (!typesByName.has(upper) || lateTypes.has(upper)) {
-            this.addError(
-              `${where}: only an elementary type, or a TYPE of this unit that holds no function block, can be measured there`,
-              span.startLine,
-              span.startCol,
-              span.file,
-            );
+            this.refuseUnmeasuredType(where, span);
           } else if (dependsOn(upper, type.name.toUpperCase())) {
             this.addError(
               `${where}: '${operand.name}' needs '${type.name}' complete, so '${type.name}' cannot measure it`,
@@ -5437,6 +5452,57 @@ export class SemanticAnalyzer {
         });
       }
     }
+  }
+
+  /**
+   * A global's initial value is emitted before the FUNCTION_BLOCK classes, as
+   * a STRUCT default is: it measures an elementary type, an INTERFACE, or a
+   * TYPE of this unit that holds no function block.
+   */
+  private validateGlobalSizeofs(ast: CompilationUnit): void {
+    const isFunctionBlock = (name: string): boolean =>
+      this.symbolTables.globalScope.lookup(name)?.kind === "functionBlock";
+    const lateTypes = typesHoldingFunctionBlocks(ast.types, isFunctionBlock);
+    // An INTERFACE is measured as its reference, which needs no class
+    const unitTypes = new Set(
+      [...ast.types, ...ast.interfaces].map((t) => t.name.toUpperCase()),
+    );
+    const blocks = [
+      ...ast.globalVarBlocks,
+      ...ast.configurations.flatMap((c) => c.varBlocks),
+    ];
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (decl.initialValue === undefined) continue;
+        walkAST(decl.initialValue, (node) => {
+          if (
+            node.kind !== "VariableExpression" ||
+            (node as VariableExpression).namesType !== true
+          ) {
+            return;
+          }
+          const operand = node as VariableExpression;
+          const upper = operand.name.toUpperCase();
+          if (isElementaryType(upper)) return;
+          if (!unitTypes.has(upper) || lateTypes.has(upper)) {
+            this.refuseUnmeasuredType(
+              `SIZEOF(${operand.name}) in the initial value of global '${decl.names.join(", ")}'`,
+              operand.sourceSpan,
+            );
+          }
+        });
+      }
+    }
+  }
+
+  /** Refuse a SIZEOF operand that is emitted before its type is complete. */
+  private refuseUnmeasuredType(where: string, span: SourceSpan): void {
+    this.addError(
+      `${where}: only an elementary type, an INTERFACE, or a TYPE of this unit that holds no function block, can be measured there`,
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
   }
 
   /**
@@ -5483,7 +5549,15 @@ export class SemanticAnalyzer {
     if (this.isContextName(upper, ctx)) return false;
     if (this.mayInheritLibraryMember(upper, ctx)) return false;
     if (this.declaresGlobal(upper)) return false;
-    if (!this.namesAType(upper)) return false;
+    const platform = this.features.has("platform_types")
+      ? platformTypeTarget(upper)
+      : undefined;
+    if (platform !== undefined && !this.namesAType(upper)) {
+      // XINT, PVOID, ...: the type it stands for on this platform
+      arg.name = platform;
+    } else if (!this.namesAType(upper)) {
+      return false;
+    }
     arg.namesType = true;
     return true;
   }

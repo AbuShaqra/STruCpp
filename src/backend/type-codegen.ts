@@ -927,7 +927,9 @@ export class TypeCodeGenerator {
           ) {
             const declared = this.typesByName.get(arg.name.toUpperCase());
             return sizeOfTypeCpp(
-              this.mapTypeToCpp(arg.name),
+              this.options.isInterfaceType?.(arg.name) === true
+                ? `IEC_ITF<${arg.name}>`
+                : this.mapTypeToCpp(arg.name),
               declared?.definition.kind === "StructDefinition"
                 ? "struct"
                 : undefined,
