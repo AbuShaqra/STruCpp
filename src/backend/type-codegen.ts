@@ -31,6 +31,7 @@ import {
   isComparison,
   isComparisonExpr,
   literalStringComparison,
+  parenthesizedCpp,
   isNonZeroIntegerLiteral,
   literalTemporalType,
   translateIECString,
@@ -216,6 +217,9 @@ function typedDecimalPayload(expr: LiteralExpression): string | undefined {
 }
 
 /** BYTE, WORD, DWORD or LWORD: a bit string other than BOOL. */
+/** Bit string types, narrowest first. */
+const BIT_STRING_WIDTHS: readonly string[] = ["BYTE", "WORD", "DWORD", "LWORD"];
+
 function isBitStringName(name: string): boolean {
   const upper = name.toUpperCase();
   return getTypeCategory(upper) === "BIT" && upper !== "BOOL";
@@ -908,7 +912,7 @@ export class TypeCodeGenerator {
       case "UnaryExpression":
         return this.unaryExprToCpp(expr);
       case "ParenthesizedExpression":
-        return `(${this.expressionToCpp(expr.expression)})`;
+        return parenthesizedCpp(expr, this.expressionToCpp(expr.expression));
       case "FunctionCallExpression":
         // `NOT (x)` is parsed as a call: it is the operator NOT on x
         if (
@@ -1133,9 +1137,13 @@ export class TypeCodeGenerator {
       expr.kind === "BinaryExpression" &&
       ["AND", "OR", "XOR"].includes(expr.operator)
     ) {
-      return (
-        this.operandBitString(expr.left) ?? this.operandBitString(expr.right)
-      );
+      // The wider of the two, whatever their order
+      const l = this.operandBitString(expr.left);
+      const r = this.operandBitString(expr.right);
+      if (l === undefined || r === undefined) return l ?? r;
+      return BIT_STRING_WIDTHS.indexOf(r) > BIT_STRING_WIDTHS.indexOf(l)
+        ? r
+        : l;
     }
     if (expr.kind === "FunctionCallExpression") {
       const name = expr.functionName.toUpperCase();

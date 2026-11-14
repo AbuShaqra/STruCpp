@@ -164,7 +164,9 @@ class Folder {
         kind: "ParenthesizedExpression",
         sourceSpan: at.sourceSpan,
         expression: { ...folded, sourceSpan: at.sourceSpan },
-        ...(type !== undefined ? { resolvedType: type } : {}),
+        ...(type !== undefined
+          ? { resolvedType: type, foldedConstant: true }
+          : {}),
       };
     }
     const supplied = Object.entries(this.supplied).find(
