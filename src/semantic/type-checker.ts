@@ -3759,9 +3759,26 @@ export class TypeChecker {
    * initializer element, nested.
    */
   private refuseNarrowAddressNested(
-    type: Pick<TypeReference, "name" | "arrayDimensions" | "elementTypeName">,
+    type: Pick<TypeReference, "name"> &
+      Partial<
+        Pick<
+          TypeReference,
+          | "arrayDimensions"
+          | "elementTypeName"
+          | "referenceKind"
+          | "elementReferenceChain"
+        >
+      >,
     value: Expression,
   ): void {
+    // A POINTER TO (or an ARRAY OF POINTER TO) holds the address whole.
+    if (
+      (type.referenceKind ?? "none") !== "none" ||
+      (type.arrayDimensions !== undefined &&
+        (type.elementReferenceChain?.length ?? 0) > 0)
+    ) {
+      return;
+    }
     if (value.kind === "ArrayLiteralExpression") {
       const element =
         type.arrayDimensions !== undefined && type.elementTypeName !== undefined

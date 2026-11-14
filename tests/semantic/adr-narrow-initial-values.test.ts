@@ -139,3 +139,18 @@ END_PROGRAM
     }
   });
 });
+
+describe("ADR into a pointer in an initial value", () => {
+  it("accepts an ARRAY OF POINTER TO and a POINTER TO field", () => {
+    const src = `TYPE ST_P : STRUCT p : POINTER TO INT; END_STRUCT; END_TYPE
+FUNCTION_BLOCK FB_AP
+VAR_INPUT y : INT := 3; END_VAR
+VAR z : INT; ap : ARRAY[0..1] OF POINTER TO INT := [ADR(y), ADR(z)]; END_VAR
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR x : INT; s : ST_P := (p := ADR(x)); f : FB_AP; END_VAR
+END_PROGRAM
+`;
+    expect(compile(src).errors).toEqual([]);
+  });
+});
