@@ -286,6 +286,50 @@ interface CallInput {
   name: string;
   type: AccessType;
   inOut: boolean;
+  /** Its place among all of the POU's VAR_INPUT, VAR_OUTPUT and VAR_IN_OUT, as a positional argument binds it. */
+  position?: number;
+}
+
+/** The VAR_INPUT and VAR_IN_OUT of one POU's blocks, each with its positional place. */
+function callInputsOfBlocks(blocks: readonly VarBlock[]): CallInput[] {
+  const out: CallInput[] = [];
+  let position = 0;
+  for (const b of blocks) {
+    const parameter =
+      b.blockType === "VAR_INPUT" ||
+      b.blockType === "VAR_OUTPUT" ||
+      b.blockType === "VAR_IN_OUT";
+    if (!parameter) continue;
+    for (const d of b.declarations) {
+      for (const name of d.names) {
+        if (b.blockType !== "VAR_OUTPUT") {
+          out.push({
+            name,
+            type: d.type,
+            inOut: b.blockType === "VAR_IN_OUT",
+            position,
+          });
+        }
+        position++;
+      }
+    }
+  }
+  return out;
+}
+
+/** The input a call argument binds: by its name, or by its position. */
+function boundInput(
+  inputs: readonly CallInput[],
+  arg: Argument,
+  index: number,
+): CallInput | undefined {
+  const argName = arg.name?.toUpperCase();
+  if (argName !== undefined) {
+    return inputs.find((p) => p.name.toUpperCase() === argName);
+  }
+  return inputs.some((p) => p.position !== undefined)
+    ? inputs.find((p) => p.position === index)
+    : inputs[index];
 }
 
 /** `NULL` or `0`: the only initializers a pointer or reference keeps (it starts null anyway). */
@@ -6052,20 +6096,7 @@ export class TypeChecker {
     expr: FunctionCallExpression,
     scope: Scope,
   ): CallInput[] | undefined {
-    const fromBlocks = (blocks: readonly VarBlock[]): CallInput[] =>
-      blocks
-        .filter(
-          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
-        )
-        .flatMap((b) =>
-          b.declarations.flatMap((d) =>
-            d.names.map((name) => ({
-              name,
-              type: d.type,
-              inOut: b.blockType === "VAR_IN_OUT",
-            })),
-          ),
-        );
+    const fromBlocks = callInputsOfBlocks;
     const ownMethod = this.ownMethod(expr.functionName);
     if (ownMethod) return fromBlocks(ownMethod.varBlocks);
     const fn = this.calledInstance(expr.functionName, scope)
@@ -7249,18 +7280,14 @@ export class TypeChecker {
 
   /** Strict conversion check for each input argument of a call (the BOOL narrowing warning outside `--strict`). */
   private checkStrictArguments(
-    inputs: Array<{ name: string; type: AccessType }> | undefined,
+    inputs: CallInput[] | undefined,
     args: readonly Argument[],
     _scope: Scope,
   ): void {
     if (!inputs) return;
     stripEnEno([...args]).forEach((arg, i) => {
       if (arg.isOutput) return;
-      const argName = arg.name?.toUpperCase();
-      const input =
-        argName === undefined
-          ? inputs[i]
-          : inputs.find((p) => p.name.toUpperCase() === argName);
+      const input = boundInput(inputs, arg, i);
       if (!input) return;
       const refKind = input.type.referenceKind;
       if (refKind !== undefined && refKind !== "none") return;
@@ -7270,6 +7297,8 @@ export class TypeChecker {
         if (declared) this.checkStrictConversion(declared, arg.value);
         return;
       }
+      // A VAR_IN_OUT mismatch has its own diagnostic (validateInOutArguments)
+      if (input.inOut) return;
       this.warnBoolInputNarrowing(input.type.name, arg.value);
     });
   }
@@ -7390,21 +7419,7 @@ export class TypeChecker {
     const method = itf.methods.find(
       (m) => m.name.toUpperCase() === methodName.toUpperCase(),
     );
-    if (method) {
-      return method.varBlocks
-        .filter(
-          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
-        )
-        .flatMap((b) =>
-          b.declarations.flatMap((d) =>
-            d.names.map((n) => ({
-              name: n,
-              type: d.type,
-              inOut: b.blockType === "VAR_IN_OUT",
-            })),
-          ),
-        );
-    }
+    if (method) return callInputsOfBlocks(method.varBlocks);
     for (const base of itf.extends ?? []) {
       const found = this.interfaceMethodInputs(base, methodName, depth + 1);
       if (found) return found;
@@ -7446,19 +7461,7 @@ export class TypeChecker {
   ): CallInput[] | undefined {
     if (!this.ast) return undefined;
     const inputsOf = (method: MethodDeclaration): CallInput[] =>
-      method.varBlocks
-        .filter(
-          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
-        )
-        .flatMap((b) =>
-          b.declarations.flatMap((d) =>
-            d.names.map((n) => ({
-              name: n,
-              type: d.type,
-              inOut: b.blockType === "VAR_IN_OUT",
-            })),
-          ),
-        );
+      callInputsOfBlocks(method.varBlocks);
     let current = fbTypeName?.toUpperCase();
     for (let depth = 0; current !== undefined && depth < 32; depth++) {
       const name: string = current;
