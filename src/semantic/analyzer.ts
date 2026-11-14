@@ -46,6 +46,7 @@ import { RUNTIME_CALLABLE_NAMES } from "./runtime-functions.js";
 import { Scope, SymbolTables } from "./symbol-table.js";
 import type { FunctionSymbol } from "./symbol-table.js";
 import { TypeChecker } from "./type-checker.js";
+import { TypeRegistry, isElementaryType } from "./type-registry.js";
 import {
   findProgramReaches,
   findProgramSelfCalls,
@@ -432,6 +433,8 @@ export class SemanticAnalyzer {
   private typeChecker: TypeChecker;
   private stdRegistry = new StdFunctionRegistry();
   private enumMemberMap: Map<string, EnumMemberEntry> = new Map();
+  /** The unit validateUndeclaredVariables checks, for the types a SIZEOF operand names. */
+  private undeclaredUnit: CompilationUnit | undefined;
   /** Uppercase names of the TYPEs hoisted from the test file being analyzed. */
   private testTypeNames = new Set<string>();
   /** The unit being checked holds an `{external}` block (inline C++). */
@@ -5322,6 +5325,7 @@ export class SemanticAnalyzer {
    * Validate that all variable references in POU bodies refer to declared variables.
    */
   private validateUndeclaredVariables(ast: CompilationUnit): void {
+    this.undeclaredUnit = ast;
     this.hasExternalCode = false;
     walkAST(ast, (node) => {
       if (node.kind === "ExternalCodePragma") this.hasExternalCode = true;
@@ -5361,6 +5365,23 @@ export class SemanticAnalyzer {
     };
     const global = this.symbolTables.globalScope;
     check(ast.globalVarBlocks, global, {});
+    // A CONFIGURATION global's `SIZEOF(T)` measures the type, as a plain global's
+    for (const config of ast.configurations) {
+      for (const block of config.varBlocks) {
+        for (const decl of block.declarations) {
+          if (decl.initialValue === undefined) continue;
+          walkAST(decl.initialValue, (node) => {
+            if (node.kind === "FunctionCallExpression") {
+              this.settleSizeofTypeOperand(
+                node as FunctionCallExpression,
+                global,
+                {},
+              );
+            }
+          });
+        }
+      }
+    }
     for (const prog of ast.programs) {
       const scope = this.symbolTables.getProgramScope(prog.name);
       check(prog.varBlocks, scope, { programName: prog.name });
@@ -5397,10 +5418,21 @@ export class SemanticAnalyzer {
       );
       for (const field of type.definition.fields) {
         if (!field.initialValue) continue;
+        // A field default sees no sibling field: `SIZEOF(T)` there is the type
+        walkAST(field.initialValue, (node) => {
+          if (node.kind === "FunctionCallExpression") {
+            this.settleSizeofTypeOperand(
+              node as FunctionCallExpression,
+              global,
+              {},
+            );
+          }
+        });
         let namesSibling = false;
         walkAST(field.initialValue, (node) => {
           if (
             node.kind === "VariableExpression" &&
+            (node as VariableExpression).namesType !== true &&
             fields.has((node as VariableExpression).name.toUpperCase())
           ) {
             namesSibling = true;
@@ -5417,6 +5449,244 @@ export class SemanticAnalyzer {
         }
       }
     }
+    this.validateStructDefaultSizeofs(ast);
+    this.validateGlobalSizeofs(ast);
+  }
+
+  /**
+   * A STRUCT field default measures, with `SIZEOF(T)`, an elementary type or
+   * a TYPE of this unit that is emitted before it: one holding no function
+   * block, and not depending on the STRUCT itself.
+   */
+  private validateStructDefaultSizeofs(ast: CompilationUnit): void {
+    const isFunctionBlock = (name: string): boolean =>
+      this.symbolTables.globalScope.lookup(name)?.kind === "functionBlock";
+    const lateTypes = typesHoldingFunctionBlocks(ast.types, isFunctionBlock);
+    const typesByName = new Map(
+      ast.types.map((t) => [t.name.toUpperCase(), t]),
+    );
+    const interfaces = new Set(ast.interfaces.map((i) => i.name.toUpperCase()));
+    const registry = new TypeRegistry();
+    registry.registerTypes(ast.types);
+    const dependsOn = (from: string, target: string): boolean => {
+      const seen = new Set<string>();
+      const queue = [from];
+      while (queue.length > 0) {
+        const name = queue.pop()!;
+        if (name === target) return true;
+        if (seen.has(name)) continue;
+        seen.add(name);
+        const decl = typesByName.get(name);
+        if (decl === undefined) continue;
+        for (const dep of registry.getTypeDependencies(decl)) {
+          queue.push(dep.toUpperCase());
+        }
+      }
+      return false;
+    };
+    for (const type of ast.types) {
+      if (type.definition.kind !== "StructDefinition") continue;
+      for (const field of type.definition.fields) {
+        if (!field.initialValue) continue;
+        walkAST(field.initialValue, (node) => {
+          if (
+            node.kind !== "VariableExpression" ||
+            (node as VariableExpression).namesType !== true
+          ) {
+            return;
+          }
+          const operand = node as VariableExpression;
+          const upper = operand.name.toUpperCase();
+          if (isElementaryType(upper)) return;
+          const where = `SIZEOF(${operand.name}) in the default of STRUCT field '${field.names.join(", ")}'`;
+          const span = operand.sourceSpan;
+          if (interfaces.has(upper)) return;
+          if (!typesByName.has(upper) || lateTypes.has(upper)) {
+            this.refuseUnmeasuredType(where, span);
+          } else if (dependsOn(upper, type.name.toUpperCase())) {
+            this.addError(
+              `${where}: '${operand.name}' needs '${type.name}' complete, so '${type.name}' cannot measure it`,
+              span.startLine,
+              span.startCol,
+              span.file,
+            );
+          }
+        });
+      }
+    }
+  }
+
+  /**
+   * A global's initial value is emitted before the FUNCTION_BLOCK classes, as
+   * a STRUCT default is: it measures an elementary type, an INTERFACE, or a
+   * TYPE of this unit that holds no function block.
+   */
+  private validateGlobalSizeofs(ast: CompilationUnit): void {
+    const isFunctionBlock = (name: string): boolean =>
+      this.symbolTables.globalScope.lookup(name)?.kind === "functionBlock";
+    const lateTypes = typesHoldingFunctionBlocks(ast.types, isFunctionBlock);
+    // An INTERFACE is measured as its reference, which needs no class
+    const unitTypes = new Set(
+      [...ast.types, ...ast.interfaces].map((t) => t.name.toUpperCase()),
+    );
+    const blocks = [
+      ...ast.globalVarBlocks,
+      ...ast.configurations.flatMap((c) => c.varBlocks),
+    ];
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (decl.initialValue === undefined) continue;
+        walkAST(decl.initialValue, (node) => {
+          if (
+            node.kind !== "VariableExpression" ||
+            (node as VariableExpression).namesType !== true
+          ) {
+            return;
+          }
+          const operand = node as VariableExpression;
+          const upper = operand.name.toUpperCase();
+          if (isElementaryType(upper)) return;
+          if (!unitTypes.has(upper) || lateTypes.has(upper)) {
+            this.refuseUnmeasuredType(
+              `SIZEOF(${operand.name}) in the initial value of global '${decl.names.join(", ")}'`,
+              operand.sourceSpan,
+            );
+          }
+        });
+      }
+    }
+  }
+
+  /** Refuse a SIZEOF operand that is emitted before its type is complete. */
+  private refuseUnmeasuredType(where: string, span: SourceSpan): void {
+    this.addError(
+      `${where}: only an elementary type, an INTERFACE, or a TYPE of this unit that holds no function block, can be measured there`,
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
+  }
+
+  /**
+   * `SIZEOF(T)` / `XSIZEOF(T)` whose operand names a type and no value in
+   * scope (a variable, a member, inherited from any base, a property): mark
+   * it, so the code generator measures the type. Returns whether it is marked.
+   */
+  private settleSizeofTypeOperand(
+    expr: FunctionCallExpression,
+    scope: Scope,
+    ctx: UndeclaredVarContext,
+  ): boolean {
+    const fn = expr.functionName.toUpperCase();
+    if (
+      (fn !== "SIZEOF" && fn !== "XSIZEOF") ||
+      expr.arguments.length !== 1 ||
+      expr.instance !== undefined
+    ) {
+      return false;
+    }
+    const arg = expr.arguments[0]!.value;
+    if (
+      arg.kind !== "VariableExpression" ||
+      arg.fieldAccess.length > 0 ||
+      arg.subscripts.length > 0 ||
+      arg.isDereference ||
+      (arg.accessChain?.length ?? 0) > 0 ||
+      arg.typedLiteral === true
+    ) {
+      return false;
+    }
+    if (arg.namesType === true) return true;
+    const upper = arg.name.toUpperCase();
+    const hit = scope.lookup(upper);
+    if (
+      hit !== undefined &&
+      hit.kind !== "type" &&
+      hit.kind !== "functionBlock" &&
+      hit.kind !== "function" &&
+      hit.kind !== "enumValue"
+    ) {
+      return false;
+    }
+    if (this.isContextName(upper, ctx)) return false;
+    if (this.mayInheritLibraryMember(upper, ctx)) return false;
+    if (this.declaresGlobal(upper)) return false;
+    const platform = this.features.has("platform_types")
+      ? platformTypeTarget(upper)
+      : undefined;
+    if (platform !== undefined && !this.namesAType(upper)) {
+      // XINT, PVOID, ...: the type it stands for on this platform
+      arg.name = platform;
+    } else if (!this.namesAType(upper)) {
+      return false;
+    }
+    arg.namesType = true;
+    return true;
+  }
+
+  /**
+   * A global of the unit has this name: a global variable list's or a
+   * CONFIGURATION's, which share the name with a type in no single scope.
+   */
+  private declaresGlobal(upper: string): boolean {
+    const unit = this.undeclaredUnit;
+    if (unit === undefined) return false;
+    const declares = (blocks: readonly VarBlock[]): boolean =>
+      blocks.some((b) =>
+        b.declarations.some((d) =>
+          d.names.some((n) => n.toUpperCase() === upper),
+        ),
+      );
+    return (
+      declares(unit.globalVarBlocks) ||
+      unit.configurations.some((c) => declares(c.varBlocks))
+    );
+  }
+
+  /**
+   * A library FB in the enclosing FB's base chain has a member of this name,
+   * or may have one: its archive does not list all of its members.
+   */
+  private mayInheritLibraryMember(
+    upper: string,
+    ctx: UndeclaredVarContext,
+  ): boolean {
+    const seen = new Set<string>();
+    let name = ctx.fbName;
+    while (name !== undefined && !seen.has(name.toUpperCase())) {
+      seen.add(name.toUpperCase());
+      const fb = this.symbolTables.globalScope.lookup(name);
+      if (fb?.kind !== "functionBlock") return false;
+      if (fb.libraryName !== undefined) {
+        const members = [
+          ...fb.inputs,
+          ...fb.outputs,
+          ...fb.inouts,
+          ...fb.locals,
+          ...(fb.temps ?? []),
+        ];
+        if (members.some((m) => m.name.toUpperCase() === upper)) return true;
+        if (fb.libraryMethodNames === undefined) return true;
+      }
+      name = fb.declaration.extends;
+    }
+    return false;
+  }
+
+  /** An elementary type, a TYPE, a FUNCTION_BLOCK or an INTERFACE (of the unit or a library). */
+  private namesAType(upper: string): boolean {
+    if (isElementaryType(upper)) return true;
+    const kind = this.symbolTables.globalScope.lookup(upper)?.kind;
+    if (kind === "type" || kind === "functionBlock") return true;
+    const unit = this.undeclaredUnit;
+    const named = (list: readonly { name: string }[]): boolean =>
+      list.some((d) => d.name.toUpperCase() === upper);
+    return (
+      unit !== undefined &&
+      (named(unit.types) ||
+        named(unit.functionBlocks) ||
+        named(unit.interfaces))
+    );
   }
 
   /**
@@ -5873,6 +6143,8 @@ export class SemanticAnalyzer {
         if (!expr.functionName.includes(".") && !expr.instance) {
           this.checkCalleeDeclared(expr.functionName, scope, ctx, expr);
         }
+        // `SIZEOF(T)` of a type: its operand is no variable to check
+        if (this.settleSizeofTypeOperand(expr, scope, ctx)) break;
         for (const arg of expr.arguments) {
           this.checkExpressionForUndeclaredVars(arg.value, scope, ctx);
         }
