@@ -1,0 +1,285 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Autonomy®
+/**
+ * E2E: a VAR_TEMP of a FUNCTION_BLOCK or PROGRAM starts from its initial
+ * value at every call, and a METHOD's VAR_INST starts from its initial value
+ * once, then keeps its value between calls.
+ */
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { compile } from "../../src/index.js";
+import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
+
+const SOURCE3 = `FUNCTION_BLOCK FB
+METHOD M : INT
+VAR_INST c : Cnt; s : S; END_VAR
+c(start := 0); s.k(); M := c.n * 10 + s.k.n;
+END_METHOD
+END_FUNCTION_BLOCK
+TYPE S : STRUCT a : INT; k : Cnt; END_STRUCT; END_TYPE
+FUNCTION_BLOCK Cnt
+VAR_INPUT start : INT; END_VAR
+VAR_OUTPUT n : INT; END_VAR
+n := n + 1 + start;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK Inner
+VAR x : INT; p : POINTER TO INT := ADR(x); END_VAR
+VAR_OUTPUT n : INT; END_VAR
+p^ := p^ + 1; n := x;
+END_FUNCTION_BLOCK
+TYPE SI : STRUCT a : INT; c : Inner; END_STRUCT; END_TYPE
+FUNCTION_BLOCK Holder
+VAR_TEMP c : Inner; ts : SI; arr : ARRAY[0..1] OF Inner; END_VAR
+VAR_OUTPUT o, o1, o2 : INT; END_VAR
+c(); o := c.n; ts.c(); o1 := ts.c.n; arr[1](); o2 := arr[1].n;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR f : FB; h : Holder; r1, r2, h1, h2, h3, h4 : INT; END_VAR
+r1 := f.M(); r2 := f.M();
+h(); h1 := h.o; h(); h2 := h.o; h3 := h.o1; h4 := h.o2;
+END_PROGRAM
+`;
+
+const SOURCE2 = `FUNCTION_BLOCK Cnt
+VAR_INPUT start : INT; END_VAR
+VAR_OUTPUT n : INT; END_VAR
+n := n + 1 + start;
+END_FUNCTION_BLOCK
+TYPE S : STRUCT a : INT; c : Cnt; END_STRUCT; END_TYPE
+FUNCTION_BLOCK FB
+VAR_TEMP c : Cnt := (start := 5); ts : S; arr : ARRAY[0..1] OF Cnt; END_VAR
+VAR_OUTPUT o, o1, o2 : INT; END_VAR
+METHOD M : INT
+VAR_TEMP mc : Cnt; END_VAR
+mc(); M := mc.n;
+END_METHOD
+METHOD K : INT
+VAR_INST kc : Cnt; END_VAR
+kc(start := 0); K := kc.n;
+END_METHOD
+c(); o := c.n; ts.c(); o1 := ts.c.n; arr[1](); o2 := arr[1].n;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK Base
+VAR_TEMP bt : INT := 1; END_VAR
+VAR_OUTPUT bo : INT; END_VAR
+bt := bt + 1; bo := bt;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK D3 EXTENDS Base
+VAR_OUTPUT o3 : INT; END_VAR
+bt := bt + 10; o3 := bt;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK D4 EXTENDS Base
+VAR_OUTPUT o4 : INT; END_VAR
+bt := bt + 10; SUPER^(); o4 := bt;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR fb : FB; a, a1, a2, m, k, e, f, g : INT; d3 : D3; d4 : D4; b : Base; END_VAR
+fb(); fb(); a := fb.o; a1 := fb.o1; a2 := fb.o2; m := fb.M(); m := fb.M(); k := fb.K(); k := fb.K();
+d3(); d3(); e := d3.o3; d4(); d4(); f := d4.o4; b(); b(); g := b.bo;
+END_PROGRAM
+`;
+
+const SOURCE = `PROGRAM Sub
+VAR_TEMP t : INT; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+t := t + 1; o := t;
+END_PROGRAM
+FUNCTION_BLOCK FB
+VAR_TEMP t : INT := 5; s : STRING := 'x'; arr : ARRAY[0..1] OF INT; END_VAR
+VAR_OUTPUT o : INT; os : STRING; END_VAR
+METHOD M : INT
+VAR_INST k : INT := 40; v : ARRAY[0..1] OF INT := [7, 8]; END_VAR
+k := k + 1; M := k * 100 + v[1];
+END_METHOD
+t := t + 1; s := CONCAT(s, 'y'); arr[0] := arr[0] + 1;
+o := t * 10 + arr[0]; os := s;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR fb : FB; a, b, c, d : INT; s : STRING; END_VAR
+fb(); fb(); a := fb.o; s := fb.os;
+Sub(); Sub(); b := Sub.o;
+c := fb.M(); d := fb.M();
+END_PROGRAM
+`;
+
+const SOURCE4 = `FUNCTION_BLOCK Inner
+VAR_INPUT k : INT; END_VAR
+VAR x : INT; p : POINTER TO INT := ADR(x); END_VAR
+VAR_OUTPUT n : INT; END_VAR
+p^ := p^ + 1 + k; n := x;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB
+VAR_TEMP tc : Inner := (k := 2); END_VAR
+VAR_OUTPUT o : INT; END_VAR
+tc(); o := tc.n;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR f : FB; o1, o2, o3 : INT; END_VAR
+f(); f(); o1 := f.o;
+END_PROGRAM
+`;
+
+const SOURCE5 = `FUNCTION_BLOCK FB
+VAR_TEMP ta : ARRAY[0..2] OF INT := [1, 2, 3]; END_VAR
+VAR_OUTPUT oa : INT; END_VAR
+oa := oa + ta[1]; ta[1] := 50;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR_TEMP pa : ARRAY[0..2] OF INT := [1, 2, 3]; END_VAR
+VAR f : FB; o1, o2, o3 : INT; END_VAR
+f(); f(); o2 := f.oa; o3 := o3 + pa[1]; pa[1] := 50;
+END_PROGRAM
+`;
+
+describe.skipIf(!hasGpp)("VAR_TEMP and VAR_INST at run time — g++ e2e", () => {
+  let tempDir: string;
+  let pchPath: string;
+  beforeAll(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-pouvars-"));
+    pchPath = createPCH(tempDir);
+  });
+  afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  for (const [label, options] of [
+    ["no dialect", {}],
+    ["iec-3", { dialect: "iec-3" }],
+    ["strict", { strict: true }],
+  ] as const) {
+    it(`resets VAR_TEMP per call and initialises VAR_INST once (${label})`, () => {
+      const result = compile(SOURCE, {
+        ...options,
+        headerFileName: "generated.hpp",
+        features: ["+program_methods"],
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `pouvars_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.A.get() << " " << p.B.get() << " " << p.C.get() << " " << p.D.get() << " "
+              << p.S.get().c_str() << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe("61 1 4108 4208 xy");
+    });
+
+    it(`starts FB instances and inherited VAR_TEMP afresh; calls a VAR_INST instance (${label})`, () => {
+      const result = compile(SOURCE2, {
+        ...options,
+        headerFileName: "generated.hpp",
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `pouvars2_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.A.get() << " " << p.A1.get() << " " << p.A2.get() << " " << p.M.get() << " "
+              << p.K.get() << " " << p.E.get() << " " << p.F.get() << " " << p.G.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe("6 1 1 1 2 11 12 2");
+    });
+
+    it(`rebuilds a VAR_TEMP FB instance in place; orders a later VAR_INST type first (${label})`, () => {
+      const result = compile(SOURCE3, {
+        ...options,
+        headerFileName: "generated.hpp",
+        features: ["+pointer_to"],
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `pouvars3_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.R1.get() << " " << p.R2.get() << " " << p.H1.get() << p.H2.get() << p.H3.get()
+              << p.H4.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe("11 22 1111");
+    });
+
+    it(`builds a VAR_TEMP FB instance with an initial value in place (${label})`, () => {
+      const result = compile(SOURCE4, {
+        ...options,
+        headerFileName: "generated.hpp",
+        features: ["+pointer_to"],
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `pouvars4_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    p.run();
+    std::cout << p.O1.get() << " " << p.O2.get() << " " << p.O3.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      // A fresh Inner each call: 0 + 1 + 2
+      expect(stdout).toBe("3 0 0");
+    });
+    it(`resets a VAR_TEMP ARRAY with an initial value (${label})`, () => {
+      const result = compile(SOURCE5, {
+        ...options,
+        headerFileName: "generated.hpp",
+        features: ["+pointer_to"],
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `pouvars5_${label.replace(/\W/g, "_")}`,
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    p.run();
+    std::cout << p.O1.get() << " " << p.O2.get() << " " << p.O3.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      // ta and pa reset to [1, 2, 3] each call
+      expect(stdout).toBe("0 8 4");
+    });
+  }
+});

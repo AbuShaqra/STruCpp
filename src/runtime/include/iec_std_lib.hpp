@@ -47,6 +47,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
+#include <new>
 
 // Undefine AVR `<time.h>` macros that collide with common IEC
 // identifiers.  `<chrono>` above pulls in `<ctime>` → `<time.h>`,
@@ -697,6 +698,31 @@ template<typename A, typename B, typename C, typename... Rest,
 inline IEC_BOOL NE(A a, B b, C c, Rest... rest) noexcept {
     if (!(iec_unwrap(a) != iec_unwrap(b))) return IEC_BOOL(false);
     return NE(b, c, rest...);
+}
+
+// =============================================================================
+// VAR_TEMP reset
+// =============================================================================
+
+/**
+ * Rebuild `x` in place as a fresh object (a VAR_TEMP holding a function block
+ * instance), so a member that refers to another of its members (a POINTER TO
+ * set at construction) refers to `x`'s own, not to a destroyed temporary.
+ */
+template<typename T>
+inline void iec_reset_in_place(T& x) {
+    x.~T();
+    new (&x) T();
+}
+
+/**
+ * Ends `x`'s lifetime and returns its storage, for `new (iec_destroyed(x)) T(init)`:
+ * the initial value is built in that storage, not copied from a temporary.
+ */
+template<typename T>
+inline void* iec_destroyed(T& x) noexcept {
+    x.~T();
+    return static_cast<void*>(&x);
 }
 
 // =============================================================================
