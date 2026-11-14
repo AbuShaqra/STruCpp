@@ -44,6 +44,8 @@ export interface ValidationWarning {
 }
 
 import { isBaseTypeName } from "./iec-types-data.js";
+import { walkAST } from "../ast-utils.js";
+import type { ASTNode, VariableExpression } from "../frontend/ast.js";
 
 /**
  * Check if a type name is an elementary type
@@ -202,6 +204,17 @@ export class TypeRegistry {
   ): void {
     if (!deps.includes(decl.type.name)) {
       deps.push(decl.type.name);
+    }
+    if (decl.initialValue !== undefined) {
+      for (const name of sizeofTypeOperands(decl.initialValue)) {
+        // A default that measures a type needs that type complete first
+        const declared = [...this.types.keys()].find(
+          (k) => k.toUpperCase() === name.toUpperCase(),
+        );
+        if (declared !== undefined && !deps.includes(declared)) {
+          deps.push(declared);
+        }
+      }
     }
   }
 
@@ -367,4 +380,21 @@ export class TypeRegistry {
 
     return errors;
   }
+}
+
+/**
+ * The types an expression measures with `SIZEOF(T)` / `XSIZEOF(T)`: operands
+ * the analyzer marked as naming a type.
+ */
+export function sizeofTypeOperands(expr: ASTNode): string[] {
+  const names: string[] = [];
+  walkAST(expr, (node) => {
+    if (
+      node.kind === "VariableExpression" &&
+      (node as VariableExpression).namesType === true
+    ) {
+      names.push((node as VariableExpression).name);
+    }
+  });
+  return names;
 }
