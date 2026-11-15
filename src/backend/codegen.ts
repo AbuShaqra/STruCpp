@@ -139,6 +139,7 @@ import {
   type StructInitEmitter,
 } from "./struct-init-codegen.js";
 import { vendorOperatorCpp } from "../semantic/vendor-operators.js";
+import { pointerReadTarget } from "../semantic/address-store.js";
 import { bitPlaceOf, bitRunMemberName } from "./bit-runs.js";
 import type { StructDefinition } from "../frontend/ast.js";
 
@@ -1210,24 +1211,13 @@ export class CodeGenerator {
     return undefined;
   }
 
-  /** A POINTER TO variable of the scope, read as a whole: an address term. */
+  /** A POINTER TO variable or ARRAY OF POINTER TO element, read whole: an address term (pointerReadTarget, as the type checker). */
   private isPointerVariable(e: Expression): boolean {
-    if (
-      e.kind !== "VariableExpression" ||
-      e.isDereference ||
-      e.fieldAccess.length > 0 ||
-      e.subscripts.length > 0 ||
-      (e.accessChain?.length ?? 0) > 0
-    ) {
-      return false;
-    }
-    const type = this.currentScopeVarTypeRefs.get(e.name.toUpperCase());
-    return (
-      type !== undefined &&
-      type.arrayDimensions === undefined &&
-      (type.referenceChain?.length ?? 1) === 1 &&
-      type.referenceKind === "pointer_to"
-    );
+    if (e.kind !== "VariableExpression") return false;
+    const upper = e.name.toUpperCase();
+    const type =
+      this.currentScopeVarTypeRefs.get(upper) ?? this.globalVarTypeRef(upper);
+    return type !== undefined && pointerReadTarget(type, e) !== undefined;
   }
 
   /** The address terms (ADR(x), POINTER TO variables) of a + / - chain. */

@@ -81,6 +81,7 @@ import {
   addressSource,
   isNarrowInteger,
   narrowAddressMessage,
+  pointerReadTarget,
 } from "./address-store.js";
 import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
 import { structExtends } from "./struct-extends.js";
@@ -553,6 +554,7 @@ export class TypeChecker {
     this.errors = [];
     this.warnings = [];
     this.ast = ast;
+    this.misalignedReported.clear();
     for (const block of varBlocks) {
       for (const decl of block.declarations) {
         if (decl.initialValue === undefined) continue;
@@ -565,6 +567,11 @@ export class TypeChecker {
         if (node.kind === "AssignmentStatement") {
           const stmt = node as AssignmentStatement;
           const target = this.resolveExprType(stmt.target, scope);
+          this.refuseMisalignedPointerStore(
+            this.storeTargetDeclaredType(stmt.target, scope),
+            stmt.value,
+            scope,
+          );
           if (
             this.reachesThroughDereference(stmt.target) ||
             (this.declaredReferenceShape(stmt.target, scope)?.chain.length ??
@@ -598,6 +605,7 @@ export class TypeChecker {
     this.warnings = [];
     this.strictReported.clear();
     this.addressStoresReported.clear();
+    this.misalignedReported.clear();
     this.ast = ast;
     this.writeTargets = new Set();
     walkAST(ast, (node) => {
@@ -2156,10 +2164,38 @@ export class TypeChecker {
         this.ast?.functions.some((f) => f.name.toUpperCase() === "ADR") !== true
       );
     }
-    return (
-      e.kind === "VariableExpression" &&
-      this.pointerTargetSize(e, scope) !== undefined
-    );
+    if (e.kind !== "VariableExpression") return false;
+    const declared = this.declaredVariableType(e, scope);
+    if (
+      declared === undefined ||
+      pointerReadTarget(declared, e) === undefined
+    ) {
+      return false;
+    }
+    this.pointerAddressReads.add(e);
+    return true;
+  }
+
+  /** POINTER TO reads met as + / - chain terms (isAddressTerm). */
+  private pointerAddressReads = new WeakSet<Expression>();
+
+  /** A POINTER TO read of a + / - chain, through parentheses: an address. */
+  private readonly isPointerRead = (e: Expression): boolean => {
+    let v = e;
+    while (v.kind === "ParenthesizedExpression") v = v.expression;
+    return this.pointerAddressReads.has(v);
+  };
+
+  /** + / - chains refused by refuseAddressArithmetic, with the error; a store's own refusal replaces it. */
+  private addressArithmeticRefused = new WeakMap<Expression, CompileError>();
+
+  /** The declared type of the variable an access starts from. */
+  private declaredVariableType(
+    e: VariableExpression,
+    scope: Scope,
+  ): TypeReference | undefined {
+    const symbol = scope.lookup(e.name);
+    return symbol?.kind === "variable" ? symbol.declaration?.type : undefined;
   }
 
   /**
@@ -2179,21 +2215,34 @@ export class TypeChecker {
       at.sourceSpan.startCol,
       at.sourceSpan.file,
     );
+    this.addressArithmeticRefused.set(
+      expr,
+      this.errors[this.errors.length - 1]!,
+    );
   }
 
   /**
-   * `p := <address> + n`, p a POINTER TO a multi-byte elementary type: when
-   * the address is known to be aligned for that type (it points to a type at
-   * least as wide) and the chain's net constant offset is not a multiple of
-   * its size, a dereference of p would be misaligned: refused. A byte address
-   * (POINTER TO BYTE, MEMCPY) is never refused.
+   * An address stored into a POINTER TO a multi-byte elementary type (any
+   * store path, `declared` being the store target's type): when the address
+   * is known to be aligned for that type (it points to a type at least as
+   * wide) and the chain's net constant offset is not a multiple of its size,
+   * a dereference would be misaligned: refused. A byte address (POINTER TO
+   * BYTE, PVOID, an integer, MEMCPY) is never refused.
    */
   private refuseMisalignedPointerStore(
-    target: Expression,
+    declared: AccessType | undefined,
     value: Expression,
     scope: Scope,
   ): void {
-    const dest = this.pointerTargetSize(target, scope);
+    if (
+      declared === undefined ||
+      declared.arrayDimensions !== undefined ||
+      declared.referenceKind !== "pointer_to" ||
+      (declared.referenceChain?.length ?? 1) !== 1
+    ) {
+      return;
+    }
+    const dest = elementarySize(declared.name);
     if (dest === undefined || dest.bytes <= 1n) return;
     const terms = this.chainTerms(value);
     if (terms.length < 2) return;
@@ -2209,60 +2258,51 @@ export class TypeChecker {
       offset += t.sign > 0 ? v : -v;
     }
     if (offset % dest.bytes === 0n) return;
+    const span = value.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+    if (this.misalignedReported.has(key)) return;
+    this.misalignedReported.add(key);
     this.addError(
       `Moving a POINTER TO ${dest.name} by ${offset} byte(s) would make its dereference misaligned; move it by a multiple of ${dest.bytes} bytes`,
-      value.sourceSpan.startLine,
-      value.sourceSpan.startCol,
-      value.sourceSpan.file,
+      span.startLine,
+      span.startCol,
+      span.file,
     );
   }
+
+  /** Positions already refused by refuseMisalignedPointerStore. */
+  private misalignedReported = new Set<string>();
 
   /** The elementary type an address term points to, and its size: a POINTER TO variable or element, or ADR(x). */
   private pointerTargetSize(
     e: Expression,
     scope: Scope,
   ): { name: string; bytes: bigint } | undefined {
-    let name: string | undefined;
     if (
       e.kind === "FunctionCallExpression" &&
       e.functionName.toUpperCase() === "ADR" &&
       e.arguments.length === 1
     ) {
-      const target = e.arguments[0]!.value.resolvedType;
-      name =
-        target?.typeKind === "elementary"
-          ? (target as ElementaryType).name
+      const operand = e.arguments[0]!.value;
+      const target = operand.resolvedType;
+      if (target !== undefined) {
+        return target.typeKind === "elementary"
+          ? elementarySize((target as ElementaryType).name)
           : undefined;
-    } else if (
-      e.kind === "VariableExpression" &&
-      !e.isDereference &&
-      e.fieldAccess.length === 0
-    ) {
-      const symbol = scope.lookup(e.name);
-      const declared =
-        symbol?.kind === "variable" ? symbol.declaration?.type : undefined;
-      if (declared === undefined) return undefined;
-      const subscripted =
-        e.subscripts.length > 0 ||
-        (e.accessChain ?? []).some((step) => step.kind === "subscript");
-      if (!subscripted && declared.referenceKind === "pointer_to") {
-        name = declared.name;
-      } else if (
-        subscripted &&
-        declared.arrayDimensions !== undefined &&
-        declared.elementReferenceChain?.length === 1 &&
-        declared.elementReferenceChain[0] === "pointer_to"
-      ) {
-        name = declared.elementTypeName;
       }
+      // Unresolved (a test file's statement): the declared type it reaches
+      const declared = this.accessedType(operand, scope);
+      return declared !== undefined &&
+        declared.referenceKind === "none" &&
+        declared.arrayDimensions === undefined
+        ? elementarySize(declared.name)
+        : undefined;
     }
-    if (name === undefined) return undefined;
-    const bits = ELEMENTARY_TYPES[name.toUpperCase()]?.sizeBits;
-    if (bits === undefined) return undefined;
-    return {
-      name: name.toUpperCase(),
-      bytes: BigInt(Math.max(1, Math.floor(bits / 8))),
-    };
+    if (e.kind !== "VariableExpression") return undefined;
+    const declared = this.declaredVariableType(e, scope);
+    const name =
+      declared !== undefined ? pointerReadTarget(declared, e) : undefined;
+    return name !== undefined ? elementarySize(name) : undefined;
   }
 
   /** An integer constant expression's value: literals, constants, + - * and parentheses. */
@@ -4139,12 +4179,19 @@ export class TypeChecker {
     if (typeName === undefined) return false;
     const user = (name: string): boolean =>
       this.findUserFunction(name) !== undefined;
+    let top = value;
+    while (top.kind === "ParenthesizedExpression") top = top.expression;
+    const chainError = this.addressArithmeticRefused.get(top);
     // `ADR(x) * 2` into an integer: no address, no offset of one.
     if (
-      addressMisuse(value, user) &&
+      addressMisuse(value, user, this.isPointerRead) &&
       addressFit(typeName, this.ast?.types ?? []) !== undefined &&
       !this.userAddressFunction()
     ) {
+      if (chainError !== undefined) {
+        this.errors = this.errors.filter((e) => e !== chainError);
+        this.addressArithmeticRefused.delete(top);
+      }
       this.addError(
         "An address can only be offset by + or - an integer",
         value.sourceSpan.startLine,
@@ -4153,7 +4200,8 @@ export class TypeChecker {
       );
       return true;
     }
-    const source = addressSource(value, user);
+    if (chainError !== undefined) return true;
+    const source = addressSource(value, user, this.isPointerRead);
     if (source === undefined) return this.checkXwordStore(typeName, value);
     // A user FUNCTION named ADR is called, not the operator.
     if (source.op === "ADR" && this.userAddressFunction()) return false;
@@ -4231,7 +4279,8 @@ export class TypeChecker {
     const user = (name: string): boolean =>
       this.findUserFunction(name) !== undefined;
     const isAddress = (e: Expression): boolean =>
-      addressSource(e, user) !== undefined ||
+      addressSource(e, user, this.isPointerRead) !== undefined ||
+      this.isPointerRead(e) ||
       (e.resolvedType !== undefined &&
         typeNameUtil(e.resolvedType).toUpperCase() === "__XWORD");
     return isAddress(v.left) && isAddress(v.right);
@@ -4245,8 +4294,13 @@ export class TypeChecker {
   private refuseAddressSelector(selector: Expression): boolean {
     const user = (name: string): boolean =>
       this.findUserFunction(name) !== undefined;
-    const source = addressSource(selector, user);
-    if (source === undefined && !addressMisuse(selector, user)) return false;
+    const source = addressSource(selector, user, this.isPointerRead);
+    if (
+      source === undefined &&
+      !addressMisuse(selector, user, this.isPointerRead)
+    ) {
+      return false;
+    }
     if (this.userAddressFunction()) return false;
     if (source?.op === "ADR" && !this.features.has("pointer_to")) return true;
     if (source !== undefined && source.operand?.kind !== "VariableExpression") {
@@ -4291,7 +4345,7 @@ export class TypeChecker {
   private storeTargetDeclaredType(
     target: Expression,
     scope: Scope,
-  ): Pick<TypeReference, "name" | "referenceKind"> | undefined {
+  ): AccessType | undefined {
     return (
       this.resultTargetType(target) ??
       this.accessedType(target, scope) ??
@@ -4347,7 +4401,7 @@ export class TypeChecker {
   private accessedType(
     target: Expression,
     scope: Scope,
-  ): Pick<TypeReference, "name" | "referenceKind"> | undefined {
+  ): AccessType | undefined {
     if (target.kind !== "VariableExpression") return undefined;
     const sym = scope.lookup(target.name);
     const declared =
@@ -4487,6 +4541,7 @@ export class TypeChecker {
             : inputs.find((p) => p.name.toUpperCase() === argName);
         // A VAR_IN_OUT binds, it stores nothing (the binding check refuses an ADR).
         if (input === undefined || input.inOut) continue;
+        this.refuseMisalignedPointerStore(input.type, arg.value, scope);
         if ((input.type.referenceKind ?? "none") !== "none") continue;
         this.checkAddressStore(input.type.name, arg.value);
       }
@@ -4612,7 +4667,11 @@ export class TypeChecker {
       case "AssignmentStatement": {
         let targetType = this.resolveExprType(stmt.target, scope);
         const valueType = this.resolveExprType(stmt.value, scope);
-        this.refuseMisalignedPointerStore(stmt.target, stmt.value, scope);
+        this.refuseMisalignedPointerStore(
+          this.storeTargetDeclaredType(stmt.target, scope),
+          stmt.value,
+          scope,
+        );
         if (
           this.strict &&
           targetType === undefined &&
@@ -8469,4 +8528,16 @@ function bitAccessPath(e: VariableExpression): string {
     else path += `[${step.indices.map(index).join(", ")}]`;
   }
   return path.toUpperCase();
+}
+
+/** An elementary type's upper-case name and size in bytes (at least 1). */
+function elementarySize(
+  name: string,
+): { name: string; bytes: bigint } | undefined {
+  const bits = ELEMENTARY_TYPES[name.toUpperCase()]?.sizeBits;
+  if (bits === undefined) return undefined;
+  return {
+    name: name.toUpperCase(),
+    bytes: BigInt(Math.max(1, Math.floor(bits / 8))),
+  };
 }

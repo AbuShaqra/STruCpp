@@ -11,6 +11,8 @@ import type {
   FunctionCallExpression,
   RefExpression,
   TypeDeclaration,
+  TypeReference,
+  VariableExpression,
 } from "../frontend/ast.js";
 import { stripEnEno } from "../ast-utils.js";
 
@@ -38,15 +40,17 @@ const PASS_THROUGH: Readonly<Record<string, number>> = {
  * `value` when it is an address: `ADR(x)`, `REF(x)`, `ADR(x) + n`,
  * `n + ADR(x)`, `ADR(x) - n`, or one passed through `SEL`, `MUX`, `MOVE`,
  * `MIN`, `MAX` or `LIMIT` (unless `userFunction` says the source declares a
- * FUNCTION of that name).
+ * FUNCTION of that name). `pointerRead` tells a POINTER TO read, which makes
+ * a subtraction a difference.
  */
 export function addressSource(
   value: Expression,
   userFunction: (name: string) => boolean = () => false,
+  pointerRead: (e: Expression) => boolean = () => false,
 ): AddressSource | undefined {
   switch (value.kind) {
     case "ParenthesizedExpression":
-      return addressSource(value.expression, userFunction);
+      return addressSource(value.expression, userFunction, pointerRead);
     case "RefExpression":
       return { op: "REF", node: value, operand: value.operand };
     case "FunctionCallExpression": {
@@ -63,7 +67,7 @@ export function addressSource(
       if (first === undefined || userFunction(name)) return undefined;
       for (const arg of stripEnEno(value.arguments).slice(first)) {
         if (arg.isOutput) continue;
-        const source = addressSource(arg.value, userFunction);
+        const source = addressSource(arg.value, userFunction, pointerRead);
         if (source) return source;
       }
       return undefined;
@@ -71,14 +75,15 @@ export function addressSource(
     case "BinaryExpression":
       if (value.operator === "+") {
         return (
-          addressSource(value.left, userFunction) ??
-          addressSource(value.right, userFunction)
+          addressSource(value.left, userFunction, pointerRead) ??
+          addressSource(value.right, userFunction, pointerRead)
         );
       }
-      // ADR(x) - n is an address; ADR(x) - ADR(y) is a difference, an integer.
+      // ADR(x) - n is an address; ADR(x) - ADR(y) or - p is a difference, an integer.
       return value.operator === "-" &&
-        addressSource(value.right, userFunction) === undefined
-        ? addressSource(value.left, userFunction)
+        addressSource(value.right, userFunction, pointerRead) === undefined &&
+        !pointerRead(value.right)
+        ? addressSource(value.left, userFunction, pointerRead)
         : undefined;
     default:
       return undefined;
@@ -96,10 +101,12 @@ const COMPARISONS = new Set(["=", "<>", "<", ">", "<=", ">="]);
 export function addressMisuse(
   value: Expression,
   userFunction: (name: string) => boolean = () => false,
+  pointerRead: (e: Expression) => boolean = () => false,
 ): boolean {
-  const misuse = (e: Expression): boolean => addressMisuse(e, userFunction);
+  const misuse = (e: Expression): boolean =>
+    addressMisuse(e, userFunction, pointerRead);
   const isAddress = (e: Expression): boolean =>
-    addressSource(e, userFunction) !== undefined;
+    addressSource(e, userFunction, pointerRead) !== undefined || pointerRead(e);
   switch (value.kind) {
     case "ParenthesizedExpression":
       return misuse(value.expression);
@@ -196,4 +203,50 @@ export function isNarrowInteger(baseName: string): boolean {
 /** The refusal of an address stored into a narrow integer. */
 export function narrowAddressMessage(what: string, narrow: string): string {
   return `${what} gives a 64-bit address, which ${narrow} cannot hold; use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT`;
+}
+
+/** The declared shape a pointer read is judged on. */
+type PointerShape = Pick<TypeReference, "name" | "referenceKind"> &
+  Partial<
+    Pick<
+      TypeReference,
+      | "referenceChain"
+      | "arrayDimensions"
+      | "elementTypeName"
+      | "elementReferenceChain"
+    >
+  >;
+
+/**
+ * The target type name when `e`, a variable declared as `declared`, reads a
+ * whole single-level POINTER TO: the variable itself, or an element of an
+ * ARRAY OF POINTER TO. Such a read is an address in + / - arithmetic, for the
+ * type checker and the code generator alike.
+ */
+export function pointerReadTarget(
+  declared: PointerShape,
+  e: VariableExpression,
+): string | undefined {
+  if (
+    e.isDereference ||
+    e.fieldAccess.length > 0 ||
+    (e.accessChain ?? []).some((step) => step.kind !== "subscript")
+  ) {
+    return undefined;
+  }
+  const subscripted =
+    e.subscripts.length > 0 ||
+    (e.accessChain ?? []).some((step) => step.kind === "subscript");
+  if (!subscripted) {
+    return declared.arrayDimensions === undefined &&
+      declared.referenceKind === "pointer_to" &&
+      (declared.referenceChain?.length ?? 1) === 1
+      ? declared.name
+      : undefined;
+  }
+  return declared.arrayDimensions !== undefined &&
+    declared.elementReferenceChain?.length === 1 &&
+    declared.elementReferenceChain[0] === "pointer_to"
+    ? declared.elementTypeName
+    : undefined;
 }

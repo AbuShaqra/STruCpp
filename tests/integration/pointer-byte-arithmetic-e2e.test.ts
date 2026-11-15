@@ -188,8 +188,8 @@ END_PROGRAM
         const [at, bytes] = t.split(" ");
         return `${at} Moving a POINTER TO DINT by ${bytes} byte(s) would make its dereference misaligned; move it by a multiple of 4 bytes`;
       }),
-      "16:12 An address is offset by + or - an integer, or subtracted from another address: it cannot be subtracted from a value or added to an address",
-      "17:11 An address is offset by + or - an integer, or subtracted from another address: it cannot be subtracted from a value or added to an address",
+      "16:7 An address can only be offset by + or - an integer",
+      "17:7 An address can only be offset by + or - an integer",
     ]);
   });
 
@@ -231,5 +231,103 @@ int main() {
 `,
     });
     expect(stdout).toBe("34 51 68 77 16 16 16");
+  });
+  it("refuses a misaligned address on every store path into a POINTER TO a wider type", () => {
+    const result = compile(
+      `TYPE ST : STRUCT p : POINTER TO DINT; END_STRUCT END_TYPE
+FUNCTION_BLOCK FB
+VAR_INPUT ip : POINTER TO DINT; bp : POINTER TO BYTE; pv : PVOID; lw : LWORD; END_VAR
+METHOD M : DINT
+VAR_INPUT q : POINTER TO INT; END_VAR
+M := 0;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION GETD : DINT
+VAR_INPUT p : POINTER TO DINT; END_VAR
+GETD := p^;
+END_FUNCTION
+FUNCTION GETB : BYTE
+VAR_INPUT p : POINTER TO BYTE; END_VAR
+GETB := p^;
+END_FUNCTION
+PROGRAM MAIN
+VAR ad : ARRAY[0..7] OF DINT; s : ST; fb : FB; pa : ARRAY[0..1] OF POINTER TO DINT; d : DINT; b : BYTE; END_VAR
+s.p := ADR(ad[0]) + 1;
+fb(ip := ADR(ad[0]) + 1);
+fb.ip := ADR(ad[0]) + 1;
+d := GETD(ADR(ad[0]) + 1);
+d := GETD(p := ADR(ad[0]) + 2);
+pa[1] := ADR(ad[0]) + 3;
+d := fb.M(ADR(ad[0]) + 1);
+s.p := ADR(ad[0]) + 4; fb(ip := ADR(ad[0]) + 8, bp := ADR(ad[0]) + 1, pv := ADR(ad[0]) + 1, lw := ADR(ad[0]) + 1);
+b := GETB(ADR(ad[0]) + 3); d := GETD(ADR(ad[0]) + 4); d := fb.M(ADR(ad[0]) + 2);
+END_PROGRAM
+`,
+      {
+        features: ["+platform_types"],
+        libraries: discoverStlibs(path.resolve(__dirname, "../../libs")),
+      },
+    );
+    expect(
+      result.errors.map((e) => `${e.line}:${e.column} ${e.message}`),
+    ).toEqual(
+      [
+        "19:8 DINT 1 4",
+        "20:10 DINT 1 4",
+        "21:10 DINT 1 4",
+        "22:11 DINT 1 4",
+        "23:16 DINT 2 4",
+        "24:10 DINT 3 4",
+        "25:11 INT 1 2",
+      ].map((t) => {
+        const [at, type, bytes, size] = t.split(" ");
+        return `${at} Moving a POINTER TO ${type} by ${bytes} byte(s) would make its dereference misaligned; move it by a multiple of ${size} bytes`;
+      }),
+    );
+  });
+
+  it("subtracts and moves global pointers and pointer-array elements in bytes", () => {
+    const result = compile(
+      `VAR_GLOBAL gad : ARRAY[0..7] OF DINT := [0, 11, 22, 33, 44, 55, 66, 77]; gp, gq : POINTER TO DINT; END_VAR
+PROGRAM MAIN
+VAR pa : ARRAY[0..1] OF POINTER TO DINT; n1, n2, n3, n4, v1, v2 : DINT; END_VAR
+gq := ADR(gad[6]); gp := ADR(gad[2]); n1 := gq - ADR(gad[0]);
+pa[0] := ADR(gad[0]); pa[1] := ADR(gad[2]); n2 := pa[1] - ADR(gad[0]);
+n3 := gq - gp; n4 := pa[1] - pa[0];
+gp := gp + 4; v1 := gp^; pa[1] := pa[1] + 8; v2 := pa[1]^;
+END_PROGRAM
+PROGRAM P2
+VAR_EXTERNAL gad : ARRAY[0..7] OF DINT; gq : POINTER TO DINT; END_VAR
+VAR n : DINT; END_VAR
+gq := ADR(gad[6]); n := gq - ADR(gad[0]);
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "ptr_global_diff",
+      extraFlags: [
+        "-fsanitize=address,undefined",
+        "-fno-sanitize-recover=undefined",
+      ],
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    static strucpp::Program_P2 p2;
+    p.run();
+    p2.run();
+    std::cout << p.N1.get() << " " << p.N2.get() << " " << p.N3.get() << " " << p.N4.get() << " "
+              << p.V1.get() << " " << p.V2.get() << " " << p2.N.get() << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("24 8 16 8 33 44 24");
   });
 });
