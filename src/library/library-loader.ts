@@ -10,6 +10,7 @@
 import type {
   LibraryManifest,
   LibraryTypeEntry,
+  LibraryFunctionEntry,
   LibraryVarType,
   StlibArchive,
 } from "./library-manifest.js";
@@ -84,6 +85,26 @@ function applyStringDefaultLength(
 ): void {
   if (stringDefaultLength === undefined) return;
   lowerDefaultStringLength(ref, stringDefaultLength);
+}
+
+/** The reference chain and inline-array shape a manifest function parameter records. */
+function parameterShapeOf(
+  p: LibraryFunctionEntry["parameters"][number],
+): Partial<LibraryVarType> {
+  return {
+    ...(Array.isArray(p.referenceChain)
+      ? { referenceChain: p.referenceChain }
+      : {}),
+    ...(Array.isArray(p.arrayDimensions)
+      ? { arrayDimensions: p.arrayDimensions }
+      : {}),
+    ...(typeof p.elementTypeName === "string"
+      ? { elementTypeName: p.elementTypeName }
+      : {}),
+    ...(Array.isArray(p.elementReferenceChain)
+      ? { elementReferenceChain: p.elementReferenceChain }
+      : {}),
+  };
 }
 
 function isReferenceKind(
@@ -349,6 +370,7 @@ export function loadLibraryManifest(json: unknown): LibraryManifest {
     }
     result.stringDefaultLength = n;
   }
+  if (obj.parameterShapes === true) result.parameterShapes = true;
 
   return result;
 }
@@ -403,6 +425,7 @@ export function registerLibrarySymbols(
             name: p.name,
             type: p.type,
             ...(p.referenceKind ? { referenceKind: p.referenceKind } : {}),
+            ...(manifest.parameterShapes ? parameterShapeOf(p) : {}),
           },
           p.direction,
           manifest.stringDefaultLength,
@@ -413,6 +436,7 @@ export function registerLibrarySymbols(
         return sym;
       }),
     };
+    if (manifest.parameterShapes) symbol.parameterShapes = true;
     symbolTables.addLibraryFunction(symbol);
     try {
       symbolTables.globalScope.defineFromLibrary(symbol);

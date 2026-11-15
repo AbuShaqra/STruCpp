@@ -71,6 +71,7 @@ import {
   type AccessType,
 } from "./type-utils.js";
 import {
+  type GlobalItem,
   type GlobalOrder,
   orderConfigurationGlobals,
   orderGlobals,
@@ -299,6 +300,8 @@ interface CallInput {
   name: string;
   type: AccessType;
   inOut: boolean;
+  /** From a library manifest, which omits a REF_TO STRING / WSTRING target's length. */
+  lengthUnrecorded?: boolean;
 }
 
 /** `NULL` or `0`: the only initializers a pointer or reference keeps (it starts null anyway). */
@@ -435,6 +438,14 @@ const TEMPORAL_STORAGE: Readonly<Record<string, string>> = {
   LDATE_AND_TIME: "dt",
   LDT: "dt",
 };
+
+/** Calls that take a variable's address or size, not its value. */
+const NOT_READING_CALLS: ReadonlySet<string> = new Set([
+  "ADR",
+  "REF",
+  "SIZEOF",
+  "XSIZEOF",
+]);
 
 /** A call's parameters in declaration order, outputs marked. */
 type OutputParams = Array<{ name: string; type: AccessType; output: boolean }>;
@@ -4066,11 +4077,72 @@ export class TypeChecker {
    * initial values that depend on each other cannot be created.
    */
   private checkGlobalInitialCycles(ast: CompilationUnit): void {
-    for (const ordered of [
-      orderGlobals(ast),
-      ...ast.configurations.map(orderConfigurationGlobals),
+    const topLevel = orderGlobals(ast);
+    for (const [ordered, outer] of [
+      [topLevel, []] as const,
+      // A CONFIGURATION global also sees the top-level globals
+      ...ast.configurations.map(
+        (c) => [orderConfigurationGlobals(c), topLevel.order] as const,
+      ),
     ]) {
       this.reportGlobalInitialCycles(ordered);
+      if (this.strict || this.inOutErrors) {
+        this.refuseDependentGlobalInitials(ordered, outer);
+      }
+    }
+  }
+
+  /**
+   * Under iec-3 and `--strict`: an initial value is a constant expression, so
+   * a global's initial value reading another global that is no CONSTANT (as a
+   * value; ADR() of it is an address) is refused. No dialect flag keeps the
+   * automatic creation order.
+   */
+  private refuseDependentGlobalInitials(
+    { order }: GlobalOrder,
+    outer: readonly GlobalItem[],
+  ): void {
+    const own = new Set(order.map((i) => i.name.toUpperCase()));
+    // The scope's own globals hide outer ones of the same name
+    const visible = [
+      ...order,
+      ...outer.filter((i) => !own.has(i.name.toUpperCase())),
+    ];
+    const constant = new Set(
+      visible
+        .filter((i) => i.block.isConstant === true)
+        .map((i) => i.name.toUpperCase()),
+    );
+    const known = new Set(visible.map((i) => i.name.toUpperCase()));
+    for (const item of order) {
+      const value = item.decl.initialValue;
+      if (value === undefined || item.decl.names[0] !== item.name) continue;
+      const reported = new Set<string>();
+      walkAST(value, (node): boolean | void => {
+        // ADR(g) and REF(g) take an address, SIZEOF(g) a size: none reads g
+        if (
+          node.kind === "RefExpression" ||
+          (node.kind === "FunctionCallExpression" &&
+            NOT_READING_CALLS.has(
+              (node as FunctionCallExpression).functionName.toUpperCase(),
+            ))
+        ) {
+          return false;
+        }
+        if (node.kind !== "VariableExpression") return;
+        const v = node as VariableExpression;
+        const upper = v.name.toUpperCase();
+        if (!known.has(upper) || constant.has(upper) || reported.has(upper)) {
+          return;
+        }
+        reported.add(upper);
+        this.addError(
+          `The initial value of global '${item.name}' reads global '${v.name}', which is no CONSTANT: an initial value is a constant expression`,
+          v.sourceSpan.startLine,
+          v.sourceSpan.startCol,
+          v.sourceSpan.file,
+        );
+      });
     }
   }
 
@@ -4851,7 +4923,8 @@ export class TypeChecker {
     const inputs =
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope) ??
-      methodParams?.filter((p) => !p.output);
+      methodParams?.filter((p) => !p.output) ??
+      this.libraryShapedFunctionInputs(expr, scope);
     if (inputs) {
       let positional = 0;
       for (const arg of args) {
@@ -7763,8 +7836,37 @@ export class TypeChecker {
     }
     return params.flatMap((p) => {
       const type = (p.declaration as VarDeclaration | undefined)?.type;
-      return type ? [{ name: p.name, type, inOut: p.isInOut }] : [];
+      return type
+        ? [{ name: p.name, type, inOut: p.isInOut, lengthUnrecorded: true }]
+        : [];
     });
+  }
+
+  /**
+   * The inputs and in-outs of a library FUNCTION whose archive records its
+   * parameters' POINTER TO, REF_TO and ARRAY shapes; undefined otherwise.
+   */
+  private libraryShapedFunctionInputs(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): CallInput[] | undefined {
+    const name = expr.functionName;
+    if (expr.instance || name.includes(".")) return undefined;
+    if (this.calledInstance(name, scope) || this.ownMethod(name)) {
+      return undefined;
+    }
+    const fn = this.symbolTables.lookupFunction(name);
+    if (fn?.parameterShapes !== true || this.findUserFunction(name)) {
+      return undefined;
+    }
+    return fn.parameters
+      .filter((p) => p.isInput || p.isInOut)
+      .flatMap((p) => {
+        const type = (p.declaration as VarDeclaration | undefined)?.type;
+        return type
+          ? [{ name: p.name, type, inOut: p.isInOut, lengthUnrecorded: true }]
+          : [];
+      });
   }
 
   /** The REF_TO check for each argument passed to a REF_TO input. */
@@ -7772,7 +7874,9 @@ export class TypeChecker {
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
-    const inputs = this.callInputs(expr, scope);
+    const inputs =
+      this.callInputs(expr, scope) ??
+      this.libraryShapedFunctionInputs(expr, scope);
     if (!inputs) return;
     stripEnEno(expr.arguments).forEach((arg, i) => {
       if (arg.isOutput) return;
@@ -7783,7 +7887,17 @@ export class TypeChecker {
           : inputs.find((p) => p.name.toUpperCase() === argName);
       if (!input) return;
       const shape = referenceShapeOf(input.type);
-      if (shape) this.validateReferenceValue(shape, arg.value, scope);
+      if (!shape) return;
+      // A manifest's REF_TO STRING carries no length: compare the base only.
+      const unrecorded =
+        input.lengthUnrecorded === true &&
+        shape.length === undefined &&
+        isStringBase(shape.base);
+      this.validateReferenceValue(
+        unrecorded ? { ...shape, lengthUnknown: true } : shape,
+        arg.value,
+        scope,
+      );
     });
   }
 
