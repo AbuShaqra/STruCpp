@@ -1294,6 +1294,25 @@ export function compile(
   }
 
   const codeResult = codegen.generate(pipeline.ast);
+  if (codeResult.errors.length > 0) {
+    const errors: CompileError[] = codeResult.errors.map((err) => ({
+      message: withDeclaredNames(err.message, pouDisplayNames),
+      line: err.line ?? 0,
+      column: err.column ?? 0,
+      severity: "error",
+      ...(err.file !== undefined ? { file: err.file } : {}),
+    }));
+    return {
+      success: false,
+      cppFiles: [],
+      cppCode: "",
+      headerCode: "",
+      lineMap: new Map(),
+      headerLineMap: new Map(),
+      errors,
+      warnings: pipeline.warnings,
+    };
+  }
 
   // Collect codegen warnings
   for (const warn of codeResult.warnings) {

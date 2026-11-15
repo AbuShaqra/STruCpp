@@ -47,7 +47,7 @@ import {
   exactIntegerLiteralValue,
   exactIntegerValue,
 } from "../literal-utils.js";
-import { isEnEnoArgument, walkAST } from "../ast-utils.js";
+import { isEnEnoArgument, stripEnEno, walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry, SourceSpan } from "../types.js";
 import {
@@ -615,6 +615,17 @@ export interface CodeGenResult {
     column?: number;
     file?: string;
   }>;
+
+  /**
+   * Errors for code the semantic passes let through malformed (a call short
+   * of arguments): reported instead of a throw; the C++ is not usable then.
+   */
+  errors: Array<{
+    message: string;
+    line?: number;
+    column?: number;
+    file?: string;
+  }>;
 }
 
 // =============================================================================
@@ -752,6 +763,14 @@ export class CodeGenerator {
 
   /** Warnings collected during code generation */
   private codegenWarnings: Array<{
+    message: string;
+    line?: number;
+    column?: number;
+    file?: string;
+  }> = [];
+
+  /** Errors collected during code generation (see CodeGenResult.errors) */
+  private codegenErrors: Array<{
     message: string;
     line?: number;
     column?: number;
@@ -1832,6 +1851,7 @@ export class CodeGenerator {
     this.headerStLineActive = false;
     this.locatedVars = [];
     this.codegenWarnings = [];
+    this.codegenErrors = [];
     this.tempVarCounter = 0;
     this.ast = ast; // Store AST for looking up program bodies
     this.fbInitPlan =
@@ -2013,6 +2033,7 @@ export class CodeGenerator {
       lineMap: this.lineMap,
       headerLineMap: this.headerLineMap,
       warnings: this.codegenWarnings,
+      errors: this.codegenErrors,
     };
   }
 
@@ -8829,16 +8850,31 @@ export class CodeGenerator {
         return `REF(${args[0] ?? ""})`;
       }
 
-      // 0b. LOWER_BOUND/UPPER_BOUND(arr, dim) → arr.lower_bound() / arr.upper_bound()
+      // 0b. LOWER_BOUND/UPPER_BOUND(arr, dim) → arr.lower_bound(dim) / arr.upper_bound(dim)
       if (nameUpper === "LOWER_BOUND" || nameUpper === "UPPER_BOUND") {
         const method =
           nameUpper === "LOWER_BOUND" ? "lower_bound" : "upper_bound";
-        const arrExpr = this.generateExpression(expr.arguments[0]!.value);
-        if (expr.arguments.length >= 2) {
-          const dimExpr = this.generateExpression(expr.arguments[1]!.value);
-          return `${arrExpr}.${method}(${dimExpr})`;
+        const args = stripEnEno(expr.arguments);
+        const named = (name: string): Expression | undefined =>
+          args.find((a) => a.name?.toUpperCase() === name)?.value;
+        const positional = (idx: number): Expression | undefined =>
+          args[idx]?.name === undefined ? args[idx]?.value : undefined;
+        const arr = named("ARR") ?? positional(0);
+        const dim = named("DIM") ?? positional(1);
+        if (args.length !== 2 || arr === undefined || dim === undefined) {
+          this.codegenErrors.push({
+            message: `${nameUpper} takes two arguments, the array and the dimension (ARR, DIM)`,
+            line: expr.sourceSpan.startLine,
+            column: expr.sourceSpan.startCol,
+            ...(expr.sourceSpan.file !== undefined
+              ? { file: expr.sourceSpan.file }
+              : {}),
+          });
+          return "0";
         }
-        return `${arrExpr}.${method}()`;
+        const arrExpr = this.generateExpression(arr);
+        const dimExpr = this.generateExpression(dim);
+        return `${arrExpr}.${method}(${dimExpr})`;
       }
 
       // 1. Check for *_TO_* conversion pattern (e.g., INT_TO_REAL -> TO_REAL)

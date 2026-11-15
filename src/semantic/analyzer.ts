@@ -4414,6 +4414,62 @@ export class SemanticAnalyzer {
       }
     }
     this.callOwner = {};
+    this.validateInitialValueCallCounts(ast);
+  }
+
+  /**
+   * Argument counts of the standard function calls in initial values, which
+   * the statement walk does not reach (`hi : DINT := UPPER_BOUND();` failed in
+   * codegen). Counts only: the other call checks stay with the bodies.
+   */
+  private validateInitialValueCallCounts(ast: CompilationUnit): void {
+    const visit = (
+      blocks: VarBlock[],
+      varTypeMap: ReadonlyMap<string, string>,
+    ): void => {
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          if (decl.initialValue === undefined) continue;
+          walkAST(decl.initialValue, (node) => {
+            if (node.kind !== "FunctionCallExpression") return;
+            const call = node as FunctionCallExpression;
+            if (call.functionName.includes(".")) return;
+            this.checkStdFunctionArgs(call, varTypeMap, true);
+          });
+        }
+      }
+    };
+    const merged = (
+      outer: ReadonlyMap<string, string>,
+      blocks: VarBlock[],
+    ): Map<string, string> => {
+      const map = new Map(outer);
+      for (const [k, v] of this.buildVarTypeMap(blocks)) map.set(k, v);
+      return map;
+    };
+    this.callOwner = {};
+    visit(ast.globalVarBlocks, new Map());
+    for (const config of ast.configurations) visit(config.varBlocks, new Map());
+    for (const func of ast.functions) {
+      visit(func.varBlocks, this.buildVarTypeMap(func.varBlocks));
+    }
+    for (const prog of ast.programs) {
+      this.callOwner = { programName: prog.name };
+      const varTypeMap = this.buildVarTypeMap(prog.varBlocks);
+      visit(prog.varBlocks, varTypeMap);
+      for (const method of prog.methods) {
+        visit(method.varBlocks, merged(varTypeMap, method.varBlocks));
+      }
+    }
+    for (const fb of ast.functionBlocks) {
+      this.callOwner = { fbName: fb.name };
+      const varTypeMap = this.buildVarTypeMap(fb.varBlocks);
+      visit(fb.varBlocks, varTypeMap);
+      for (const method of fb.methods) {
+        visit(method.varBlocks, merged(varTypeMap, method.varBlocks));
+      }
+    }
+    this.callOwner = {};
   }
 
   /**
@@ -4632,6 +4688,8 @@ export class SemanticAnalyzer {
   private checkStdFunctionArgs(
     expr: FunctionCallExpression,
     varTypeMap: ReadonlyMap<string, string>,
+    /** Check the argument count of a standard function only. */
+    countsOnly = false,
   ): void {
     const nameUpper = expr.functionName.toUpperCase();
     // A method of the enclosing block is called, not a function of its name.
@@ -4708,10 +4766,11 @@ export class SemanticAnalyzer {
       // (the C++ compiler for library functions, or silent zero-fill for
       // user functions). Function-block invocations resolve to a variable,
       // not a function, so their optional inputs never reach this path.
-      if (sym?.kind === "function") {
+      if (sym?.kind === "function" && !countsOnly) {
         this.checkRequiredFunctionInputs(expr, sym, userArgs);
       }
     }
+    if (countsOnly) return;
 
     if (nameUpper === "ADR" && !userFunction) {
       this.requireFeature("pointer_to", "ADR", expr.sourceSpan);
