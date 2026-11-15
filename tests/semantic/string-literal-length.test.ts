@@ -74,4 +74,78 @@ END_PROGRAM
       ],
     );
   });
+  const warnings = (source: string): string[] => {
+    const r = compile(source);
+    expect(r.errors).toEqual([]);
+    return r.warnings.map((w) => `${w.line}:${w.column} ${w.message}`);
+  };
+  it("counts a # inside a STRING literal as a character", () => {
+    expect(
+      warnings(`PROGRAM Main
+VAR a : STRING(3) := 'ab#cdef'; b : STRING(3) := '#abcde'; c : STRING(7) := 'a#''bcdef'; d : STRING(3) := 'a#b'; END_VAR
+END_PROGRAM
+`),
+    ).toEqual([
+      "2:22 A STRING literal of 7 characters is longer than STRING(3): it is cut to 3",
+      "2:50 A STRING literal of 6 characters is longer than STRING(3): it is cut to 3",
+      "2:77 A STRING literal of 8 characters is longer than STRING(7): it is cut to 7",
+    ]);
+  });
+  it("resolves a variable inherited through EXTENDS before a global", () => {
+    expect(
+      warnings(`VAR_GLOBAL v : STRING(1); i : STRING(1); END_VAR
+FUNCTION_BLOCK PA
+VAR v : STRING(5); END_VAR
+VAR_INPUT i : STRING(5); END_VAR
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK MID EXTENDS PA
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK CH EXTENDS MID
+METHOD M : INT
+v := 'abc';
+i := 'abc';
+END_METHOD
+v := 'abc';
+i := 'abc';
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR c : CH; END_VAR
+c(i := 'abc');
+END_PROGRAM
+`),
+    ).toEqual([]);
+  });
+  it("warns for an inherited variable that is too short", () => {
+    expect(
+      warnings(`FUNCTION_BLOCK PA
+VAR v : STRING(2); END_VAR
+VAR_INPUT i : STRING(2); END_VAR
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK CH EXTENDS PA
+METHOD M : INT
+v := 'abcd';
+END_METHOD
+v := 'abc';
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR c : CH; END_VAR
+c(i := 'abcde');
+END_PROGRAM
+`),
+    ).toEqual([
+      "13:8 A STRING literal of 5 characters is longer than STRING(2): it is cut to 2",
+      "9:6 A STRING literal of 3 characters is longer than STRING(2): it is cut to 2",
+      "7:6 A STRING literal of 4 characters is longer than STRING(2): it is cut to 2",
+    ]);
+  });
+  it("warns once for a repeated array element", () => {
+    expect(
+      warnings(`PROGRAM Main
+VAR a : ARRAY[1..3] OF STRING(2) := [3('abc')]; END_VAR
+END_PROGRAM
+`),
+    ).toEqual([
+      "2:40 A STRING literal of 3 characters is longer than STRING(2): it is cut to 2",
+    ]);
+  });
 });

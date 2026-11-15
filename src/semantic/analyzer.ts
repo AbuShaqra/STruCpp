@@ -2104,6 +2104,7 @@ export class SemanticAnalyzer {
         ? fieldsOf(def)
         : undefined;
     };
+    const warned = new Set<string>();
     const check = (
       value: Expression | undefined,
       type: TypeReference | undefined,
@@ -2132,10 +2133,17 @@ export class SemanticAnalyzer {
       if (!wide && value.literalType !== "STRING") return;
       if ((target.kind === "WSTRING") !== wide) return;
       const { max, kind } = target;
+      // From the opening quote, so a `#` inside the text is not a type prefix
+      const raw = value.rawValue;
+      const quoted = raw.slice(Math.max(0, raw.search(/['"]/)));
       const length = charLiteralUnits(
-        wide ? `WSTRING#${value.rawValue}` : value.rawValue,
+        `${wide ? "WSTRING" : "STRING"}#${quoted}`,
       ).units.length;
       if (length <= max) return;
+      // A repeated array element, `[3('abc')]`, is one literal: warn once
+      const at = `${value.sourceSpan.file}:${value.sourceSpan.startLine}:${value.sourceSpan.startCol}`;
+      if (warned.has(at)) return;
+      warned.add(at);
       // A WSTRING holds UTF-16 code units, which a character may take two of
       const unit = wide
         ? length === 1
@@ -2153,8 +2161,9 @@ export class SemanticAnalyzer {
     };
     const inputsOf = (
       blocks: readonly VarBlock[],
-    ): TypeReference[] & { names?: string[] } => {
-      const out: TypeReference[] & { names?: string[] } = [];
+    ): TypeReference[] & { names?: string[]; positional?: boolean } => {
+      const out: TypeReference[] & { names?: string[]; positional?: boolean } =
+        [];
       out.names = [];
       for (const b of blocks) {
         if (b.blockType !== "VAR_INPUT" && b.blockType !== "VAR_IN_OUT")
@@ -2192,6 +2201,28 @@ export class SemanticAnalyzer {
         check(field.initialValue, field.type);
       }
     }
+    const findFb = (name: string): FunctionBlockDeclaration | undefined =>
+      ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name.toUpperCase(),
+      );
+    /**
+     * The variable blocks `fb` inherits through EXTENDS, root ancestor first;
+     * undefined when an ancestor is not in this unit or the chain loops.
+     */
+    const inheritedBlocks = (
+      fb: FunctionBlockDeclaration,
+    ): VarBlock[] | undefined => {
+      const chain: FunctionBlockDeclaration[] = [];
+      let parentName = fb.extends;
+      while (parentName !== undefined) {
+        const parent = findFb(parentName);
+        if (parent === undefined || parent === fb || chain.includes(parent))
+          return undefined;
+        chain.unshift(parent);
+        parentName = parent.extends;
+      }
+      return chain.flatMap((p) => p.varBlocks);
+    };
     const callInputs = (
       call: FunctionCallExpression,
       scope: Map<string, TypeReference>,
@@ -2199,26 +2230,31 @@ export class SemanticAnalyzer {
       const upper = call.functionName.toUpperCase();
       const local = scope.get(upper);
       if (local !== undefined) {
-        const fb = ast.functionBlocks.find(
-          (f) => f.name.toUpperCase() === local.name.toUpperCase(),
-        );
-        return fb === undefined ? undefined : inputsOf(fb.varBlocks);
+        const fb = findFb(local.name);
+        const inherited = fb === undefined ? undefined : inheritedBlocks(fb);
+        if (fb === undefined || inherited === undefined) return undefined;
+        const inputs = inputsOf([...inherited, ...fb.varBlocks]);
+        // Positional order across an EXTENDS chain is not checked
+        if (inherited.length > 0) inputs.positional = false;
+        return inputs;
       }
       const fn = ast.functions.find((f) => f.name.toUpperCase() === upper);
       return fn === undefined ? undefined : inputsOf(fn.varBlocks);
     };
     /**
-     * Check `own`'s initial values and `body`, with `outer` (the owning POU's
-     * variables, for a METHOD) and `result` (a FUNCTION or METHOD's own name)
-     * in scope but not checked again.
+     * Check `own`'s initial values and `body`, with `outer` (inherited and
+     * owning-POU variables, outermost first) and `result` (a FUNCTION or
+     * METHOD's own name) in scope but not checked again. Without `withGlobals`
+     * (an EXTENDS chain not fully known) no global is in scope.
      */
     const checkPou = (
       own: readonly VarBlock[],
       body: Statement[],
       outer: readonly VarBlock[] = [],
       result?: { name: string; type: TypeReference | undefined },
+      withGlobals = true,
     ): void => {
-      const scope = new Map(globals);
+      const scope = new Map(withGlobals ? globals : []);
       for (const block of outer) {
         for (const decl of block.declarations) {
           for (const name of decl.names)
@@ -2252,7 +2288,9 @@ export class SemanticAnalyzer {
             if (arg.isOutput) return;
             const type =
               arg.name === undefined
-                ? inputs[i]
+                ? inputs.positional === false
+                  ? undefined
+                  : inputs[i]
                 : inputs[inputs.names!.indexOf(arg.name.toUpperCase())];
             check(arg.value, type);
           });
@@ -2275,12 +2313,17 @@ export class SemanticAnalyzer {
       });
     }
     for (const fb of ast.functionBlocks) {
-      checkPou(fb.varBlocks, fb.body);
+      const inherited = inheritedBlocks(fb);
+      const known = inherited !== undefined;
+      checkPou(fb.varBlocks, fb.body, inherited, undefined, known);
       for (const m of fb.methods) {
-        checkPou(m.varBlocks, m.body, fb.varBlocks, {
-          name: m.name,
-          type: m.returnType,
-        });
+        checkPou(
+          m.varBlocks,
+          m.body,
+          [...(inherited ?? []), ...fb.varBlocks],
+          { name: m.name, type: m.returnType },
+          known,
+        );
       }
     }
   }
