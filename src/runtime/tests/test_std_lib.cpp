@@ -141,28 +141,26 @@ TEST(StdLibTest, TypeConversions) {
 // IEC TIME / DATE / TOD / DT standard-library tests
 // =============================================================================
 //
-// These exercise the IECVar-based surface (the only one codegen emits), so
-// passing here means generated POU code that calls `ADD_TIME` etc. will
-// link.  Time literals in IEC code lower to raw `int64_t` nanoseconds; we
-// mirror that by constructing IEC_TIME directly from a literal `LL` count
-// (no separate value-class helper).
+// TIME and TOD are 32-bit ms, DATE and DT 32-bit seconds since 1970, all
+// wrapping modulo 2^32; LTIME, LTOD and LDT are 64-bit ns, LDATE days.
 
 TEST(TimeTest, Arithmetic) {
-    IEC_TIME t1(10LL * NS_PER_S);
-    IEC_TIME t2(5LL * NS_PER_S);
+    IEC_TIME t1(TIME_t(10000u));
+    IEC_TIME t2(TIME_t(5000u));
 
     EXPECT_EQ(TIME_TO_S(ADD_TIME(t1, t2)), 15);
     EXPECT_EQ(TIME_TO_S(SUB_TIME(t1, t2)), 5);
     EXPECT_EQ(TIME_TO_S(MUL_TIME(t1, 2)), 20);
     EXPECT_EQ(TIME_TO_S(DIV_TIME(t1, 2)), 5);
     EXPECT_EQ(DIVTIME(t1, t2), 2);
-    EXPECT_EQ(TIME_TO_S(ABS_TIME(IEC_TIME(-5LL * NS_PER_S))), 5);
+    // Wraps modulo 2^32 ms: 5 s - 10 s is T#49d17h2m42s296ms
+    EXPECT_EQ(SUB_TIME(t2, t1).get().raw, 4294962296u);
 }
 
 TEST(TimeTest, Comparison) {
-    IEC_TIME t1(10LL * NS_PER_S);
-    IEC_TIME t2(5LL * NS_PER_S);
-    IEC_TIME t3(10LL * NS_PER_S);
+    IEC_TIME t1(TIME_t(10000u));
+    IEC_TIME t2(TIME_t(5000u));
+    IEC_TIME t3(TIME_t(10000u));
 
     EXPECT_TRUE(GT_TIME(t1, t2));
     EXPECT_TRUE(LT_TIME(t2, t1));
@@ -173,22 +171,27 @@ TEST(TimeTest, Comparison) {
 }
 
 TEST(TimeTest, UnitConversion) {
-    IEC_TIME t(static_cast<TIME_t>(NS_PER_D + 2 * NS_PER_H + 30 * NS_PER_M + 45 * NS_PER_S + 500 * NS_PER_MS));
+    IEC_TIME t(TIME_t(static_cast<uint32_t>((NS_PER_D + 2 * NS_PER_H + 30 * NS_PER_M + 45 * NS_PER_S + 500 * NS_PER_MS) / NS_PER_MS)));
     EXPECT_EQ(TIME_TO_D(t), 1);
     EXPECT_EQ(TIME_TO_H(t), 26);
     EXPECT_EQ(TIME_TO_M(t), 26 * 60 + 30);
     // TIME_TO_S returns LREAL seconds and keeps the fraction; TIME_TO_MS truncates.
     EXPECT_DOUBLE_EQ(TIME_TO_S(t), 26.0 * 3600.0 + 30.0 * 60.0 + 45.5);
     EXPECT_EQ(TIME_TO_MS(t), (26LL * 3600LL + 30 * 60 + 45) * 1000 + 500);
+    // TIME <-> LTIME: exact one way, truncated to ms and wrapped the other
+    EXPECT_EQ(TO_LTIME(t).get(), TIME_TO_NS(t));
+    EXPECT_EQ(LTIME_TO_TIME_VALUE(1999999LL).get().raw, 1u);
 }
 
 TEST(DateTest, Construction) {
     IEC_DATE d = DATE_FROM_YMD(2024, 6, 15);
     // 2024-06-15 is 19889 days since 1970-01-01.
     EXPECT_EQ(DATE_TO_DAYS(d), 19889);
+    EXPECT_EQ(DATE_TO_SECONDS(d), 19889LL * 86400LL);
     EXPECT_EQ(DATE_TO_DAYS(DATE_FROM_YMD(1970, 1, 1)), 0);
     // 2000-03-01: the day after a 400-year leap day.
     EXPECT_EQ(DATE_TO_DAYS(DATE_FROM_YMD(2000, 3, 1)), 11017);
+    EXPECT_EQ(sizeof(d), 4u);
 }
 
 TEST(DateTest, Arithmetic) {
@@ -212,20 +215,19 @@ TEST(DateTest, Comparison) {
 }
 
 TEST(TodTest, Construction) {
-    // 14:30:45 → 14*3600 + 30*60 + 45 = 52245 seconds = 52245 * 10^9 ns.
+    // 14:30:45 is 52245 s, 52245000 ms.
     IEC_TOD tod = TOD_FROM_HMS(14, 30, 45);
+    EXPECT_EQ(TOD_TO_MS(tod), 52245000LL);
     EXPECT_EQ(TOD_TO_NS(tod), 52245LL * 1000000000LL);
 }
 
-TEST(TodTest, ArithmeticNormalises) {
+TEST(TodTest, ArithmeticWraps) {
     IEC_TOD ten_am = TOD_FROM_HMS(10, 0, 0);
-    // +5h crosses noon but not midnight.
-    IEC_TOD plus5h = ADD_TOD(ten_am, 5LL * 3600LL * 1000000000LL);
-    EXPECT_EQ(TOD_TO_NS(plus5h), 15LL * 3600LL * 1000000000LL);
-
-    // +20h wraps past midnight: 10am + 20h = 6am next day → normalised to 6am.
-    IEC_TOD next_morning = ADD_TOD(ten_am, 20LL * 3600LL * 1000000000LL);
-    EXPECT_EQ(TOD_TO_NS(next_morning), 6LL * 3600LL * 1000000000LL);
+    IEC_TOD plus5h = ADD_TOD(ten_am, 5LL * 3600LL * 1000LL);
+    EXPECT_EQ(TOD_TO_MS(plus5h), 15LL * 3600LL * 1000LL);
+    // A TOD past midnight wraps modulo 2^32 ms, as on the PLC, not 24 h.
+    IEC_TOD later = ADD_TOD(ten_am, 20LL * 3600LL * 1000LL);
+    EXPECT_EQ(TOD_TO_MS(later), 30LL * 3600LL * 1000LL);
 }
 
 TEST(TodTest, Comparison) {
@@ -238,7 +240,6 @@ TEST(TodTest, Comparison) {
 
 TEST(DtTest, Construction) {
     IEC_DT dt = DT_FROM_COMPONENTS(2024, 6, 15, 14, 30, 45);
-    // 2024-06-15 14:30:45 UTC = days_to_epoch * 86400 + 14*3600 + 30*60 + 45 seconds.
     const int64_t expected_seconds = 19889LL * 86400LL + 14LL * 3600LL + 30LL * 60LL + 45LL;
     EXPECT_EQ(DT_TO_SECONDS(dt), expected_seconds);
     EXPECT_EQ(DT_TO_NS(dt), expected_seconds * 1000000000LL);
@@ -259,10 +260,12 @@ TEST(DtTest, DateAndTodRoundTrip) {
 
 TEST(DtTest, Arithmetic) {
     IEC_DT base = DT_FROM_COMPONENTS(2024, 6, 15, 14, 30, 45);
-    const int64_t one_minute_ns = 60LL * 1000000000LL;
-    IEC_DT later = ADD_DT(base, one_minute_ns);
-    EXPECT_EQ(DIFF_DT(later, base), one_minute_ns);
-    EXPECT_TRUE(EQ_DT(SUB_DT(later, one_minute_ns), base));
+    IEC_DT later = ADD_DT(base, 60);
+    EXPECT_EQ(DIFF_DT(later, base), 60);
+    EXPECT_TRUE(EQ_DT(SUB_DT(later, 60), base));
+    // DT - DT is a TIME in ms, DT + TIME moves by whole seconds
+    EXPECT_EQ(iec_temporal_sub(later, base).get().raw, 60000u);
+    EXPECT_TRUE(EQ_DT(iec_temporal_add(base, IEC_TIME(TIME_t(60999u))), later));
 }
 
 TEST(StringTest, Construction) {
@@ -432,21 +435,21 @@ TEST(TimeVarTest, Forcing) {
     // wrapper. The force table holds the value and writes it back at each
     // cycle boundary.
     force::clear_all();
-    IEC_TIME tv(10LL * NS_PER_S);
+    IEC_TIME tv(TIME_t(10000u));
     EXPECT_EQ(TIME_TO_S(tv), 10);
 
-    const TIME_t forced = 99LL * NS_PER_S;
+    const TIME_t forced(99000u);
     force::set(&tv, &forced, sizeof forced);
     EXPECT_TRUE(force::is_forced(&tv));
     EXPECT_EQ(TIME_TO_S(tv), 99);
 
-    tv.set(20LL * NS_PER_S);
+    tv.set(TIME_t(20000u));
     EXPECT_EQ(TIME_TO_S(tv), 20);  // the write lands inside the cycle
     force::apply_all();
     EXPECT_EQ(TIME_TO_S(tv), 99);  // and the force wins at the boundary
 
     force::clear(&tv);
-    tv.set(20LL * NS_PER_S);
+    tv.set(TIME_t(20000u));
     force::apply_all();
     EXPECT_EQ(TIME_TO_S(tv), 20);
 }

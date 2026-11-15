@@ -75,5 +75,40 @@ describe("one-pass diagnostics", () => {
         "7:6: CHAR#'☃' holds a character Windows-1252 lacks, which a CHAR cannot store; use a WCHAR literal (WCHAR#\"...\") for it",
       ]);
     });
+
+    it(`gives literals into WCHAR, WSTRING, CHAR inputs and CHAR their own messages after a declaration error (${label})`, () => {
+      const body = (dup: boolean): string =>
+        `FUNCTION F : INT\nVAR_INPUT c : CHAR; END_VAR\nF := 0;\nEND_FUNCTION\nPROGRAM P\nVAR ${dup ? "x : INT; x : INT; " : ""}r : INT; w : WCHAR; c : CHAR; ws : WSTRING; END_VAR\nr := F(c := '☃');\nw := '☃';\nc := '☃☃';\nws := '☃';\nr := F('é');\nEND_PROGRAM\n`;
+      const list = (dup: boolean): string[] =>
+        compile(body(dup), { ...options, libraries })
+          .errors.map((e) => `${e.line}:${e.column}: ${e.message}`)
+          .filter((m) => !m.includes("already defined"))
+          .sort();
+      const expected = [
+        "10:7: Cannot assign STRING to WSTRING",
+        "7:13: CHAR#'☃' holds a character Windows-1252 lacks, which a CHAR cannot store; use a WCHAR literal (WCHAR#\"...\") for it",
+        "8:6: Cannot assign STRING to WCHAR",
+        "9:6: Cannot assign STRING to CHAR",
+      ];
+      expect(list(true)).toEqual(expected);
+      expect(list(false)).toEqual(expected);
+    });
+
+    it(`binds positional and method calls in the fallback as a clean compile does (${label})`, () => {
+      const sources = [
+        "FUNCTION F : INT\nVAR_IN_OUT io : INT; END_VAR\nVAR_INPUT s : STRING; c : CHAR; END_VAR\nF := LEN(s) * 1000 + CHAR_TO_INT(c);\nEND_FUNCTION\nPROGRAM P\nVAR r : INT; END_VAR\nr := F(r, 'hello', 'a');\n",
+        "FUNCTION F : INT\nVAR_INPUT c : CHAR; END_VAR\nF := 1;\nEND_FUNCTION\nFUNCTION_BLOCK FB\nVAR_OUTPUT o : INT; END_VAR\nMETHOD F : INT\nVAR_INPUT c : STRING; END_VAR\nF := LEN(c);\nEND_METHOD\no := F('hello');\nEND_FUNCTION_BLOCK\nPROGRAM P\nVAR f1 : FB; r : INT; END_VAR\nf1();\n",
+        "FUNCTION F : INT\nVAR_IN_OUT io : INT; END_VAR\nVAR_INPUT c : CHAR; ws : WSTRING; END_VAR\nF := 0;\nEND_FUNCTION\nPROGRAM P\nVAR r : INT; END_VAR\nr := F(r, 'ab', \"é\");\n",
+        "FUNCTION F : INT\nVAR_INPUT ws : WSTRING; END_VAR\nF := 0;\nEND_FUNCTION\nPROGRAM P\nVAR r : INT; END_VAR\nr := F('xyz');\nr := F(ws := 'xyz');\n",
+        "FUNCTION F : INT\nVAR_INPUT c : CHAR; END_VAR\nVAR_OUTPUT o : INT; END_VAR\nVAR_INPUT ws : WSTRING; c2 : CHAR; END_VAR\nF := 0;\nEND_FUNCTION\nPROGRAM P\nVAR r : INT; END_VAR\nr := F('ab', r, 'x', 'yz');\nr := F(c2 := 'pq', c := 'a', ws := 'w');\n",
+      ];
+      for (const head of sources) {
+        const errors = (extra: string): string[] =>
+          compile(`${head}${extra}END_PROGRAM\n`, { ...options, libraries })
+            .errors.map((e) => `${e.line}:${e.column}: ${e.message}`)
+            .filter((m) => !m.includes("Cannot assign TIME to INT"));
+        expect(errors("r := T#1s;\n")).toEqual(errors(""));
+      }
+    });
   }
 });

@@ -37,8 +37,16 @@ export type IECWireFormat =
   | "uint64"
   | "float32"
   | "float64"
-  /** TIME — int64 nanoseconds duration, formatted as `T#…` */
+  /** LTIME — int64 nanoseconds duration, formatted as `LTIME#…` */
   | "duration-ns-i64"
+  /** TIME — uint32 milliseconds duration (wraps), formatted as `T#…` */
+  | "duration-ms-u32"
+  /** DT — uint32 seconds since the Unix epoch, formatted as `DT#…` */
+  | "datetime-s-u32"
+  /** DATE — uint32 seconds since the Unix epoch (whole days), `D#…` */
+  | "date-s-u32"
+  /** TOD — uint32 milliseconds since midnight, formatted as `TOD#…` */
+  | "tod-ms-u32"
   /** DT — int64 nanoseconds since Unix epoch, formatted as `DT#…` */
   | "datetime-ns-i64"
   /** DATE — int64 nanoseconds since Unix epoch (date portion only),
@@ -288,11 +296,11 @@ export const IEC_BASE_TYPES: readonly IECTypeMetadata[] = [
   {
     name: "TIME",
     aliases: [],
-    byteSize: 8,
-    bits: 64,
-    signed: true,
+    byteSize: 4,
+    bits: 32,
+    signed: false,
     cppType: "TIME_t",
-    wireFormat: "duration-ns-i64",
+    wireFormat: "duration-ms-u32",
     xml: { elementName: "TIME", plcopenStandard: true },
     literalDisplay: "T#1d2h3m",
   },
@@ -310,33 +318,33 @@ export const IEC_BASE_TYPES: readonly IECTypeMetadata[] = [
   {
     name: "DATE",
     aliases: [],
-    byteSize: 8,
-    bits: 64,
-    signed: true,
+    byteSize: 4,
+    bits: 32,
+    signed: false,
     cppType: "DATE_t",
-    wireFormat: "date-ns-i64",
+    wireFormat: "date-s-u32",
     xml: { elementName: "DATE", plcopenStandard: true },
     literalDisplay: "D#YYYY-MM-DD",
   },
   {
     name: "TOD",
     aliases: ["TIME_OF_DAY"],
-    byteSize: 8,
-    bits: 64,
-    signed: true,
+    byteSize: 4,
+    bits: 32,
+    signed: false,
     cppType: "TOD_t",
-    wireFormat: "tod-ns-i64",
+    wireFormat: "tod-ms-u32",
     xml: { elementName: "TOD", plcopenStandard: true },
     literalDisplay: "TOD#HH:MM:SS",
   },
   {
     name: "DT",
     aliases: ["DATE_AND_TIME"],
-    byteSize: 8,
-    bits: 64,
-    signed: true,
+    byteSize: 4,
+    bits: 32,
+    signed: false,
     cppType: "DT_t",
-    wireFormat: "datetime-ns-i64",
+    wireFormat: "datetime-s-u32",
     xml: { elementName: "DT", plcopenStandard: true },
     literalDisplay: "DT#YYYY-MM-DD-HH:MM:SS",
   },

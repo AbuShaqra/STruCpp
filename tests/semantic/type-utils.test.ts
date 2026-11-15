@@ -59,8 +59,9 @@ describe("type-utils", () => {
     });
 
     it("should have correct sizes for TOD and DT aliases", () => {
-      expect(ELEMENTARY_TYPES["TOD"]!.sizeBits).toBe(64);
-      expect(ELEMENTARY_TYPES["DT"]!.sizeBits).toBe(64);
+      expect(ELEMENTARY_TYPES["TOD"]!.sizeBits).toBe(32);
+      expect(ELEMENTARY_TYPES["DT"]!.sizeBits).toBe(32);
+      expect(ELEMENTARY_TYPES["LTOD"]!.sizeBits).toBe(64);
     });
   });
 

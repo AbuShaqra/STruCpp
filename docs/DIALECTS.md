@@ -104,6 +104,42 @@ the root. A profile without `extends` has only its own features.
 | `bit_type`           | `BIT` as the type of a STRUCT member, packed into shared bytes ([below](#bit-members)) |
 | `string_default_80`  | a STRING or WSTRING written without a length holds 80 characters, not 254 ([below](#default-string-length)) |
 
+## Bitwise operators on integers
+
+IEC 61131-3 Ed. 3 Table 31 defines AND, OR and XOR on ANY_BIT (BOOL and the bit strings) only. With no
+dialect flag an integer operand is accepted, as before, and the result now has the operands' common
+integer type (`i AND j` with INT operands is an INT, not a BOOL), so assigning it to a narrower type gets
+the usual narrowing warning. An untyped constant beside a typed integer takes that integer's type
+(`s AND 16#7F` with a SINT `s` is a SINT, so `s := s AND 16#7F` gets no warning); beside an operand that is
+neither an integer nor ANY_BIT (TIME, REAL, STRING) it is typed as before. A signed and an unsigned integer
+take the smallest signed type that holds both, as Figure 11 widens them, whatever their order (`si OR usi`
+is an INT, `i AND ui` a DINT, `di XOR udi` a LINT), and the generated C++ computes in that type, so
+`(di OR udi) < 0` is TRUE for a negative `di`; LINT and ULINT have none, so their result is a LINT with
+the warning `LINT and ULINT have no common integer type: AND of them is a LINT`. With no dialect flag this adds narrowing
+warnings that development did not give, where the wider result is stored back into a narrower variable:
+`udi := di OR udi` (DINT and UDINT) now warns `Implicit narrowing conversion from LINT to UDINT`. A refusal is reported once,
+at the typed operand, also in a chain (`s AND 1 AND 2`). Under `--dialect iec-3`,
+and under `--strict` in any dialect, a typed integer operand is refused, at that operand and naming its
+type (an alias by its base type): `AND takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not
+SINT; convert it with SINT_TO_WORD or the like`. An untyped constant beside a bit string or BOOL
+(`w AND 16#FF`, `x OR 1`) takes that operand's type and is accepted, and so does an expression of untyped constants only
+(`w := 16#F0 OR 16#0F`, `CW : WORD := 16#F0 AND 16#0F`), which takes its type from where it is used. Only a
+typed integer operand (an INT variable, `INT#16#F0`) is refused.
+
+NOT follows the same rules. `NOT i` with a typed integer `i` keeps its logical meaning with no dialect flag
+(`NOT 5` is FALSE), and is refused under `--dialect iec-3` and `--strict`: `NOT takes bit strings or BOOL
+(ANY_BIT, IEC 61131-3 Table 31), not INT; convert it with INT_TO_WORD or the like`. NOT of an untyped constant
+takes its type from where it is used: into a bit string it is that width's complement (`w := NOT 16#00F0` is
+16#FF0F), elsewhere it stays logical. Code that stored `NOT 16#00F0` into a WORD and got 0 now gets 16#FF0F.
+
+Because `i AND 1` with an INT `i` is an INT, not a BOOL, it is an error in every mode, with no dialect
+flag too, wherever a BOOL is required: as the condition of IF, ELSIF, WHILE or REPEAT ... UNTIL
+(`Condition must be a boolean or bit type, got INT`) and as the G argument of SEL (`Argument 'G' of 'SEL'
+expects BOOL, got INT`). Such code compiled before. Write the test as a comparison: `IF (i AND 1) <> 0
+THEN`. Assigned to a BOOL variable it gets the narrowing warning, as any INT does. Passed to a BOOL
+VAR_INPUT of a user FUNCTION or function block (`F(i AND 1)`, `fb(b := i AND 1)`) it is accepted with no
+diagnostic outside `--strict`, as an INT variable passed there is.
+
 ## Refusals
 
 When a feature is off the compile fails with an error at the construct's own line and column:
