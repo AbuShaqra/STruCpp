@@ -369,6 +369,16 @@ the thread that runs a task, before that task's programs run in each cycle, and
 `strucpp::strucpp_set_current_task(nullptr)` after them. The name is not copied: pass a string that
 outlives the call, such as a literal.
 
+A store into a subrange variable goes through `iec_subrange_store`, which raises the same fault
+(`IecFault::Subrange`) with `Value <v> outside <lo>..<hi> stored in <variable>` when the value is outside the range,
+each number as written (a ULINT above 2^63 too). Every store is checked: an assignment (to a local, a member, a
+FUNCTION or METHOD result, a global, a CONFIGURATION global through VAR_EXTERNAL, an ARRAY element, a STRUCT
+field), an output or in-out copied back (`f(o => x)`). An input of a FUNCTION_BLOCK, FUNCTION or METHOD is
+checked on entry, so its fault names the callee and the line of its VAR_INPUT. An integer literal
+inside the range is stored with no check. The check costs time: a tight loop of subrange stores ran about 2.4
+times slower at -O2 than with no check. Defining `STRUCPP_NO_BOUNDS_CHECK` leaves the check out, as it does the
+index check.
+
 ## Pointer and Reference Types
 
 ### POINTER TO (`iec_pointer.hpp`)
