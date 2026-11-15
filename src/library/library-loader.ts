@@ -45,7 +45,10 @@ export class LibraryManifestError extends Error {
 /** Build a TypeReference AST node from a manifest variable entry. The
  *  reference preserves the metadata downstream consumers (codegen,
  *  debug-table-gen) need to recurse into nested types. */
-function makeTypeRef(v: LibraryVarType): TypeReference {
+function makeTypeRef(
+  v: LibraryVarType,
+  stringDefaultLength?: number,
+): TypeReference {
   // Archive JSON is external input: keep only kinds the compiler writes.
   const referenceKind: ReferenceKind = isReferenceKind(v.referenceKind)
     ? v.referenceKind
@@ -65,7 +68,29 @@ function makeTypeRef(v: LibraryVarType): TypeReference {
   if (v.referenceChain) {
     ref.referenceChain = v.referenceChain.filter(isReferenceKind);
   }
+  applyStringDefaultLength(ref, stringDefaultLength);
   return ref;
+}
+
+/**
+ * A plain STRING or WSTRING of a library compiled with another default length
+ * (manifest `stringDefaultLength`) has that length, marked as a default.
+ */
+function applyStringDefaultLength(
+  ref: TypeReference,
+  stringDefaultLength: number | undefined,
+): void {
+  const upper = ref.name.toUpperCase();
+  if (
+    stringDefaultLength === undefined ||
+    (upper !== "STRING" && upper !== "WSTRING") ||
+    ref.maxLength !== undefined ||
+    ref.arrayDimensions !== undefined
+  ) {
+    return;
+  }
+  ref.maxLength = stringDefaultLength;
+  ref.defaultLength = true;
 }
 
 function isReferenceKind(
@@ -125,6 +150,7 @@ function buildLibraryTypeDefinition(
 function makeVarSymbol(
   v: LibraryVarType,
   direction: "input" | "output" | "inout" | "local",
+  stringDefaultLength?: number,
 ): VariableSymbol {
   const varType: ElementaryType = ELEMENTARY_TYPES[v.type.toUpperCase()] ?? {
     typeKind: "elementary",
@@ -135,7 +161,7 @@ function makeVarSymbol(
     kind: "VarDeclaration",
     sourceSpan: createDefaultSourceSpan(),
     names: [v.name],
-    type: makeTypeRef(v),
+    type: makeTypeRef(v, stringDefaultLength),
   };
   return {
     name: v.name,
@@ -316,6 +342,15 @@ export function loadLibraryManifest(json: unknown): LibraryManifest {
   if (Array.isArray(obj.sourceFiles)) {
     result.sourceFiles = obj.sourceFiles as string[];
   }
+  if (obj.stringDefaultLength !== undefined) {
+    const n = obj.stringDefaultLength;
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 1) {
+      throw new LibraryManifestError(
+        "Invalid library manifest: stringDefaultLength must be a positive integer",
+      );
+    }
+    result.stringDefaultLength = n;
+  }
 
   return result;
 }
@@ -352,6 +387,13 @@ export function registerLibrarySymbols(
           name: fn.returnType,
           isReference: false,
           referenceKind: "none",
+          ...(manifest.stringDefaultLength !== undefined &&
+          ["STRING", "WSTRING"].includes(fn.returnType.toUpperCase())
+            ? {
+                maxLength: manifest.stringDefaultLength,
+                defaultLength: true as const,
+              }
+            : {}),
         },
         varBlocks: [],
         body: [],
@@ -365,6 +407,7 @@ export function registerLibrarySymbols(
             ...(p.referenceKind ? { referenceKind: p.referenceKind } : {}),
           },
           p.direction,
+          manifest.stringDefaultLength,
         );
         // Carry the optional-input marker: a parameter with an initial value
         // is optional at the call site (see Option A in the analyzer).
@@ -473,15 +516,27 @@ export function registerLibrarySymbols(
           actions: [],
           body: [],
         },
-        inputs: fb.inputs.map((i) => makeVarSymbol(i, "input")),
-        outputs: fb.outputs.map((o) => makeVarSymbol(o, "output")),
-        inouts: fb.inouts.map((io) => makeVarSymbol(io, "inout")),
+        inputs: fb.inputs.map((i) =>
+          makeVarSymbol(i, "input", manifest.stringDefaultLength),
+        ),
+        outputs: fb.outputs.map((o) =>
+          makeVarSymbol(o, "output", manifest.stringDefaultLength),
+        ),
+        inouts: fb.inouts.map((io) =>
+          makeVarSymbol(io, "inout", manifest.stringDefaultLength),
+        ),
         // Present from archives that export them; an older archive leaves
         // this empty and a RETAINed instance of its blocks covers the visible
         // surface only, with a warning naming the block.
-        locals: (fb.locals ?? []).map((l) => makeVarSymbol(l, "local")),
+        locals: (fb.locals ?? []).map((l) =>
+          makeVarSymbol(l, "local", manifest.stringDefaultLength),
+        ),
         ...(fb.temps !== undefined
-          ? { temps: fb.temps.map((t) => makeVarSymbol(t, "local")) }
+          ? {
+              temps: fb.temps.map((t) =>
+                makeVarSymbol(t, "local", manifest.stringDefaultLength),
+              ),
+            }
           : {}),
         ...(fb.properties !== undefined && fb.methods !== undefined
           ? { libraryMethodNames: fb.methods.map((m) => m.name) }

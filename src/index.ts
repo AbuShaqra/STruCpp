@@ -50,6 +50,10 @@ import { lowerAccessorLocals } from "./semantic/lower-accessor-locals.js";
 import { lowerProgramSelfMembers } from "./semantic/program-access.js";
 import { lowerPlatformTypes } from "./semantic/platform-types.js";
 import {
+  defaultStringLength,
+  lowerDefaultStringLength,
+} from "./semantic/string-default-length.js";
+import {
   implicitParameterPragmas,
   markImplicitParameters,
 } from "./semantic/implicit-parameters.js";
@@ -880,6 +884,9 @@ function runPipeline(
     ];
     // After the actions, so `PRG_A.x` in an action of PRG_A is lowered too.
     if (dialect.features.has("program_methods")) lowerProgramSelfMembers(ast);
+    if (dialect.features.has("string_default_80")) {
+      lowerDefaultStringLength(ast, defaultStringLength(dialect.features));
+    }
     if (dialect.features.has("platform_types")) {
       const libraryTypes = new Set<string>();
       for (const archive of mergedOptions.libraries ?? []) {

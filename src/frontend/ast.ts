@@ -518,6 +518,10 @@ export interface TypeReference extends ASTNode {
   bit?: true;
   /** STRING / WSTRING length of an inline array's element (`ARRAY[0..1] OF STRING(10)`). */
   elementMaxLength?: number | string;
+  /** Set when `maxLength` is the dialect's default (feature string_default_80), none written. */
+  defaultLength?: true;
+  /** Set when `elementMaxLength` is the dialect's default, none written. */
+  elementDefaultLength?: true;
   /**
    * The element's reference levels, outermost first, for an inline array of
    * pointers or references: `ARRAY[0..3] OF POINTER TO INT` is

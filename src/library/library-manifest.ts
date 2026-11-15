@@ -301,6 +301,9 @@ export interface LibraryManifest {
   displayName?: string;
   /** Library version */
   version: string;
+  /** The length of a STRING or WSTRING declared without one in this library
+   *  (80 when compiled with the feature string_default_80). Absent means 254. */
+  stringDefaultLength?: number;
   /** Human-readable description */
   description?: string;
   /** C++ namespace for the library */
