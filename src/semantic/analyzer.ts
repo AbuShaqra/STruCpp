@@ -1980,33 +1980,110 @@ export class SemanticAnalyzer {
         this.literalsReported.add(literal);
       }
     });
-    const charKind = (typeName: string): "CHAR" | "WCHAR" | undefined => {
+    const baseOf = (typeName: string): string => {
       let upper = typeName.toUpperCase();
       for (let i = 0; i < 32; i++) {
-        if (upper === "CHAR" || upper === "WCHAR") return upper;
         const current = upper;
         const def = ast.types.find(
           (t) => t.name.toUpperCase() === current,
         )?.definition;
-        if (def?.kind !== "TypeReference") return undefined;
+        if (
+          def?.kind !== "TypeReference" ||
+          def.arrayDimensions !== undefined
+        ) {
+          return upper;
+        }
         upper = def.name.toUpperCase();
       }
-      return undefined;
+      return upper;
     };
-    const adapt = (value: Expression, typeName: string | undefined): void => {
-      const kind = typeName === undefined ? undefined : charKind(typeName);
-      if (kind === undefined || value.kind !== "LiteralExpression") return;
-      const want = kind === "CHAR" ? "STRING" : "WSTRING";
-      if (value.literalType !== want || (value.typePrefix ?? "") !== "") return;
-      const raw = `${kind}#${value.rawValue}`;
-      if (charLiteralUnits(raw).units.length !== 1) return;
-      value.literalType = kind;
-      value.rawValue = raw;
-      value.value = raw;
+    // A STRING literal into a CHAR, WCHAR or WSTRING, settled as the type
+    // checks would: the character it holds, or the error they give.
+    const adapt = (
+      value: Expression,
+      typeName: string | undefined,
+      param?: string,
+    ): void => {
+      if (typeName === undefined || value.kind !== "LiteralExpression") return;
+      if (value.literalType !== "STRING" || (value.typePrefix ?? "") !== "") {
+        return;
+      }
+      const base = baseOf(typeName);
+      if (base !== "CHAR" && base !== "WCHAR" && base !== "WSTRING") return;
+      // The call check takes a STRING literal into a WSTRING input.
+      if (param !== undefined && base === "WSTRING") return;
+      if (base === "CHAR") {
+        const raw = `CHAR#${value.rawValue}`;
+        if (charLiteralUnits(raw).units.length === 1) {
+          value.literalType = "CHAR";
+          value.rawValue = raw;
+          value.value = raw;
+          return;
+        }
+      }
+      const target = typeName.toUpperCase();
+      const span = value.sourceSpan;
+      this.literalsReported.add(value);
+      // The type checks ran and reported it already.
+      if (at.has(`${span.file ?? ""}:${span.startLine}:${span.startCol}`))
+        return;
+      this.addError(
+        param === undefined
+          ? `Cannot assign STRING to ${target}`
+          : `Cannot assign STRING to parameter '${param}' of type ${target}`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    };
+    // A callable's VAR_INPUT and VAR_IN_OUT in declaration order: the call
+    // check binds the i-th argument to the i-th of them.
+    type Param = { name: string; type: string; input: boolean };
+    const paramsOf = (blocks: readonly VarBlock[]): Param[] =>
+      blocks
+        .filter(
+          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
+        )
+        .flatMap((b) =>
+          b.declarations.flatMap((d) =>
+            d.names.map((n) => ({
+              name: n,
+              type: d.type.name,
+              input:
+                b.blockType === "VAR_INPUT" &&
+                d.type.arrayDimensions === undefined &&
+                (d.type.referenceKind ?? "none") === "none",
+            })),
+          ),
+        );
+    const functionParams = new Map<string, Param[]>();
+    for (const f of ast.functions) {
+      functionParams.set(f.name.toUpperCase(), paramsOf(f.varBlocks));
+    }
+    /** The methods a bare call in an FB (its bases' too) or PROGRAM reaches. */
+    const methodsOf = (owner: {
+      methods: readonly { name: string; varBlocks: VarBlock[] }[];
+      extends?: string;
+    }): Map<string, Param[]> => {
+      const out = new Map<string, Param[]>();
+      const seen = new Set<string>();
+      let current: typeof owner | undefined = owner;
+      while (current) {
+        for (const m of current.methods) {
+          const upper = m.name.toUpperCase();
+          if (!out.has(upper)) out.set(upper, paramsOf(m.varBlocks));
+        }
+        const base: string | undefined = current.extends?.toUpperCase();
+        if (base === undefined || seen.has(base)) break;
+        seen.add(base);
+        current = ast.functionBlocks.find((f) => f.name.toUpperCase() === base);
+      }
+      return out;
     };
     const visitPou = (
       blocks: readonly VarBlock[],
       bodies: readonly Statement[][],
+      methods: ReadonlyMap<string, Param[]> = new Map(),
     ): void => {
       const types = new Map<string, string>();
       for (const b of [...ast.globalVarBlocks, ...blocks]) {
@@ -2020,6 +2097,26 @@ export class SemanticAnalyzer {
       for (const body of bodies) {
         for (const stmt of body) {
           walkAST(stmt as ASTNode, (n) => {
+            if (n.kind === "FunctionCallExpression") {
+              const call = n as FunctionCallExpression;
+              const upper = call.functionName.toUpperCase();
+              // A variable of the name (an FB instance) is what the call invokes.
+              if (call.instance !== undefined || types.has(upper)) return;
+              const params = methods.get(upper) ?? functionParams.get(upper);
+              if (params === undefined) return;
+              stripEnEno(call.arguments).forEach((arg, i) => {
+                const param =
+                  arg.name === undefined
+                    ? params[i]
+                    : params.find(
+                        (p) => p.name.toUpperCase() === arg.name!.toUpperCase(),
+                      );
+                if (param?.input === true && !arg.isOutput) {
+                  adapt(arg.value, param.type, param.name);
+                }
+              });
+              return;
+            }
             if (n.kind !== "AssignmentStatement") return;
             const a = n as AssignmentStatement;
             if (
@@ -2034,12 +2131,15 @@ export class SemanticAnalyzer {
         }
       }
     };
-    for (const p of ast.programs) visitPou(p.varBlocks, [p.body]);
+    for (const p of ast.programs) {
+      visitPou(p.varBlocks, [p.body], methodsOf(p));
+    }
     for (const f of ast.functions) visitPou(f.varBlocks, [f.body]);
     for (const fb of ast.functionBlocks) {
-      visitPou(fb.varBlocks, [fb.body]);
+      const own = methodsOf(fb);
+      visitPou(fb.varBlocks, [fb.body], own);
       for (const m of fb.methods) {
-        visitPou([...fb.varBlocks, ...m.varBlocks], [m.body]);
+        visitPou([...fb.varBlocks, ...m.varBlocks], [m.body], own);
       }
     }
   }

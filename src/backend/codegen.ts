@@ -140,6 +140,7 @@ import {
   type StructInitEmitter,
 } from "./struct-init-codegen.js";
 import { vendorOperatorCpp } from "../semantic/vendor-operators.js";
+import { untypedNotCpp, untypedNotTarget } from "../semantic/untyped-not.js";
 import { bitPlaceOf, bitRunMemberName } from "./bit-runs.js";
 import type { StructDefinition } from "../frontend/ast.js";
 
@@ -7475,6 +7476,11 @@ export class CodeGenerator {
 
     switch (expr.operator) {
       case "NOT": {
+        // NOT of an untyped constant typed from its use (`w := NOT 16#00F0`)
+        const contextType = untypedNotTarget(expr);
+        if (contextType !== undefined) {
+          return untypedNotCpp(contextType, operand);
+        }
         // NOT on non-BOOL ANY_BIT types must use bitwise complement (~)
         const opType = this.inferExprType(expr.operand);
         if (opType) {
@@ -8218,6 +8224,15 @@ export class CodeGenerator {
         ) {
           return `iec_div(${this.generateExpression(dividend)}, ${this.generateExpression(divisor)}, ${this.faultSite(expr)})`;
         }
+      }
+
+      // `NOT (16#F0)` typed from its use, as `NOT 16#F0` is
+      const notType = untypedNotTarget(expr);
+      if (notType !== undefined) {
+        return untypedNotCpp(
+          notType,
+          this.generateExpression(expr.arguments[0]!.value),
+        );
       }
 
       // 0. ADR(x) → &(x) (CODESYS address-of operator)
