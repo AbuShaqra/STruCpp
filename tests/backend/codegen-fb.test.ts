@@ -43,7 +43,9 @@ describe("Codegen - Function Blocks", () => {
       // Implementation should contain constructor and operator()
       expect(result.cppCode).toContain("ADDER::ADDER()");
       expect(result.cppCode).toContain("void ADDER::operator()()");
-      expect(result.cppCode).toContain("RESULT = A + B;");
+      expect(result.cppCode).toContain(
+        "RESULT = strucpp::iec_add<DINT_t>({A, B});",
+      );
     });
   });
 
@@ -353,7 +355,9 @@ describe("Codegen - Function Blocks", () => {
       `);
       expect(result.headerCode).toContain("IEC_INOUT<IEC_INT> V;");
       expect(result.cppCode).toContain("FB.V.bind(X);");
-      expect(result.cppCode).toContain("(*V) = (*V) + 1;");
+      expect(result.cppCode).toContain(
+        "(*V) = strucpp::iec_add<DINT_t>({(*V), 1});",
+      );
       expect(result.cppCode).not.toContain("X = FB.V;");
     });
 

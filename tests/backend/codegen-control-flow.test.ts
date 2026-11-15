@@ -372,7 +372,7 @@ describe("Phase 3.2: FOR Statement Code Generation", () => {
     `);
     expect(result.success).toBe(true);
     expect(result.cppCode).toContain("for (I = 1; I <= 10; I++) {");
-    expect(result.cppCode).toContain("SUM = SUM + I;");
+    expect(result.cppCode).toContain("SUM = strucpp::iec_add<DINT_t>({SUM, I});");
   });
 
   it("should generate FOR loop with positive BY step", () => {
@@ -431,7 +431,7 @@ describe("Phase 3.2: WHILE Statement Code Generation", () => {
     `);
     expect(result.success).toBe(true);
     expect(result.cppCode).toContain("while (COUNT < 100) {");
-    expect(result.cppCode).toContain("COUNT = COUNT + 1;");
+    expect(result.cppCode).toContain("COUNT = strucpp::iec_add<DINT_t>({COUNT, 1});");
   });
 
   it("should generate WHILE loop with complex condition", () => {
@@ -446,8 +446,8 @@ describe("Phase 3.2: WHILE Statement Code Generation", () => {
     `);
     expect(result.success).toBe(true);
     expect(result.cppCode).toContain("while (((X < 10)) & ((Y > 0))) {");
-    expect(result.cppCode).toContain("X = X + 1;");
-    expect(result.cppCode).toContain("Y = Y - 1;");
+    expect(result.cppCode).toContain("X = strucpp::iec_add<DINT_t>({X, 1});");
+    expect(result.cppCode).toContain("Y = strucpp::iec_sub<DINT_t>({Y, 1});");
   });
 });
 
@@ -468,7 +468,7 @@ describe("Phase 3.2: REPEAT Statement Code Generation", () => {
     `);
     expect(result.success).toBe(true);
     expect(result.cppCode).toContain("do {");
-    expect(result.cppCode).toContain("COUNT = COUNT + 1;");
+    expect(result.cppCode).toContain("COUNT = strucpp::iec_add<DINT_t>({COUNT, 1});");
     expect(result.cppCode).toContain("} while (!(COUNT >= 100));");
   });
 
@@ -485,8 +485,8 @@ describe("Phase 3.2: REPEAT Statement Code Generation", () => {
     `);
     expect(result.success).toBe(true);
     expect(result.cppCode).toContain("do {");
-    expect(result.cppCode).toContain("FACTORIAL = FACTORIAL * N;");
-    expect(result.cppCode).toContain("N = N + 1;");
+    expect(result.cppCode).toContain("FACTORIAL = strucpp::iec_mul<DINT_t>({FACTORIAL, N});");
+    expect(result.cppCode).toContain("N = strucpp::iec_add<DINT_t>({N, 1});");
     expect(result.cppCode).toContain("} while (!(N > 5));");
   });
 });
@@ -590,7 +590,7 @@ describe("Phase 3.2: RETURN Statement Code Generation", () => {
       END_FUNCTION
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("ABS__result = -X;");
+    expect(result.cppCode).toContain("ABS__result = strucpp::iec_neg<DINT_t>(X);");
     expect(result.cppCode).toContain("return ABS__result;");
   });
 });
@@ -639,7 +639,7 @@ describe("Phase 3.2: Complex Control Flow", () => {
     `);
     expect(result.success).toBe(true);
     expect(result.cppCode).toContain("if ((ENABLE) & (!PREV)) {");
-    expect(result.cppCode).toContain("COUNT = COUNT + 1;");
+    expect(result.cppCode).toContain("COUNT = strucpp::iec_add<DINT_t>({COUNT, 1});");
     expect(result.cppCode).toContain("PREV = ENABLE;");
   });
 

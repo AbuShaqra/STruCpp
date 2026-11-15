@@ -831,6 +831,8 @@ export interface BinaryExpression extends TypedNode {
   right: Expression;
   /** Set by the type checker when `=` / `<>` compares a POINTER TO or REF_TO itself, not what it refers to. */
   comparesReferences?: true;
+  /** Set by the type checker when `+` / `-` has a POINTER TO, REF_TO or ADR() operand: address arithmetic. */
+  addressArithmetic?: true;
   /** Set by the type checker on AND/OR/XOR of a signed and an unsigned integer: the type both are widened to. */
   computeAs?: string;
 }

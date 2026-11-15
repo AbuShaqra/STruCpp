@@ -107,6 +107,10 @@ import {
   storedInstance,
 } from "./fb-init.js";
 import {
+  exactIntegerLiteralValue,
+  integerTypeRange,
+} from "../literal-utils.js";
+import {
   isUntypedIntegerConstant,
   typeUntypedNot,
   untypedNotTarget,
@@ -2155,6 +2159,13 @@ export class TypeChecker {
     ) {
       expr.comparesReferences = true;
     }
+    delete expr.addressArithmetic;
+    if (
+      (expr.operator === "+" || expr.operator === "-") &&
+      [expr.left, expr.right].some((e) => this.isAddressOperand(e, scope))
+    ) {
+      expr.addressArithmetic = true;
+    }
 
     if (this.refuseTemporalOperands(expr, scope)) return undefined;
 
@@ -2793,6 +2804,156 @@ export class TypeChecker {
       expr.sourceSpan.startCol,
       expr.sourceSpan.file,
     );
+  }
+
+  /**
+   * `--strict`: an integer constant expression (`200 * 200`) whose value is
+   * outside the integer type it is stored in wraps at run time; warn.
+   */
+  private warnConstantOverflow(
+    targetType: IECType | undefined,
+    value: Expression,
+  ): void {
+    if (targetType?.typeKind !== "elementary") return;
+    // A typed literal has its own range check
+    if (value.kind === "LiteralExpression" && (value.typePrefix ?? "") !== "") {
+      return;
+    }
+    // A typed DINT or LINT subexpression wraps in its own type, whatever the target
+    const inner = this.typedConstantOverflow(value);
+    if (inner !== undefined) {
+      this.warnOverflowAt(inner.at, inner.value, inner.type);
+      return;
+    }
+    const name = this.aliasBase(
+      (targetType as ElementaryType).name,
+    ).toUpperCase();
+    const v = this.constantIntegerValue(value);
+    if (v !== undefined) this.warnOverflowAt(value, v, name);
+  }
+
+  /** The --strict wrap warning at `at` when `v` is outside the integer type `name`. */
+  private warnOverflowAt(at: Expression, v: bigint, name: string): void {
+    const range = integerTypeRange(name);
+    if (range === undefined || (v >= range.min && v <= range.max)) return;
+    this.addWarning(
+      `The constant expression is ${v}, outside ${name} (${range.min}..${range.max}): it wraps`,
+      at.sourceSpan.startLine,
+      at.sourceSpan.startCol,
+      at.sourceSpan.file,
+    );
+  }
+
+  /**
+   * The first subexpression of typed literals (`DINT#2147483647 + 1`) whose
+   * value is outside the type it is computed in, with that value and type.
+   * A binary expression is computed in the common type of its operands, at
+   * least DINT, so a narrow one (`INT#32767 + 1`) overflows only its target.
+   */
+  private typedConstantOverflow(
+    expr: Expression,
+  ): { at: Expression; value: bigint; type: string } | undefined {
+    let found: { at: Expression; value: bigint; type: string } | undefined;
+    const typeOf = (e: Expression): string | undefined => {
+      switch (e.kind) {
+        case "LiteralExpression":
+          return e.literalType === "INT" && (e.typePrefix ?? "") !== ""
+            ? this.aliasBase(e.typePrefix!).toUpperCase()
+            : undefined;
+        case "ParenthesizedExpression":
+          return typeOf(e.expression);
+        case "UnaryExpression":
+          return typeOf(e.operand);
+        case "BinaryExpression": {
+          if (!["+", "-", "*", "/"].includes(e.operator)) return undefined;
+          const type = this.computedIntegerType(
+            typeOf(e.left),
+            typeOf(e.right),
+          );
+          if (found !== undefined) return undefined;
+          const v = this.constantIntegerValue(e);
+          const range = type === undefined ? undefined : integerTypeRange(type);
+          if (
+            type !== undefined &&
+            v !== undefined &&
+            range !== undefined &&
+            (v < range.min || v > range.max)
+          ) {
+            found = { at: e, value: v, type };
+          }
+          return type;
+        }
+        default:
+          return undefined;
+      }
+    };
+    typeOf(expr);
+    return found;
+  }
+
+  /**
+   * The integer type a binary expression of operand types `l` and `r` is
+   * computed in: their common type, a type narrower than DINT promoted to DINT.
+   */
+  private computedIntegerType(
+    l: string | undefined,
+    r: string | undefined,
+  ): string | undefined {
+    const lt = l === undefined ? undefined : ELEMENTARY_TYPES[l];
+    const rt = r === undefined ? undefined : ELEMENTARY_TYPES[r];
+    const common =
+      lt !== undefined && rt !== undefined ? getCommonType(lt, rt) : undefined;
+    const name =
+      common?.typeKind === "elementary"
+        ? (common as ElementaryType).name.toUpperCase()
+        : (l ?? r);
+    if (name === undefined) return undefined;
+    const bits = ELEMENTARY_TYPES[name]?.sizeBits;
+    return bits !== undefined && bits < 32 ? "DINT" : name;
+  }
+
+  /** The exact value of an integer constant expression of literals, if it is one. */
+  private constantIntegerValue(expr: Expression): bigint | undefined {
+    switch (expr.kind) {
+      case "LiteralExpression": {
+        if (expr.literalType !== "INT") return undefined;
+        const raw =
+          (expr.typePrefix ?? "") !== ""
+            ? expr.rawValue.slice(expr.rawValue.indexOf("#") + 1)
+            : expr.rawValue;
+        return exactIntegerLiteralValue(raw);
+      }
+      case "ParenthesizedExpression":
+        return this.constantIntegerValue(expr.expression);
+      case "UnaryExpression": {
+        const v = this.constantIntegerValue(expr.operand);
+        if (v === undefined) return undefined;
+        return expr.operator === "-"
+          ? -v
+          : expr.operator === "+"
+            ? v
+            : undefined;
+      }
+      case "BinaryExpression": {
+        const l = this.constantIntegerValue(expr.left);
+        const r = this.constantIntegerValue(expr.right);
+        if (l === undefined || r === undefined) return undefined;
+        switch (expr.operator) {
+          case "+":
+            return l + r;
+          case "-":
+            return l - r;
+          case "*":
+            return l * r;
+          case "/":
+            return r === 0n ? undefined : l / r;
+          default:
+            return undefined;
+        }
+      }
+      default:
+        return undefined;
+    }
   }
 
   /**
@@ -5910,6 +6071,7 @@ export class TypeChecker {
     if (this.typeNotFromExpected(value, targetType)) {
       valueType = value.resolvedType;
     }
+    if (this.strict) this.warnConstantOverflow(targetType, value);
     const targetInterface = this.interfaceTypeOf(targetType);
     if (targetInterface !== undefined) {
       this.checkInterfaceValue(targetInterface, valueType, value);
@@ -7118,7 +7280,10 @@ export class TypeChecker {
       : lit.literalType;
   }
 
-  /** A one-character literal passed to a CHAR or WCHAR input is that character. */
+  /**
+   * A one-character literal passed to a CHAR or WCHAR input is that character;
+   * under --strict an overflowing constant argument warns.
+   */
   private adaptCharArguments(
     inputs: CallInput[] | undefined,
     args: readonly Argument[],
@@ -7149,6 +7314,13 @@ export class TypeChecker {
       }
       const refKind = input.type.referenceKind;
       if (refKind !== undefined && refKind !== "none") return;
+      // An overflowing constant argument wraps as its assignment would
+      if (this.strict) {
+        this.warnConstantOverflow(
+          this.resolveNamedType(input.type.name),
+          arg.value,
+        );
+      }
       const charType = this.charTypeOfName(input.type.name);
       if (charType === undefined) return;
       this.adaptCharLiteral(arg.value, charType);
@@ -7824,6 +7996,16 @@ export class TypeChecker {
     return (
       this.declaredReferenceShape(target, scope)?.chain[0] === "pointer_to"
     );
+  }
+
+  /** An address operand of `+` / `-`: ADR(), a POINTER TO or REF_TO itself, or address arithmetic. */
+  private isAddressOperand(expr: Expression, scope: Scope): boolean {
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.isAddressOperand(expr.expression, scope);
+    }
+    if (expr.kind === "BinaryExpression")
+      return expr.addressArithmetic === true;
+    return isAddressOf(expr) || this.isReferenceItself(expr, scope);
   }
 
   /** Whether `expr` denotes a POINTER TO or REF_TO variable, not its target. */

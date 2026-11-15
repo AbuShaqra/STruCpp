@@ -379,7 +379,7 @@ END_PROGRAM`;
     expect(output).toContain('class Program_COUNTER');
     expect(output).toContain('IEC_INT COUNT');
     // C++ side should also show statement code
-    expect(output).toContain('COUNT = COUNT + 1');
+    expect(output).toContain('COUNT = strucpp::iec_add<DINT_t>({COUNT, 1})');
   });
 
   /**

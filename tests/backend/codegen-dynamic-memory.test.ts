@@ -132,7 +132,7 @@ describe("Phase 3.5: __NEW Array Allocation", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("strucpp::iec_new_array<INT_t>(N * 2)");
+    expect(result.cppCode).toContain("strucpp::iec_new_array<INT_t>(strucpp::iec_mul<DINT_t>({N, 2}))");
   });
 });
 

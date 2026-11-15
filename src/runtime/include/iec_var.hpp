@@ -65,6 +65,85 @@ constexpr bool iec_mod_minus_one(V v) noexcept {
     return detail::iec_mod_minus_one(v, std::is_signed<V>{});
 }
 
+namespace detail {
+/** The type C++ computes `T + T` in: int for the narrow integers, T otherwise. */
+template<typename T>
+using iec_arith_t = decltype(std::declval<T>() + std::declval<T>());
+
+/** Integer arithmetic done in the unsigned type, so a signed result wraps without UB. */
+template<typename T>
+using iec_wrap_int = std::integral_constant<bool,
+    std::is_integral<T>::value && !std::is_same<T, bool>::value>;
+}  // namespace detail
+
+/**
+ * a + b, a - b and a * b. On an integer type the result wraps (two's
+ * complement) instead of overflowing: the operation is done in the unsigned
+ * type of the same width. Other types use the plain operator.
+ */
+template<typename T, std::enable_if_t<detail::iec_wrap_int<T>::value, int> = 0>
+constexpr detail::iec_arith_t<T> iec_add(T a, T b) noexcept {
+    using R = detail::iec_arith_t<T>;
+    using U = std::make_unsigned_t<R>;
+    return static_cast<R>(static_cast<U>(static_cast<R>(a)) + static_cast<U>(static_cast<R>(b)));
+}
+template<typename T, std::enable_if_t<detail::iec_wrap_int<T>::value, int> = 0>
+constexpr detail::iec_arith_t<T> iec_sub(T a, T b) noexcept {
+    using R = detail::iec_arith_t<T>;
+    using U = std::make_unsigned_t<R>;
+    return static_cast<R>(static_cast<U>(static_cast<R>(a)) - static_cast<U>(static_cast<R>(b)));
+}
+template<typename T, std::enable_if_t<detail::iec_wrap_int<T>::value, int> = 0>
+constexpr detail::iec_arith_t<T> iec_mul(T a, T b) noexcept {
+    using R = detail::iec_arith_t<T>;
+    using U = std::make_unsigned_t<R>;
+    return static_cast<R>(static_cast<U>(static_cast<R>(a)) * static_cast<U>(static_cast<R>(b)));
+}
+namespace detail {
+/**
+ * The operands of a generated iec_add, iec_sub or iec_mul call, `{a, b}`:
+ * a braced list evaluates them left to right, as ST does, then converts to T.
+ */
+template<typename T>
+struct iec_operand {
+    T v;
+    /** Reads the operand's value when it is evaluated, before the next one; may throw (null REFERENCE TO). */
+    template<typename A>
+    constexpr iec_operand(const A& x) : v(static_cast<T>(x)) {}
+};
+template<typename T>
+struct iec_operands {
+    T a;
+    T b;
+    constexpr iec_operands(iec_operand<T> x, iec_operand<T> y) noexcept : a(x.v), b(y.v) {}
+};
+}  // namespace detail
+
+/** iec_add<T>({a, b}): a + b with a evaluated before b. */
+template<typename T>
+constexpr auto iec_add(detail::iec_operands<T> o) noexcept { return iec_add<T>(o.a, o.b); }
+/** iec_sub<T>({a, b}): a - b with a evaluated before b. */
+template<typename T>
+constexpr auto iec_sub(detail::iec_operands<T> o) noexcept { return iec_sub<T>(o.a, o.b); }
+/** iec_mul<T>({a, b}): a * b with a evaluated before b. */
+template<typename T>
+constexpr auto iec_mul(detail::iec_operands<T> o) noexcept { return iec_mul<T>(o.a, o.b); }
+
+/** -a; on an integer type the minimum value wraps to itself instead of overflowing. */
+template<typename T, std::enable_if_t<detail::iec_wrap_int<T>::value, int> = 0>
+constexpr detail::iec_arith_t<T> iec_neg(T a) noexcept {
+    using R = detail::iec_arith_t<T>;
+    using U = std::make_unsigned_t<R>;
+    return static_cast<R>(static_cast<U>(0) - static_cast<U>(static_cast<R>(a)));
+}
+template<typename T, std::enable_if_t<!detail::iec_wrap_int<T>::value, int> = 0>
+constexpr auto iec_neg(T a) noexcept { return -a; }
+template<typename T, std::enable_if_t<!detail::iec_wrap_int<T>::value, int> = 0>
+constexpr auto iec_add(T a, T b) noexcept { return a + b; }
+template<typename T, std::enable_if_t<!detail::iec_wrap_int<T>::value, int> = 0>
+constexpr auto iec_sub(T a, T b) noexcept { return a - b; }
+template<typename T, std::enable_if_t<!detail::iec_wrap_int<T>::value, int> = 0>
+constexpr auto iec_mul(T a, T b) noexcept { return a * b; }
 
 // Forward declaration for pointer-to-integer assignment
 template<typename T> class IEC_Ptr;
@@ -266,17 +345,17 @@ public:
     // =========================================================================
 
     IECVar& operator+=(T v) noexcept {
-        set(get() + v);
+        set(iec_add<T>(get(), v));
         return *this;
     }
 
     IECVar& operator-=(T v) noexcept {
-        set(get() - v);
+        set(iec_sub<T>(get(), v));
         return *this;
     }
 
     IECVar& operator*=(T v) noexcept {
-        set(get() * v);
+        set(iec_mul<T>(get(), v));
         return *this;
     }
 
@@ -345,17 +424,17 @@ private:
 
 template<typename T>
 inline IECVar<T> operator+(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return IECVar<T>(a.get() + b.get());
+    return IECVar<T>(iec_add<T>(a.get(), b.get()));
 }
 
 template<typename T>
 inline IECVar<T> operator-(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return IECVar<T>(a.get() - b.get());
+    return IECVar<T>(iec_sub<T>(a.get(), b.get()));
 }
 
 template<typename T>
 inline IECVar<T> operator*(const IECVar<T>& a, const IECVar<T>& b) noexcept {
-    return IECVar<T>(a.get() * b.get());
+    return IECVar<T>(iec_mul<T>(a.get(), b.get()));
 }
 
 template<typename T>
@@ -369,12 +448,12 @@ inline IECVar<T> operator%(const IECVar<T>& a, const IECVar<T>& b) noexcept {
 }
 
 // Mixed-type arithmetic operators (IECVar<T> op T) and (T op IECVar<T>)
-template<typename T> inline IECVar<T> operator+(const IECVar<T>& a, T b) noexcept { return IECVar<T>(a.get() + b); }
-template<typename T> inline IECVar<T> operator+(T a, const IECVar<T>& b) noexcept { return IECVar<T>(a + b.get()); }
-template<typename T> inline IECVar<T> operator-(const IECVar<T>& a, T b) noexcept { return IECVar<T>(a.get() - b); }
-template<typename T> inline IECVar<T> operator-(T a, const IECVar<T>& b) noexcept { return IECVar<T>(a - b.get()); }
-template<typename T> inline IECVar<T> operator*(const IECVar<T>& a, T b) noexcept { return IECVar<T>(a.get() * b); }
-template<typename T> inline IECVar<T> operator*(T a, const IECVar<T>& b) noexcept { return IECVar<T>(a * b.get()); }
+template<typename T> inline IECVar<T> operator+(const IECVar<T>& a, T b) noexcept { return IECVar<T>(iec_add<T>(a.get(), b)); }
+template<typename T> inline IECVar<T> operator+(T a, const IECVar<T>& b) noexcept { return IECVar<T>(iec_add<T>(a, b.get())); }
+template<typename T> inline IECVar<T> operator-(const IECVar<T>& a, T b) noexcept { return IECVar<T>(iec_sub<T>(a.get(), b)); }
+template<typename T> inline IECVar<T> operator-(T a, const IECVar<T>& b) noexcept { return IECVar<T>(iec_sub<T>(a, b.get())); }
+template<typename T> inline IECVar<T> operator*(const IECVar<T>& a, T b) noexcept { return IECVar<T>(iec_mul<T>(a.get(), b)); }
+template<typename T> inline IECVar<T> operator*(T a, const IECVar<T>& b) noexcept { return IECVar<T>(iec_mul<T>(a, b.get())); }
 template<typename T> inline IECVar<T> operator/(const IECVar<T>& a, T b) noexcept { return IECVar<T>(a.get() / b); }
 template<typename T> inline IECVar<T> operator/(T a, const IECVar<T>& b) noexcept { return IECVar<T>(a / b.get()); }
 template<typename T, typename = std::enable_if_t<std::is_integral<T>::value>> inline IECVar<T> operator%(const IECVar<T>& a, T b) noexcept { return IECVar<T>(b == T(0) || iec_mod_minus_one(b) ? T(0) : T(a.get() % b)); }

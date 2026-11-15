@@ -35,8 +35,12 @@ describe("global named like a runtime name", () => {
     expect(r.errors).toEqual([]);
     expect(r.headerCode).toContain("inline IEC_INT EQ_TIME_ = 3;");
     expect(r.headerCode).toContain("inline IEC_INT KEEP{};");
-    expect(r.cppCode).toContain("EQ_TIME_ = EQ_TIME_ + 1;");
-    expect(r.cppCode).toContain("R = EQ_TIME_ + KEEP + F();");
+    expect(r.cppCode).toContain(
+      "EQ_TIME_ = strucpp::iec_add<DINT_t>({EQ_TIME_, 1});",
+    );
+    expect(r.cppCode).toContain(
+      "R = strucpp::iec_add<DINT_t>({strucpp::iec_add<DINT_t>({EQ_TIME_, KEEP}), F()});",
+    );
     expect(r.cppCode).toContain("IEC_INT TIME_TO_US = 2;");
   });
 
@@ -65,7 +69,9 @@ describe("global named like a runtime name", () => {
     expect(r.cppCode).toContain(
       "locatedGlobals[0] = DIVTIME_.value.raw_ptr();",
     );
-    expect(r.cppCode).toContain("DIVTIME->write(DIVTIME->read() + 1);");
+    expect(r.cppCode).toContain(
+      "DIVTIME->write(strucpp::iec_add<DINT_t>({DIVTIME->read(), 1}));",
+    );
     expect(r.debugTableCpp).toContain("(void*)&DIVTIME_.value");
   });
 

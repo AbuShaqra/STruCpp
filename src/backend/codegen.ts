@@ -42,7 +42,11 @@ import type {
   ASTNode,
   AssertCall,
 } from "../frontend/ast.js";
-import { charLiteralUnits, exactIntegerValue } from "../literal-utils.js";
+import {
+  charLiteralUnits,
+  exactIntegerLiteralValue,
+  exactIntegerValue,
+} from "../literal-utils.js";
 import { isEnEnoArgument, walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry, SourceSpan } from "../types.js";
@@ -620,6 +624,29 @@ export interface CodeGenResult {
 /**
  * C++ code generator for IEC 61131-3 programs.
  */
+/** The runtime helper that computes +, - or * so that it wraps instead of overflowing. */
+const WRAPPING_ARITHMETIC: Readonly<Record<string, string>> = {
+  "+": "iec_add",
+  "-": "iec_sub",
+  "*": "iec_mul",
+};
+
+/**
+ * The integer type +, -, * and unary minus are computed in, by the operand
+ * type: DINT and LINT in their own width, the narrow types in DINT (they are
+ * cut only where the result is stored). Unsigned 32/64-bit types need none.
+ */
+const WRAPPING_COMPUTE_TYPE: Readonly<Record<string, string>> = {
+  SINT: "DINT",
+  INT: "DINT",
+  USINT: "DINT",
+  UINT: "DINT",
+  BYTE: "DINT",
+  WORD: "DINT",
+  DINT: "DINT",
+  LINT: "LINT",
+};
+
 /** A STRING or WSTRING parameter with no length (254), not an array or reference. */
 function isPlainString(type: {
   name: string;
@@ -1095,12 +1122,25 @@ export class CodeGenerator {
 
   /** True when the expression is of an integer or bit string type (an alias of one too). */
   private isIntegerExpression(expr: Expression): boolean {
+    const upper = this.baseTypeName(expr);
+    return (
+      upper !== undefined &&
+      /^(U?(SINT|INT|DINT|LINT)|BYTE|WORD|DWORD|LWORD)$/.test(upper)
+    );
+  }
+
+  /**
+   * The upper-case type name of `expr` with aliases and subranges resolved
+   * to the elementary type under them (`TYPE MyD : DINT` is DINT); undefined
+   * when the type is unknown.
+   */
+  private baseTypeName(expr: Expression): string | undefined {
     const t = expr.resolvedType;
     const name =
       t?.typeKind === "elementary" && "name" in t
         ? String(t.name)
         : this.inferExprType(expr);
-    if (name === undefined) return false;
+    if (name === undefined) return undefined;
     let upper = name.toUpperCase();
     for (let i = 0; i < 32; i++) {
       const current = upper;
@@ -1115,7 +1155,133 @@ export class CodeGenerator {
         break;
       }
     }
-    return /^(U?(SINT|INT|DINT|LINT)|BYTE|WORD|DWORD|LWORD)$/.test(upper);
+    return upper;
+  }
+
+  /** The type `expr`'s +, -, * or unary minus is computed in so that it wraps, if any. */
+  private wrappingComputeType(expr: Expression): string | undefined {
+    const name = this.baseTypeName(expr);
+    const computed =
+      name === undefined ? undefined : WRAPPING_COMPUTE_TYPE[name];
+    if (computed !== "DINT") return computed;
+    if (expr.kind !== "BinaryExpression") {
+      return this.fitsDint(expr) ? computed : undefined;
+    }
+    const operands = [expr.left, expr.right];
+    // `di * T#1s`: a duration or date operand is temporal arithmetic, not integer
+    if (
+      operands.some((e) =>
+        /^L?(TIME|DATE|TOD|DT)$/.test(this.temporalBase(e) ?? ""),
+      )
+    ) {
+      return undefined;
+    }
+    // An untyped operand literal past DINT (`i + 3000000000`) needs LINT
+    if (operands.some((e) => this.isPastDintLiteral(e))) return "LINT";
+    // A narrow result is computed in DINT only when every operand is known
+    // to fit it; otherwise the plain operator stays
+    if (name === "DINT") return computed;
+    return operands.every((e) => this.fitsDint(e)) ? computed : undefined;
+  }
+
+  /**
+   * Whether `expr` is known to hold a DINT-sized value: an untyped literal, or
+   * a DINT or narrower integer all the way down (`DWORD / 86400` may be typed
+   * INT, but its operand is not).
+   */
+  private fitsDint(expr: Expression): boolean {
+    switch (expr.kind) {
+      case "LiteralExpression":
+        if ((expr.typePrefix ?? "") === "") {
+          return !this.isPastDintLiteral(expr);
+        }
+        break;
+      case "ParenthesizedExpression":
+        return this.fitsDint(expr.expression);
+      case "UnaryExpression":
+        if (expr.operator === "NOT") break;
+        return this.fitsDint(expr.operand);
+      case "BinaryExpression":
+        if (!["+", "-", "*", "/", "MOD"].includes(expr.operator)) break;
+        return this.fitsDint(expr.left) && this.fitsDint(expr.right);
+    }
+    return WRAPPING_COMPUTE_TYPE[this.baseTypeName(expr) ?? ""] === "DINT";
+  }
+
+  /** `pt + 1`, `ADR(x) - 4`: arithmetic on an address, which no integer helper takes. */
+  private isAddressArithmetic(expr: BinaryExpression): boolean {
+    if (expr.addressArithmetic === true) return true;
+    if (expr.operator !== "+" && expr.operator !== "-") return false;
+    return [expr.left, expr.right].some((e) => this.isAddressOperand(e));
+  }
+
+  /** ADR(), a POINTER TO or REF_TO variable itself, or address arithmetic. */
+  private isAddressOperand(e: Expression): boolean {
+    switch (e.kind) {
+      case "ParenthesizedExpression":
+        return this.isAddressOperand(e.expression);
+      case "BinaryExpression":
+        return this.isAddressArithmetic(e);
+      case "FunctionCallExpression":
+        return /^ADR(INST)?$/i.test(e.functionName);
+      case "VariableExpression":
+        return this.isAddressVariable(e);
+      default:
+        return false;
+    }
+  }
+
+  /** A POINTER TO or REF_TO variable, member or element itself, also through a type alias. */
+  private isAddressVariable(e: VariableExpression): boolean {
+    const isAddress = (kind: string | undefined): boolean =>
+      kind === "pointer_to" || kind === "ref_to";
+    if (isAddress(this.refAssignTargetKind(e))) return true;
+    const nameUpper = e.name.toUpperCase();
+    const hasAccess =
+      e.subscripts.length > 0 ||
+      e.fieldAccess.length > 0 ||
+      e.isDereference ||
+      (e.accessChain !== undefined && e.accessChain.length > 0);
+    const base = this.currentScopeVarTypeRefs.get(nameUpper);
+    const declared =
+      base === undefined || !hasAccess
+        ? base
+        : resolveAccessType(base, e, this.accessLookup);
+    let name =
+      (declared?.referenceKind ?? "none") === "none"
+        ? declared?.name
+        : undefined;
+    for (let i = 0; name !== undefined && i < 32; i++) {
+      const current = name.toUpperCase();
+      const def = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === current,
+      )?.definition;
+      if (def?.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+        return false;
+      }
+      if (isAddress(def.referenceKind)) return true;
+      name = def.name;
+    }
+    return false;
+  }
+
+  /** An untyped integer literal (in parentheses or negated) outside DINT. */
+  private isPastDintLiteral(expr: Expression): boolean {
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.isPastDintLiteral(expr.expression);
+    }
+    if (expr.kind === "UnaryExpression") {
+      return this.isPastDintLiteral(expr.operand);
+    }
+    if (
+      expr.kind !== "LiteralExpression" ||
+      expr.literalType !== "INT" ||
+      (expr.typePrefix ?? "") !== ""
+    ) {
+      return false;
+    }
+    const v = exactIntegerLiteralValue(expr.rawValue);
+    return v !== undefined && (v > 2147483647n || v < -2147483648n);
   }
 
   /** Runs `emit` with `pou` (and `owner`, for its methods) as the POU a fault site names. */
@@ -7460,6 +7626,17 @@ export class CodeGenerator {
       return `iec_mod(${left}, ${right})`;
     }
 
+    // Integer +, -, * wrap (two's complement) instead of overflowing; narrow
+    // types are computed in DINT and cut where the result is stored
+    const wrapped = WRAPPING_ARITHMETIC[expr.operator];
+    const computed =
+      wrapped === undefined || this.isAddressArithmetic(expr)
+        ? undefined
+        : this.wrappingComputeType(expr);
+    if (computed !== undefined) {
+      // `{l, r}`: a braced list keeps ST's left-to-right operand order
+      return `strucpp::${wrapped}<${computed}_t>({${left}, ${right}})`;
+    }
     return `${left} ${cppOp} ${right}`;
   }
 
@@ -7868,8 +8045,17 @@ export class CodeGenerator {
         }
         return `!${operand}`;
       }
-      case "-":
+      case "-": {
+        // Negating a variable wraps like `0 - x`; a literal stays as written
+        const computed =
+          expr.operand.kind === "LiteralExpression"
+            ? undefined
+            : this.wrappingComputeType(expr.operand);
+        if (computed !== undefined) {
+          return `strucpp::iec_neg<${computed}_t>(${operand})`;
+        }
         return `-${operand}`;
+      }
       case "+":
         return `+${operand}`;
     }

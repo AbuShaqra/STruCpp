@@ -129,7 +129,7 @@ END_PROGRAM
     expect(cls).toContain("    IEC_INT __TICK__CALLS;");
     expect(
       functionBody(result.cppCode, "IEC_INT Program_MAIN::TICK()"),
-    ).toContain("__TICK__CALLS = __TICK__CALLS + 1;");
+    ).toContain("__TICK__CALLS = strucpp::iec_add<DINT_t>({__TICK__CALLS, 1});");
   });
 });
 
@@ -224,7 +224,7 @@ END_PROGRAM
     expect(run).toContain("N = this->TWO();");
     expect(run).toContain("this->ONE();");
     expect(functionBody(result.cppCode, "IEC_INT Program_MAIN::TWO()")).toContain(
-      "this->ONE() + 1",
+      "strucpp::iec_add<DINT_t>({this->ONE(), 1})",
     );
   });
 
@@ -238,7 +238,7 @@ END_PROGRAM
     expect(cls).not.toContain("virtual");
     expect(out.cppCode).toContain("IEC_INT Program_MAIN::ADD(IEC_INT K) {");
     expect(functionBody(out.cppCode, "IEC_INT Program_MAIN::ADD(")).toContain(
-      "N = N + K;",
+      "N = strucpp::iec_add<DINT_t>({N, K});",
     );
   });
 });
