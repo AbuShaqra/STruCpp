@@ -196,7 +196,7 @@ describe("getHover — built-in IEC data type docs (#55)", () => {
     const timeLine = lines.findIndex((l) => l.includes(": TIME")) + 1;
     const timeCol = lines[timeLine - 1].indexOf("TIME") + 1;
     const timeHover = getHover(analysis, "types.st", timeLine, timeCol, undefined, source);
-    expect((timeHover!.contents as { value: string }).value).toContain("nanoseconds");
+    expect((timeHover!.contents as { value: string }).value).toContain("milliseconds");
   });
 
   it("does not hijack hover on a variable name", () => {

@@ -25,7 +25,8 @@ import type {
 import { charLiteralUnits } from "../literal-utils.js";
 import { TypeRegistry, isElementaryType } from "../semantic/type-registry.js";
 import {
-  dateArithmeticCpp,
+  temporalArithmeticCpp,
+  temporalLiteralCpp,
   formatArrayType,
   formatIntegerLiteral,
   isComparison,
@@ -45,12 +46,6 @@ import {
   bitRuns,
   type BitRun,
 } from "./bit-runs.js";
-import {
-  parseDateLiteralToDays,
-  parseDtLiteralToNs,
-  parseTimeLiteral,
-  parseTodLiteralToNs,
-} from "../project-model.js";
 import {
   buildEnumMemberMap,
   implicitEnumBaseName,
@@ -1005,25 +1000,20 @@ export class TypeCodeGenerator {
         const str = String(expr.value);
         return str.includes(".") || /[eE]/.test(str) ? str : `${str}.0`;
       }
-      case "TIME":
-      case "LTIME": {
-        const timeVal = parseTimeLiteral(String(expr.value));
-        return `${timeVal.exact}LL`;
-      }
       case "CHAR":
       case "WCHAR": {
         const { wide, units } = charLiteralUnits(expr.rawValue);
         return `static_cast<${wide ? "WCHAR_t" : "CHAR_t"}>(${Math.max(units[0] ?? 0, 0)})`;
       }
+      case "TIME":
+      case "LTIME":
       case "DATE":
       case "LDATE":
-        return `${parseDateLiteralToDays(String(expr.value))}LL`;
       case "TIME_OF_DAY":
       case "LTIME_OF_DAY":
-        return `${parseTodLiteralToNs(String(expr.value))}LL`;
       case "DATE_AND_TIME":
       case "LDATE_AND_TIME":
-        return `${parseDtLiteralToNs(String(expr.value))}LL`;
+        return temporalLiteralCpp(expr.literalType, String(expr.value))!;
       default:
         return String(expr.value);
     }
@@ -1072,7 +1062,7 @@ export class TypeCodeGenerator {
         ? (t as ElementaryType).name.toUpperCase()
         : literalTemporalType(e);
     };
-    const dated = dateArithmeticCpp(
+    const dated = temporalArithmeticCpp(
       expr.operator,
       temporal(expr.left),
       temporal(expr.right),

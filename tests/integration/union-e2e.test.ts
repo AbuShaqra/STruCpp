@@ -318,10 +318,10 @@ int main() {
 `,
     });
     // r4 keeps the padding byte of ST_Q from the earlier inner.w write; r5 is
-    // row-major; r6 is T#1s in ns; r8 counts the in-out increments.
+    // row-major; r6 is T#1s in ms; r8 counts the in-out increments.
     expect(stdout).toBe(
       "3FF0000000000000 0000000000001234 00000000000012FF AAAA0002AAAA1201 " +
-        "0004000300020001 000000003B9ACA00 000000000000BFF1 0000000000000003 " +
+        "0004000300020001 00000000000003E8 000000000000BFF1 0000000000000003 " +
         "| 1 3 210 43 1 3",
     );
   });
