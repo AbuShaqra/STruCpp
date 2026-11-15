@@ -30,11 +30,11 @@ using ULINT_t = uint64_t;
 using REAL_t  = float;
 using LREAL_t = double;
 
-// Time/date (nanosecond precision, stored as int64_t)
-using TIME_t  = int64_t;
-using DATE_t  = int64_t;
-using TOD_t   = int64_t;  // TIME_OF_DAY
-using DT_t    = int64_t;  // DATE_AND_TIME
+// Time/date: 32-bit unsigned, one distinct type each, wrapping modulo 2^32
+using TIME_t  = IecTemporal32<IEC_KIND_TIME>;  // ms
+using DATE_t  = IecTemporal32<IEC_KIND_DATE>;  // s since 1970, whole days
+using TOD_t   = IecTemporal32<IEC_KIND_TOD>;   // TIME_OF_DAY, ms since midnight
+using DT_t    = IecTemporal32<IEC_KIND_DT>;    // DATE_AND_TIME, s since 1970
 using LTIME_t = int64_t;  // 64-bit time (nanosecond precision)
 using LDATE_t = int64_t;
 using LTOD_t  = int64_t;
@@ -206,24 +206,34 @@ template<typename T> struct is_any_string;  // IECString, IECWString
 
 Used by standard function templates for type-safe dispatch.
 
-## LTIME
+## TIME, DATE, TOD and DT
 
-LTIME is stored as TIME is, signed 64-bit nanoseconds (`IEC_LTIME` and
-`IEC_TIME` are both `IECVar<int64_t>`). For debugger hosts an LTIME leaf is a
-`TAG_TIME` leaf of 8 bytes, and `libs/iec-types.json` lists LTIME with the
-`duration-ns-i64` wire format TIME uses; a host tells the two apart by the
-declared type, not by the wire. `TO_LTIME` and `ADD_LTIME` / `SUB_LTIME` /
-`MUL_LTIME` / `DIV_LTIME` are the TIME helpers under their LTIME names.
+TIME, DATE, TOD and DT are 4 bytes, as on the PLC: `IecTemporal32<Kind>`, a
+distinct value type per kind holding a `uint32_t` (TIME and TOD in ms, DATE and
+DT in seconds since 1970-01-01, a DATE a whole number of days). Arithmetic
+wraps modulo 2^32; a raw count converts in only explicitly (`TIME_t(1000u)`,
+the form a `T#1s` literal takes). `iec_temporal_add` / `iec_temporal_sub` give
+TOD, DT or DATE plus or minus a TIME and the TIME between two of them; the
+`*_TO_*` helpers keep the vendor units (ms, s) for integers. For debugger hosts
+a TIME, DATE, TOD or DT leaf is a `TAG_TIME`, `TAG_DATE`, `TAG_TOD` or `TAG_DT`
+leaf (tags 22 to 25) of 4 bytes, and `libs/iec-types.json` lists them with the
+`duration-ms-u32`, `date-s-u32`, `tod-ms-u32` and `datetime-s-u32` wire formats.
+The retain image format is 2: one written by format 1, where these were 8
+bytes, is not loaded.
 
-LDATE, LTOD and LDT are stored as DATE (days since 1970-01-01), TOD and DT
-(nanoseconds) are; an LDATE, LTOD or LDT leaf is a `TAG_DATE`, `TAG_TOD` or
-`TAG_DT` leaf of 8 bytes, and `libs/iec-types.json` lists them with the DATE,
-TOD and DT wire formats. An LDATE leaf's value on the debug wire is therefore a
-day count since 1970-01-01, as a DATE leaf's is, not the nanoseconds IEC
-61131-3 Ed. 3 (Table 10) specifies for LDATE. The debug map (`debugMap.leaves`)
-lists an LTIME, LDATE, LTOD or LDT leaf under its short type name (TIME, DATE,
-TOD, DT), as the wire is the same; a host that shows the long name takes it from
-the declaration. `TO_LDATE`, `TO_LTOD` and `TO_LDT` are the casts.
+## LTIME, LDATE, LTOD and LDT
+
+LTIME is signed 64-bit nanoseconds (`IEC_LTIME` is `IECVar<int64_t>`), a
+`TAG_LTIME` leaf (tag 15) of 8 bytes with the `duration-ns-i64` wire format.
+`LTIME()` is the scan clock as an LTIME. A TIME widens to an LTIME implicitly
+(`IECVar<int64_t>` takes an `IecTemporal32` by its kind: TIME, TOD and DT as
+ns, DATE as days).
+
+LDATE (days since 1970-01-01), LTOD and LDT (nanoseconds) are `TAG_LDATE`,
+`TAG_LTOD` and `TAG_LDT` leaves (tags 16 to 18) of 8 bytes. An LDATE leaf's
+value on the debug wire is a day count since 1970-01-01, not the nanoseconds
+IEC 61131-3 Ed. 3 (Table 10) specifies for LDATE. `TO_LDATE`, `TO_LTOD` and
+`TO_LDT` are the casts; of a 32-bit value they widen it by its meaning.
 
 ## CHAR and WCHAR
 
@@ -314,7 +324,9 @@ IEC arrays use 1-based (or arbitrary-based) indexing. The template parameters en
 
 A fault the compiler can place names where it happened, in one format: `<what> in <POU>, line <n>, task <task>`,
 for example `Division by zero in MAIN, line 12, task FAST`. Integer division by zero (`a / b` and `DIV(a, b)`
-on every integer and bit string type, through `iec_div`) is such a fault. `MOD` by zero is not: it gives 0
+on every integer and bit string type, through `iec_div`) is such a fault, and so is a TIME, DATE, TOD or DT
+divided by a number that is 0 (`t / n`, `DIV_TIME(t, n)`, through `iec_temporal_div`),
+and `DIVTIME(a, b)` of two durations with b = 0 (through `iec_divtime`). `MOD` by zero is not: it gives 0
 (Table 29, note e).
 
 Every fault goes through `strucpp::iec_raise_fault`, which builds the message in a fixed buffer, with no
@@ -448,7 +460,7 @@ Uses `malloc`/`free` with placement new. Sets pointer to `nullptr` after deletio
 
 ## Time Types (`iec_time.hpp`, `iec_date.hpp`, `iec_dt.hpp`, `iec_tod.hpp`)
 
-All time/date types use nanosecond-precision `int64_t` storage. Arithmetic operations (`+`, `-`, comparison) are defined. Time literal parsing handles the IEC format: `T#1h2m3s4ms5us6ns`. LTIME types share the same int64_t representation with nanosecond precision.
+TIME, DATE, TOD and DT are 32-bit (see [TIME, DATE, TOD and DT](#time-date-tod-and-dt)); LTIME, LDATE, LTOD and LDT are 64-bit. Arithmetic operations (`+`, `-`, comparison) are defined. Time literal parsing handles the IEC format: `T#1h2m3s4ms` (LTIME also `us` and `ns`).
 
 ## Standard Functions (`iec_std_lib.hpp`)
 

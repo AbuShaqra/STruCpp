@@ -3,6 +3,7 @@
 /**
  * E2E: a date or time value converted to STRING gives its canonical IEC
  * literal (T#1h2m3s4ms, D#2024-03-05, TOD#12:34:56.789, DT#...), long forms too.
+ * TIME, DATE, TOD and DT are 32-bit: no sign, DT in whole seconds, TOD in ms.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -14,8 +15,8 @@ import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 const SOURCE = `PROGRAM Main
 VAR t : TIME := T#1h2m3s4ms; lt : LTIME := LTIME#1d2h; d : DATE := D#2024-03-05; tod : TOD := TOD#12:34:56.789;
   dt : DT := DT#2024-03-05-12:34:56; b : BOOL := TRUE; ld : LDATE := LDATE#2024-03-05; z : TIME := T#0s;
-  ng : TIME := T#-1500ms; ltod : LTOD := LTOD#01:02:03.000456; ldt : LDT := LDT#2000-01-01-00:00:00.5;
-  old : DATE := D#1969-12-31;
+  ng : LTIME := LTIME#-1500ms; ltod : LTOD := LTOD#01:02:03.000456; ldt : LDT := LDT#2000-01-01-00:00:00.5;
+  old : DATE := D#1970-01-01;
   s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15 : STRING; END_VAR
 s1 := TIME_TO_STRING(t); s2 := LTIME_TO_STRING(lt); s3 := DATE_TO_STRING(d); s4 := TOD_TO_STRING(tod);
 s5 := DT_TO_STRING(dt); s6 := BOOL_TO_STRING(b); s7 := LDATE_TO_STRING(ld); s8 := TIME_TO_STRING(z);
@@ -79,15 +80,15 @@ int main() {
 `,
       });
       expect(stdout).toBe(
-        "T#1h2m3s4ms|LTIME#1d2h|D#2024-03-05|TOD#12:34:56.789|DT#2024-03-05-12:34:56|TRUE|LDATE#2024-03-05|T#0ms|T#-1s500ms|LTOD#01:02:03.000456|LDT#2000-01-01-00:00:00.5|D#1969-12-31|TRUE|FALSE|T#1h2m3s4ms|",
+        "T#1h2m3s4ms|LTIME#1d2h|D#2024-03-05|TOD#12:34:56.789|DT#2024-03-05-12:34:56|TRUE|LDATE#2024-03-05|T#0ms|LTIME#-1s500ms|LTOD#01:02:03.000456|LDT#2000-01-01-00:00:00.5|D#1970-01-01|TRUE|FALSE|T#1h2m3s4ms|",
       );
     });
   }
 
-  it("reads its own text back: a negative interval and a fraction of a second", () => {
+  it("reads its own text back: a negative LTIME and a fraction of a second of an LDT", () => {
     const result = compile(
       `PROGRAM Main
-VAR t : TIME := T#-1s500ms; lt : LTIME := LTIME#-1d1ns; dt : DT := DT#1969-12-31-23:59:59.5;
+VAR t : TIME := T#1s500ms; lt : LTIME := LTIME#-1d1ns; dt : DT := DT#2024-03-05-12:34:56;
   ldt : LDT := LDT#2000-01-01-00:00:00.000000001; p : TIME := T#1h2m3s4ms;
   rt, rp : TIME; rl : LTIME; rdt : DT; rldt : LDT; a, b, c, d, e : STRING; END_VAR
 rt := STRING_TO_TIME(TIME_TO_STRING(t)); a := TIME_TO_STRING(rt);
@@ -118,7 +119,7 @@ int main() {
 `,
     });
     expect(stdout).toBe(
-      "T#-1s500ms|LTIME#-1d1ns|DT#1969-12-31-23:59:59.5|LDT#2000-01-01-00:00:00.000000001|T#1h2m3s4ms",
+      "T#1s500ms|LTIME#-1d1ns|DT#2024-03-05-12:34:56|LDT#2000-01-01-00:00:00.000000001|T#1h2m3s4ms",
     );
   });
 
@@ -195,16 +196,18 @@ int main() {
 `,
     });
     expect(stdout.split("|").filter((l) => l !== "")).toEqual([
-      "DT#1789-01-13-09:11:24.390662144",
-      "T#30s1ms500us",
+      // A 32-bit DT, TIME or TOD takes the text truncated to its unit
+      // (s, ms) and modulo 2^32
+      "DT#2061-03-28-22:07:56",
+      "T#30s1ms",
       "T#0ms",
       "T#5ms",
       "DT#1970-01-01-00:00:00",
       "DT#1970-01-01-00:00:00",
       "LTOD#10:38:42.129794059",
-      "TOD#22:38:44.511365",
+      "TOD#22:38:44.511",
       "T#1s500ms",
-      "DT#1988-12-29-20:03:13.025376256",
+      "DT#1988-12-29-20:03:13",
     ]);
   });
 });

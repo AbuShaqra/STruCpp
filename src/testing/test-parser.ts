@@ -13,6 +13,10 @@ import { toCompileErrors } from "../frontend/parse-errors.js";
 import { buildTestAST } from "../frontend/ast-builder.js";
 import { lowerTestInlineTypes } from "../frontend/lower-inline-types.js";
 import { lowerTestPlatformTypes } from "../semantic/platform-types.js";
+import {
+  defaultStringLength,
+  lowerDefaultStringLength,
+} from "../semantic/string-default-length.js";
 import type { TestFile } from "./test-model.js";
 import type { CompileError, CompileOptions, SourceSpan } from "../types.js";
 import { tokenizeTest } from "../frontend/lexer.js";
@@ -137,6 +141,9 @@ export function parseTestFile(
     errors.push(...pointerFeatureErrors(testFile, dialect, fileName));
     if (dialect.features.has("platform_types")) {
       lowerTestPlatformTypes(testFile);
+    }
+    if (dialect.features.has("string_default_80")) {
+      lowerDefaultStringLength(testFile, defaultStringLength(dialect.features));
     }
     testFile.dialect = dialect;
     return { testFile, errors };

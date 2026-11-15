@@ -524,6 +524,10 @@ export interface TypeReference extends ASTNode {
   bit?: true;
   /** STRING / WSTRING length of an inline array's element (`ARRAY[0..1] OF STRING(10)`). */
   elementMaxLength?: number | string;
+  /** Set when `maxLength` is the dialect's default (feature string_default_80), none written. */
+  defaultLength?: true;
+  /** Set when `elementMaxLength` is the dialect's default, none written. */
+  elementDefaultLength?: true;
   /**
    * The element's reference levels, outermost first, for an inline array of
    * pointers or references: `ARRAY[0..3] OF POINTER TO INT` is
@@ -827,6 +831,8 @@ export interface BinaryExpression extends TypedNode {
   right: Expression;
   /** Set by the type checker when `=` / `<>` compares a POINTER TO or REF_TO itself, not what it refers to. */
   comparesReferences?: true;
+  /** Set by the type checker on AND/OR/XOR of a signed and an unsigned integer: the type both are widened to. */
+  computeAs?: string;
 }
 
 /**
@@ -989,6 +995,8 @@ export type LiteralType =
 export interface ParenthesizedExpression extends TypedNode {
   kind: "ParenthesizedExpression";
   expression: Expression;
+  /** A typed global constant folded into a STRUCT default: it keeps its declared type. */
+  foldedConstant?: boolean;
 }
 
 /**

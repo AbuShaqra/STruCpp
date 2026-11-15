@@ -4378,7 +4378,9 @@ export class ASTBuilder {
    */
   buildTestCase(cst: CstNode): import("./ast.js").TestCase {
     const children = cst.children as CstChildren;
-    const nameToken = getFirstToken(children.StringLiteral);
+    const nameToken =
+      getFirstToken(children.StringLiteral) ??
+      getFirstToken(children.WideStringLiteral);
     // Remove surrounding quotes from test name
     const name = nameToken ? nameToken.image.slice(1, -1) : "";
     const varBlocks = getAllNodes(children.varBlock).map((vb) =>

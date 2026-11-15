@@ -125,6 +125,13 @@ public:
     IECVar(const IECVar<U>& other) noexcept
         : value_{static_cast<T>(other.get())} {}
 
+    /** A 32-bit TIME, TOD, DT or DATE widened to its long form (an int64
+     *  LTIME, LTOD, LDT or LDATE), in that form's unit. */
+    template<int K, typename V = T, std::enable_if_t<std::is_same<V, int64_t>::value, int> = 0>
+    IECVar(IecTemporal32<K> v) noexcept : value_{iec_long_value(v)} {}
+    template<int K, typename V = T, std::enable_if_t<std::is_same<V, int64_t>::value, int> = 0>
+    IECVar(const IECVar<IecTemporal32<K>>& v) noexcept : value_{iec_long_value(v.get())} {}
+
     /** Construct from a raw pointer, storing the address as an integer: the
      *  initial value `w : __XWORD := ADR(x)`. Only an integer as wide as an
      *  address (no truncation), and only from a pointer to an object that is
@@ -490,6 +497,49 @@ using IEC_DATE = IECVar<DATE_t>;
 using IEC_TOD = IECVar<TOD_t>;
 using IEC_DT = IECVar<DT_t>;
 
+// A 32-bit TIME scaled or divided by a number (ANY_NUM), a variable on either side
+template<int K, typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
+inline IECVar<IecTemporal32<K>> operator*(const IECVar<IecTemporal32<K>>& a, N n) noexcept {
+    return IECVar<IecTemporal32<K>>(a.get() * n);
+}
+template<int K, typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
+inline IECVar<IecTemporal32<K>> operator*(N n, const IECVar<IecTemporal32<K>>& a) noexcept {
+    return IECVar<IecTemporal32<K>>(a.get() * n);
+}
+template<int K, typename N>
+inline IECVar<IecTemporal32<K>> operator*(const IECVar<IecTemporal32<K>>& a, const IECVar<N>& n) noexcept {
+    return IECVar<IecTemporal32<K>>(a.get() * n.get());
+}
+template<int K, typename N>
+inline IECVar<IecTemporal32<K>> operator*(const IECVar<N>& n, const IECVar<IecTemporal32<K>>& a) noexcept {
+    return IECVar<IecTemporal32<K>>(a.get() * n.get());
+}
+template<int K, typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
+inline IECVar<IecTemporal32<K>> operator/(const IECVar<IecTemporal32<K>>& a, N n) noexcept {
+    return IECVar<IecTemporal32<K>>(a.get() / n);
+}
+template<int K, typename N>
+inline IECVar<IecTemporal32<K>> operator/(const IECVar<IecTemporal32<K>>& a, const IECVar<N>& n) noexcept {
+    return IECVar<IecTemporal32<K>>(a.get() / n.get());
+}
+// A 32-bit temporal value (not a variable) by a number held in a variable
+template<int K, typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
+inline IecTemporal32<K> operator*(IecTemporal32<K> a, const IECVar<N>& n) noexcept {
+    return a * n.get();
+}
+template<int K, typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
+inline IecTemporal32<K> operator*(const IECVar<N>& n, IecTemporal32<K> a) noexcept {
+    return a * n.get();
+}
+template<int K, typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
+inline IecTemporal32<K> operator/(IecTemporal32<K> a, const IECVar<N>& n) noexcept {
+    return a / n.get();
+}
+template<int K>
+inline IECVar<IecTemporal32<K>> operator-(const IECVar<IecTemporal32<K>>& a) noexcept {
+    return IECVar<IecTemporal32<K>>(-a.get());
+}
+
 // IEC v3 Long time types
 using IEC_LTIME = IECVar<LTIME_t>;
 using IEC_LDATE = IECVar<LDATE_t>;
@@ -531,6 +581,12 @@ static_assert(detail::is_packed_as<IEC_LINT, LINT_t>::value, "IEC_LINT must be i
 static_assert(detail::is_packed_as<IEC_REAL, REAL_t>::value, "IEC_REAL must be its value");
 static_assert(detail::is_packed_as<IEC_LREAL, LREAL_t>::value, "IEC_LREAL must be its value");
 static_assert(detail::is_packed_as<IEC_TIME, TIME_t>::value, "IEC_TIME must be its value");
+static_assert(detail::is_packed_as<IEC_DATE, DATE_t>::value, "IEC_DATE must be its value");
+static_assert(detail::is_packed_as<IEC_TOD, TOD_t>::value, "IEC_TOD must be its value");
+static_assert(detail::is_packed_as<IEC_DT, DT_t>::value, "IEC_DT must be its value");
+static_assert(sizeof(TIME_t) == 4 && sizeof(DATE_t) == 4 && sizeof(TOD_t) == 4 && sizeof(DT_t) == 4,
+              "TIME, DATE, TOD and DT are 4 bytes, as on the PLC");
+static_assert(detail::is_packed_as<IEC_LTIME, LTIME_t>::value, "IEC_LTIME must be its value");
 static_assert(detail::is_packed_as<IEC_CHAR, CHAR_t>::value, "IEC_CHAR must be its value");
 static_assert(detail::is_packed_as<IEC_WCHAR, WCHAR_t>::value, "IEC_WCHAR must be its value");
 

@@ -2,6 +2,7 @@
  * CONFIGURATION and RESOURCE VAR_GLOBALs: each is created after the globals
  * its initial value names; a cycle is an error. A RESOURCE declares only
  * VAR_GLOBAL, under names of its own, reached by its own program instances.
+ * Under iec-3 and --strict an initial value reads only CONSTANT globals.
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
@@ -43,12 +44,29 @@ END_CONFIGURATION
 const errors = (src: string, options: Options): string[] =>
   compile(src, options).errors.map((e) => e.message);
 
+const refusal = (global: string, read: string): string =>
+  `The initial value of global '${global}' reads global '${read}', which is no CONSTANT: an initial value is a constant expression`;
+
 describe("CONFIGURATION and RESOURCE globals", () => {
   for (const [label, options] of MODES) {
     describe(label, () => {
+      const constantOnly = label !== "no dialect";
+
       it("creates a global after the globals it names", () => {
+        const nonConstant = source(
+          "VAR_GLOBAL r : INT := b + 1; b : INT := 5; END_VAR",
+          "",
+        );
+        if (constantOnly) {
+          expect(errors(nonConstant, options)).toEqual([refusal("R", "B")]);
+        }
         const result = compile(
-          source("VAR_GLOBAL r : INT := b + 1; b : INT := 5; END_VAR", ""),
+          constantOnly
+            ? source(
+                "VAR_GLOBAL r : INT := b + 1; END_VAR VAR_GLOBAL CONSTANT b : INT := 5; END_VAR",
+                "",
+              )
+            : nonConstant,
           options,
         );
         expect(result.errors).toEqual([]);
@@ -66,15 +84,40 @@ describe("CONFIGURATION and RESOURCE globals", () => {
           ),
         ).toEqual([
           "The initial values of the globals 'R' and 'B' depend on each other (R -> B -> R)",
+          ...(constantOnly ? [refusal("B", "R"), refusal("R", "B")] : []),
+        ]);
+        expect(
+          errors(
+            source(
+              "VAR_GLOBAL r : INT := 1; END_VAR VAR_GLOBAL CONSTANT b : INT := c + 1; c : INT := b; END_VAR",
+              "",
+            ),
+            options,
+          ),
+        ).toEqual([
+          "The initial values of the globals 'B' and 'C' depend on each other (B -> C -> B)",
         ]);
       });
 
       it("accepts and orders the globals of a RESOURCE", () => {
+        const nonConstant = source(
+          "VAR_GLOBAL a : INT := 3; END_VAR",
+          "VAR_GLOBAL r : INT := s * 2 + a; s : INT := a + 1; END_VAR",
+        );
+        if (constantOnly) {
+          expect(errors(nonConstant, options)).toEqual([
+            refusal("S", "A"),
+            refusal("R", "S"),
+            refusal("R", "A"),
+          ]);
+        }
         const result = compile(
-          source(
-            "VAR_GLOBAL a : INT := 3; END_VAR",
-            "VAR_GLOBAL r : INT := s * 2 + a; s : INT := a + 1; END_VAR",
-          ),
+          constantOnly
+            ? source(
+                "VAR_GLOBAL CONSTANT a : INT := 3; END_VAR",
+                "VAR_GLOBAL r : INT := s * 2 + a; END_VAR VAR_GLOBAL CONSTANT s : INT := a + 1; END_VAR",
+              )
+            : nonConstant,
           options,
         );
         expect(result.errors).toEqual([]);
