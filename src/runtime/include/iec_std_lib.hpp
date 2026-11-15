@@ -1785,6 +1785,16 @@ inline auto iec_div(const A& a, const B& b, iec_site site) -> decltype(a / b) {
 }
 
 /**
+ * A TIME, DATE, TOD or DT `/` a number (DIV_TIME too): a zero divisor is a
+ * run-time fault naming the POU, line and task, as for integers.
+ */
+template<typename A, typename N>
+inline auto iec_temporal_div(const A& a, const N& n, iec_site site) -> decltype(a / n) {
+    if (iec_unwrap(n) == 0) iec_site_fault(IecFault::DivideByZero, "Division by zero", site);
+    return a / n;
+}
+
+/**
  * Binary MOD operator: OUT is 0 when IN2 is 0 (IEC 61131-3 Table 29, note e).
  * The result type is the one the C++ % operator gives for the operands.
  */

@@ -7139,6 +7139,15 @@ export class CodeGenerator {
       return `${l} ${cppOp} ${r}`;
     }
 
+    // TIME, DATE, TOD or DT `/` a number that may be 0: a fault, as for integers
+    if (
+      expr.operator === "/" &&
+      !isNonZeroIntegerLiteral(expr.right) &&
+      this.isTemporal32(expr.left)
+    ) {
+      return `iec_temporal_div(${left}, ${right}, ${this.faultSite(expr)})`;
+    }
+
     // Integer `/` by a divisor that may be 0: a fault naming the POU and line
     if (
       expr.operator === "/" &&
@@ -7172,6 +7181,14 @@ export class CodeGenerator {
       this.temporalBase(expr.right),
       left,
       right,
+    );
+  }
+
+  /** A TIME, DATE, TOD or DT operand (the 32-bit temporal types). */
+  private isTemporal32(e: Expression): boolean {
+    const base = this.temporalBase(e);
+    return (
+      base === "TIME" || base === "DATE" || base === "TOD" || base === "DT"
     );
   }
 
@@ -8250,6 +8267,16 @@ export class CodeGenerator {
           this.keepReferenceWrapper = kept;
         }
         return vendorOperatorCpp(expr.vendorOperator, arg);
+      }
+      // DIV_TIME(t, n) of a TIME faults on a zero divisor, as `t / n` does
+      if (
+        nameUpper === "DIV_TIME" &&
+        expr.arguments.length === 2 &&
+        expr.arguments.every((a) => a.name === undefined && !a.isOutput) &&
+        !isNonZeroIntegerLiteral(expr.arguments[1]!.value) &&
+        this.isTemporal32(expr.arguments[0]!.value)
+      ) {
+        return `iec_temporal_div(${this.generateExpression(expr.arguments[0]!.value)}, ${this.generateExpression(expr.arguments[1]!.value)}, ${this.faultSite(expr)})`;
       }
       // DIV(a, b) of integers faults on a zero divisor, as `a / b` does
       if (nameUpper === "DIV" && expr.arguments.length === 2) {

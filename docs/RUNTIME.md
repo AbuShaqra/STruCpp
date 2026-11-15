@@ -324,7 +324,8 @@ IEC arrays use 1-based (or arbitrary-based) indexing. The template parameters en
 
 A fault the compiler can place names where it happened, in one format: `<what> in <POU>, line <n>, task <task>`,
 for example `Division by zero in MAIN, line 12, task FAST`. Integer division by zero (`a / b` and `DIV(a, b)`
-on every integer and bit string type, through `iec_div`) is such a fault. `MOD` by zero is not: it gives 0
+on every integer and bit string type, through `iec_div`) is such a fault, and so is a TIME, DATE, TOD or DT
+divided by a number that is 0 (`t / n`, `DIV_TIME(t, n)`, through `iec_temporal_div`). `MOD` by zero is not: it gives 0
 (Table 29, note e).
 
 Every fault goes through `strucpp::iec_raise_fault`, which builds the message in a fixed buffer, with no
