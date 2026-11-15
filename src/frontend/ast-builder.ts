@@ -4157,6 +4157,7 @@ export class ASTBuilder {
           nodeToSourceSpan(tailNode),
         ),
         ...caret,
+        ...(children.Caret ? { bareCaretSpan: nodeToSourceSpan(node) } : {}),
       };
       if (children.RefAssign) {
         const sourceNode = getFirstNode(children.variable);

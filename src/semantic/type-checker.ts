@@ -636,6 +636,8 @@ const MEMBER_KIND: Partial<Record<VarBlock["blockType"], MemberKind>> = {
 export class TypeChecker {
   private errors: CompileError[] = [];
   private warnings: CompileError[] = [];
+  /** How many of `errors` are struct_compare refusals, which gate no later pass. */
+  private refusals = 0;
   private ast: CompilationUnit | undefined;
 
   constructor(
@@ -798,9 +800,12 @@ export class TypeChecker {
   check(ast: CompilationUnit): {
     errors: CompileError[];
     warnings: CompileError[];
+    /** How many of `errors` are struct_compare refusals, which gate no later pass. */
+    refusals: number;
   } {
     this.errors = [];
     this.warnings = [];
+    this.refusals = 0;
     this.strictReported.clear();
     this.addressStoresReported.clear();
     this.misalignedReported.clear();
@@ -923,6 +928,7 @@ export class TypeChecker {
     return {
       errors: this.errors,
       warnings: this.warnings,
+      refusals: this.refusals,
     };
   }
 
@@ -6505,65 +6511,75 @@ export class TypeChecker {
     if (expr.operator !== "=" && expr.operator !== "<>") return;
     // A POINTER TO or REF_TO itself compares the reference, not the STRUCT.
     if (
-      this.isReferenceItself(expr.left, scope) ||
-      this.isReferenceItself(expr.right, scope)
+      this.isReferenceItself(unparenthesized(expr.left), scope) ||
+      this.isReferenceItself(unparenthesized(expr.right), scope)
     ) {
       return;
     }
+    const leftName = this.structOperandName(expr.left, left, scope);
     if (
-      !this.isStructOperand(expr.left, left, scope) ||
-      !this.isStructOperand(expr.right, right, scope)
+      leftName === undefined ||
+      this.structOperandName(expr.right, right, scope) === undefined
     ) {
       return;
     }
+    const upper = leftName.toUpperCase();
+    const isUnion =
+      this.ast?.types.some(
+        (t) =>
+          t.name.toUpperCase() === upper &&
+          t.definition.kind === "StructDefinition" &&
+          t.definition.isUnion === true,
+      ) ?? false;
     this.addError(
       this.featureMessage(
         "struct_compare",
-        `${expr.operator} of two STRUCT values`,
+        `${expr.operator} of two ${isUnion ? "UNION" : "STRUCT"} values`,
       ),
       expr.sourceSpan.startLine,
       expr.sourceSpan.startCol,
       expr.sourceSpan.file,
     );
+    this.refusals++;
   }
 
   /**
-   * An operand of STRUCT type: by its expression type, or, where that is
-   * unknown (`r^`), by the declared type of the access.
+   * The STRUCT type name of an operand: by its expression type, or, where
+   * that is unknown (`r^`), by the declared type of the access.
    */
-  private isStructOperand(
+  private structOperandName(
     expr: Expression,
     type: IECType | undefined,
     scope: Scope,
-  ): boolean {
-    if (type?.typeKind === "struct") return true;
+  ): string | undefined {
+    if (type?.typeKind === "struct") return (type as StructType).name;
     let name: string | undefined;
     if (type?.typeKind === "elementary") {
       name = (type as ElementaryType).name;
     } else if (type === undefined) {
       const inner =
         expr.kind === "ParenthesizedExpression" ? expr.expression : expr;
-      if (inner.kind !== "VariableExpression") return false;
+      if (inner.kind !== "VariableExpression") return undefined;
       const sym = scope.lookup(inner.name);
-      if (sym?.kind !== "variable") return false;
+      if (sym?.kind !== "variable") return undefined;
       const declared = sym.declaration as VarDeclaration | undefined;
-      if (!declared) return false;
+      if (!declared) return undefined;
       const access = resolveAccessType(declared.type, inner, this.accessLookup);
       if (
         access === undefined ||
         access.arrayDimensions !== undefined ||
         (access.referenceKind ?? "none") !== "none"
       ) {
-        return false;
+        return undefined;
       }
       name = access.name;
     }
-    if (name === undefined) return false;
+    if (name === undefined) return undefined;
     const target = this.aliasTarget(name);
-    return (
-      this.isStructType(target) ||
+    return this.isStructType(target) ||
       this.symbolTables.lookupType(target)?.resolvedType?.typeKind === "struct"
-    );
+      ? target
+      : undefined;
   }
 
   /** A STRUCT (or UNION) TYPE of this unit. */
@@ -10236,4 +10252,11 @@ function elementarySize(
     name: name.toUpperCase(),
     bytes: BigInt(Math.max(1, Math.floor(bits / 8))),
   };
+}
+
+/** `expr` without its enclosing parentheses, at any depth. */
+function unparenthesized(expr: Expression): Expression {
+  let inner = expr;
+  while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
+  return inner;
 }
