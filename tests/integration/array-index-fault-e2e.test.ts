@@ -1,0 +1,444 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Autonomy®
+/**
+ * E2E: an array index out of bounds is a run-time fault naming the index, the
+ * POU, the line and the running task; an unbound REFERENCE TO names the task.
+ * STRUCPP_NO_BOUNDS_CHECK builds without the checks.
+ */
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { compile } from "../../src/index.js";
+import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
+
+const ARRAY_SOURCE = `PROGRAM Main
+VAR arr : ARRAY[0..2] OF INT; m : ARRAY[0..1, 0..1] OF INT; i : INT := 5; v : INT; END_VAR
+arr[1] := 4; v := arr[1];
+m[1, 1] := 3;
+arr[i] := 1;
+END_PROGRAM
+`;
+
+const REF_SOURCE = `FUNCTION_BLOCK FB
+VAR_INPUT r : REFERENCE TO INT; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+o := r;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR f : FB; END_VAR
+f();
+END_PROGRAM
+`;
+
+const MAIN = `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    strucpp::strucpp_set_current_task("FAST");
+    try { p.run(); } catch (const std::exception& e) { std::cout << e.what(); }
+    std::cout << std::endl;
+    return 0;
+}
+`;
+
+describe.skipIf(!hasGpp)("array index and reference faults — g++ e2e", () => {
+  let tempDir: string;
+  let pchPath: string;
+  beforeAll(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-index-fault-"));
+    pchPath = createPCH(tempDir);
+  });
+  afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  for (const [label, options] of [
+    ["no dialect", {}],
+    ["iec-3", { dialect: "iec-3" }],
+    ["strict", { strict: true }],
+  ] as const) {
+    it(`names the index, POU, line and task (${label})`, () => {
+      const result = compile(ARRAY_SOURCE, {
+        ...options,
+        headerFileName: "generated.hpp",
+      });
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: `index_fault_${label.replace(/\W/g, "_")}`,
+        mainCode: MAIN,
+      });
+      expect(stdout).toBe(
+        "Array index out of bounds: 5 in MAIN, line 5, task FAST",
+      );
+    });
+  }
+
+  it("names the reference, POU, line and task for an unbound REFERENCE TO", () => {
+    const result = compile(REF_SOURCE, { headerFileName: "generated.hpp" });
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "ref_fault",
+      mainCode: MAIN,
+    });
+    expect(stdout).toBe("Unbound REFERENCE TO R in FB, line 4, task FAST");
+  });
+
+  it("builds without the checks under STRUCPP_NO_BOUNDS_CHECK, and only there (-Wextra -Werror)", () => {
+    // m[0, j] is outside its row but inside the array: unchecked, it stores into m[1, 0]
+    const result = compile(
+      `PROGRAM Main
+VAR m : ARRAY[0..1, 0..1] OF INT; j : INT := 2; r : REFERENCE TO INT; x : INT; END_VAR
+r REF= x; r := 5; x := r;
+m[0, j] := 7;
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const run = (name: string, extraFlags: string[]): string =>
+      compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: name,
+        extraFlags: ["-Wall", "-Wextra", "-Werror", ...extraFlags],
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    strucpp::strucpp_set_current_task("FAST");
+    try { p.run(); } catch (const std::exception& e) { std::cout << e.what(); }
+    std::cout << "|" << p.X << " " << p.M.data()[2] << std::endl;
+    return 0;
+}
+`,
+      });
+    expect(run("bounds_check_on", [])).toBe(
+      "Array index out of bounds: [0, 2] in MAIN, line 4, task FAST|5 0",
+    );
+    expect(run("no_bounds_check", ["-DSTRUCPP_NO_BOUNDS_CHECK"])).toBe("|5 7");
+  });
+
+  const DEREF_SOURCE = `TYPE SS : STRUCT f : INT; END_STRUCT END_TYPE
+FUNCTION F : INT
+VAR_INPUT r : REFERENCE TO INT; END_VAR
+F := r + 1;
+END_FUNCTION
+FUNCTION_BLOCK FB
+VAR_INPUT r : REFERENCE TO INT; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+o := r;
+r := 5;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR p : POINTER TO INT; ps : POINTER TO SS; q : REF_TO INT; rr : REFERENCE TO INT; x : INT; fb1 : FB; k : INT; END_VAR
+CASE k OF
+1: x := p^;
+2: p^ := 3;
+3: x := ps^.f;
+4: x := q^;
+5: x := rr;
+6: x := F(r := rr);
+7: fb1();
+8: rr := 4;
+END_CASE;
+END_PROGRAM
+`;
+
+  const ARRAYS_SOURCE = `TYPE U : UNION a : ARRAY[0..1, 0..1] OF INT; b : ARRAY[0..3] OF INT; END_UNION END_TYPE
+FUNCTION SumV : DINT
+VAR_IN_OUT v : ARRAY[*] OF DINT; END_VAR
+VAR_INPUT k : DINT; END_VAR
+SumV := v[k];
+END_FUNCTION
+PROGRAM Main
+VAR q : ARRAY[0..2] OF INT; n : ARRAY[-5..-1] OF INT; u : ULINT := 18446744073709551615; v : ARRAY[0..4] OF DINT; uu : U; i : INT := 2; x : DINT; k : INT; END_VAR
+CASE k OF
+1: x := q[u];
+2: n[u] := 7;
+3: x := SumV(v, 7);
+4: x := uu.a[i, 0];
+5: x := q[i + 5];
+END_CASE;
+END_PROGRAM
+`;
+
+  const runCases = (
+    source: string,
+    name: string,
+    count: number,
+    extraFlags: string[] = [],
+  ): string[] => {
+    const result = compile(source, {
+      headerFileName: "generated.hpp",
+      features: ["+union"],
+    });
+    expect(result.errors).toEqual([]);
+    return compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: name,
+      extraFlags,
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::strucpp_set_current_task("FAST");
+    for (int k = 1; k <= ${count}; ++k) {
+        try { strucpp::Program_MAIN p; p.K = k; p.run(); std::cout << k << " ok|"; }
+        catch (const std::exception& e) { std::cout << k << " " << e.what() << "|"; }
+    }
+    std::cout << std::endl;
+    return 0;
+}
+`,
+    })
+      .split("|")
+      .filter((l) => l !== "");
+  };
+
+  it("names the POU, line and task for a NULL POINTER TO or REF_TO and an unbound REFERENCE TO", () => {
+    expect(runCases(DEREF_SOURCE, "deref_faults", 8)).toEqual([
+      "1 Null pointer dereference in MAIN, line 15, task FAST",
+      "2 Null pointer dereference in MAIN, line 16, task FAST",
+      "3 Null pointer dereference in MAIN, line 17, task FAST",
+      "4 Null reference dereference in MAIN, line 18, task FAST",
+      "5 Unbound REFERENCE TO RR in MAIN, line 19, task FAST",
+      "6 Unbound REFERENCE TO R in F, line 4, task FAST",
+      "7 Unbound REFERENCE TO R in FB, line 9, task FAST",
+      "8 Unbound REFERENCE TO RR in MAIN, line 22, task FAST",
+    ]);
+  });
+
+  it("names a ULINT index as written, and faults on it whatever the bounds", () => {
+    expect(runCases(ARRAYS_SOURCE, "index_faults", 5)).toEqual([
+      "1 Array index out of bounds: 18446744073709551615 in MAIN, line 10, task FAST",
+      "2 Array index out of bounds: 18446744073709551615 in MAIN, line 11, task FAST",
+      "3 Array index out of bounds: 7 in SUMV, line 5, task FAST",
+      "4 Array index out of bounds: [2, 0] in MAIN, line 13, task FAST",
+      "5 Array index out of bounds: 7 in MAIN, line 14, task FAST",
+    ]);
+  });
+
+  it("leaves out the ARRAY[*] and UNION array checks under STRUCPP_NO_BOUNDS_CHECK", () => {
+    const out = runCases(ARRAYS_SOURCE, "index_no_check", 5, [
+      "-DSTRUCPP_NO_BOUNDS_CHECK",
+    ]);
+    expect(out[2]).toBe("3 ok");
+    expect(out[3]).toBe("4 ok");
+  });
+
+  it("names the site without exceptions", () => {
+    const result = compile(ARRAYS_SOURCE, {
+      headerFileName: "generated.hpp",
+      features: ["+union"],
+    });
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "index_no_exceptions",
+      extraFlags: ["-fno-exceptions"],
+      mainCode: `
+#include <cstdio>
+#include <cstdlib>
+namespace strucpp {
+[[noreturn]] void iec_runtime_fault(IecFault reason, const char* context) noexcept {
+    std::printf("fault %d %s\\n", static_cast<int>(reason), context != nullptr ? context : "");
+    std::exit(0);
+}
+}
+int main() {
+    strucpp::strucpp_set_current_task("FAST");
+    static strucpp::Program_MAIN p;
+    p.K = 3;
+    p.run();
+    std::printf("nofault\\n");
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe(
+      "fault 1 Array index out of bounds in SUMV, line 5, task FAST",
+    );
+  });
+
+  const MEMBER_REFS = `TYPE S : STRUCT r : REFERENCE TO INT; v : INT; END_STRUCT END_TYPE
+FUNCTION_BLOCK FB
+VAR_INPUT r : REFERENCE TO INT; END_VAR
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR x : INT; y : INT; r1, r2 : REFERENCE TO INT; s : S; a : ARRAY[0..1] OF REFERENCE TO INT; f : FB; p : POINTER TO INT; k : INT; n : UDINT; END_VAR
+CASE k OF
+1: r1 REF= r2; IF __ISVALIDREF(r1) THEN y := 1; ELSE y := 2; END_IF;
+2: n := SIZEOF(r2);
+3: x := s.r;
+4: s.r := 5;
+5: x := a[0];
+6: f.r := 3;
+7: x := p^;
+END_CASE;
+END_PROGRAM
+`;
+
+  it("binds REF= from an unbound reference unchecked, and names a reference member, element and FB input (-Werror)", () => {
+    expect(
+      runCases(MEMBER_REFS, "member_refs", 7, ["-Wall", "-Werror"]),
+    ).toEqual([
+      "1 ok",
+      "2 ok",
+      "3 Unbound REFERENCE TO S.R in MAIN, line 10, task FAST",
+      "4 Unbound REFERENCE TO S.R in MAIN, line 11, task FAST",
+      "5 Unbound REFERENCE TO A in MAIN, line 12, task FAST",
+      "6 Unbound REFERENCE TO F.R in MAIN, line 13, task FAST",
+      "7 Null pointer dereference in MAIN, line 14, task FAST",
+    ]);
+  });
+
+  const REFS_THROUGH = `TYPE S : STRUCT r : REFERENCE TO INT; v : INT; END_STRUCT END_TYPE
+VAR_GLOBAL g : S; END_VAR
+PROGRAM MAIN
+VAR rs : REFERENCE TO S; t : S; p : POINTER TO S; y : INT; k : INT; END_VAR
+rs REF= t; p := ADR(t);
+CASE k OF
+1: y := rs.r;
+2: rs.r := 3;
+3: y := p^.r;
+4: p^.r := 4;
+5: y := g.r;
+6: g.r := 2;
+END_CASE;
+END_PROGRAM
+`;
+
+  it("names a REFERENCE TO member reached through a REFERENCE TO, a pointer and a global", () => {
+    expect(runCases(REFS_THROUGH, "refs_through", 6)).toEqual([
+      "1 Unbound REFERENCE TO RS.R in MAIN, line 7, task FAST",
+      "2 Unbound REFERENCE TO RS.R in MAIN, line 8, task FAST",
+      "3 Unbound REFERENCE TO P.R in MAIN, line 9, task FAST",
+      "4 Unbound REFERENCE TO P.R in MAIN, line 10, task FAST",
+      "5 Unbound REFERENCE TO G.R in MAIN, line 11, task FAST",
+      "6 Unbound REFERENCE TO G.R in MAIN, line 12, task FAST",
+    ]);
+  });
+
+  const LONG = "F" + "X".repeat(240);
+  const LONG_SOURCE = `FUNCTION_BLOCK ${LONG}
+VAR_INPUT z : DINT; END_VAR
+VAR_OUTPUT o : DINT; END_VAR
+o := 7 / z;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR f : ${LONG}; s : STRING := 'abc'; c : CHAR; i : INT := 7; k : INT; END_VAR
+IF k = 1 THEN f(z := 0); ELSE c := s[i]; END_IF;
+END_PROGRAM
+`;
+
+  it("keeps the line and task of a long message, shortening the POU", () => {
+    const result = compile(LONG_SOURCE, {
+      headerFileName: "generated.hpp",
+      dialect: "iec-3",
+    });
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "long_pou",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::strucpp_set_current_task("FAST_TASK");
+    try { strucpp::Program_MAIN p; p.K = 1; p.run(); }
+    catch (const std::exception& e) { std::cout << e.what() << std::endl; }
+    return 0;
+}
+`,
+    });
+    expect(stdout.startsWith("Division by zero in FXXX")).toBe(true);
+    expect(stdout.endsWith("…, line 4, task FAST_TASK")).toBe(true);
+    expect(Buffer.byteLength(stdout)).toBeLessThan(224);
+  });
+
+  it("keeps the description and line with a long task name: shortens the POU, then the task, on a UTF-8 boundary", () => {
+    const result = compile(LONG_SOURCE, {
+      headerFileName: "generated.hpp",
+      dialect: "iec-3",
+    });
+    expect(result.errors).toEqual([]);
+    const run = (name: string, task: string): string =>
+      compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: name,
+        mainCode: `
+#include <iostream>
+int main() {
+    strucpp::strucpp_set_current_task("${task}");
+    try { strucpp::Program_MAIN p; p.K = 1; p.run(); }
+    catch (const std::exception& e) { std::cout << e.what() << std::endl; }
+    return 0;
+}
+`,
+      });
+    // The task fits once the POU is shortened: it stays whole
+    const medium = "T".repeat(150);
+    const first = run("long_task_medium", medium);
+    expect(first).toMatch(/^Division by zero in FX+…, line 4, task T+$/);
+    expect(first.endsWith(`, task ${medium}`)).toBe(true);
+    expect(Buffer.byteLength(first)).toBe(223);
+    // Too long even so: the POU goes, then the task is cut, never inside a character
+    const second = run("long_task_utf8", "TEST 'x" + "é".repeat(150) + "'");
+    expect(second).toMatch(/^Division by zero in …, line 4, task TEST 'xé+…$/);
+    expect(second).not.toContain("\uFFFD");
+    expect(Buffer.byteLength(second)).toBeLessThanOrEqual(223);
+  });
+
+  it("keeps the STRING index text without exceptions", () => {
+    const result = compile(LONG_SOURCE, {
+      headerFileName: "generated.hpp",
+      dialect: "iec-3",
+    });
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "string_index_no_exceptions",
+      extraFlags: ["-fno-exceptions"],
+      mainCode: `
+#include <cstdio>
+#include <cstdlib>
+namespace strucpp {
+[[noreturn]] void iec_runtime_fault(IecFault reason, const char* context) noexcept {
+    std::printf("fault %d %s\\n", static_cast<int>(reason), context != nullptr ? context : "");
+    std::exit(0);
+}
+}
+int main() {
+    strucpp::strucpp_set_current_task("FAST");
+    static strucpp::Program_MAIN p;
+    p.run();
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe(
+      "fault 1 String index out of bounds in MAIN, line 8, task FAST",
+    );
+  });
+});

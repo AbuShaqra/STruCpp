@@ -25,7 +25,7 @@ VAR
   m1 : MyDate := D#2024-01-15; m2 : MyDate := D#2024-01-20; d1 : DATE := D#2024-01-15;
   mt : MyTime := T#1d; fb1 : FB; m : MyDT := DT#2024-07-15-12:30:15;
   t1 : TIME; t7 : TIME; x1 : DATE; r5 : DATE; r7 : TOD;
-  far : DATE := D#2500-01-01; old : DATE := D#1600-01-01; xf : DATE; xo : DATE; neg : DATE;
+  far : DATE := D#2106-02-06; old : DATE := D#1970-01-01; xf : DATE; xo : DATE; neg : DATE;
   dt1 : DT := DT#2024-07-15-12:30:15;
   dw : DT := DT#2024-01-15-12:30:15;
   summer : BOOL; winter : BOOL; dd : DATE; tt : TOD; diff : TIME; nx : DATE;
@@ -48,25 +48,26 @@ neg := d1 - T#36h;
 END_PROGRAM
 `;
 
-// Name, value now, value before (raw nanoseconds or days, mixed up).
+// Name, value now (DATE and DT in seconds, TIME and TOD in ms), value before
+// the 32-bit types (TIME and TOD in ns, DATE in days).
 const EXPECTED: Array<[string, string, string]> = [
-  ["DST(2024-07-15) (OSCAT)", "1", "0"],
+  ["DST(2024-07-15) (OSCAT)", "1", "1"],
   ["DST(2024-01-15) (OSCAT)", "0", "0"],
-  ["DT_TO_DATE (days since 1970)", "19919", "1721046615000000000"],
-  ["DT_TO_TOD (ns since midnight)", "45015000000000", "1721046615000000000"],
-  ["D#2024-01-20 - D#2024-01-15 (ns, T#5d)", "432000000000000", "5"],
-  ["D#2024-01-15 + T#1d (days since 1970)", "19738", "86400000019737"],
-  ["alias DATE - alias DATE (ns)", "432000000000000", "5"],
-  ["FB output DATE - DATE (ns)", "432000000000000", "5"],
-  ["alias DATE + alias TIME (days)", "19738", "86400000019737"],
-  ["TO_DATE of an alias of DT (days)", "19919", "1721046615000000000"],
-  ["TO_TOD of CONCAT_DATE_TOD (ns)", "45015000000000", "1721046615000000000"],
-  ["D#2500-01-01 + T#1d (days)", "193580", "86400000193579"],
-  ["D#1600-01-01 + T#1d (days)", "-135139", "86399999864860"],
+  ["DT_TO_DATE (seconds since 1970)", "1721001600", "19919"],
+  ["DT_TO_TOD (ms since midnight)", "45015000", "45015000000000"],
+  ["D#2024-01-20 - D#2024-01-15 (ms, T#5d)", "432000000", "432000000000000"],
+  ["D#2024-01-15 + T#1d (seconds)", "1705363200", "19738"],
+  ["alias DATE - alias DATE (ms)", "432000000", "432000000000000"],
+  ["FB output DATE - DATE (ms)", "432000000", "432000000000000"],
+  ["alias DATE + alias TIME (seconds)", "1705363200", "19738"],
+  ["TO_DATE of an alias of DT (seconds)", "1721001600", "19919"],
+  ["TO_TOD of CONCAT_DATE_TOD (ms)", "45015000", "45015000000000"],
+  ["D#2106-02-06 + T#1d, the last DATE (seconds)", "4294944000", "49710"],
+  ["D#1970-01-01 + T#1d (seconds)", "86400", "1"],
   [
     "D#2024-01-15 - T#36h (the day holding the instant, D#2024-01-13)",
+    "1705104000",
     "19735",
-    "-129599999980263",
   ],
 ];
 
@@ -149,7 +150,7 @@ int main() {
 }
 `,
       });
-      expect(stdout).toBe("432000000000000 19738 45015000000000 19919");
+      expect(stdout).toBe("432000000 1705363200 45015000 1721001600");
     });
 
     for (const options of [{}, { dialect: "iec-3" }, { strict: true }]) {
@@ -160,7 +161,7 @@ PROGRAM Main
 VAR
   d : DATE := D#2024-01-15; d2 : DATE := D#2024-01-10; b : BOOL := TRUE;
   r1, r2, r3, r4 : DATE; t1 : TIME; sv : SD;
-  arr : ARRAY[0..1] OF DATE := [D#2024-01-15 + T#-1ms, D#2024-01-15];
+  arr : ARRAY[0..1] OF DATE := [D#2024-01-15 - T#1ms, D#2024-01-15];
 END_VAR
 r1 := SEL(b, d2, d) - T#1ms;
 r2 := d + SEL(b, T#1d, T#2d);
@@ -190,7 +191,7 @@ int main() {
 `,
         });
         expect(stdout).toBe(
-          "19736 19739 432000000000000 19738 19738 19736 19736",
+          "1705190400 1705449600 432000000 1705363200 1705363200 1705190400 1705190400",
         );
       });
     }

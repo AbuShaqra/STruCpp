@@ -100,7 +100,7 @@ TEST(IECTraitsTest, IsAnyBit) {
 }
 
 TEST(IECTraitsTest, IsAnyDate) {
-    EXPECT_TRUE(is_any_date_v<TIME_t>);
+    EXPECT_FALSE(is_any_date_v<TIME_t>);
     EXPECT_TRUE(is_any_date_v<DATE_t>);
     EXPECT_TRUE(is_any_date_v<TOD_t>);
     EXPECT_TRUE(is_any_date_v<DT_t>);
@@ -121,9 +121,10 @@ TEST(IECTraitsTest, IsAnyString) {
 TEST(IECTraitsTest, IsAnyTime) {
     EXPECT_TRUE(is_any_time_v<TIME_t>);
     EXPECT_TRUE(is_any_time_v<LTIME_t>);
-    // Note: TIME_t, DATE_t, TOD_t, DT_t, LINT_t are all int64_t, so DATE_t is also ANY_TIME
-    // This is a known limitation of type aliasing in C++
-    EXPECT_TRUE(is_any_time_v<DATE_t>);
+    // The 32-bit DATE, TOD and DT are their own types, no duration
+    EXPECT_FALSE(is_any_time_v<DATE_t>);
+    EXPECT_FALSE(is_any_time_v<TOD_t>);
+    EXPECT_FALSE(is_any_time_v<DT_t>);
     EXPECT_FALSE(is_any_time_v<INT_t>);
 }
 
@@ -132,9 +133,7 @@ TEST(IECTraitsTest, IsAnyMagnitude) {
     EXPECT_TRUE(is_any_magnitude_v<REAL_t>);
     EXPECT_TRUE(is_any_magnitude_v<TIME_t>);
     EXPECT_FALSE(is_any_magnitude_v<BOOL_t>);
-    // Note: TIME_t, DATE_t, TOD_t, DT_t, LINT_t are all int64_t, so DATE_t is also ANY_MAGNITUDE
-    // This is a known limitation of type aliasing in C++
-    EXPECT_TRUE(is_any_magnitude_v<DATE_t>);
+    EXPECT_FALSE(is_any_magnitude_v<DATE_t>);
 }
 
 TEST(IECTraitsTest, BitSize) {

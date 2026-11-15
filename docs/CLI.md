@@ -227,8 +227,16 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
   wider bit string is accepted; untyped constants such as `-1`, `16#FF` or `1 + 2` take the type
   they are assigned to, and `0`, `1` and `NOT 1` fit a BOOL; AND, OR and XOR with a bit-string
   operand have the wider bit string's type; the same rules apply to an output captured with
-  `o => v`, from a FUNCTION or a function block;
-- arithmetic on BOOL or on BYTE/WORD/DWORD/LWORD, and an integer used as TIME;
+  `o => v`, from a FUNCTION or a function block, and to the argument of a typed conversion
+  `X_TO_Y`, which must be an X or convert to it implicitly (`BYTE_TO_INT(w)` with a WORD,
+  `DINT_TO_TIME(t)` with a TIME and `STRING_TO_INT(ws)` with a WSTRING are refused; a function, method
+  or FB instance of the conversion's name is not checked as one);
+- a condition of IF, ELSIF, WHILE or REPEAT ... UNTIL that is not a BOOL (`IF w THEN` with a WORD);
+- arithmetic on BOOL or on BYTE/WORD/DWORD/LWORD, an integer used as TIME, and a typed integer operand of
+  AND, OR or XOR (Table 31: ANY_BIT only; also refused under `--dialect iec-3`, see DIALECTS.md). With
+  integer operands the result is the integer in every mode, so `IF i AND 1 THEN`, `WHILE i AND 8 DO`,
+  `UNTIL j AND 8` and `SEL(i AND 1, a, b)` are errors with or without `--strict`
+  ([DIALECTS.md](DIALECTS.md#bitwise-operators-on-integers));
 - the reserved names ON, STEP and MOVE for a variable, POU, method, type, field, enum value,
   configuration, resource, task or program instance (a FUNCTION may still be named MOVE);
 - a FOR loop with no statement in its body (an empty statement, `DO ; END_FOR`, is a

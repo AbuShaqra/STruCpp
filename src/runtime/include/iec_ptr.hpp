@@ -110,6 +110,7 @@ public:
     // (where there is no MMU to trap a null deref, so the unchecked access would
     // silently read/write address 0). Mirrors REF_TO's NullReferenceException.
     void __fault_if_null() const {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
         if (!ptr_) {
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::runtime_error("Null pointer dereference");
@@ -117,6 +118,7 @@ public:
             iec_runtime_fault(IecFault::NullReference);
 #endif
         }
+#endif
     }
 
     // Dereference (null-checked)

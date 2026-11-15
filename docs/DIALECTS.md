@@ -102,6 +102,43 @@ the root. A profile without `extends` has only its own features.
 | `conditional_return` | `RETURN (cond);`, a RETURN taken when `cond` is TRUE      |
 | `platform_types`     | the types `__XINT`/`XINT`, `__UXINT`/`UXINT`, `XWORD` and `PVOID` ([below](#platform-types)) |
 | `bit_type`           | `BIT` as the type of a STRUCT member, packed into shared bytes ([below](#bit-members)) |
+| `string_default_80`  | a STRING or WSTRING written without a length holds 80 characters, not 254 ([below](#default-string-length)) |
+
+## Bitwise operators on integers
+
+IEC 61131-3 Ed. 3 Table 31 defines AND, OR and XOR on ANY_BIT (BOOL and the bit strings) only. With no
+dialect flag an integer operand is accepted, as before, and the result now has the operands' common
+integer type (`i AND j` with INT operands is an INT, not a BOOL), so assigning it to a narrower type gets
+the usual narrowing warning. An untyped constant beside a typed integer takes that integer's type
+(`s AND 16#7F` with a SINT `s` is a SINT, so `s := s AND 16#7F` gets no warning); beside an operand that is
+neither an integer nor ANY_BIT (TIME, REAL, STRING) it is typed as before. A signed and an unsigned integer
+take the smallest signed type that holds both, as Figure 11 widens them, whatever their order (`si OR usi`
+is an INT, `i AND ui` a DINT, `di XOR udi` a LINT), and the generated C++ computes in that type, so
+`(di OR udi) < 0` is TRUE for a negative `di`; LINT and ULINT have none, so their result is a LINT with
+the warning `LINT and ULINT have no common integer type: AND of them is a LINT`. With no dialect flag this adds narrowing
+warnings that development did not give, where the wider result is stored back into a narrower variable:
+`udi := di OR udi` (DINT and UDINT) now warns `Implicit narrowing conversion from LINT to UDINT`. A refusal is reported once,
+at the typed operand, also in a chain (`s AND 1 AND 2`). Under `--dialect iec-3`,
+and under `--strict` in any dialect, a typed integer operand is refused, at that operand and naming its
+type (an alias by its base type): `AND takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not
+SINT; convert it with SINT_TO_WORD or the like`. An untyped constant beside a bit string or BOOL
+(`w AND 16#FF`, `x OR 1`) takes that operand's type and is accepted, and so does an expression of untyped constants only
+(`w := 16#F0 OR 16#0F`, `CW : WORD := 16#F0 AND 16#0F`), which takes its type from where it is used. Only a
+typed integer operand (an INT variable, `INT#16#F0`) is refused.
+
+NOT follows the same rules. `NOT i` with a typed integer `i` keeps its logical meaning with no dialect flag
+(`NOT 5` is FALSE), and is refused under `--dialect iec-3` and `--strict`: `NOT takes bit strings or BOOL
+(ANY_BIT, IEC 61131-3 Table 31), not INT; convert it with INT_TO_WORD or the like`. NOT of an untyped constant
+takes its type from where it is used: into a bit string it is that width's complement (`w := NOT 16#00F0` is
+16#FF0F), elsewhere it stays logical. Code that stored `NOT 16#00F0` into a WORD and got 0 now gets 16#FF0F.
+
+Because `i AND 1` with an INT `i` is an INT, not a BOOL, it is an error in every mode, with no dialect
+flag too, wherever a BOOL is required: as the condition of IF, ELSIF, WHILE or REPEAT ... UNTIL
+(`Condition must be a boolean or bit type, got INT`) and as the G argument of SEL (`Argument 'G' of 'SEL'
+expects BOOL, got INT`). Such code compiled before. Write the test as a comparison: `IF (i AND 1) <> 0
+THEN`. Assigned to a BOOL variable it gets the narrowing warning, as any INT does. Passed to a BOOL
+VAR_INPUT of a user FUNCTION or function block (`F(i AND 1)`, `fb(b := i AND 1)`) it is accepted with no
+diagnostic outside `--strict`, as an INT variable passed there is.
 
 ## Refusals
 
@@ -410,6 +447,10 @@ END_PROGRAM
 - With the feature off, init arguments are refused at `(` (see Refusals), and every FB_init of a
   FUNCTION_BLOCK gets the warning `FB_init is not run unless the feature fb_init is on` at its name. The
   method is still compiled as an ordinary method; only the warning is new.
+- A METHOD named FB_exit is never called: this compiler does not tear an instance down (no online change,
+  no program stop). With the feature on or off, each FB_exit of a FUNCTION_BLOCK gets the warning
+  `FB_exit of 'FB' is never called: an instance is not torn down` at its name; it is still compiled as
+  an ordinary method and may be called explicitly.
 - FB_init's inputs are the two BOOL flags `bInitRetains` and `bInCopyCode` plus the VAR_INPUTs it
   declares. A flag it does not declare is declared for it (a BOOL VAR_INPUT before its own); a declared
   flag must be a BOOL VAR_INPUT: `'BINITRETAINS' of FB_init must be a BOOL VAR_INPUT`. Both flags are
@@ -933,3 +974,27 @@ open documents. A rejected value keeps the previous selection and shows
   "features": ["+program_methods"]
 }
 ```
+
+## Default string length
+
+Under `string_default_80` a `STRING` or `WSTRING` written without a length is `STRING(80)` or
+`WSTRING(80)`, in every place a type is written (a variable, a STRUCT field, an ARRAY element, a FUNCTION
+or METHOD result, a parameter, an `ARRAY[*] OF STRING` parameter's element, a PROPERTY, a TYPE alias, a
+test file); without the feature it is 254.
+
+- `SIZEOF` of a plain STRING is 81 and of a plain WSTRING 162; a longer value stored is cut at 80.
+- The standard string functions (`CONCAT`, `INSERT`, ...) give a result of 254 characters or the longest
+  argument's length, as without the feature; only the store cuts it.
+- A library compiled with the feature records `stringDefaultLength: 80` in its manifest; one without it
+  is read as 254. A library's plain STRING keeps the library's length.
+- A plain STRING bound to a library's plain STRING `VAR_IN_OUT` of the other default length is passed by
+  copy-in / copy-out with no warning; a length written on either side still warns. A plain STRING bound
+  to a `REFERENCE TO STRING` of the other length is refused, as for any two lengths.
+  The same copy applies to a library FUNCTION's or FUNCTION_BLOCK METHOD's VAR_IN_OUT and VAR_OUTPUT,
+  element by element to an `ARRAY OF STRING` one, and to an `ARRAY[*] OF STRING` VAR_IN_OUT of a library
+  FUNCTION; a copy back is cut at the variable's length.
+- A library's array elements, `ARRAY[*]` parameters and STRUCT fields written as a plain STRING keep the
+  library's length too.
+- The debugger shows strings of 254 characters only: a plain STRING or WSTRING (80) is left out of the
+  debug table with a build warning (`Declare it as STRING(254) to expose it`); an ARRAY of them is left
+  out whole, with one warning (`Declare them as STRING(254) to expose them`).

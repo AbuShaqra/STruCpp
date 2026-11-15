@@ -219,7 +219,7 @@ describe("structure initializers — PROGRAM variables", () => {
     `);
     expectOk(result);
     expect(initList(result.cppCode)).toContain(
-      "R(strucpp::iec_struct_init<RAMP>([](auto& v0) { v0.PERIOD = 1000000000LL; v0.STEP = 2.5; }))",
+      "R(strucpp::iec_struct_init<RAMP>([](auto& v0) { v0.PERIOD = TIME_t(1000u); v0.STEP = 2.5; }))",
     );
   });
 });

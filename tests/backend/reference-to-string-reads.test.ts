@@ -5,6 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 type Options = Parameters<typeof compile>[1];
 const MODES: Array<[string, Options]> = [
@@ -42,9 +43,9 @@ describe("REFERENCE TO STRING reads", () => {
           options,
         );
         expect(r.errors).toEqual([]);
-        expect(r.cppCode).toContain("RR.bind(X);");
-        expect(r.cppCode).toContain("I = LEN(RR.target()) + LEN(RW.target());");
-        expect(r.cppCode).toContain("S = RR.target();");
+        expect(withoutSites(r.cppCode)).toContain("RR.bind(X);");
+        expect(withoutSites(r.cppCode)).toContain("I = LEN(RR.target()) + LEN(RW.target());");
+        expect(withoutSites(r.cppCode)).toContain("S = RR.target();");
       });
 
       it("refuses '^' on a REFERENCE TO", () => {

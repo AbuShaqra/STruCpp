@@ -3,7 +3,7 @@
 /**
  * E2E: LTIME values, literals, TIME mixing and conversions build and run under
  * g++, an LTON from the IEC library runs, and an LTIME leaf is read on the
- * debug wire as a TIME-tagged 8-byte nanosecond count.
+ * debug wire as an LTIME-tagged 8-byte nanosecond count.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -79,12 +79,13 @@ int main() {
 `,
       });
       expect(stdout).toBe(
-        "93782505006007 93786005006007 1 -3000000000 9223286400000000000 0 1",
+        // LTIME_TO_TIME(-3 s) truncates to ms and wraps the 32-bit TIME
+        "93782505006007 93786005006007 1 4294964296 9223286400000000000 0 1",
       );
     });
   }
 
-  it("describes an LTIME leaf to the debugger as TIME, 8 bytes", () => {
+  it("describes an LTIME leaf to the debugger as LTIME, 8 bytes", () => {
     const result = compile(
       `${SOURCE}
 CONFIGURATION C
@@ -97,7 +98,7 @@ END_CONFIGURATION`,
     );
     expect(result.errors).toEqual([]);
     const leaf = result.debugMap!.leaves.find((l) => l.path === "INST.A");
-    expect(leaf).toMatchObject({ type: "TIME", size: 8 });
-    expect(result.debugTableCpp).toContain("TAG_TIME, 0 },  // INST.A");
+    expect(leaf).toMatchObject({ type: "LTIME", size: 8 });
+    expect(result.debugTableCpp).toContain("TAG_LTIME, 0 },  // INST.A");
   });
 });

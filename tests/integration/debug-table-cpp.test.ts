@@ -44,13 +44,13 @@ int main() {
   // A timer mid-count: the interface says "running", and START_TIME is the
   // only thing that says since when.
   g_config.INSTANCE0.T.IN = true;
-  g_config.INSTANCE0.T.PT = 5000;
+  g_config.INSTANCE0.T.PT = strucpp::TIME_t(5000u);
   g_config.INSTANCE0.T.Q  = false;
-  g_config.INSTANCE0.T.ET = 1234;
+  g_config.INSTANCE0.T.ET = strucpp::TIME_t(1234u);
   g_config.INSTANCE0.T.STATE = 1;
   g_config.INSTANCE0.T.PREV_IN = true;
-  g_config.INSTANCE0.T.START_TIME = 987654;
-  g_config.INSTANCE0.LOOSE.START_TIME = 555;
+  g_config.INSTANCE0.T.START_TIME = strucpp::TIME_t(987654u);
+  g_config.INSTANCE0.LOOSE.START_TIME = strucpp::TIME_t(555u);
 
   unsigned char blob[1024] = {0};
   size_t n = retain::pack(blob, sizeof(blob), rd, sz);
@@ -58,20 +58,20 @@ int main() {
 
   // Power cycle.
   g_config.INSTANCE0.T.IN = false;
-  g_config.INSTANCE0.T.PT = 0;
-  g_config.INSTANCE0.T.ET = 0;
+  g_config.INSTANCE0.T.PT = strucpp::TIME_t(0u);
+  g_config.INSTANCE0.T.ET = strucpp::TIME_t(0u);
   g_config.INSTANCE0.T.STATE = 0;
   g_config.INSTANCE0.T.PREV_IN = false;
-  g_config.INSTANCE0.T.START_TIME = 0;
-  g_config.INSTANCE0.LOOSE.START_TIME = 0;
+  g_config.INSTANCE0.T.START_TIME = strucpp::TIME_t(0u);
+  g_config.INSTANCE0.LOOSE.START_TIME = strucpp::TIME_t(0u);
 
   chk("unpack ok", retain::unpack(blob, n, wr, sz) == retain::LoadResult::Ok);
-  chk("interface ET", (long long)g_config.INSTANCE0.T.ET == 1234);
+  chk("interface ET", g_config.INSTANCE0.T.ET.get().raw == 1234u);
   chk("internal STATE", (int)g_config.INSTANCE0.T.STATE == 1);
   chk("internal PREV_IN", (bool)g_config.INSTANCE0.T.PREV_IN == true);
-  chk("internal START_TIME", (long long)g_config.INSTANCE0.T.START_TIME == 987654);
+  chk("internal START_TIME", g_config.INSTANCE0.T.START_TIME.get().raw == 987654u);
   // The whole point: the un-retained instance stays cold.
-  chk("non-retained instance untouched", (long long)g_config.INSTANCE0.LOOSE.START_TIME == 0);
+  chk("non-retained instance untouched", g_config.INSTANCE0.LOOSE.START_TIME.get().raw == 0u);
 
   printf(fails ? "FAILURES=%d\\n" : "ALL_OK\\n", fails);
   return fails ? 1 : 0;

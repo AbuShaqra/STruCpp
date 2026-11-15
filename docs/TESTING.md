@@ -36,14 +36,14 @@ VAR
 END_VAR
 END_SETUP
 
-TEST "increments on each call"
+TEST 'increments on each call'
     c(reset := FALSE);
     ASSERT_EQ(c.count, 1);
     c(reset := FALSE);
     ASSERT_EQ(c.count, 2);
 END_TEST
 
-TEST "reset clears count"
+TEST 'reset clears count'
     c(reset := FALSE);
     c(reset := FALSE);
     c(reset := TRUE);
@@ -77,12 +77,12 @@ TEARDOWN
 END_TEARDOWN
 ```
 
-SETUP runs before each test case. TEARDOWN runs after each test case. Variables declared in SETUP are accessible in all TEST blocks within the same file.
+SETUP runs before each test case, its variables starting from their declared initial values. TEARDOWN runs after each test case, also in a file with no SETUP, and also when the test failed, ended with `RETURN` or stopped on a run-time fault (a division by zero, an index out of bounds): the fault is reported as the test's failure after TEARDOWN has run. Variables declared in SETUP are accessible in all TEST blocks within the same file.
 
 ### TEST Blocks
 
 ```
-TEST "descriptive test name"
+TEST 'descriptive test name'
 VAR
     result : INT;
 END_VAR
@@ -91,17 +91,18 @@ END_VAR
 END_TEST
 ```
 
-Each TEST block is an isolated test case. Tests can declare local variables in a VAR block. Any ST statement is valid inside a test (assignments, function calls, FB invocations, control flow).
+The test name is a string in single quotes (`TEST 'name'`); a double-quoted name is refused. Each TEST block is an isolated test case. Tests can declare local variables in a VAR block. Any ST statement is valid inside a test (assignments, function calls, FB invocations, control flow).
 
 `RETURN` ends a TEST there, and the test passes unless an assertion before it failed; this holds at the top
-level of the body and nested in an `IF`, `CASE` or loop. TEARDOWN still runs. In SETUP or TEARDOWN a
+level of the body and nested in an `IF`, `CASE` or loop. TEARDOWN still runs, with or without a SETUP. In SETUP or TEARDOWN a
 `RETURN` (or `RETURN (cond);` under the feature `conditional_return`) ends that block.
 
 All TEST blocks of a run share one process, and nothing is reset between them: global variables keep the values the previous test left. So does a PROGRAM reached by name from another POU (feature `program_methods`, see [DIALECTS.md](DIALECTS.md)): it has one instance, a test's variable of its type (`p : PRG_A`) names that instance, and its state carries from one test to the next. Reset what a test depends on in SETUP or at the start of the test. A program nobody reaches by name is still a fresh instance per test variable.
 
 ## Assertions
 
-All assertions accept an optional trailing message argument for custom failure output.
+All assertions accept an optional trailing message argument for custom failure output: a STRING literal,
+in single quotes. A double-quoted (WSTRING) literal there is an argument too many and is refused.
 
 | Assertion | Description | Example |
 |-----------|-------------|---------|
@@ -118,17 +119,19 @@ All assertions accept an optional trailing message argument for custom failure o
 With custom message:
 
 ```
-ASSERT_EQ(result, expected, "calculation should match");
+ASSERT_EQ(result, expected, 'calculation should match');
 ```
 
-A failed assertion stops the current test immediately (remaining statements are skipped) and reports the failure with source location.
+`ASSERT_EQ` and `ASSERT_NEQ` of two STRUCT values compare them field by field, as `a = b` does in a test body. The dialect flags of the run (`--dialect`, `--feature`) apply to the test files too, so `XSIZEOF` works there under `vendor_operators`.
+
+A failed assertion stops the current test immediately (remaining statements are skipped) and reports the failure with source location. This holds for an assertion nested in `IF`, `CASE`, `FOR`, `WHILE` or `REPEAT` as well, and a nested assertion is checked like any other: its argument count and the names it reads. An assertion in SETUP or TEARDOWN that fails fails the test it runs for: a failed SETUP assertion skips the test body, and TEARDOWN still runs.
 
 ## Time Advancement
 
 For testing time-dependent logic (timers, delays):
 
 ```
-TEST "TON timer fires after preset"
+TEST 'TON timer fires after preset'
     timer(IN := TRUE, PT := T#100ms);
     ASSERT_FALSE(timer.Q);
 
@@ -148,7 +151,7 @@ END_TEST
 Skip a FB's execution while tracking that it was called:
 
 ```
-TEST "controller uses sensor"
+TEST 'controller uses sensor'
     MOCK mySensor;
 
     controller();
@@ -165,7 +168,7 @@ END_TEST
 Replace a function with a fixed return value:
 
 ```
-TEST "uses mocked Add"
+TEST 'uses mocked Add'
     MOCK_FUNCTION Add RETURNS 42;
 
     result := Add(1, 2);
@@ -190,7 +193,7 @@ The `--test` mode:
 2. Parses test files into a test AST (SETUP/TEARDOWN/TEST blocks, assertions, mocks)
 3. Validates test files against the source's symbol tables
 4. Generates a C++ test runner (`test_main.cpp`) with:
-   - A setup struct per test file (if SETUP exists)
+   - A setup struct per test file (if SETUP or TEARDOWN exists)
    - A test function per TEST block, which names itself as the running task (`TEST '<name>'`) so a
      run-time fault such as a division by zero reports the test that raised it
    - Test registration in `main()`

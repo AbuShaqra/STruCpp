@@ -40,8 +40,9 @@ import type {
   PropertyDeclaration,
   Visibility,
   ASTNode,
+  AssertCall,
 } from "../frontend/ast.js";
-import { charLiteralUnits } from "../literal-utils.js";
+import { charLiteralUnits, exactIntegerValue } from "../literal-utils.js";
 import { isEnEnoArgument, walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry, SourceSpan } from "../types.js";
@@ -63,10 +64,6 @@ import type {
 import {
   collectFileScopeGlobals,
   getProjectNamespace,
-  parseDateLiteralToDays,
-  parseDtLiteralToNs,
-  parseTimeLiteral,
-  parseTodLiteralToNs,
 } from "../project-model.js";
 import { isElementaryType, TypeRegistry } from "../semantic/type-registry.js";
 import { programsReachedByName } from "../semantic/program-access.js";
@@ -94,15 +91,17 @@ import {
   IEC_TO_CPP_VAR_TYPE,
   sizeOfTypeCpp,
 } from "./type-codegen.js";
-import { addressFit, addressSource } from "../semantic/address-store.js";
 import {
-  dateArithmeticCpp,
+  temporalArithmeticCpp,
+  temporalLiteralCpp,
+  NS_PER_DAY,
   formatArrayType,
   formatIntegerLiteral,
   iecBaseToCppLiteral,
   isComparison,
   isComparisonExpr,
   stringComparisonCpp,
+  parenthesizedCpp,
   isNonZeroIntegerLiteral,
   literalTemporalType,
   translateIECString,
@@ -140,6 +139,7 @@ import {
   type StructInitEmitter,
 } from "./struct-init-codegen.js";
 import { vendorOperatorCpp } from "../semantic/vendor-operators.js";
+import { untypedNotCpp, untypedNotTarget } from "../semantic/untyped-not.js";
 import { bitPlaceOf, bitRunMemberName } from "./bit-runs.js";
 import type { StructDefinition } from "../frontend/ast.js";
 
@@ -157,6 +157,8 @@ interface InOutCopyArg {
   cppType?: string;
   /** Reads and writes the variable through one reference (its index runs once). */
   once?: true;
+  /** A POINTER TO or REF_TO output captured into this 64-bit integer type: copied out as its address, not copied in. */
+  addressInto?: string;
 }
 
 /** The parts of a type reference that decide its C++ type. */
@@ -384,10 +386,10 @@ export interface CodeGenOptions {
  * yield; `fromUnit` converts back. `undefined` means the internal
  * representation already IS that unit, so no call is emitted.
  *
- * Internally every temporal type is nanoseconds since its own zero, except
- * DATE, which is whole days. CODESYS uses 32-bit seconds for DATE and DT,
- * 32-bit milliseconds for TOD and TIME, and 64-bit nanoseconds for all four
- * `L` variants — so the `L` rows are pass-through and the rest scale.
+ * TIME and TOD are held in 32-bit ms, DATE and DT in 32-bit seconds (as the
+ * vendor holds them), LTIME, LTOD and LDT in 64-bit ns and LDATE in days. The
+ * helpers convert between the held value and the integer's unit (the 32-bit
+ * ones are a plain count, wrapping modulo 2^32; LDATE scales days to ns).
  *
  * One table rather than a chain of `if`s because the two directions have to
  * agree: OSCAT converts out and back inside a single expression, and a unit
@@ -420,9 +422,8 @@ const TEMPORAL_CONVERSION_UNITS = new Map<string, TemporalUnitInfo>([
   ["DATE_AND_TIME", { toUnit: "DT_TO_SECONDS", fromUnit: "DT_FROM_SECONDS" }],
   ["DATE", { toUnit: "DATE_TO_SECONDS", fromUnit: "DATE_FROM_SECONDS" }],
   ["D", { toUnit: "DATE_TO_SECONDS", fromUnit: "DATE_FROM_SECONDS" }],
-  // nanoseconds — the 64-bit variants. TIME, TOD and DT are already stored in
-  // nanoseconds, so those need no call at all; DATE is stored in days and
-  // still has to be scaled.
+  // nanoseconds — the 64-bit variants, held in ns already; LDATE is held in
+  // days and is scaled.
   ["LTIME", { toUnit: undefined, fromUnit: undefined }],
   ["LTOD", { toUnit: undefined, fromUnit: undefined }],
   ["LTIME_OF_DAY", { toUnit: undefined, fromUnit: undefined }],
@@ -467,11 +468,27 @@ const LONG_TEMPORAL_NAMES = new Set([
   "LTIME",
 ]);
 
+/** The 32-bit C++ value type and the long IECVar of each temporal kind. */
+const TEMPORAL_CPP: Record<
+  "date" | "tod" | "dt" | "duration",
+  { short: string; long: string; narrow: string }
+> = {
+  duration: {
+    short: "TIME_t",
+    long: "IEC_LTIME",
+    narrow: "LTIME_TO_TIME_VALUE",
+  },
+  date: { short: "DATE_t", long: "IEC_LDATE", narrow: "LDATE_TO_DATE_VALUE" },
+  tod: { short: "TOD_t", long: "IEC_LTOD", narrow: "LTOD_TO_TOD_VALUE" },
+  dt: { short: "DT_t", long: "IEC_LDT", narrow: "LDT_TO_DT_VALUE" },
+};
+
 /**
  * A conversion between two temporal types: the date or time of day of a
- * date-and-time is split off (in every form, Table 26); with a long (Ed. 3)
- * form on either side, a date becomes the date-and-time of its midnight and the
- * same kind converts unchanged. Undefined for any other pair.
+ * date-and-time is split off (in every form, Table 26), and with a long
+ * (Ed. 3) form on either side the value goes through the long form's unit (ns,
+ * days for LDATE): a 32-bit source widens exactly, a 32-bit target is
+ * truncated to its unit and taken modulo 2^32. Undefined for any other pair.
  */
 function longTemporalConversion(
   argExpr: string,
@@ -481,21 +498,32 @@ function longTemporalConversion(
   const f = TEMPORAL_KIND[from];
   const t = TEMPORAL_KIND[to];
   if (f === undefined || t === undefined) return undefined;
-  // Table 26: the date or the time of day of a date-and-time, in every form.
-  // Through the stored nanoseconds, so a REFERENCE TO DT converts too.
-  if (f === "dt" && t === "date") {
-    return `DATE_OF_DT(IEC_DT(static_cast<int64_t>(${argExpr})))`;
-  }
-  if (f === "dt" && t === "tod") {
-    return `TOD_OF_DT(IEC_DT(static_cast<int64_t>(${argExpr})))`;
-  }
-  if (!LONG_TEMPORAL_NAMES.has(from) && !LONG_TEMPORAL_NAMES.has(to)) {
+  const fromLong = LONG_TEMPORAL_NAMES.has(from);
+  const toLong = LONG_TEMPORAL_NAMES.has(to);
+  if (!fromLong && !toLong) {
+    // Table 26: the date or the time of day of a date-and-time.
+    if (f === "dt" && t === "date") {
+      return `DATE_OF_DT(IEC_DT(static_cast<DT_t>(${argExpr})))`;
+    }
+    if (f === "dt" && t === "tod") {
+      return `TOD_OF_DT(IEC_DT(static_cast<DT_t>(${argExpr})))`;
+    }
     return undefined;
   }
-  if (f === t) return argExpr;
-  if (f === "date" && t === "dt") return `DATE_TO_NS(${argExpr})`;
-  if (f === "tod" && t === "dt") return argExpr;
-  return undefined;
+  const value = fromLong
+    ? `static_cast<int64_t>(${argExpr})`
+    : `iec_long_value(static_cast<${TEMPORAL_CPP[f].short}>(${argExpr}))`;
+  let long: string;
+  if (f === t) long = value;
+  else if (f === "dt" && t === "date") {
+    long = `iec_floor_div(${value}, ${NS_PER_DAY})`;
+  } else if (f === "dt" && t === "tod") long = `TOD_NORMALIZE(${value})`;
+  else if (f === "date" && t === "dt") long = `(${value}) * ${NS_PER_DAY}`;
+  else if (f === "tod" && t === "dt") long = value;
+  else return undefined;
+  return toLong
+    ? `${TEMPORAL_CPP[t].long}(${long})`
+    : `${TEMPORAL_CPP[t].narrow}(${long})`;
 }
 
 /**
@@ -591,6 +619,22 @@ export interface CodeGenResult {
 /**
  * C++ code generator for IEC 61131-3 programs.
  */
+/** A STRING or WSTRING parameter with no length (254), not an array or reference. */
+function isPlainString(type: {
+  name: string;
+  maxLength?: number | string;
+  arrayDimensions?: unknown;
+  referenceKind?: string;
+}): boolean {
+  const upper = type.name.toUpperCase();
+  return (
+    (upper === "STRING" || upper === "WSTRING") &&
+    type.maxLength === undefined &&
+    type.arrayDimensions === undefined &&
+    (type.referenceKind ?? "none") === "none"
+  );
+}
+
 export class CodeGenerator {
   private options: CodeGenOptions;
 
@@ -739,6 +783,9 @@ export class CodeGenerator {
 
   /** Library functions by upper-cased name, and their parsed declarations. */
   private libraryFunctions: Map<string, LibraryFunctionEntry> = new Map();
+  /** The default STRING length of the library declaring each function, when not 254. */
+  private libraryFunctionStringDefaults: Map<LibraryFunctionEntry, number> =
+    new Map();
   /** Every library FUNCTION, keyed `LIBRARY:NAME` (upper case), shadowed ones included. */
   private libraryFunctionsByLibrary: Map<string, LibraryFunctionEntry> =
     new Map();
@@ -1100,6 +1147,43 @@ export class CodeGenerator {
   }
 
   /**
+   * `TIME_TO_STRING(t)` and every other date/time conversion to STRING or
+   * WSTRING: the value's canonical IEC literal text. Undefined otherwise.
+   */
+  private temporalText(
+    from: string,
+    to: string,
+    value: Expression,
+  ): string | undefined {
+    if (to !== "STRING" && to !== "WSTRING") return undefined;
+    const forms: Record<string, [string, string]> = {
+      TIME: ["iec_duration_text", "T#"],
+      LTIME: ["iec_duration_text", "LTIME#"],
+      DATE: ["iec_date_text", "D#"],
+      LDATE: ["iec_date_text", "LDATE#"],
+      TOD: ["iec_tod_text", "TOD#"],
+      TIME_OF_DAY: ["iec_tod_text", "TOD#"],
+      LTOD: ["iec_tod_text", "LTOD#"],
+      LTIME_OF_DAY: ["iec_tod_text", "LTOD#"],
+      DT: ["iec_dt_text", "DT#"],
+      DATE_AND_TIME: ["iec_dt_text", "DT#"],
+      LDT: ["iec_dt_text", "LDT#"],
+      LDATE_AND_TIME: ["iec_dt_text", "LDT#"],
+    };
+    const form = forms[from];
+    if (form === undefined) return undefined;
+    // A 32-bit value goes to the text in its long form's unit (ns, days).
+    const kind = TEMPORAL_KIND[from];
+    const code = this.generateExpression(value);
+    const held =
+      kind !== undefined && !LONG_TEMPORAL_NAMES.has(from)
+        ? `iec_long_value(static_cast<${TEMPORAL_CPP[kind].short}>(${code}))`
+        : `static_cast<int64_t>(iec_unwrap(${code}))`;
+    const text = `strucpp::${form[0]}(${held}, "${form[1]}")`;
+    return to === "WSTRING" ? `STRING_TO_WSTRING(${text})` : text;
+  }
+
+  /**
    * `SIZEOF(T)` / `XSIZEOF(T)` whose operand the analyzer marked as naming a
    * type: the size of the type. Undefined for any other operand.
    */
@@ -1303,7 +1387,11 @@ export class CodeGenerator {
    */
   registerLibraryArchives(archives: StlibArchive[]): void {
     for (const archive of archives) {
+      const stringDefault = archive.manifest.stringDefaultLength;
       for (const fn of archive.manifest.functions) {
+        if (stringDefault !== undefined) {
+          this.libraryFunctionStringDefaults.set(fn, stringDefault);
+        }
         const upper = fn.name.toUpperCase();
         if (!this.libraryFunctions.has(upper)) {
           this.libraryFunctions.set(upper, fn);
@@ -1314,7 +1402,7 @@ export class CodeGenerator {
         );
       }
       for (const fb of archive.manifest.functionBlocks) {
-        const methods = libraryMethodDeclarations(fb);
+        const methods = libraryMethodDeclarations(fb, stringDefault);
         if (methods !== undefined && methods.length > 0) {
           this.libraryMethods.set(fb.name.toUpperCase(), methods);
         }
@@ -2068,10 +2156,18 @@ export class CodeGenerator {
    * complete, so it is emitted after the FB classes and late types.
    */
   private emitGvlGlobals(ast: CompilationUnit, late: boolean): void {
-    this.withFaultPou("VAR_GLOBAL", undefined, () =>
-      this.emitGvlGlobalsBody(ast, late),
-    );
+    this.atNamespaceScope = true;
+    try {
+      this.withFaultPou("VAR_GLOBAL", undefined, () =>
+        this.emitGvlGlobalsBody(ast, late),
+      );
+    } finally {
+      this.atNamespaceScope = false;
+    }
   }
+
+  /** Initial values emitted at namespace scope, where a lambda captures nothing. */
+  private atNamespaceScope = false;
 
   private emitGvlGlobalsBody(ast: CompilationUnit, late: boolean): void {
     const holdsFB = (typeRef: TypeReference): boolean =>
@@ -3110,6 +3206,8 @@ export class CodeGenerator {
       }
     }
 
+    this.emitSubrangeInputChecks(method.varBlocks);
+
     // Generate body
     if (method.body.length > 0) {
       this.generateStatements(method.body);
@@ -3425,6 +3523,7 @@ export class CodeGenerator {
       this.emit("    if (__mocked_) { __mock_state_.call_count++; return; }");
     }
     this.enterScope(fb.varBlocks);
+    this.emitSubrangeInputChecks(fb.varBlocks);
     if (fb.body.length > 0) {
       this.generateStatements(fb.body);
     } else if (this.options.sourceComments) {
@@ -3606,6 +3705,8 @@ export class CodeGenerator {
           }
         }
       }
+
+      this.emitSubrangeInputChecks(func.varBlocks);
 
       if (func.body.length > 0) {
         this.generateStatements(func.body);
@@ -4307,9 +4408,14 @@ export class CodeGenerator {
   }
 
   private emitFileScopeGlobals(): void {
-    this.withFaultPou("VAR_GLOBAL", undefined, () =>
-      this.emitFileScopeGlobalsBody(),
-    );
+    this.atNamespaceScope = true;
+    try {
+      this.withFaultPou("VAR_GLOBAL", undefined, () =>
+        this.emitFileScopeGlobalsBody(),
+      );
+    } finally {
+      this.atNamespaceScope = false;
+    }
   }
 
   private emitFileScopeGlobalsBody(): void {
@@ -4758,7 +4864,10 @@ export class CodeGenerator {
         );
         break;
       case "AssertCall":
-        // Assert calls only appear in test files, not in normal source compilation
+        // Only in test files: emitted by the test generator, nested ones too
+        for (const line of this.assertEmitter?.(stmt, indent) ?? []) {
+          this.emit(line);
+        }
         break;
       default: {
         const _exhaustive: never = stmt;
@@ -4873,13 +4982,14 @@ export class CodeGenerator {
       this.programExternals.has(stmt.target.name.toUpperCase())
     ) {
       const value = this.generateExpression(stmt.value);
-      this.emit(`${indent}${stmt.target.name}->write(${value});`);
+      const checked = this.subrangeStore(stmt.target, value, stmt.value);
+      this.emit(`${indent}${stmt.target.name}->write(${checked ?? value});`);
       return;
     }
 
     const target = this.generateLvalue(stmt.target);
-    const value = this.addressIntoAlias(
-      stmt.target,
+    const value = this.ltimeIntoTime(
+      this.temporalBase(stmt.target),
       stmt.value,
       this.generateExpression(stmt.value),
     );
@@ -4894,43 +5004,144 @@ export class CodeGenerator {
       return;
     }
 
-    this.emit(`${indent}${target} = ${value};`);
+    const checked = this.subrangeStore(stmt.target, value, stmt.value);
+    this.emit(`${indent}${target} = ${checked ?? value};`);
   }
 
   /**
-   * An address stored in a variable whose type is a TYPE alias of a 64-bit
-   * integer (`TYPE T_L : LWORD`), held as the plain integer: the address
-   * converted to it. Otherwise `value` unchanged.
+   * A store into a variable of a subrange type: the value through
+   * `iec_subrange_store`, which faults when it is outside the range.
+   * Undefined for any other target.
    */
-  private addressIntoAlias(
+  private subrangeStore(
     target: Expression,
-    valueExpr: Expression,
     value: string,
-  ): string {
-    if (
-      target.kind !== "VariableExpression" ||
-      target.fieldAccess.length > 0 ||
+    valueExpr?: Expression,
+  ): string | undefined {
+    if (target.kind !== "VariableExpression") return undefined;
+    const upper = target.name.toUpperCase();
+    const hasAccess =
       target.subscripts.length > 0 ||
+      target.fieldAccess.length > 0 ||
       target.isDereference ||
-      (target.accessChain?.length ?? 0) > 0 ||
-      addressSource(valueExpr) === undefined ||
-      !this.ast ||
-      this.ast.functions.some((f) => f.name.toUpperCase() === "ADR")
-    ) {
-      return value;
+      (target.accessChain !== undefined && target.accessChain.length > 0);
+    // A local or member, else the result of the FUNCTION or METHOD (or a field of it), else a global
+    const root =
+      this.currentScopeVarTypeRefs.get(upper) ??
+      (this.currentFunctionName?.toUpperCase() === upper &&
+      this.currentFunctionResultType !== undefined
+        ? {
+            name: this.currentFunctionResultType,
+            referenceKind: "none" as const,
+          }
+        : undefined) ??
+      this.globalVarTypeRef(upper);
+    if (root === undefined) return undefined;
+    const type = hasAccess
+      ? resolveAccessType(root, target, this.accessLookup)
+      : root;
+    const shown = [target.name, ...target.fieldAccess].join(".");
+    return this.subrangeChecked(type, value, valueExpr, shown, target);
+  }
+
+  /**
+   * A VAR_INPUT of a subrange type, checked on entry to the FUNCTION, METHOD or
+   * FUNCTION_BLOCK: the caller stored its argument into it.
+   */
+  private emitSubrangeInputChecks(blocks: readonly VarBlock[]): void {
+    for (const block of blocks) {
+      if (block.blockType !== "VAR_INPUT") continue;
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          const member = this.localCppName(name);
+          const checked = this.subrangeChecked(
+            decl.type,
+            member,
+            undefined,
+            name,
+            decl,
+          );
+          if (checked !== undefined) this.emit(`    ${member} = ${checked};`);
+        }
+      }
     }
-    const typeName = this.rootVariableType(target.name.toUpperCase());
-    const alias = this.ast.types.find(
-      (t) => t.name.toUpperCase() === typeName?.toUpperCase(),
-    );
+  }
+
+  /** The declared type of a global (a global variable list's or a CONFIGURATION's) of this name. */
+  private globalVarTypeRef(upper: string): TypeReference | undefined {
+    const blocks = [
+      ...(this.ast?.globalVarBlocks ?? []),
+      ...(this.ast?.configurations.flatMap((c) => c.varBlocks) ?? []),
+    ];
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (decl.names.some((n) => n.toUpperCase() === upper)) return decl.type;
+      }
+    }
+    return undefined;
+  }
+
+  /** The subrange TYPE a declared type is, through aliases; undefined for any other. */
+  private subrangeTypeOf(
+    type: TypeShape | undefined,
+  ): TypeDeclaration | undefined {
     if (
-      alias === undefined ||
-      alias.definition.kind !== "TypeReference" ||
-      addressFit(alias.name, this.ast.types) !== "wide"
+      type === undefined ||
+      type.arrayDimensions !== undefined ||
+      (type.referenceKind ?? "none") !== "none"
     ) {
-      return value;
+      return undefined;
     }
-    return `static_cast<${alias.name}>(reinterpret_cast<std::uintptr_t>(${value}))`;
+    let name = type.name.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const current = name;
+      const decl = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === current,
+      );
+      if (decl === undefined) return undefined;
+      if (decl.definition.kind === "SubrangeDefinition") return decl;
+      if (
+        decl.definition.kind !== "TypeReference" ||
+        decl.definition.arrayDimensions !== undefined
+      ) {
+        return undefined;
+      }
+      name = decl.definition.name.toUpperCase();
+    }
+    return undefined;
+  }
+
+  /**
+   * `value`, stored into `shown` of declared type `type`, checked against
+   * its range when that is a subrange: undefined for any other type. An
+   * integer literal inside the range needs no check.
+   */
+  private subrangeChecked(
+    type: TypeShape | undefined,
+    value: string,
+    valueExpr: Expression | undefined,
+    shown: string,
+    site: { sourceSpan: SourceSpan },
+  ): string | undefined {
+    const decl = this.subrangeTypeOf(type);
+    if (decl === undefined || decl.definition.kind !== "SubrangeDefinition") {
+      return undefined;
+    }
+    const constant =
+      valueExpr === undefined ? undefined : exactIntegerValue(valueExpr);
+    const lo = exactIntegerValue(decl.definition.lowerBound);
+    const hi = exactIntegerValue(decl.definition.upperBound);
+    if (
+      constant !== undefined &&
+      lo !== undefined &&
+      hi !== undefined &&
+      constant >= lo &&
+      constant <= hi
+    ) {
+      return undefined;
+    }
+    // Qualified: a variable named SR_MIN or SR_MAX would hide the bound
+    return `strucpp::iec_subrange_store(${value}, ::strucpp::${decl.name}_MIN, ::strucpp::${decl.name}_MAX, "${shown}", ${this.faultSite(site)})`;
   }
 
   /**
@@ -4949,7 +5160,8 @@ export class CodeGenerator {
     indent: string,
   ): void {
     const tmp = `__gwv_${this.tempVarCounter++}`;
-    const value = this.generateExpression(valueExpr);
+    const generated = this.generateExpression(valueExpr);
+    const value = this.subrangeStore(target, generated, valueExpr) ?? generated;
     // In a block of its own: a declaration directly under a CASE label would
     // be jumped over by the next label (C++ "jump to case label").
     const inner = indent + this.options.indent;
@@ -5047,12 +5259,26 @@ export class CodeGenerator {
    * member's field type, so it binds the callee's `T&`).
    */
   private inOutCopy(
-    { value: arg, cppType, once }: InOutCopyArg,
+    { value: arg, cppType, once, addressInto }: InOutCopyArg,
     tmp: string,
   ): { declaration: string; copyOut: string } {
     const read = this.generateVariableExpression(arg);
     const copyIn = arg.unionMember === true ? `union_value(${read})` : read;
     const upper = arg.name.toUpperCase();
+    // A pointer output into an integer: no copy in, its address copied out.
+    if (addressInto !== undefined && cppType !== undefined) {
+      const out = this.addressAsInteger(addressInto, tmp);
+      const store =
+        this.bitStore(arg, out) ??
+        (this.compositeExternals.has(upper)
+          ? this.compositeGlobalStore(arg, out)
+          : this.programExternals.has(upper) &&
+              arg.fieldAccess.length === 0 &&
+              !arg.isDereference
+            ? `${arg.name}->write(${out});`
+            : `${read} = ${out};`);
+      return { declaration: `${cppType} ${tmp};`, copyOut: store };
+    }
     const bitStore = this.bitStore(arg, tmp);
     // A dereference, a REFERENCE TO or a bit is no lvalue a reference can hold.
     const plainLvalue =
@@ -5206,8 +5432,9 @@ export class CodeGenerator {
       (this.programExternals.has(e.name.toUpperCase()) ||
         this.currentScopeVarRefKinds.get(e.name.toUpperCase()) ===
           "reference_to");
+    const calleeBlocks = this.calleeVarBlocks(call);
     const varBlocks =
-      this.calleeVarBlocks(call) ??
+      calleeBlocks ??
       this.librarySizedStringBlocks(call) ??
       (call.arguments.some((a) => a.inOutCopy === true) &&
       call.kind === "FunctionCallExpression"
@@ -5220,6 +5447,7 @@ export class CodeGenerator {
           b.declarations.some(
             (d) =>
               this.sizedStringLength(d.type) !== undefined ||
+              isPlainString(d.type) ||
               this.arrayStringElementLength(d.type) !== undefined ||
               this.vlaStringElementCpp(d.type) !== undefined,
           ),
@@ -5278,16 +5506,37 @@ export class CodeGenerator {
       if (!param) continue;
       const value = arg.value;
       if (value.kind !== "VariableExpression") continue;
+      // A STRING of another length bound to a plain STRING (254) parameter
+      // of a library POU, which keeps its own default: copied.
+      const otherLength =
+        isPlainString(param.type) &&
+        !isCompositeGlobal(value) &&
+        !isUnionMember(value) &&
+        !rendersBound(value) &&
+        this.stringLengthOf(value) !== undefined;
       if (param.blockType === "VAR_IN_OUT" && !arg.isOutput) {
         const sized = this.sizedStringLength(param.type);
         if (
           arg.inOutCopy === true ||
+          otherLength ||
           (sized !== undefined &&
             !isCompositeGlobal(value) &&
             !isUnionMember(value) &&
             !rendersBound(value) &&
             !this.hasStringLength(value, sized))
         ) {
+          result.push({
+            value,
+            cppType: this.inOutParamType(param.type),
+          });
+        } else if (
+          !isCompositeGlobal(value) &&
+          !isUnionMember(value) &&
+          !rendersBound(value) &&
+          this.fixedStringElementDiffers(param.type, value)
+        ) {
+          // ARRAY OF STRING(n) over elements of another known length: copied
+          // element-wise into a temporary of the parameter's type and back.
           result.push({
             value,
             cppType: this.inOutParamType(param.type),
@@ -5319,6 +5568,7 @@ export class CodeGenerator {
         !isCompositeGlobal(value) &&
         !isUnionMember(value) &&
         (arg.inOutCopy === true ||
+          otherLength ||
           (this.sizedStringLength(param.type) !== undefined &&
             !this.hasStringLength(
               value,
@@ -5328,10 +5578,17 @@ export class CodeGenerator {
       ) {
         // A STRING(n) output binds only a variable of that length, an integer
         // output only one of its own C++ type: others go through a temporary.
+        const outType =
+          arg.addressInto !== undefined && calleeBlocks === undefined
+            ? this.libraryOutputReferenceType(call, param.name)
+            : undefined;
         result.push({
           value,
-          cppType: this.inOutParamType(param.type),
+          cppType: this.inOutParamType(outType ?? param.type),
           once: true as const,
+          ...(arg.addressInto !== undefined
+            ? { addressInto: arg.addressInto }
+            : {}),
         });
       } else if (
         (arg.isOutput || param.blockType === "VAR_OUTPUT") &&
@@ -5388,14 +5645,61 @@ export class CodeGenerator {
     const blocks = this.libraryFunctionDeclaration(
       call.functionName,
     )?.varBlocks;
-    const sized = blocks?.some(
-      (b) =>
-        (b.blockType === "VAR_OUTPUT" || b.blockType === "VAR_IN_OUT") &&
-        b.declarations.some(
-          (d) => this.sizedStringLength(d.type) !== undefined,
-        ),
+    const byReference = (blocks ?? []).filter(
+      (b) => b.blockType === "VAR_OUTPUT" || b.blockType === "VAR_IN_OUT",
     );
-    return sized === true ? blocks : undefined;
+    const not254 = (element: string | undefined): boolean =>
+      element !== undefined && !element.endsWith("(254)");
+    const sized = byReference.some((b) =>
+      b.declarations.some(
+        (d) =>
+          this.sizedStringLength(d.type) !== undefined ||
+          not254(this.arrayStringElementLength(d.type)) ||
+          (this.vlaStringElementCpp(d.type) !== undefined &&
+            d.type.elementMaxLength !== undefined &&
+            String(d.type.elementMaxLength) !== "254"),
+      ),
+    );
+    if (sized) return blocks;
+    // A STRING, ARRAY OF STRING or ARRAY[*] OF STRING parameter of 254, only
+    // when an argument holds strings of another length (else nothing to copy).
+    const stringParam = byReference.some((b) =>
+      b.declarations.some(
+        (d) =>
+          isPlainString(d.type) ||
+          this.arrayStringElementLength(d.type) !== undefined ||
+          this.vlaStringElementCpp(d.type) !== undefined,
+      ),
+    );
+    return stringParam &&
+      call.arguments.some((a) => this.holdsOtherLength(a.value))
+      ? blocks
+      : undefined;
+  }
+
+  /** True when `value` is a variable of a STRING, or an ARRAY of STRING, of a known length other than 254. */
+  private holdsOtherLength(value: Expression): boolean {
+    if (value.kind !== "VariableExpression") return false;
+    const type = this.variableTypeOf(value);
+    if (type === undefined) return false;
+    if (this.sizedStringLength(type) !== undefined) return true;
+    const element = this.arrayStringElementLength(type);
+    return element !== undefined && !element.endsWith("(254)");
+  }
+
+  /** The declared type of `value` after its subscripts and fields; undefined when unknown. */
+  private variableTypeOf(value: VariableExpression): TypeShape | undefined {
+    const hasAccess =
+      value.subscripts.length > 0 ||
+      value.fieldAccess.length > 0 ||
+      value.isDereference ||
+      (value.accessChain !== undefined && value.accessChain.length > 0);
+    const root =
+      this.currentScopeVarTypeRefs.get(value.name.toUpperCase()) ??
+      this.namespaceGlobalTypeRef(value.name.toUpperCase());
+    return root !== undefined && hasAccess
+      ? resolveAccessType(root, value, this.accessLookup)
+      : root;
   }
 
   /**
@@ -5496,6 +5800,40 @@ export class CodeGenerator {
   }
 
   /**
+   * True when `param` is a fixed ARRAY of STRING and `value` an ARRAY of
+   * STRING whose element length is known and differs.
+   */
+  private fixedStringElementDiffers(
+    param: TypeShape,
+    value: VariableExpression,
+  ): boolean {
+    if (VLA_TYPE_NAME.test(param.name)) return false;
+    const want = this.arrayStringElementLength(param);
+    if (want === undefined) return false;
+    const type = this.variableTypeOf(value);
+    if (type === undefined || VLA_TYPE_NAME.test(type.name)) return false;
+    const have = this.arrayStringElementLength(type);
+    return have !== undefined && have !== want;
+  }
+
+  /** The length of a STRING or WSTRING variable other than 254; undefined otherwise or when unknown. */
+  private stringLengthOf(value: VariableExpression): string | undefined {
+    const hasAccess =
+      value.subscripts.length > 0 ||
+      value.fieldAccess.length > 0 ||
+      value.isDereference ||
+      (value.accessChain !== undefined && value.accessChain.length > 0);
+    const root =
+      this.currentScopeVarTypeRefs.get(value.name.toUpperCase()) ??
+      this.namespaceGlobalTypeRef(value.name.toUpperCase());
+    const type =
+      root !== undefined && hasAccess
+        ? resolveAccessType(root, value, this.accessLookup)
+        : root;
+    return type === undefined ? undefined : this.sizedStringLength(type);
+  }
+
+  /**
    * True when `value` is a plain variable declared as a STRING or WSTRING of
    * `length` (the length text as written); false when unknown.
    */
@@ -5578,7 +5916,10 @@ export class CodeGenerator {
     } finally {
       this.keepReferenceWrapper = false;
     }
-    const source = this.addressedOperand(stmt.source, "REF=", stmt);
+    // Bound from another REFERENCE TO: the reference itself, unchecked
+    const source = this.refWrapper(
+      this.addressedOperand(stmt.source, "REF=", stmt),
+    );
     const targetKind =
       stmt.target.kind === "VariableExpression"
         ? this.refAssignTargetKind(stmt.target)
@@ -5927,6 +6268,10 @@ export class CodeGenerator {
    */
   /** When set, a RETURN returns this C++ value: `true` in a TEST body, which passes. */
   protected returnValueOverride: string | undefined;
+  /** Test files: the C++ lines of an ASSERT_* met inside IF, a loop or CASE. */
+  protected assertEmitter:
+    | ((stmt: AssertCall, indent: string) => string[])
+    | undefined;
 
   private generateReturnStatement(indent: string): void {
     if (this.returnValueOverride !== undefined) {
@@ -6006,6 +6351,18 @@ export class CodeGenerator {
    * Returns the C++ expression as a string.
    */
   protected generateExpression(expr: Expression): string {
+    const code = this.generateExpressionUnconverted(expr);
+    return expr.addressInto === undefined
+      ? code
+      : this.addressAsInteger(expr.addressInto, code);
+  }
+
+  /** An address (a pointer, a REF, a POINTER TO value) as the 64-bit integer type `typeName`. */
+  private addressAsInteger(typeName: string, code: string): string {
+    return `static_cast<${this.typeCodeGen.mapTypeToCpp(typeName)}>(strucpp::address_bits(${code}))`;
+  }
+
+  private generateExpressionUnconverted(expr: Expression): string {
     switch (expr.kind) {
       case "LiteralExpression":
         return this.generateLiteralExpression(expr);
@@ -6021,7 +6378,7 @@ export class CodeGenerator {
       case "UnaryExpression":
         return this.generateUnaryExpression(expr);
       case "ParenthesizedExpression":
-        return `(${this.generateExpression(expr.expression)})`;
+        return parenthesizedCpp(expr, this.generateExpression(expr.expression));
       case "FunctionCallExpression":
         return this.wrapGlobalInOutCall(expr, () =>
           this.generateFunctionCallExpression(expr),
@@ -6111,31 +6468,20 @@ export class CodeGenerator {
         const wEscaped = translateIECString(wInner, true);
         return `u"${wEscaped}"`;
       }
-      case "TIME":
-      case "LTIME": {
-        const timeVal = parseTimeLiteral(String(expr.value));
-        return `${timeVal.exact}LL`;
-      }
       case "CHAR":
       case "WCHAR": {
         const { wide, units } = charLiteralUnits(expr.rawValue);
         return `static_cast<${wide ? "WCHAR_t" : "CHAR_t"}>(${Math.max(units[0] ?? 0, 0)})`;
       }
+      case "TIME":
+      case "LTIME":
       case "DATE":
       case "LDATE":
-        // DATE: int64 days since Unix epoch (UTC).  `iec_date.hpp`
-        // stores DATE as days (see `DT_FROM_DATE_AND_TOD`'s
-        // `iec_unwrap(date) * DT_NS_PER_DAY` math).  Lowering to ns
-        // here would break every conversion / arithmetic helper.
-        return `${parseDateLiteralToDays(String(expr.value))}LL`;
       case "TIME_OF_DAY":
       case "LTIME_OF_DAY":
-        // TOD: int64 nanoseconds since midnight.
-        return `${parseTodLiteralToNs(String(expr.value))}LL`;
       case "DATE_AND_TIME":
       case "LDATE_AND_TIME":
-        // DT: int64 nanoseconds since Unix epoch (UTC).
-        return `${parseDtLiteralToNs(String(expr.value))}LL`;
+        return temporalLiteralCpp(expr.literalType, String(expr.value))!;
       case "NULL":
         return "IEC_NULL";
       default:
@@ -6171,7 +6517,11 @@ export class CodeGenerator {
     // A REFERENCE TO STRING / WSTRING read as a value: the bound variable, so
     // the string functions' templates see a string (no conversion deduced).
     if (!this.keepReferenceWrapper && this.isPlainStringReference(expr)) {
-      return `${this.resolveVariableBaseName(expr.name)}.target()`;
+      return this.refTarget(
+        this.resolveVariableBaseName(expr.name),
+        expr.name,
+        expr,
+      );
     }
 
     // `PRG_A.x`: a member of a reached program's one shared instance.
@@ -6404,8 +6754,22 @@ export class CodeGenerator {
       }
     }
 
-    if (this.reachesThroughReference(expr)) result = `${result}.target()`;
-    return this.renderAccessTail(result, expr, nameUpper);
+    if (this.reachesThroughReference(expr)) {
+      result = this.refTarget(result, expr.name, expr);
+    } else if (!this.keepReferenceWrapper && this.isPlainReference(expr)) {
+      // A REFERENCE TO read or written: its target, an unbound one a fault
+      return this.refTarget(result, expr.name, expr);
+    }
+    const rendered = this.renderAccessTail(result, expr, nameUpper);
+    // A REFERENCE TO reached as a member, an element or another FB's input
+    if (!this.keepReferenceWrapper && this.accessEndsInReference(expr)) {
+      return this.refTarget(
+        rendered,
+        [expr.name, ...expr.fieldAccess].join("."),
+        expr,
+      );
+    }
+    return rendered;
   }
 
   /**
@@ -6462,8 +6826,73 @@ export class CodeGenerator {
     return this.memberMangledNames.get(name.toUpperCase()) ?? name;
   }
 
+  /** The object a REFERENCE TO `base` (named `name`) is bound to; unbound, a fault naming the site. */
+  private refTarget(
+    base: string,
+    name: string,
+    node: { sourceSpan: SourceSpan },
+  ): string {
+    // Already the checked target (a plain reference renders as one)
+    if (this.refWrapper(base) !== base) return base;
+    return `strucpp::iec_ref(${base}, "${name.toUpperCase()}", ${this.faultSite(node)})`;
+  }
+
+  /** A REFERENCE TO itself, from its checked target: what binds another reference to the same object. */
+  private refWrapper(generated: string): string {
+    const m =
+      /^strucpp::iec_ref\((.*), "[^"]*", strucpp::iec_site\{"[^"]*", \d+\}\)$/.exec(
+        generated,
+      );
+    return m === null ? generated : m[1]!;
+  }
+
   /** Set while a REF= target is generated: it names the reference itself. */
   private keepReferenceWrapper = false;
+
+  /**
+   * `s.r`, `a[i]`, `f.r`, `rs.r`, `p^.r`: an access that ends in a REFERENCE TO
+   * member or element, from a variable of the scope or a global.
+   */
+  private accessEndsInReference(expr: VariableExpression): boolean {
+    const hasAccess =
+      expr.fieldAccess.length > 0 ||
+      expr.subscripts.length > 0 ||
+      (expr.accessChain?.length ?? 0) > 0;
+    if (!hasAccess) return false;
+    const upper = expr.name.toUpperCase();
+    const root =
+      this.currentScopeVarTypeRefs.get(upper) ?? this.globalDeclType(upper);
+    if (root === undefined) return false;
+    const type = resolveAccessType(root, expr, this.accessLookup);
+    return type?.referenceKind === "reference_to";
+  }
+
+  /** The declared type of a top-level or CONFIGURATION global of this name. */
+  private globalDeclType(upper: string): TypeReference | undefined {
+    // A partial unit (a test runner's) may have neither list
+    for (const block of [
+      ...(this.ast?.globalVarBlocks ?? []),
+      ...(this.ast?.configurations ?? []).flatMap((c) => c.varBlocks),
+    ]) {
+      for (const decl of block.declarations) {
+        if (decl.names.some((n) => n.toUpperCase() === upper)) return decl.type;
+      }
+    }
+    return undefined;
+  }
+
+  /** `rr`, a REFERENCE TO variable of the scope, with no access. */
+  private isPlainReference(expr: VariableExpression): boolean {
+    const upper = expr.name.toUpperCase();
+    return (
+      this.currentScopeVarRefKinds.get(upper) === "reference_to" &&
+      !this.isCurrentFunctionResult(upper) &&
+      !expr.isDereference &&
+      expr.fieldAccess.length === 0 &&
+      expr.subscripts.length === 0 &&
+      (expr.accessChain?.length ?? 0) === 0
+    );
+  }
 
   /** `rr`, a REFERENCE TO STRING / WSTRING variable of the scope, with no access. */
   private isPlainStringReference(expr: VariableExpression): boolean {
@@ -6574,6 +7003,7 @@ export class CodeGenerator {
         nameUpper,
         baseType,
         expr.namedBitIndex === true,
+        expr,
       );
     }
 
@@ -6583,12 +7013,13 @@ export class CodeGenerator {
     // targets (caught by the runtime, stops the faulting task), or
     // iec_runtime_fault(ArrayBounds) on -fno-exceptions MCU targets — instead of
     // the unchecked operator[]/operator() that silently corrupts memory.
+    // The access names its site, so a fault reports the POU, line and indices.
     if (expr.subscripts.length > 1) {
       const args = expr.subscripts.map((sub) => this.generateExpression(sub));
-      result += `.at(${args.join(", ")})`;
+      result = `strucpp::iec_at(${result}, ${this.faultSite(expr)}, ${args.join(", ")})`;
     } else {
       for (const sub of expr.subscripts) {
-        result += `.at(${this.generateExpression(sub)})`;
+        result = `strucpp::iec_at(${result}, ${this.faultSite(expr)}, ${this.generateExpression(sub)})`;
       }
     }
 
@@ -6630,9 +7061,9 @@ export class CodeGenerator {
       }
     }
 
-    // Dereference (^ operator → pointer dereference)
+    // Dereference (^ operator): a NULL pointer is a fault naming the site
     if (expr.isDereference) {
-      result = `(*${result})`;
+      result = `(*strucpp::iec_deref(${result}, ${this.faultSite(expr)}))`;
     }
 
     return result;
@@ -6691,6 +7122,7 @@ export class CodeGenerator {
     baseNameUpper: string,
     baseType?: string,
     namedBit = false,
+    site?: { sourceSpan: SourceSpan },
   ): string {
     let result = base;
     let currentType = baseType ?? this.rootVariableType(baseNameUpper);
@@ -6737,18 +7169,20 @@ export class CodeGenerator {
           // task) and iec_runtime_fault(IecFault::ArrayBounds) on -fno-exceptions
           // MCU targets. operator[] stays unchecked+constexpr for the debug-table
           // generator's &arr[i] address-of expressions; POU bodies use .at().
-          if (step.indices.length > 1) {
+          if (step.indices.length > 0) {
             const args = step.indices.map((idx) =>
               this.generateExpression(idx),
             );
-            result += `.at(${args.join(", ")})`;
-          } else if (step.indices.length === 1) {
-            result += `.at(${this.generateExpression(step.indices[0]!)})`;
+            result = `strucpp::iec_at(${result}, ${this.faultSite(step.indices[0]!)}, ${args.join(", ")})`;
           }
           break;
         }
         case "dereference": {
-          result = `(*${result})`;
+          // A NULL pointer is a fault naming the site
+          result =
+            site !== undefined
+              ? `(*strucpp::iec_deref(${result}, ${this.faultSite(site)}))`
+              : `(*${result})`;
           break;
         }
       }
@@ -6844,6 +7278,10 @@ export class CodeGenerator {
       expr.operator === "OR" ||
       expr.operator === "XOR"
     ) {
+      if (expr.computeAs !== undefined) {
+        const t = `${expr.computeAs}_t`;
+        return `static_cast<${t}>(${left}) ${cppOp} static_cast<${t}>(${right})`;
+      }
       return `(${left}) ${cppOp} (${right})`;
     }
 
@@ -6866,6 +7304,44 @@ export class CodeGenerator {
       const l = isComparisonExpr(expr.left) ? `(${left})` : left;
       const r = isComparisonExpr(expr.right) ? `(${right})` : right;
       return `${l} ${cppOp} ${r}`;
+    }
+
+    const lk = this.temporalBase(expr.left);
+    const rk = this.temporalBase(expr.right);
+    // TOD or DT MOD a TIME: the time within that period
+    if (
+      expr.operator === "MOD" &&
+      (lk === "TOD" || lk === "DT") &&
+      rk === "TIME"
+    ) {
+      return `iec_temporal_mod_period(${left}, ${right})`;
+    }
+    // TIME with LTIME in MOD or `/`: the TIME widens to an LTIME
+    if (
+      (expr.operator === "MOD" || expr.operator === "/") &&
+      lk !== rk &&
+      (lk === "TIME" || lk === "LTIME") &&
+      (rk === "TIME" || rk === "LTIME")
+    ) {
+      const wl = lk === "TIME" ? `TO_LTIME(${left})` : left;
+      const wr = rk === "TIME" ? `TO_LTIME(${right})` : right;
+      return expr.operator === "MOD"
+        ? `iec_mod(${wl}, ${wr})`
+        : `iec_div(${wl}, ${wr}, ${this.faultSite(expr)})`;
+    }
+
+    // TIME, DATE, TOD or DT MOD an integer or a duration: unsigned, MOD 0 is 0
+    if (expr.operator === "MOD" && this.isTemporal32(expr.left)) {
+      return `iec_temporal_mod(${left}, ${right})`;
+    }
+
+    // TIME, DATE, TOD or DT `/` a number that may be 0: a fault, as for integers
+    if (
+      expr.operator === "/" &&
+      !isNonZeroIntegerLiteral(expr.right) &&
+      this.isTemporal32(expr.left)
+    ) {
+      return `iec_temporal_div(${left}, ${right}, ${this.faultSite(expr)})`;
     }
 
     // Integer `/` by a divisor that may be 0: a fault naming the POU and line
@@ -6895,13 +7371,52 @@ export class CodeGenerator {
     left: string,
     right: string,
   ): string | undefined {
-    return dateArithmeticCpp(
+    return temporalArithmeticCpp(
       expr.operator,
       this.temporalBase(expr.left),
       this.temporalBase(expr.right),
       left,
       right,
     );
+  }
+
+  /** A TIME, DATE, TOD or DT operand (the 32-bit temporal types). */
+  private isTemporal32(e: Expression): boolean {
+    const base = this.temporalBase(e);
+    return (
+      base === "TIME" || base === "DATE" || base === "TOD" || base === "DT"
+    );
+  }
+
+  /**
+   * An LTIME stored in a TIME (a timer's PT takes an LTIME preset): the
+   * value truncated to ms and wrapped to 32 bits. Otherwise `code` unchanged.
+   */
+  private ltimeIntoTime(
+    targetType: string | undefined,
+    value: Expression,
+    code: string,
+  ): string {
+    return targetType === "TIME" && this.temporalBase(value) === "LTIME"
+      ? `LTIME_TO_TIME_VALUE(static_cast<int64_t>(${code}))`
+      : code;
+  }
+
+  /** The declared result type of the FUNCTION or METHOD being generated. */
+  private currentResultTypeName(): string | undefined {
+    const upper = this.currentFunctionName?.toUpperCase();
+    if (upper === undefined || !this.ast) return undefined;
+    const fn = this.ast.functions.find((f) => f.name.toUpperCase() === upper);
+    if (fn) return fn.returnType.name.toUpperCase();
+    const owner = (
+      this.currentFBName ?? this.currentProgramName
+    )?.toUpperCase();
+    const pou =
+      this.ast.functionBlocks.find((f) => f.name.toUpperCase() === owner) ??
+      this.ast.programs.find((p) => p.name.toUpperCase() === owner);
+    return pou?.methods
+      .find((m) => m.name.toUpperCase() === upper)
+      ?.returnType?.name.toUpperCase();
   }
 
   /**
@@ -6936,7 +7451,23 @@ export class CodeGenerator {
     ) {
       name = "DT";
     }
-    for (let i = 0; i < 32 && name !== undefined; i++) {
+    // The result variable of the FUNCTION or METHOD being generated
+    if (
+      name === undefined &&
+      e.kind === "VariableExpression" &&
+      e.fieldAccess.length === 0 &&
+      e.subscripts.length === 0 &&
+      this.currentFunctionName?.toUpperCase() === e.name.toUpperCase()
+    ) {
+      name = this.currentResultTypeName();
+    }
+    return name === undefined ? undefined : this.elementaryThroughAliases(name);
+  }
+
+  /** The canonical elementary name a type name stands for, through user aliases (`TYPE MyT : TIME`). */
+  private elementaryThroughAliases(typeName: string): string {
+    let name = typeName.toUpperCase();
+    for (let i = 0; i < 32; i++) {
       const upper = name;
       const def = this.ast?.types.find(
         (d) => d.name.toUpperCase() === upper,
@@ -6946,7 +7477,7 @@ export class CodeGenerator {
       }
       name = def.name.toUpperCase();
     }
-    return name === undefined ? undefined : canonicalElementaryName(name);
+    return canonicalElementaryName(name);
   }
 
   /** The selected or compared operands of a standard SEL, MUX, LIMIT, MAX or MIN call. */
@@ -7124,6 +7655,11 @@ export class CodeGenerator {
    * or for a variable reached through `^` or a REFERENCE TO, by its
    * declaration. Undefined for anything else.
    */
+  /** The STRUCT type an operand of `=` / `<>` is compared as, if any. */
+  protected structOperandName(expr: Expression): string | undefined {
+    return this.comparedStructName(expr);
+  }
+
   private comparedStructName(expr: Expression): string | undefined {
     const rt = expr.resolvedType;
     if (rt !== undefined && "name" in rt && typeof rt.name === "string") {
@@ -7163,7 +7699,11 @@ export class CodeGenerator {
       expr.subscripts.length === 0 &&
       (expr.accessChain?.length ?? 0) === 0
     ) {
-      return `${this.resolveVariableBaseName(expr.name)}.target()`;
+      return this.refTarget(
+        this.resolveVariableBaseName(expr.name),
+        expr.name,
+        expr,
+      );
     }
     return generated;
   }
@@ -7211,6 +7751,11 @@ export class CodeGenerator {
 
     switch (expr.operator) {
       case "NOT": {
+        // NOT of an untyped constant typed from its use (`w := NOT 16#00F0`)
+        const contextType = untypedNotTarget(expr);
+        if (contextType !== undefined) {
+          return untypedNotCpp(contextType, operand);
+        }
         // NOT on non-BOOL ANY_BIT types must use bitwise complement (~)
         const opType = this.inferExprType(expr.operand);
         if (opType) {
@@ -7491,16 +8036,11 @@ export class CodeGenerator {
    * Scale the argument of a `TO_*` conversion when a temporal type is on
    * either side of it.
    *
-   * Why this lives in codegen and not in the runtime:
-   *  - `IEC_TIME`, `IEC_LTIME`, `IEC_TOD`, `IEC_LTOD`, `IEC_DT`,
-   *    `IEC_LDT`, `IEC_DATE`, `IEC_LDATE` are all
-   *    `using ... = IECVar<int64_t>` aliases — they collapse to the same
-   *    C++ type after preprocessing.
-   *  - A runtime overload `TO_UINT(IEC_TIME)` therefore CANNOT be
-   *    distinguished from `TO_UINT(IEC_DATE)`, and `TO_DT(seconds)`
-   *    cannot be distinguished from `TO_DT(IEC_DT)`.
-   *  - The IEC type label only survives at the language layer, so the
-   *    scaling has to happen here, before the type identity is erased.
+   * Why this lives in codegen and not in the runtime: the long forms
+   * (`IEC_LTIME`, `IEC_LTOD`, `IEC_LDT`, `IEC_LDATE`) are all
+   * `IECVar<int64_t>`, the type of LINT, so `TO_LDT(nanoseconds)` cannot be
+   * told from `TO_LDT(anLdt)` at run time; the IEC type label survives only
+   * here.
    *
    * The units are CODESYS's, which is what the IEC libraries we ship are
    * written against. From its documentation: DATE, DT and TOD are held in a
@@ -7877,7 +8417,7 @@ export class CodeGenerator {
                 ? instance()
                 : this.currentScopeVarRefKinds.get(prefix.toUpperCase()) ===
                     "reference_to"
-                  ? `${instance()}.target()`
+                  ? this.refTarget(instance(), prefix, expr)
                   : prefix;
         return `${receiver}.${resolvedMethod}(${args.join(", ")})`;
       }
@@ -7928,7 +8468,10 @@ export class CodeGenerator {
           return `static_cast<IEC_ULINT>(${sizedType})`;
         }
         const kept = this.keepReferenceWrapper;
-        this.keepReferenceWrapper = expr.vendorOperator === "__ISVALIDREF";
+        // __ISVALIDREF and XSIZEOF of a REFERENCE TO read the reference itself
+        this.keepReferenceWrapper =
+          expr.vendorOperator === "__ISVALIDREF" ||
+          expr.vendorOperator === "XSIZEOF";
         let arg: string;
         try {
           arg = this.generateExpression(expr.arguments[0]!.value);
@@ -7936,6 +8479,24 @@ export class CodeGenerator {
           this.keepReferenceWrapper = kept;
         }
         return vendorOperatorCpp(expr.vendorOperator, arg);
+      }
+      // DIV_TIME(t, n) of a TIME faults on a zero divisor, as `t / n` does
+      if (
+        nameUpper === "DIV_TIME" &&
+        expr.arguments.length === 2 &&
+        expr.arguments.every((a) => a.name === undefined && !a.isOutput) &&
+        !isNonZeroIntegerLiteral(expr.arguments[1]!.value) &&
+        this.isTemporal32(expr.arguments[0]!.value)
+      ) {
+        return `iec_temporal_div(${this.generateExpression(expr.arguments[0]!.value)}, ${this.generateExpression(expr.arguments[1]!.value)}, ${this.faultSite(expr)})`;
+      }
+      // DIVTIME(a, b) faults when b is a zero duration
+      if (
+        nameUpper === "DIVTIME" &&
+        expr.arguments.length === 2 &&
+        expr.arguments.every((a) => a.name === undefined && !a.isOutput)
+      ) {
+        return `iec_divtime(${this.generateExpression(expr.arguments[0]!.value)}, ${this.generateExpression(expr.arguments[1]!.value)}, ${this.faultSite(expr)})`;
       }
       // DIV(a, b) of integers faults on a zero divisor, as `a / b` does
       if (nameUpper === "DIV" && expr.arguments.length === 2) {
@@ -7951,6 +8512,15 @@ export class CodeGenerator {
         ) {
           return `iec_div(${this.generateExpression(dividend)}, ${this.generateExpression(divisor)}, ${this.faultSite(expr)})`;
         }
+      }
+
+      // `NOT (16#F0)` typed from its use, as `NOT 16#F0` is
+      const notType = untypedNotTarget(expr);
+      if (notType !== undefined) {
+        return untypedNotCpp(
+          notType,
+          this.generateExpression(expr.arguments[0]!.value),
+        );
       }
 
       // 0. ADR(x) → &(x) (CODESYS address-of operator)
@@ -7985,6 +8555,15 @@ export class CodeGenerator {
 
       // 1. Check for *_TO_* conversion pattern (e.g., INT_TO_REAL -> TO_REAL)
       const conversion = this.stdRegistry.resolveConversion(nameUpper);
+      if (conversion && expr.arguments.length >= 1) {
+        // TIME_TO_STRING and the like: the canonical IEC literal (T#1h2m3s4ms)
+        const text = this.temporalText(
+          conversion.fromType.toUpperCase(),
+          conversion.toType.toUpperCase(),
+          expr.arguments[0]!.value,
+        );
+        if (text !== undefined) return text;
+      }
       if (conversion) {
         const args = expr.arguments.map((arg, idx) => {
           const generated = this.bitConversionArg(
@@ -8013,6 +8592,23 @@ export class CodeGenerator {
         return `${conversion.cppName}(${args.join(", ")})`;
       }
 
+      // `TO_STRING(t)` of a date/time value: its canonical IEC literal text
+      if (
+        (nameUpper === "TO_STRING" || nameUpper === "TO_WSTRING") &&
+        expr.arguments.length === 1
+      ) {
+        const from = this.temporalBase(expr.arguments[0]!.value);
+        const text =
+          from === undefined
+            ? undefined
+            : this.temporalText(
+                from.toUpperCase(),
+                nameUpper.slice(3),
+                expr.arguments[0]!.value,
+              );
+        if (text !== undefined) return text;
+      }
+
       // 2. Check for standard function (may have different cppName)
       const stdFunc = this.stdRegistry.lookup(nameUpper);
       const sizedType =
@@ -8023,6 +8619,8 @@ export class CodeGenerator {
       if (stdFunc) {
         const args = expr.arguments.map((arg, idx) => {
           let generated = this.generateExpression(arg.value);
+          // SIZEOF of a REFERENCE TO measures the reference: no binding needed
+          if (nameUpper === "SIZEOF") generated = this.refWrapper(generated);
           if (stdFunc.isConversion) {
             generated = this.bitConversionArg(arg.value, generated);
           }
@@ -8147,6 +8745,7 @@ export class CodeGenerator {
 
     // Positional arguments bound to REFERENCE TO inputs.
     if (calleeBlocks) {
+      this.ltimeIntoTimeInputs(args, expr.arguments, calleeBlocks);
       const supplied = args.slice(0, suppliedArgs);
       this.bindPositionalReferenceInputs(supplied, calleeBlocks);
       args.splice(0, suppliedArgs, ...supplied);
@@ -8229,9 +8828,55 @@ export class CodeGenerator {
         : this.libraryFunctions.get(upper);
     if (!entry) return undefined;
     if (!this.libraryFunctionDecls.has(key)) {
-      this.libraryFunctionDecls.set(key, libraryFunctionDeclaration(entry));
+      this.libraryFunctionDecls.set(
+        key,
+        libraryFunctionDeclaration(
+          entry,
+          this.libraryFunctionStringDefaults.get(entry),
+        ),
+      );
     }
     return this.libraryFunctionDecls.get(key);
+  }
+
+  /**
+   * The POINTER TO or REF_TO type of a library FUNCTION's output `name`, which
+   * the declaration built from the manifest leaves out; undefined otherwise.
+   */
+  private libraryOutputReferenceType(
+    call: FunctionCallExpression | MethodCallExpression,
+    name: string,
+  ): TypeReference | undefined {
+    if (call.kind !== "FunctionCallExpression") return undefined;
+    const upper = name.toUpperCase();
+    const param = this.libraryFunctions
+      .get(call.functionName.toUpperCase())
+      ?.parameters.find(
+        (p) => p.direction === "output" && p.name.toUpperCase() === upper,
+      );
+    const kind = param?.referenceKind;
+    if (param === undefined || (kind !== "pointer_to" && kind !== "ref_to")) {
+      return undefined;
+    }
+    return {
+      kind: "TypeReference",
+      sourceSpan: call.sourceSpan,
+      name: param.type,
+      isReference: true,
+      referenceKind: kind,
+      ...(param.referenceChain !== undefined
+        ? { referenceChain: param.referenceChain }
+        : {}),
+      ...(param.arrayDimensions !== undefined
+        ? { arrayDimensions: param.arrayDimensions }
+        : {}),
+      ...(param.elementTypeName !== undefined
+        ? { elementTypeName: param.elementTypeName }
+        : {}),
+      ...(param.elementReferenceChain !== undefined
+        ? { elementReferenceChain: param.elementReferenceChain }
+        : {}),
+    };
   }
 
   /**
@@ -8326,10 +8971,68 @@ export class CodeGenerator {
     }
     const args = callArgs.map((a) => this.generateExpression(a.value));
     if (method) {
+      this.ltimeIntoTimeInputs(args, callArgs, method.varBlocks);
       this.bindPositionalReferenceInputs(args, method.varBlocks);
       this.padOmittedArguments(args, method.varBlocks);
     }
     return args;
+  }
+
+  /**
+   * Positional arguments: an LTIME bound to a TIME VAR_INPUT is converted as
+   * an LTIME stored in a TIME is. Only when every argument is positional.
+   */
+  private ltimeIntoTimeInputs(
+    args: string[],
+    callArgs: Argument[],
+    varBlocks: VarBlock[],
+  ): void {
+    if (callArgs.some((a) => a.name !== undefined || a.isOutput)) return;
+    let index = 0;
+    for (const block of varBlocks) {
+      if (
+        block.blockType !== "VAR_INPUT" &&
+        block.blockType !== "VAR_IN_OUT" &&
+        block.blockType !== "VAR_OUTPUT"
+      ) {
+        continue;
+      }
+      for (const decl of block.declarations) {
+        for (let n = 0; n < decl.names.length; n++, index++) {
+          if (index >= callArgs.length || block.blockType !== "VAR_INPUT") {
+            continue;
+          }
+          args[index] = this.ltimeIntoTimeInput(
+            decl.type,
+            callArgs[index]!.value,
+            args[index]!,
+          );
+        }
+      }
+    }
+  }
+
+  /** `code` for a value input of type `type`, an LTIME into a TIME converted. */
+  private ltimeIntoTimeInput(
+    type: {
+      readonly name: string;
+      readonly referenceKind?: string | undefined;
+      readonly arrayDimensions?: unknown;
+    },
+    value: Expression,
+    code: string,
+  ): string {
+    if (
+      (type.referenceKind ?? "none") !== "none" ||
+      type.arrayDimensions !== undefined
+    ) {
+      return code;
+    }
+    return this.ltimeIntoTime(
+      this.elementaryThroughAliases(type.name),
+      value,
+      code,
+    );
   }
 
   /**
@@ -8353,7 +9056,7 @@ export class CodeGenerator {
       for (const decl of block.declarations) {
         for (let n = 0; n < decl.names.length; n++, index++) {
           if (index < args.length && isReferenceInput(block, decl)) {
-            args[index] = `ref_bind(${args[index]})`;
+            args[index] = `ref_bind(${this.refWrapper(args[index]!)})`;
           }
         }
       }
@@ -8424,8 +9127,13 @@ export class CodeGenerator {
       if (arg.name !== undefined) {
         const upperName = arg.name.toUpperCase();
         if (upperName === "EN" || upperName === "ENO") continue;
+        const param = params.find((p) => p.name === upperName);
+        const generated = this.generateExpression(arg.value);
         namedArgs.set(upperName, {
-          expr: this.generateExpression(arg.value),
+          expr:
+            param?.blockType === "VAR_INPUT" && !arg.isOutput
+              ? this.ltimeIntoTimeInput(param.type, arg.value, generated)
+              : generated,
           isOutput: arg.isOutput,
         });
         claimedSlots.add(upperName);
@@ -8505,7 +9213,7 @@ export class CodeGenerator {
       const refType = params[i]!.refInput;
       if (refType === undefined) continue;
       if (result[i] !== undefined) {
-        result[i] = `ref_bind(${result[i]})`;
+        result[i] = `ref_bind(${this.refWrapper(result[i]!)})`;
       } else if (params[i]!.defaultExpr === undefined) {
         result[i] = `${this.mapTypeRefToCpp(refType)}()`;
       }
@@ -9598,7 +10306,11 @@ export class CodeGenerator {
             ? this.generateExpression(this.dottedInstanceExpression(call))
             : this.currentScopeVarRefKinds.get(rawName.toUpperCase()) ===
                 "reference_to"
-              ? `${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName}.target()`
+              ? this.refTarget(
+                  this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName,
+                  rawName,
+                  call,
+                )
               : this.scopeInOutRefs.has(rawName.toUpperCase())
                 ? `(*${this.memberMangledNames.get(rawName.toUpperCase()) ?? rawName})`
                 : (this.varInstMangledNames.get(rawName.toUpperCase()) ??
@@ -9734,9 +10446,12 @@ export class CodeGenerator {
     for (const arg of filteredArgs) {
       if (arg.name && arg.isOutput) {
         const member = `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`;
+        const source = kindOf(arg.name) === "ref" ? `(*${member})` : member;
         this.emitCaptureToLvalue(
           arg.value,
-          kindOf(arg.name) === "ref" ? `(*${member})` : member,
+          arg.addressInto === undefined
+            ? source
+            : this.addressAsInteger(arg.addressInto, source),
           indent,
         );
       }
@@ -9839,7 +10554,11 @@ export class CodeGenerator {
       (value.accessChain?.length ?? 0) === 0 &&
       !value.isDereference
     ) {
-      return `${this.resolveVariableBaseName(value.name)}.target()`;
+      return this.refTarget(
+        this.resolveVariableBaseName(value.name),
+        value.name,
+        value,
+      );
     }
     const saved = this.inOutBindExprs.delete(value);
     const rendered = this.generateLvalue(value);
@@ -9921,13 +10640,16 @@ export class CodeGenerator {
     paramName: string,
     value: Expression,
   ): string {
-    const generated = this.generateExpression(value);
+    let generated = this.generateExpression(value);
     if (fbTypeName === undefined) return generated;
     const inout = this.fbInoutParams.get(fbTypeName.toUpperCase());
     if (inout?.has(paramName.toUpperCase()) === true) return generated;
     const field = this.accessLookup.field(fbTypeName, paramName);
+    if (field !== undefined) {
+      generated = this.ltimeIntoTimeInput(field.type, value, generated);
+    }
     return field?.type.referenceKind === "reference_to"
-      ? `ref_bind(${generated})`
+      ? `ref_bind(${this.refWrapper(generated)})`
       : generated;
   }
 
@@ -9943,6 +10665,8 @@ export class CodeGenerator {
     source: string,
     indent: string,
   ): void {
+    // An output or copy-back into a subrange variable is a store too
+    source = this.subrangeStore(target, source) ?? source;
     if (
       target.kind === "VariableExpression" &&
       !target.isDereference &&
@@ -10362,9 +11086,11 @@ export class CodeGenerator {
     }
     if (
       this.externalPointerSuffix !== "" ||
-      this.externalPointerOf !== undefined
+      this.externalPointerOf !== undefined ||
+      (!this.atNamespaceScope && this.namesLocalVariable(value))
     ) {
-      // In a PROGRAM constructor the VAR_EXTERNAL parameters are captured.
+      // In a PROGRAM constructor the VAR_EXTERNAL parameters are captured;
+      // in a constructor or body, the members or locals the value names.
       return generateInitializerValue(
         value,
         cppType,
@@ -10378,6 +11104,25 @@ export class CodeGenerator {
       stTypeName,
       this.getStructInitEmitter(),
     );
+  }
+
+  /** `value` names a variable that is neither a file-level global nor an enumeration member. */
+  private namesLocalVariable(value: Expression): boolean {
+    const globals = this.fileScopeGlobalNames();
+    const enumMembers = new Set(
+      (this.ast?.types ?? []).flatMap((t) =>
+        t.definition.kind === "EnumDefinition"
+          ? t.definition.members.map((m) => m.name.toUpperCase())
+          : [],
+      ),
+    );
+    let found = false;
+    walkAST(value, (node) => {
+      if (node.kind !== "VariableExpression") return;
+      const name = (node as VariableExpression).name.toUpperCase();
+      if (!globals.has(name) && !enumMembers.has(name)) found = true;
+    });
+    return found;
   }
 
   /** The reference levels a TYPE alias (through aliases) adds: `T_R : REFERENCE TO INT`. */
@@ -10426,7 +11171,14 @@ export class CodeGenerator {
    */
   private getStructInitEmitter(): StructInitEmitter {
     this.structInitEmitter ??= {
-      emitValue: (value: Expression): string => this.generateExpression(value),
+      emitValue: (value: Expression, stTypeName?: string): string =>
+        this.ltimeIntoTime(
+          stTypeName === undefined
+            ? undefined
+            : this.elementaryThroughAliases(stTypeName),
+          value,
+          this.generateExpression(value),
+        ),
       memberName: (
         fieldName: string,
         ownerTypeName: string | undefined,
@@ -10467,6 +11219,15 @@ export class CodeGenerator {
     if (upperType === "REAL" || upperType === "LREAL") return "0.0";
     if (upperType === "STRING") return '""';
     if (upperType === "WSTRING") return 'u""';
+    // The 32-bit date and time types: their zero value
+    const temporal = TEMPORAL_KIND[upperType];
+    if (
+      temporal !== undefined &&
+      isElementaryType(upperType) &&
+      !LONG_TEMPORAL_NAMES.has(upperType)
+    ) {
+      return `${TEMPORAL_CPP[temporal].short}()`;
+    }
 
     // Check if it's an elementary type that uses numeric default
     const numericTypes = [
@@ -10482,10 +11243,6 @@ export class CodeGenerator {
       "WORD",
       "DWORD",
       "LWORD",
-      "TIME",
-      "DATE",
-      "TOD",
-      "DT",
       "LTIME",
       "LDATE",
       "LTOD",

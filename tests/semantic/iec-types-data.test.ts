@@ -128,10 +128,12 @@ describe("IEC base-type registry", () => {
         LINT: 8,
         ULINT: 8,
         LREAL: 8,
-        TIME: 8,
-        DATE: 8,
-        TOD: 8,
-        DT: 8,
+        TIME: 4,
+        DATE: 4,
+        TOD: 4,
+        DT: 4,
+        LTIME: 8,
+        LDT: 8,
       };
       for (const [name, bytes] of Object.entries(expected)) {
         const t = lookupBaseType(name);

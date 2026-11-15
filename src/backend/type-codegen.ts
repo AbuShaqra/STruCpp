@@ -25,12 +25,14 @@ import type {
 import { charLiteralUnits } from "../literal-utils.js";
 import { TypeRegistry, isElementaryType } from "../semantic/type-registry.js";
 import {
-  dateArithmeticCpp,
+  temporalArithmeticCpp,
+  temporalLiteralCpp,
   formatArrayType,
   formatIntegerLiteral,
   isComparison,
   isComparisonExpr,
   stringComparisonCpp,
+  parenthesizedCpp,
   isNonZeroIntegerLiteral,
   literalTemporalType,
   translateIECString,
@@ -44,12 +46,6 @@ import {
   bitRuns,
   type BitRun,
 } from "./bit-runs.js";
-import {
-  parseDateLiteralToDays,
-  parseDtLiteralToNs,
-  parseTimeLiteral,
-  parseTodLiteralToNs,
-} from "../project-model.js";
 import {
   buildEnumMemberMap,
   implicitEnumBaseName,
@@ -67,6 +63,7 @@ import {
   unionTypeLines,
   type UnionMemberSpelling,
 } from "./union-codegen.js";
+import { untypedNotCpp, untypedNotTarget } from "../semantic/untyped-not.js";
 
 /**
  * Options for type code generation
@@ -216,6 +213,9 @@ function typedDecimalPayload(expr: LiteralExpression): string | undefined {
 }
 
 /** BYTE, WORD, DWORD or LWORD: a bit string other than BOOL. */
+/** Bit string types, narrowest first. */
+const BIT_STRING_WIDTHS: readonly string[] = ["BYTE", "WORD", "DWORD", "LWORD"];
+
 function isBitStringName(name: string): boolean {
   const upper = name.toUpperCase();
   return getTypeCategory(upper) === "BIT" && upper !== "BOOL";
@@ -919,9 +919,18 @@ export class TypeCodeGenerator {
       case "UnaryExpression":
         return this.unaryExprToCpp(expr);
       case "ParenthesizedExpression":
-        return `(${this.expressionToCpp(expr.expression)})`;
+        return parenthesizedCpp(expr, this.expressionToCpp(expr.expression));
       case "FunctionCallExpression":
         // `NOT (x)` is parsed as a call: it is the operator NOT on x
+        {
+          const notType = untypedNotTarget(expr);
+          if (notType !== undefined) {
+            return untypedNotCpp(
+              notType,
+              this.expressionToCpp(expr.arguments[0]!.value),
+            );
+          }
+        }
         if (
           expr.functionName.toUpperCase() === "NOT" &&
           expr.arguments.length === 1 &&
@@ -1002,25 +1011,20 @@ export class TypeCodeGenerator {
         const str = String(expr.value);
         return str.includes(".") || /[eE]/.test(str) ? str : `${str}.0`;
       }
-      case "TIME":
-      case "LTIME": {
-        const timeVal = parseTimeLiteral(String(expr.value));
-        return `${timeVal.exact}LL`;
-      }
       case "CHAR":
       case "WCHAR": {
         const { wide, units } = charLiteralUnits(expr.rawValue);
         return `static_cast<${wide ? "WCHAR_t" : "CHAR_t"}>(${Math.max(units[0] ?? 0, 0)})`;
       }
+      case "TIME":
+      case "LTIME":
       case "DATE":
       case "LDATE":
-        return `${parseDateLiteralToDays(String(expr.value))}LL`;
       case "TIME_OF_DAY":
       case "LTIME_OF_DAY":
-        return `${parseTodLiteralToNs(String(expr.value))}LL`;
       case "DATE_AND_TIME":
       case "LDATE_AND_TIME":
-        return `${parseDtLiteralToNs(String(expr.value))}LL`;
+        return temporalLiteralCpp(expr.literalType, String(expr.value))!;
       default:
         return String(expr.value);
     }
@@ -1069,7 +1073,7 @@ export class TypeCodeGenerator {
         ? (t as ElementaryType).name.toUpperCase()
         : literalTemporalType(e);
     };
-    const dated = dateArithmeticCpp(
+    const dated = temporalArithmeticCpp(
       expr.operator,
       temporal(expr.left),
       temporal(expr.right),
@@ -1099,6 +1103,10 @@ export class TypeCodeGenerator {
     const cppOp = opMap[expr.operator] ?? expr.operator;
     // AND/OR/XOR are bitwise, as in a POU body (BOOL operands included).
     if (["AND", "OR", "XOR"].includes(expr.operator)) {
+      if (expr.computeAs !== undefined) {
+        const t = `${expr.computeAs}_t`;
+        return `static_cast<${t}>(${left}) ${cppOp} static_cast<${t}>(${right})`;
+      }
       return `(${left}) ${cppOp} (${right})`;
     }
     // Parenthesise a comparison nested in a comparison (a chain).
@@ -1140,12 +1148,39 @@ export class TypeCodeGenerator {
 
   /** The bit string type an operand is known to have: its type, or a typed literal's prefix. */
   private operandBitString(expr: Expression): string | undefined {
-    if (expr.kind === "ParenthesizedExpression") {
-      return this.operandBitString(expr.expression);
-    }
     const t = expr.resolvedType;
     if (t?.typeKind === "elementary") {
       return this.bitStringBase((t as ElementaryType).name);
+    }
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.operandBitString(expr.expression);
+    }
+    // NOT, AND, OR, XOR of a bit string keep its type
+    if (expr.kind === "UnaryExpression" && expr.operator === "NOT") {
+      return this.operandBitString(expr.operand);
+    }
+    if (
+      expr.kind === "BinaryExpression" &&
+      ["AND", "OR", "XOR"].includes(expr.operator)
+    ) {
+      // The wider of the two, whatever their order
+      const l = this.operandBitString(expr.left);
+      const r = this.operandBitString(expr.right);
+      if (l === undefined || r === undefined) return l ?? r;
+      return BIT_STRING_WIDTHS.indexOf(r) > BIT_STRING_WIDTHS.indexOf(l)
+        ? r
+        : l;
+    }
+    if (expr.kind === "FunctionCallExpression") {
+      const name = expr.functionName.toUpperCase();
+      const first = expr.arguments[0]?.value;
+      // SHL, SHR, ROL, ROR and NOT (x) give IN's type
+      if (
+        ["SHL", "SHR", "ROL", "ROR", "NOT"].includes(name) &&
+        first !== undefined
+      ) {
+        return this.operandBitString(first);
+      }
     }
     if (expr.kind === "LiteralExpression" && (expr.typePrefix ?? "") !== "") {
       return this.bitStringBase(expr.typePrefix!);
@@ -1155,6 +1190,11 @@ export class TypeCodeGenerator {
 
   private unaryExprToCpp(expr: UnaryExpression): string {
     const operand = this.expressionToCpp(expr.operand);
+    // NOT of an untyped constant typed from the element (`w : WORD := NOT 16#0F`)
+    const contextType = untypedNotTarget(expr);
+    if (contextType !== undefined) {
+      return untypedNotCpp(contextType, operand);
+    }
     if (expr.operator === "NOT") return this.notToCpp(expr.operand, operand);
 
     const opMap: Record<string, string> = {

@@ -13,6 +13,7 @@
 
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 function compileST(source: string): { cppCode: string; headerCode: string; success: boolean; errors: unknown[] } {
   const result = compile(source);
@@ -43,7 +44,7 @@ describe("Phase 3.3: Array Element Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("ARR.at(1) = 100;");
+    expect(withoutSites(result.cppCode)).toContain("ARR.at(1) = 100;");
   });
 
   it("should generate 1D array element read", () => {
@@ -60,7 +61,7 @@ describe("Phase 3.3: Array Element Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("X = ARR.at(5);");
+    expect(withoutSites(result.cppCode)).toContain("X = ARR.at(5);");
   });
 
   it("should generate array access with variable index", () => {
@@ -77,7 +78,7 @@ describe("Phase 3.3: Array Element Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("ARR.at(I) = ARR.at(I) + 1;");
+    expect(withoutSites(result.cppCode)).toContain("ARR.at(I) = ARR.at(I) + 1;");
   });
 
   it("should generate array access with expression index", () => {
@@ -94,7 +95,7 @@ describe("Phase 3.3: Array Element Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("ARR.at(I + 1) = ARR.at(I - 1) + ARR.at(I);");
+    expect(withoutSites(result.cppCode)).toContain("ARR.at(I + 1) = ARR.at(I - 1) + ARR.at(I);");
   });
 
   it("should generate 2D array access with multiple subscripts", () => {
@@ -113,8 +114,8 @@ describe("Phase 3.3: Array Element Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("MATRIX.at(0, 0) = 1.0;");
-    expect(result.cppCode).toContain("MATRIX.at(I, J) = 0.0;");
+    expect(withoutSites(result.cppCode)).toContain("MATRIX.at(0, 0) = 1.0;");
+    expect(withoutSites(result.cppCode)).toContain("MATRIX.at(I, J) = 0.0;");
   });
 
   it("should generate array access in FOR loop", () => {
@@ -137,8 +138,8 @@ describe("Phase 3.3: Array Element Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("ARR.at(I) = I * 10;");
-    expect(result.cppCode).toContain("SUM = SUM + ARR.at(I);");
+    expect(withoutSites(result.cppCode)).toContain("ARR.at(I) = I * 10;");
+    expect(withoutSites(result.cppCode)).toContain("SUM = SUM + ARR.at(I);");
   });
 });
 
@@ -162,8 +163,8 @@ describe("Phase 3.3: Structure Member Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("P.X = 10;");
-    expect(result.cppCode).toContain("P.Y = 20;");
+    expect(withoutSites(result.cppCode)).toContain("P.X = 10;");
+    expect(withoutSites(result.cppCode)).toContain("P.Y = 20;");
   });
 
   it("should generate struct member read", () => {
@@ -180,7 +181,7 @@ describe("Phase 3.3: Structure Member Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("DIST = P.X + P.Y;");
+    expect(withoutSites(result.cppCode)).toContain("DIST = P.X + P.Y;");
   });
 
   it("should generate nested struct access", () => {
@@ -202,8 +203,8 @@ describe("Phase 3.3: Structure Member Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("LINE_.STARTPT.X = 0;");
-    expect(result.cppCode).toContain("LINE_.ENDPT.Y = 100;");
+    expect(withoutSites(result.cppCode)).toContain("LINE_.STARTPT.X = 0;");
+    expect(withoutSites(result.cppCode)).toContain("LINE_.ENDPT.Y = 100;");
   });
 
   it("should generate struct assignment", () => {
@@ -220,7 +221,7 @@ describe("Phase 3.3: Structure Member Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("P2 = P1;");
+    expect(withoutSites(result.cppCode)).toContain("P2 = P1;");
   });
 });
 
@@ -248,8 +249,8 @@ describe("Phase 3.3: Combined Array/Struct Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("POINTS.at(1).X = 100;");
-    expect(result.cppCode).toContain("POINTS.at(I).Y = 200;");
+    expect(withoutSites(result.cppCode)).toContain("POINTS.at(1).X = 100;");
+    expect(withoutSites(result.cppCode)).toContain("POINTS.at(I).Y = 200;");
   });
 
   it("should generate array of struct access in loop", () => {
@@ -273,8 +274,8 @@ describe("Phase 3.3: Combined Array/Struct Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("POINTS.at(I).X = I;");
-    expect(result.cppCode).toContain("POINTS.at(I).Y = I * 2;");
+    expect(withoutSites(result.cppCode)).toContain("POINTS.at(I).X = I;");
+    expect(withoutSites(result.cppCode)).toContain("POINTS.at(I).Y = I * 2;");
   });
 });
 
@@ -303,9 +304,9 @@ describe("Enum-typed variable declarations (regression)", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.headerCode).toContain("enum class COLOR");
-    expect(result.headerCode).toContain("using IEC_COLOR = IEC_ENUM<COLOR>;");
-    expect(result.headerCode).toContain("IEC_COLOR C;");
+    expect(withoutSites(result.headerCode)).toContain("enum class COLOR");
+    expect(withoutSites(result.headerCode)).toContain("using IEC_COLOR = IEC_ENUM<COLOR>;");
+    expect(withoutSites(result.headerCode)).toContain("IEC_COLOR C;");
   });
 
   it("should wrap enum-typed FB members in IEC_<name>", () => {
@@ -327,7 +328,7 @@ describe("Enum-typed variable declarations (regression)", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.headerCode).toContain("IEC_MODE M;");
-    expect(result.headerCode).toContain("IEC_MODE LOCAL_M;");
+    expect(withoutSites(result.headerCode)).toContain("IEC_MODE M;");
+    expect(withoutSites(result.headerCode)).toContain("IEC_MODE LOCAL_M;");
   });
 });
