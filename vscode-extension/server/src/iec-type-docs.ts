@@ -5,7 +5,7 @@
  *
  * Sizes/representations describe how STruC++ actually lowers each type (see
  * `src/runtime/include/iec_types.hpp`), not a generic PLC assumption — in
- * particular every temporal type (TIME/LTIME/DATE/TOD/DT) is a signed 64-bit
+ * particular TIME/DATE/TOD/DT are unsigned 32-bit and the long forms 64-bit
  * integer here, not the 32-bit milliseconds some controllers use.
  */
 
@@ -40,17 +40,17 @@ export const IEC_TYPE_DOCS: Readonly<Record<string, string>> = {
   LREAL:
     "**LREAL** (*Long Real*)\n\nDouble-precision IEEE-754 float. Range: ±1.8×10³⁰⁸ (~15 significant digits).\n\n**Size:** 64 bits",
 
-  // --- Time / date (STruC++ represents all of these as signed int64) ---
-  TIME: "**TIME** (*Duration*)\n\nSigned 64-bit duration counted in **nanoseconds**. Literal: `T#1h30m` or `TIME#500ms`.\n\n**Size:** 64 bits (nanoseconds)",
+  // --- Time / date (32-bit unsigned short forms, 64-bit long forms) ---
+  TIME: "**TIME** (*Duration*)\n\nUnsigned 32-bit duration counted in **milliseconds**, wrapping after `T#49d17h2m47s295ms`. Literal: `T#1h30m` or `TIME#500ms`.\n\n**Size:** 32 bits (milliseconds)",
   LTIME:
     "**LTIME** (*Long Duration*)\n\nHigh-resolution duration, signed 64-bit **nanoseconds**. Literal: `LTIME#1h30m0s500ms`.\n\n**Size:** 64 bits (nanoseconds)",
-  DATE: "**DATE** (*Date*)\n\nCalendar date as signed 64-bit **days** since the Unix epoch (UTC). Literal: `D#2024-01-31` or `DATE#2024-01-31`.\n\n**Size:** 64 bits (days)",
+  DATE: "**DATE** (*Date*)\n\nCalendar date as unsigned 32-bit **seconds** since the Unix epoch (UTC), a whole number of days: `D#1970-01-01` … `D#2106-02-07`. Literal: `D#2024-01-31` or `DATE#2024-01-31`.\n\n**Size:** 32 bits (seconds)",
   TIME_OF_DAY:
-    "**TIME_OF_DAY** (*Time of Day*)\n\nTime within a day as signed 64-bit **nanoseconds** since midnight. Literal: `TOD#12:30:00` or `TIME_OF_DAY#08:00:00.500`.\n\n**Size:** 64 bits (nanoseconds)",
-  TOD: "**TOD** (*Time of Day*)\n\nShort alias for `TIME_OF_DAY` — signed 64-bit nanoseconds since midnight. Literal: `TOD#12:30:00`.\n\n**Size:** 64 bits (nanoseconds)",
+    "**TIME_OF_DAY** (*Time of Day*)\n\nTime within a day as unsigned 32-bit **milliseconds** since midnight. Literal: `TOD#12:30:00` or `TIME_OF_DAY#08:00:00.500`.\n\n**Size:** 32 bits (milliseconds)",
+  TOD: "**TOD** (*Time of Day*)\n\nShort alias for `TIME_OF_DAY` — unsigned 32-bit milliseconds since midnight. Literal: `TOD#12:30:00`.\n\n**Size:** 32 bits (milliseconds)",
   DATE_AND_TIME:
-    "**DATE_AND_TIME** (*Date and Time*)\n\nCombined timestamp as signed 64-bit **nanoseconds** since the Unix epoch (UTC). Literal: `DT#2024-01-31-12:30:00`.\n\n**Size:** 64 bits (nanoseconds)",
-  DT: "**DT** (*Date and Time*)\n\nShort alias for `DATE_AND_TIME` — signed 64-bit nanoseconds since the Unix epoch (UTC). Literal: `DT#2024-01-31-12:30:00`.\n\n**Size:** 64 bits (nanoseconds)",
+    "**DATE_AND_TIME** (*Date and Time*)\n\nCombined timestamp as unsigned 32-bit **seconds** since the Unix epoch (UTC): `DT#1970-01-01-00:00:00` … `DT#2106-02-07-06:28:15`. Literal: `DT#2024-01-31-12:30:00`.\n\n**Size:** 32 bits (seconds)",
+  DT: "**DT** (*Date and Time*)\n\nShort alias for `DATE_AND_TIME` — unsigned 32-bit seconds since the Unix epoch (UTC). Literal: `DT#2024-01-31-12:30:00`.\n\n**Size:** 32 bits (seconds)",
 
   // --- Character strings ---
   STRING:

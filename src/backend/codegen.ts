@@ -63,10 +63,6 @@ import type {
 import {
   collectFileScopeGlobals,
   getProjectNamespace,
-  parseDateLiteralToDays,
-  parseDtLiteralToNs,
-  parseTimeLiteral,
-  parseTodLiteralToNs,
 } from "../project-model.js";
 import { isElementaryType, TypeRegistry } from "../semantic/type-registry.js";
 import { programsReachedByName } from "../semantic/program-access.js";
@@ -96,7 +92,9 @@ import {
 } from "./type-codegen.js";
 import { addressFit, addressSource } from "../semantic/address-store.js";
 import {
-  dateArithmeticCpp,
+  temporalArithmeticCpp,
+  temporalLiteralCpp,
+  NS_PER_DAY,
   formatArrayType,
   formatIntegerLiteral,
   iecBaseToCppLiteral,
@@ -384,10 +382,10 @@ export interface CodeGenOptions {
  * yield; `fromUnit` converts back. `undefined` means the internal
  * representation already IS that unit, so no call is emitted.
  *
- * Internally every temporal type is nanoseconds since its own zero, except
- * DATE, which is whole days. CODESYS uses 32-bit seconds for DATE and DT,
- * 32-bit milliseconds for TOD and TIME, and 64-bit nanoseconds for all four
- * `L` variants — so the `L` rows are pass-through and the rest scale.
+ * TIME and TOD are held in 32-bit ms, DATE and DT in 32-bit seconds (as the
+ * vendor holds them), LTIME, LTOD and LDT in 64-bit ns and LDATE in days. The
+ * helpers convert between the held value and the integer's unit (the 32-bit
+ * ones are a plain count, wrapping modulo 2^32; LDATE scales days to ns).
  *
  * One table rather than a chain of `if`s because the two directions have to
  * agree: OSCAT converts out and back inside a single expression, and a unit
@@ -420,9 +418,8 @@ const TEMPORAL_CONVERSION_UNITS = new Map<string, TemporalUnitInfo>([
   ["DATE_AND_TIME", { toUnit: "DT_TO_SECONDS", fromUnit: "DT_FROM_SECONDS" }],
   ["DATE", { toUnit: "DATE_TO_SECONDS", fromUnit: "DATE_FROM_SECONDS" }],
   ["D", { toUnit: "DATE_TO_SECONDS", fromUnit: "DATE_FROM_SECONDS" }],
-  // nanoseconds — the 64-bit variants. TIME, TOD and DT are already stored in
-  // nanoseconds, so those need no call at all; DATE is stored in days and
-  // still has to be scaled.
+  // nanoseconds — the 64-bit variants, held in ns already; LDATE is held in
+  // days and is scaled.
   ["LTIME", { toUnit: undefined, fromUnit: undefined }],
   ["LTOD", { toUnit: undefined, fromUnit: undefined }],
   ["LTIME_OF_DAY", { toUnit: undefined, fromUnit: undefined }],
@@ -467,11 +464,27 @@ const LONG_TEMPORAL_NAMES = new Set([
   "LTIME",
 ]);
 
+/** The 32-bit C++ value type and the long IECVar of each temporal kind. */
+const TEMPORAL_CPP: Record<
+  "date" | "tod" | "dt" | "duration",
+  { short: string; long: string; narrow: string }
+> = {
+  duration: {
+    short: "TIME_t",
+    long: "IEC_LTIME",
+    narrow: "LTIME_TO_TIME_VALUE",
+  },
+  date: { short: "DATE_t", long: "IEC_LDATE", narrow: "LDATE_TO_DATE_VALUE" },
+  tod: { short: "TOD_t", long: "IEC_LTOD", narrow: "LTOD_TO_TOD_VALUE" },
+  dt: { short: "DT_t", long: "IEC_LDT", narrow: "LDT_TO_DT_VALUE" },
+};
+
 /**
  * A conversion between two temporal types: the date or time of day of a
- * date-and-time is split off (in every form, Table 26); with a long (Ed. 3)
- * form on either side, a date becomes the date-and-time of its midnight and the
- * same kind converts unchanged. Undefined for any other pair.
+ * date-and-time is split off (in every form, Table 26), and with a long
+ * (Ed. 3) form on either side the value goes through the long form's unit (ns,
+ * days for LDATE): a 32-bit source widens exactly, a 32-bit target is
+ * truncated to its unit and taken modulo 2^32. Undefined for any other pair.
  */
 function longTemporalConversion(
   argExpr: string,
@@ -481,21 +494,32 @@ function longTemporalConversion(
   const f = TEMPORAL_KIND[from];
   const t = TEMPORAL_KIND[to];
   if (f === undefined || t === undefined) return undefined;
-  // Table 26: the date or the time of day of a date-and-time, in every form.
-  // Through the stored nanoseconds, so a REFERENCE TO DT converts too.
-  if (f === "dt" && t === "date") {
-    return `DATE_OF_DT(IEC_DT(static_cast<int64_t>(${argExpr})))`;
-  }
-  if (f === "dt" && t === "tod") {
-    return `TOD_OF_DT(IEC_DT(static_cast<int64_t>(${argExpr})))`;
-  }
-  if (!LONG_TEMPORAL_NAMES.has(from) && !LONG_TEMPORAL_NAMES.has(to)) {
+  const fromLong = LONG_TEMPORAL_NAMES.has(from);
+  const toLong = LONG_TEMPORAL_NAMES.has(to);
+  if (!fromLong && !toLong) {
+    // Table 26: the date or the time of day of a date-and-time.
+    if (f === "dt" && t === "date") {
+      return `DATE_OF_DT(IEC_DT(static_cast<DT_t>(${argExpr})))`;
+    }
+    if (f === "dt" && t === "tod") {
+      return `TOD_OF_DT(IEC_DT(static_cast<DT_t>(${argExpr})))`;
+    }
     return undefined;
   }
-  if (f === t) return argExpr;
-  if (f === "date" && t === "dt") return `DATE_TO_NS(${argExpr})`;
-  if (f === "tod" && t === "dt") return argExpr;
-  return undefined;
+  const value = fromLong
+    ? `static_cast<int64_t>(${argExpr})`
+    : `iec_long_value(static_cast<${TEMPORAL_CPP[f].short}>(${argExpr}))`;
+  let long: string;
+  if (f === t) long = value;
+  else if (f === "dt" && t === "date") {
+    long = `iec_floor_div(${value}, ${NS_PER_DAY})`;
+  } else if (f === "dt" && t === "tod") long = `TOD_NORMALIZE(${value})`;
+  else if (f === "date" && t === "dt") long = `(${value}) * ${NS_PER_DAY}`;
+  else if (f === "tod" && t === "dt") long = value;
+  else return undefined;
+  return toLong
+    ? `${TEMPORAL_CPP[t].long}(${long})`
+    : `${TEMPORAL_CPP[t].narrow}(${long})`;
 }
 
 /**
@@ -1125,7 +1149,14 @@ export class CodeGenerator {
     };
     const form = forms[from];
     if (form === undefined) return undefined;
-    const text = `strucpp::${form[0]}(static_cast<int64_t>(iec_unwrap(${this.generateExpression(value)})), "${form[1]}")`;
+    // A 32-bit value goes to the text in its long form's unit (ns, days).
+    const kind = TEMPORAL_KIND[from];
+    const code = this.generateExpression(value);
+    const held =
+      kind !== undefined && !LONG_TEMPORAL_NAMES.has(from)
+        ? `iec_long_value(static_cast<${TEMPORAL_CPP[kind].short}>(${code}))`
+        : `static_cast<int64_t>(iec_unwrap(${code}))`;
+    const text = `strucpp::${form[0]}(${held}, "${form[1]}")`;
     return to === "WSTRING" ? `STRING_TO_WSTRING(${text})` : text;
   }
 
@@ -4911,7 +4942,11 @@ export class CodeGenerator {
     const value = this.addressIntoAlias(
       stmt.target,
       stmt.value,
-      this.generateExpression(stmt.value),
+      this.ltimeIntoTime(
+        this.temporalBase(stmt.target),
+        stmt.value,
+        this.generateExpression(stmt.value),
+      ),
     );
 
     // For interface-returning methods, convert assignment to result var into return statement
@@ -6144,31 +6179,20 @@ export class CodeGenerator {
         const wEscaped = translateIECString(wInner, true);
         return `u"${wEscaped}"`;
       }
-      case "TIME":
-      case "LTIME": {
-        const timeVal = parseTimeLiteral(String(expr.value));
-        return `${timeVal.exact}LL`;
-      }
       case "CHAR":
       case "WCHAR": {
         const { wide, units } = charLiteralUnits(expr.rawValue);
         return `static_cast<${wide ? "WCHAR_t" : "CHAR_t"}>(${Math.max(units[0] ?? 0, 0)})`;
       }
+      case "TIME":
+      case "LTIME":
       case "DATE":
       case "LDATE":
-        // DATE: int64 days since Unix epoch (UTC).  `iec_date.hpp`
-        // stores DATE as days (see `DT_FROM_DATE_AND_TOD`'s
-        // `iec_unwrap(date) * DT_NS_PER_DAY` math).  Lowering to ns
-        // here would break every conversion / arithmetic helper.
-        return `${parseDateLiteralToDays(String(expr.value))}LL`;
       case "TIME_OF_DAY":
       case "LTIME_OF_DAY":
-        // TOD: int64 nanoseconds since midnight.
-        return `${parseTodLiteralToNs(String(expr.value))}LL`;
       case "DATE_AND_TIME":
       case "LDATE_AND_TIME":
-        // DT: int64 nanoseconds since Unix epoch (UTC).
-        return `${parseDtLiteralToNs(String(expr.value))}LL`;
+        return temporalLiteralCpp(expr.literalType, String(expr.value))!;
       case "NULL":
         return "IEC_NULL";
       default:
@@ -6995,13 +7019,44 @@ export class CodeGenerator {
     left: string,
     right: string,
   ): string | undefined {
-    return dateArithmeticCpp(
+    return temporalArithmeticCpp(
       expr.operator,
       this.temporalBase(expr.left),
       this.temporalBase(expr.right),
       left,
       right,
     );
+  }
+
+  /**
+   * An LTIME stored in a TIME (a timer's PT takes an LTIME preset): the
+   * value truncated to ms and wrapped to 32 bits. Otherwise `code` unchanged.
+   */
+  private ltimeIntoTime(
+    targetType: string | undefined,
+    value: Expression,
+    code: string,
+  ): string {
+    return targetType === "TIME" && this.temporalBase(value) === "LTIME"
+      ? `LTIME_TO_TIME_VALUE(static_cast<int64_t>(${code}))`
+      : code;
+  }
+
+  /** The declared result type of the FUNCTION or METHOD being generated. */
+  private currentResultTypeName(): string | undefined {
+    const upper = this.currentFunctionName?.toUpperCase();
+    if (upper === undefined || !this.ast) return undefined;
+    const fn = this.ast.functions.find((f) => f.name.toUpperCase() === upper);
+    if (fn) return fn.returnType.name.toUpperCase();
+    const owner = (
+      this.currentFBName ?? this.currentProgramName
+    )?.toUpperCase();
+    const pou =
+      this.ast.functionBlocks.find((f) => f.name.toUpperCase() === owner) ??
+      this.ast.programs.find((p) => p.name.toUpperCase() === owner);
+    return pou?.methods
+      .find((m) => m.name.toUpperCase() === upper)
+      ?.returnType?.name.toUpperCase();
   }
 
   /**
@@ -7035,6 +7090,16 @@ export class CodeGenerator {
       e.functionName.toUpperCase() === "CONCAT_DATE_TOD"
     ) {
       name = "DT";
+    }
+    // The result variable of the FUNCTION or METHOD being generated
+    if (
+      name === undefined &&
+      e.kind === "VariableExpression" &&
+      e.fieldAccess.length === 0 &&
+      e.subscripts.length === 0 &&
+      this.currentFunctionName?.toUpperCase() === e.name.toUpperCase()
+    ) {
+      name = this.currentResultTypeName();
     }
     for (let i = 0; i < 32 && name !== undefined; i++) {
       const upper = name;
@@ -7595,16 +7660,11 @@ export class CodeGenerator {
    * Scale the argument of a `TO_*` conversion when a temporal type is on
    * either side of it.
    *
-   * Why this lives in codegen and not in the runtime:
-   *  - `IEC_TIME`, `IEC_LTIME`, `IEC_TOD`, `IEC_LTOD`, `IEC_DT`,
-   *    `IEC_LDT`, `IEC_DATE`, `IEC_LDATE` are all
-   *    `using ... = IECVar<int64_t>` aliases — they collapse to the same
-   *    C++ type after preprocessing.
-   *  - A runtime overload `TO_UINT(IEC_TIME)` therefore CANNOT be
-   *    distinguished from `TO_UINT(IEC_DATE)`, and `TO_DT(seconds)`
-   *    cannot be distinguished from `TO_DT(IEC_DT)`.
-   *  - The IEC type label only survives at the language layer, so the
-   *    scaling has to happen here, before the type identity is erased.
+   * Why this lives in codegen and not in the runtime: the long forms
+   * (`IEC_LTIME`, `IEC_LTOD`, `IEC_LDT`, `IEC_LDATE`) are all
+   * `IECVar<int64_t>`, the type of LINT, so `TO_LDT(nanoseconds)` cannot be
+   * told from `TO_LDT(anLdt)` at run time; the IEC type label survives only
+   * here.
    *
    * The units are CODESYS's, which is what the IEC libraries we ship are
    * written against. From its documentation: DATE, DT and TOD are held in a
@@ -10064,11 +10124,21 @@ export class CodeGenerator {
     paramName: string,
     value: Expression,
   ): string {
-    const generated = this.generateExpression(value);
+    let generated = this.generateExpression(value);
     if (fbTypeName === undefined) return generated;
     const inout = this.fbInoutParams.get(fbTypeName.toUpperCase());
     if (inout?.has(paramName.toUpperCase()) === true) return generated;
     const field = this.accessLookup.field(fbTypeName, paramName);
+    if (
+      field !== undefined &&
+      (field.type.referenceKind ?? "none") === "none"
+    ) {
+      generated = this.ltimeIntoTime(
+        canonicalElementaryName(field.type.name),
+        value,
+        generated,
+      );
+    }
     return field?.type.referenceKind === "reference_to"
       ? `ref_bind(${this.refWrapper(generated)})`
       : generated;
@@ -10610,6 +10680,15 @@ export class CodeGenerator {
     if (upperType === "REAL" || upperType === "LREAL") return "0.0";
     if (upperType === "STRING") return '""';
     if (upperType === "WSTRING") return 'u""';
+    // The 32-bit date and time types: their zero value
+    const temporal = TEMPORAL_KIND[upperType];
+    if (
+      temporal !== undefined &&
+      isElementaryType(upperType) &&
+      !LONG_TEMPORAL_NAMES.has(upperType)
+    ) {
+      return `${TEMPORAL_CPP[temporal].short}()`;
+    }
 
     // Check if it's an elementary type that uses numeric default
     const numericTypes = [
@@ -10625,10 +10704,6 @@ export class CodeGenerator {
       "WORD",
       "DWORD",
       "LWORD",
-      "TIME",
-      "DATE",
-      "TOD",
-      "DT",
       "LTIME",
       "LDATE",
       "LTOD",

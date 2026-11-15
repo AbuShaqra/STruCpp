@@ -3,7 +3,7 @@
 /**
  * E2E: LDATE, LTOD and LDT literals, arithmetic, mixing with the short forms
  * and conversions build and run under g++, and their leaves reach the
- * debugger with the DATE, TOD and DT tags.
+ * debugger with their own LDATE, LTOD and LDT tags (8 bytes).
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -95,7 +95,7 @@ int main() {
     });
   }
 
-  it("describes the leaves to the debugger by their short tags", () => {
+  it("describes the leaves to the debugger by their own tags", () => {
     const result = compile(
       `${SOURCE}
 CONFIGURATION C
@@ -110,9 +110,9 @@ END_CONFIGURATION`,
     const type = (p: string): string | undefined =>
       result.debugMap!.leaves.find((l) => l.path === p)?.type;
     expect([type("INST.LD"), type("INST.LT"), type("INST.LDT")]).toEqual([
-      "DATE",
-      "TOD",
-      "DT",
+      "LDATE",
+      "LTOD",
+      "LDT",
     ]);
   });
 });

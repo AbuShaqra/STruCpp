@@ -229,10 +229,12 @@ ${prints}
               << ":" << (int)p.S.get() << std::endl;`,
       "dt_subsecond",
     );
-    expect(out).toBe("truncated 15:36:55");
+    // DT holds whole seconds, so the literal's .360 is gone already and
+    // the round trip is exact.
+    expect(out).toBe("exact 15:36:55");
   });
 
-  it("floors a pre-epoch DATE instead of rounding toward zero", () => {
+  it("wraps a pre-epoch DATE modulo 2^32, down to its day", () => {
     // Review follow-up. C++ integer division truncates toward zero, so
     // DATE_FROM_SECONDS(-1) landed on day 0 (1970-01-01) when the floor is
     // day -1 (1969-12-31). DATE_OF_DT already spilled that borrow explicitly,
@@ -253,9 +255,10 @@ ${prints}
       `    std::cout << (long long)p.N1.get() << " " << (long long)p.N2.get() << std::endl;`,
       "date_pre_epoch",
     );
-    // One second before the epoch floors to 1969-12-31, which is -86400
-    // seconds; exactly one day before is unchanged at -86400.
-    expect(out).toBe("-86400 -86400");
+    // A DATE is 32-bit unsigned seconds: -1 wraps to 4294967295 s, the day
+    // of which starts at 4294944000 (-23296 as a DINT); -86400 wraps to
+    // 4294880896 s, whose day starts at 4294857600 (-109696).
+    expect(out).toBe("-23296 -109696");
   });
 
   it("agrees with DATE_OF_DT on where a pre-epoch instant falls", () => {

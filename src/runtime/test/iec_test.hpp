@@ -54,6 +54,24 @@ inline std::string to_display_string(const T& value) {
     return std::to_string(static_cast<typename std::underlying_type<T>::type>(value));
 }
 
+// TIME, DATE, TOD and DT (32-bit) as their canonical literal
+inline std::string to_display_string(const TIME_t& value) {
+    return iec_duration_text(iec_long_value(value), "T#").c_str();
+}
+inline std::string to_display_string(const DATE_t& value) {
+    return iec_date_text(iec_long_value(value), "D#").c_str();
+}
+inline std::string to_display_string(const TOD_t& value) {
+    return iec_tod_text(iec_long_value(value), "TOD#").c_str();
+}
+inline std::string to_display_string(const DT_t& value) {
+    return iec_dt_text(iec_long_value(value), "DT#").c_str();
+}
+template<int K>
+inline std::string to_display_string(const IECVar<IecTemporal32<K>>& value) {
+    return to_display_string(value.get());
+}
+
 // Bool specialization: show TRUE/FALSE instead of 1/0
 inline std::string to_display_string(const bool& value) {
     return value ? "TRUE" : "FALSE";

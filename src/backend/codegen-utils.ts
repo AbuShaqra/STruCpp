@@ -11,6 +11,12 @@ import type {
 } from "../frontend/ast.js";
 import { exactIntegerLiteralValue } from "../literal-utils.js";
 import { cp1252Byte } from "../byte-utils.js";
+import {
+  parseDateLiteralToDays,
+  parseDtLiteralToNs,
+  parseTimeLiteral,
+  parseTodLiteralToNs,
+} from "../project-model.js";
 
 const COMPARISON_OPERATORS: ReadonlySet<string> = new Set([
   "=",
@@ -350,39 +356,136 @@ export function translateIECString(inner: string, wide = false): string {
   return result;
 }
 
+/**
+ * A 32-bit TIME, DATE, TOD or DT value as C++: its raw count (ms for TIME and
+ * TOD, seconds for DATE and DT) modulo 2^32, in the type's constructor.
+ */
+export function temporal32Cpp(
+  type: "TIME_t" | "DATE_t" | "TOD_t" | "DT_t",
+  raw: bigint,
+): string {
+  const wrapped = ((raw % 4294967296n) + 4294967296n) % 4294967296n;
+  return `${type}(${wrapped}u)`;
+}
+
+/**
+ * The C++ of a date or time literal: the 32-bit TIME, DATE, TOD and DT in
+ * their types (ms, s, ms, s), the long forms as int64 (ns; days for LDATE).
+ * Undefined for any other literal type.
+ */
+export function temporalLiteralCpp(
+  literalType: string,
+  value: string,
+): string | undefined {
+  switch (literalType) {
+    case "TIME":
+      return temporal32Cpp("TIME_t", parseTimeLiteral(value).exact / 1000000n);
+    case "LTIME":
+      return `${parseTimeLiteral(value).exact}LL`;
+    case "DATE":
+      return temporal32Cpp("DATE_t", parseDateLiteralToDays(value) * 86400n);
+    case "LDATE":
+      return `${parseDateLiteralToDays(value)}LL`;
+    case "TIME_OF_DAY":
+      return temporal32Cpp("TOD_t", parseTodLiteralToNs(value) / 1000000n);
+    case "LTIME_OF_DAY":
+      return `${parseTodLiteralToNs(value)}LL`;
+    case "DATE_AND_TIME":
+      return temporal32Cpp(
+        "DT_t",
+        floorDivBig(parseDtLiteralToNs(value), 1000000000n),
+      );
+    case "LDATE_AND_TIME":
+      return `${parseDtLiteralToNs(value)}LL`;
+    default:
+      return undefined;
+  }
+}
+
+/** `n / d` rounded toward negative infinity. */
+export function floorDivBig(n: bigint, d: bigint): bigint {
+  const q = n / d;
+  return n % d !== 0n && n < 0n !== d < 0n ? q - 1n : q;
+}
+
 /** Nanoseconds in a day, as a C++ literal. */
 export const NS_PER_DAY = "86400000000000LL";
 
+/** The kind of a temporal type, and whether it is the long (64-bit) form. */
+const TEMPORAL_KINDS: Record<string, [string, boolean]> = {
+  TIME: ["duration", false],
+  LTIME: ["duration", true],
+  DATE: ["date", false],
+  LDATE: ["date", true],
+  TOD: ["tod", false],
+  TIME_OF_DAY: ["tod", false],
+  LTOD: ["tod", true],
+  LTIME_OF_DAY: ["tod", true],
+  DT: ["dt", false],
+  DATE_AND_TIME: ["dt", false],
+  LDT: ["dt", true],
+  LDATE_AND_TIME: ["dt", true],
+};
+
+/** The long form a 32-bit temporal operand widens to, as a C++ conversion. */
+const WIDEN: Record<string, string> = {
+  duration: "TO_LTIME",
+  date: "TO_LDATE",
+  tod: "TO_LTOD",
+  dt: "TO_LDT",
+};
+
 /**
- * Date arithmetic in days (Table 35): DATE - DATE is a duration in
- * nanoseconds, and a date plus or minus a duration is the day that holds the
- * resulting instant (floor). `l` and `r` are the operands' canonical types;
- * undefined for any other operation.
+ * A binary operation on temporal operands (Table 30, Table 35). `l` and `r`
+ * are the operands' canonical types; undefined when it is no such operation.
+ * - Both 32-bit: TIME +/- TIME and TIME * or / a number stay C++ operators;
+ *   any other + or - (TOD, DT or DATE with TIME, or a difference) calls
+ *   `iec_temporal_add` / `iec_temporal_sub`.
+ * - A 32-bit operand beside a long one widens to its long form; then a date
+ *   (days) with a duration or a date goes by days, the rest in nanoseconds.
  */
-export function dateArithmeticCpp(
+export function temporalArithmeticCpp(
   operator: string,
   l: string | undefined,
   r: string | undefined,
   left: string,
   right: string,
 ): string | undefined {
-  if (operator !== "+" && operator !== "-") return undefined;
-  const isDate = (k: string | undefined): boolean =>
-    k === "DATE" || k === "LDATE";
-  const isDuration = (k: string | undefined): boolean =>
-    k === "TIME" || k === "LTIME";
-  const raw = (code: string): string => `static_cast<int64_t>(${code})`;
-  if (operator === "-" && isDate(l) && isDate(r)) {
-    return `((${raw(left)} - ${raw(right)}) * ${NS_PER_DAY})`;
+  const lk = l === undefined ? undefined : TEMPORAL_KINDS[l];
+  const rk = r === undefined ? undefined : TEMPORAL_KINDS[r];
+  const comparison = ["=", "<>", "<", ">", "<=", ">="].includes(operator);
+  if (lk === undefined || rk === undefined) return undefined;
+  if (operator !== "+" && operator !== "-" && !comparison) return undefined;
+  if (!lk[1] && !rk[1]) {
+    if (comparison || (lk[0] === "duration" && rk[0] === "duration")) {
+      return undefined;
+    }
+    return operator === "+"
+      ? `iec_temporal_add(${left}, ${right})`
+      : `iec_temporal_sub(${left}, ${right})`;
   }
-  if (isDate(l) && isDuration(r)) {
-    const signed = operator === "-" ? `-${raw(right)}` : raw(right);
-    return `DATE_FROM_DAYS(${raw(left)} + iec_floor_div(${signed}, ${NS_PER_DAY}))`;
+  // One side long: widen the other.
+  const wl = lk[1] ? left : `${WIDEN[lk[0]]!}(${left})`;
+  const wr = rk[1] ? right : `${WIDEN[rk[0]]!}(${right})`;
+  if (comparison) {
+    return lk[1] === rk[1]
+      ? undefined
+      : `${wl} ${operator === "=" ? "==" : operator === "<>" ? "!=" : operator} ${wr}`;
   }
-  if (operator === "+" && isDuration(l) && isDate(r)) {
-    return `DATE_FROM_DAYS(iec_floor_div(${raw(left)}, ${NS_PER_DAY}) + ${raw(right)})`;
+  const raw = (code: string): string =>
+    `static_cast<int64_t>(iec_unwrap(${code}))`;
+  if (operator === "-" && lk[0] === "date" && rk[0] === "date") {
+    return `IEC_LTIME((${raw(wl)} - ${raw(wr)}) * ${NS_PER_DAY})`;
   }
-  return undefined;
+  if (lk[0] === "date" && rk[0] === "duration") {
+    const signed = operator === "-" ? `-${raw(wr)}` : raw(wr);
+    return `IEC_LDATE(${raw(wl)} + iec_floor_div(${signed}, ${NS_PER_DAY}))`;
+  }
+  if (operator === "+" && lk[0] === "duration" && rk[0] === "date") {
+    return `IEC_LDATE(iec_floor_div(${raw(wl)}, ${NS_PER_DAY}) + ${raw(wr)})`;
+  }
+  if (lk[1] === rk[1]) return undefined;
+  return `${wl} ${operator} ${wr}`;
 }
 
 /** The temporal type a literal names (`D#...`, `T#...`, `LTIME#...`), canonical; else undefined. */
@@ -395,7 +498,14 @@ export function literalTemporalType(expr: Expression): string | undefined {
   }
   if (expr.kind !== "LiteralExpression") return undefined;
   const t = expr.literalType;
-  return t === "DATE" || t === "LDATE" || t === "TIME" || t === "LTIME"
+  return t === "DATE" ||
+    t === "LDATE" ||
+    t === "TIME" ||
+    t === "LTIME" ||
+    t === "TIME_OF_DAY" ||
+    t === "LTIME_OF_DAY" ||
+    t === "DATE_AND_TIME" ||
+    t === "LDATE_AND_TIME"
     ? t
     : undefined;
 }

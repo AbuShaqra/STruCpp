@@ -117,7 +117,12 @@ import {
   integerTypeRange,
 } from "../literal-utils.js";
 import { cp1252Byte } from "../byte-utils.js";
-import { exactTimeLiteralNanoseconds } from "../project-model.js";
+import {
+  exactTimeLiteralNanoseconds,
+  parseDateLiteralToDays,
+  parseDtLiteralToNs,
+  parseTodLiteralToNs,
+} from "../project-model.js";
 import { libraryOverloadFor } from "./library-overload.js";
 import {
   vendorOperatorFeature,
@@ -427,6 +432,52 @@ const BIT_STRING_BITS: Readonly<Record<string, number>> = {
   DWORD: 32,
   LWORD: 64,
 };
+
+const U32_MAX = 4294967295n;
+
+/**
+ * Why a TIME, DATE, TOD or DT literal does not fit its 32-bit type (TIME:
+ * 0 to T#49d17h2m47s295ms in whole ms; DATE and DT: 1970-01-01 to
+ * 2106-02-07-06:28:15; TOD: below 24 h); undefined when it fits or is no
+ * such literal.
+ */
+function temporal32LiteralRefusal(
+  literal: LiteralExpression,
+): string | undefined {
+  const raw = literal.rawValue;
+  switch (literal.literalType) {
+    case "TIME": {
+      const ns = exactTimeLiteralNanoseconds(raw);
+      if (ns < 0n) {
+        return `TIME literal '${raw}' is negative; a TIME holds T#0ms to T#49d17h2m47s295ms (an LTIME can be negative)`;
+      }
+      if (ns % 1000000n !== 0n) {
+        return `TIME literal '${raw}' has a part below a millisecond, which a TIME cannot hold; use an LTIME literal (LTIME#...)`;
+      }
+      return ns / 1000000n > U32_MAX
+        ? `TIME literal '${raw}' is outside the TIME range (T#0ms to T#49d17h2m47s295ms)`
+        : undefined;
+    }
+    case "DATE": {
+      const s = parseDateLiteralToDays(String(literal.value)) * 86400n;
+      return s < 0n || s > U32_MAX
+        ? `DATE literal '${raw}' is outside the DATE range (D#1970-01-01 to D#2106-02-07)`
+        : undefined;
+    }
+    case "DATE_AND_TIME": {
+      const ns = parseDtLiteralToNs(String(literal.value));
+      return ns < 0n || ns / 1000000000n > U32_MAX
+        ? `DT literal '${raw}' is outside the DT range (DT#1970-01-01-00:00:00 to DT#2106-02-07-06:28:15)`
+        : undefined;
+    }
+    case "TIME_OF_DAY":
+      return parseTodLiteralToNs(String(literal.value)) >= 86400000000000n
+        ? `TOD literal '${raw}' is outside the TOD range (TOD#00:00:00 to TOD#23:59:59.999)`
+        : undefined;
+    default:
+      return undefined;
+  }
+}
 
 export class SemanticAnalyzer {
   private symbolTables: SymbolTables;
@@ -2576,6 +2627,12 @@ export class SemanticAnalyzer {
       if (node.kind !== "LiteralExpression") return;
       const literal = node as LiteralExpression;
       if (this.literalsReported.has(literal)) return;
+      const refusal = temporal32LiteralRefusal(literal);
+      if (refusal !== undefined) {
+        const at = literal.sourceSpan;
+        this.addError(refusal, at.startLine, at.startCol, at.file);
+        return;
+      }
       if (literal.literalType !== "LTIME") return;
       const ns = exactTimeLiteralNanoseconds(literal.rawValue);
       if (ns >= -(2n ** 63n) && ns < 2n ** 63n) return;
@@ -4987,9 +5044,11 @@ export class SemanticAnalyzer {
     if (this.testTypeNames.has(upper)) return true;
     const sym = this.symbolTables.globalScope.lookup(upper);
     // An elementary type that is no global scope builtin (LTIME): a global
-    // variable may still bear its name, as before it was a type.
+    // variable, or the clock function LTIME(), may still bear its name.
     if (
-      (sym === undefined || sym.kind === "variable") &&
+      (sym === undefined ||
+        sym.kind === "variable" ||
+        sym.kind === "function") &&
       ELEMENTARY_TYPES[upper] !== undefined
     ) {
       return true;
@@ -6659,13 +6718,24 @@ export class SemanticAnalyzer {
       this.checkTestMemberAccess(testFile.teardown.body, setupScope);
     }
 
-    // STRING literals (assertion messages included) hold Windows-1252 characters
-    this.validateStringLiteralCharset([
+    const testRoots = [
       ...(testFile.setup?.varBlocks ?? []),
       ...(testFile.setup?.body ?? []),
       ...(testFile.teardown?.body ?? []),
       ...testFile.testCases.flatMap((tc) => [...tc.varBlocks, ...tc.body]),
-    ] as ASTNode[]);
+    ] as ASTNode[];
+    // STRING literals (assertion messages included) hold Windows-1252 characters
+    this.validateStringLiteralCharset(testRoots);
+    // TIME, DATE, TOD and DT literals fit their 32-bit types
+    for (const root of testRoots) {
+      walkAST(root, (node) => {
+        if (node.kind !== "LiteralExpression") return;
+        const refusal = temporal32LiteralRefusal(node as LiteralExpression);
+        if (refusal === undefined) return;
+        const at = node.sourceSpan;
+        this.addError(refusal, at.startLine, at.startCol, at.file);
+      });
+    }
 
     // Walk each TEST body with scope = SETUP vars + TEST-local vars
     for (const tc of testFile.testCases) {

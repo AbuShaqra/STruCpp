@@ -662,7 +662,7 @@ class TestFunctionGenerator {
   ): void {
     const durationExpr = this.testCodegen.emitExpression(stmt.duration);
     lines.push(
-      `${this.indent}strucpp::__CURRENT_TIME_NS += static_cast<int64_t>(${durationExpr});`,
+      `${this.indent}strucpp::__CURRENT_TIME_NS += strucpp::iec_duration_ns(${durationExpr});`,
     );
   }
 

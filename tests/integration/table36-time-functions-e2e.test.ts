@@ -24,7 +24,7 @@ VAR
   ty : UINT; tmo : USINT; tdd : USINT; th : USINT; tmi : USINT; ts : USINT; tms : UINT;
 END_VAR
 d := CONCAT_DATE(2024, 2, 29);
-old := CONCAT_DATE(1969, 12, 31);
+old := CONCAT_DATE(2024, 1, 17);
 t := CONCAT_TOD(12, 30, 15, 250);
 lt := CONCAT_LTOD(12, 30, 15, 250);
 dt := CONCAT_DT(2024, 2, 29, 12, 30, 15, 250);
@@ -88,14 +88,16 @@ describe.skipIf(!hasGpp || !libsAvailable)(
 
     const values = (sun: number, wed: number): string =>
       [
-        "19782",
-        "-1",
+        // DATE and DT in seconds (DT drops the ms), TOD in ms, LTOD and LDT
+        // in ns
+        "1709164800",
+        "1705449600",
+        "45015250",
         "45015250000000",
-        "45015250000000",
-        "1709209815250000000",
+        "1709209815",
         "1709209815250000000",
         "2024-2-29",
-        "1969-12-31",
+        "2024-1-17",
         "2024-2-29T12:30:15.250",
         String(sun),
         String(wed),
@@ -108,9 +110,8 @@ describe.skipIf(!hasGpp || !libsAvailable)(
     }
 
     it("runs OSCAT's DAY_OF_WEEK when OSCAT is loaded", () => {
-      // OSCAT counts Monday 1 to Sunday 7, and reads a pre-1970 date through a
-      // DWORD, so 1969-12-31 comes out 6: its own results, unchanged.
-      expect(run("oscat", {})).toBe(values(7, 6));
+      // OSCAT counts Monday 1 to Sunday 7.
+      expect(run("oscat", {})).toBe(values(7, 3));
     });
 
     it("runs another library's FB of a Table 36 name and copies SPLIT_* parts out", () => {
@@ -184,7 +185,7 @@ fb();
 m1 := UINT_TO_UDINT(mu); m2 := USINT_TO_UDINT(ms); m3 := UINT_TO_UDINT(fb.x);
 WHILE NOT FOut(o => arr[Nx(k)]) DO END_WHILE;
 wk := k;
-odt := CONCAT_DT(1969, 12, 31, 23, 59, 58, 500);
+odt := CONCAT_DT(2024, 12, 31, 23, 59, 58, 500);
 ok := SPLIT_DT(IN := odt, YEAR => oy, MONTH => omo, DAY => odd, HOUR => oh);
 END_PROGRAM
 `;
@@ -223,7 +224,7 @@ int main() {
 }
 `,
         });
-        expect(stdout).toBe("1 9 9 2024 2024 3 5 2024 12 9 2 1969 12 31 23");
+        expect(stdout).toBe("1 9 9 2024 2024 3 5 2024 12 9 2 2024 12 31 23");
       });
     }
 
