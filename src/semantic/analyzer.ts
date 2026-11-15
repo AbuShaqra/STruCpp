@@ -2003,7 +2003,7 @@ export class SemanticAnalyzer {
     this.validateExpressions(ast);
 
     // EN/ENO only on a call written as a statement or a whole right-hand side
-    this.validateEnEnoPlacement(ast);
+    this.validateEnEnoPlacement([ast]);
 
     // Validate array initializer shape/size and subscript counts
     this.validateArrayShapes(ast);
@@ -2030,9 +2030,14 @@ export class SemanticAnalyzer {
    * value) they are refused at the EN/ENO argument. A standard MAX, MIN,
    * LIMIT, comparison, SEL or MUX of CHAR or WCHAR keeps its nested EN/ENO.
    */
-  private validateEnEnoPlacement(ast: CompilationUnit): void {
+  private validateEnEnoPlacement(roots: readonly ASTNode[]): void {
     const wrapped = new Set<Expression>();
-    walkAST(ast, (node) => {
+    const visit = (visitor: (node: ASTNode) => void): void => {
+      for (const root of roots) walkAST(root, visitor);
+    };
+    // A TYPE's initial value is reached twice; one error per position
+    const reported = new Set<string>();
+    visit((node) => {
       if (node.kind === "FunctionCallStatement") {
         wrapped.add((node as FunctionCallStatement).call);
       } else if (node.kind === "AssignmentStatement") {
@@ -2045,7 +2050,7 @@ export class SemanticAnalyzer {
         }
       }
     });
-    walkAST(ast, (node) => {
+    visit((node) => {
       if (
         node.kind !== "FunctionCallExpression" &&
         node.kind !== "MethodCallExpression"
@@ -2063,6 +2068,9 @@ export class SemanticAnalyzer {
         return;
       }
       const at = arg.sourceSpan ?? arg.value.sourceSpan;
+      const key = `${at.file}:${at.startLine}:${at.startCol}`;
+      if (reported.has(key)) return;
+      reported.add(key);
       this.addError(
         "EN/ENO are only supported on a call written as a statement or as the whole right-hand side of an assignment",
         at.startLine,
@@ -7304,6 +7312,8 @@ export class SemanticAnalyzer {
     ] as ASTNode[];
     // STRING literals (assertion messages included) hold Windows-1252 characters
     this.validateStringLiteralCharset(testRoots);
+    // EN/ENO in SETUP, TEARDOWN and TEST bodies as in the sources
+    this.validateEnEnoPlacement(testRoots);
     // TIME, DATE, TOD and DT literals fit their 32-bit types
     for (const root of testRoots) {
       walkAST(root, (node) => {

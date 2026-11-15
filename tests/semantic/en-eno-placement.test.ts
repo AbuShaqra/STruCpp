@@ -13,6 +13,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { compile } from "../../src/index.js";
 import { discoverStlibs } from "../../src/node/library-loader.js";
+import { parseTestFile } from "../../src/testing/test-parser.js";
+import { analyzeTestFile } from "../../src/semantic/analyzer.js";
 
 type Options = Parameters<typeof compile>[1];
 const MODES: Array<[string, Options]> = [
@@ -231,5 +233,65 @@ END_PROGRAM
       { libraries },
     );
     expect(r.errors).toEqual([]);
+  });
+});
+
+describe("EN/ENO placement, other sites", () => {
+  it("reports a TYPE initial value once", () => {
+    const r = compile(
+      `${DECLS}TYPE T1 : INT := F(EN := TRUE, x := 1); END_TYPE
+PROGRAM Main
+VAR v : T1; END_VAR
+v := 1;
+END_PROGRAM
+`,
+    );
+    const line = DECLS.split("\n").length;
+    expect(r.errors.map((e) => `${e.line}:${e.column} ${e.message}`)).toEqual([
+      `${line}:20 ${MESSAGE}`,
+    ]);
+  });
+
+  const testErrors = (test: string): string[] => {
+    const src = compile(`${DECLS}PROGRAM Main\nEND_PROGRAM\n`);
+    expect(src.errors).toEqual([]);
+    const parsed = parseTestFile(test, "t.st");
+    expect(parsed.errors).toEqual([]);
+    return analyzeTestFile(
+      parsed.testFile!,
+      src.symbolTables!,
+      src.ast,
+    ).errors.map((e) => `${e.line}:${e.column} ${e.message}`);
+  };
+
+  it("is refused nested in a TEST, SETUP or TEARDOWN body", () => {
+    expect(
+      testErrors(`SETUP
+VAR q : INT; ok0 : BOOL; END_VAR
+q := 2 * F(EN := FALSE, x := 1, ENO => ok0);
+END_SETUP
+TEARDOWN
+q := G(F(EN := TRUE, x := 1));
+END_TEARDOWN
+TEST 'nested'
+VAR r : INT := 7; ok : BOOL := TRUE; END_VAR
+r := 1 + F(EN := FALSE, x := 1, ENO => ok);
+ASSERT_EQ(r, 7);
+END_TEST
+`),
+    ).toEqual([`3:12 ${MESSAGE}`, `6:10 ${MESSAGE}`, `10:12 ${MESSAGE}`]);
+  });
+
+  it("accepts the statement and whole right-hand side forms in a TEST", () => {
+    expect(
+      testErrors(`TEST 'whole'
+VAR r : INT := 7; ok : BOOL := TRUE; i : FB1; END_VAR
+r := F(EN := FALSE, x := 1, ENO => ok);
+F(EN := FALSE, x := 1, ENO => ok);
+r := i.M(EN := TRUE, x := 1, ENO => ok);
+ASSERT_EQ(r, 2);
+END_TEST
+`),
+    ).toEqual([]);
   });
 });
