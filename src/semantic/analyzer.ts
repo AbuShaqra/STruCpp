@@ -594,6 +594,19 @@ export class SemanticAnalyzer {
     this.validatePostfixEnumBases(ast);
     this.validateConfigurationGlobalsHoldNoFB(ast);
     this.validateDeclaredEno(ast);
+    // FB_exit is a vendor finalizer; no instance is ever torn down here, in any mode
+    for (const fb of ast.functionBlocks) {
+      for (const m of fb.methods) {
+        if (m.name.toUpperCase() !== "FB_EXIT") continue;
+        const at = m.nameSpan ?? m.sourceSpan;
+        this.addWarning(
+          `FB_exit of '${fb.name}' is never called: an instance is not torn down`,
+          at.startLine,
+          at.startCol,
+          at.file,
+        );
+      }
+    }
     if (this.features.has("fb_init")) {
       validateFbInitArguments(
         ast,
