@@ -36,14 +36,14 @@ VAR
 END_VAR
 END_SETUP
 
-TEST "increments on each call"
+TEST 'increments on each call'
     c(reset := FALSE);
     ASSERT_EQ(c.count, 1);
     c(reset := FALSE);
     ASSERT_EQ(c.count, 2);
 END_TEST
 
-TEST "reset clears count"
+TEST 'reset clears count'
     c(reset := FALSE);
     c(reset := FALSE);
     c(reset := TRUE);
@@ -82,7 +82,7 @@ SETUP runs before each test case, its variables starting from their declared ini
 ### TEST Blocks
 
 ```
-TEST "descriptive test name"
+TEST 'descriptive test name'
 VAR
     result : INT;
 END_VAR
@@ -131,7 +131,7 @@ A failed assertion stops the current test immediately (remaining statements are 
 For testing time-dependent logic (timers, delays):
 
 ```
-TEST "TON timer fires after preset"
+TEST 'TON timer fires after preset'
     timer(IN := TRUE, PT := T#100ms);
     ASSERT_FALSE(timer.Q);
 
@@ -151,7 +151,7 @@ END_TEST
 Skip a FB's execution while tracking that it was called:
 
 ```
-TEST "controller uses sensor"
+TEST 'controller uses sensor'
     MOCK mySensor;
 
     controller();
@@ -168,7 +168,7 @@ END_TEST
 Replace a function with a fixed return value:
 
 ```
-TEST "uses mocked Add"
+TEST 'uses mocked Add'
     MOCK_FUNCTION Add RETURNS 42;
 
     result := Add(1, 2);
@@ -193,7 +193,7 @@ The `--test` mode:
 2. Parses test files into a test AST (SETUP/TEARDOWN/TEST blocks, assertions, mocks)
 3. Validates test files against the source's symbol tables
 4. Generates a C++ test runner (`test_main.cpp`) with:
-   - A setup struct per test file (if SETUP exists)
+   - A setup struct per test file (if SETUP or TEARDOWN exists)
    - A test function per TEST block, which names itself as the running task (`TEST '<name>'`) so a
      run-time fault such as a division by zero reports the test that raised it
    - Test registration in `main()`
