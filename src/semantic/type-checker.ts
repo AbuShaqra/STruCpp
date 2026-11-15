@@ -2920,7 +2920,7 @@ export class TypeChecker {
         expr.arguments,
         scope,
       );
-      this.checkStrictConversionArgument(expr, scope);
+      if (this.strict) this.checkStrictConversionArgument(expr, scope);
     }
 
     const nameUpper = expr.functionName.toUpperCase();

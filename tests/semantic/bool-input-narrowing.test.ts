@@ -113,4 +113,23 @@ END_PROGRAM
       ),
     ).toEqual([]);
   });
+
+  it("checks a typed conversion's argument only under --strict", () => {
+    const source = `PROGRAM Main
+VAR i : INT := 5; u : UINT := 7; d : DWORD; t : TIME; END_VAR
+t := DWORD_TO_TIME(i);
+d := UINT_TO_DWORD(i);
+d := DWORD_TO_DWORD(u);
+END_PROGRAM
+`;
+    expect(compile(source).errors).toEqual([]);
+    expect(compile(source, { dialect: "iec-3" }).errors).toEqual([]);
+    expect(
+      compile(source, { strict: true }).errors.map((e) => e.message),
+    ).toEqual([
+      "Implicit conversion from INT to DWORD is not allowed; use INT_TO_DWORD",
+      "Implicit conversion from INT to UINT is not allowed; use INT_TO_UINT",
+      "Implicit conversion from UINT to DWORD is not allowed; use UINT_TO_DWORD",
+    ]);
+  });
 });
