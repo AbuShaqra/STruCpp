@@ -40,7 +40,7 @@ const MODES: Array<[string, Options]> = [
 ];
 
 describe("library FUNCTION REFERENCE TO inputs", () => {
-  it("records the reference kind of the input only", () => {
+  it("records the reference kind of the REFERENCE TO and POINTER TO inputs", () => {
     const fn = lib().manifest.functions.find((f) => f.name === "BUMP")!;
     expect(fn.parameters).toEqual([
       {
@@ -50,7 +50,12 @@ describe("library FUNCTION REFERENCE TO inputs", () => {
         referenceKind: "reference_to",
       },
       { name: "D", type: "INT", direction: "input" },
-      { name: "P", type: "INT", direction: "input" },
+      {
+        name: "P",
+        type: "INT",
+        direction: "input",
+        referenceKind: "pointer_to",
+      },
     ]);
   });
 

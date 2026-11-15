@@ -5,6 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 function body(stmts: string): string {
   const r = compile(
@@ -25,7 +26,7 @@ function body(stmts: string): string {
     { headerFileName: "generated.hpp" },
   );
   expect(r.errors).toEqual([]);
-  const m = /void Program_MAIN::run\(\) \{\n([\s\S]*?)\n\}/.exec(r.cppCode);
+  const m = /void Program_MAIN::run\(\) \{\n([\s\S]*?)\n\}/.exec(withoutSites(r.cppCode));
   return m?.[1] ?? "";
 }
 

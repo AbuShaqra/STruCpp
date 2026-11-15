@@ -40,12 +40,15 @@ describe("getIecTypeDoc", () => {
     expect(getIecTypeDoc("")).toBeNull();
   });
 
-  it("documents the temporal types as STruC++ implements them (int64)", () => {
-    // Regression guard: these are NOT 32-bit ms in STruC++ — all 64-bit.
-    for (const t of ["TIME", "LTIME", "TOD", "TIME_OF_DAY", "DATE_AND_TIME", "DT"]) {
-      expect(getIecTypeDoc(t), t).toContain("64 bits (nanoseconds)");
+  it("documents the temporal types as STruC++ implements them", () => {
+    // TIME, TOD, DATE and DT are 32-bit, as on the PLC; LTIME is 64-bit.
+    for (const t of ["TIME", "TOD", "TIME_OF_DAY"]) {
+      expect(getIecTypeDoc(t), t).toContain("32 bits (milliseconds)");
     }
-    expect(getIecTypeDoc("DATE")).toContain("64 bits (days)");
+    for (const t of ["DATE", "DATE_AND_TIME", "DT"]) {
+      expect(getIecTypeDoc(t), t).toContain("32 bits (seconds)");
+    }
+    expect(getIecTypeDoc("LTIME")).toContain("64 bits (nanoseconds)");
   });
 
   it("documents signed/unsigned integer widths correctly", () => {

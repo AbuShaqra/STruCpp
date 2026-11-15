@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Autonomy®
 /**
  * Table 26: DT_TO_DATE and DT_TO_TOD take the date or the time of day of a
- * date-and-time; Table 35: DATE - DATE is a TIME. A DATE holds days and a
- * duration nanoseconds, so codegen splits and scales. Before this, the
- * conversions copied the raw nanosecond count and DATE - DATE gave days.
+ * date-and-time; Table 35: DATE - DATE is a TIME. DATE and DT hold 32-bit
+ * seconds and TIME 32-bit ms, so codegen calls the runtime's split and
+ * temporal arithmetic.
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
@@ -34,28 +34,28 @@ describe("DT_TO_DATE, DT_TO_TOD and DATE arithmetic", () => {
           options,
         );
         expect(code).toContain(
-          "D = TO_DATE(DATE_OF_DT(IEC_DT(static_cast<int64_t>(DT1))));",
+          "D = TO_DATE(DATE_OF_DT(IEC_DT(static_cast<DT_t>(DT1))));",
         );
         expect(code).toContain(
-          "T = TO_TOD(TOD_OF_DT(IEC_DT(static_cast<int64_t>(DT1))));",
+          "T = TO_TOD(TOD_OF_DT(IEC_DT(static_cast<DT_t>(DT1))));",
         );
         expect(code).not.toContain("TO_DATE(DT1)");
         expect(code).not.toContain("TO_TOD(DT1)");
       });
 
-      it("gives DATE - DATE in nanoseconds and moves a DATE by whole days", () => {
+      it("gives DATE - DATE as a TIME and moves a DATE by whole days", () => {
         const code = cpp(
           "tm := d2 - d;\nd := d + T#1d;\nd := d - T#2d;",
           options,
         );
         expect(code).toContain(
-          "TM = ((static_cast<int64_t>(D2) - static_cast<int64_t>(D)) * 86400000000000LL);",
+          "TM = iec_temporal_sub(D2, D);",
         );
         expect(code).toContain(
-          "D = DATE_FROM_DAYS(static_cast<int64_t>(D) + iec_floor_div(static_cast<int64_t>(86400000000000LL), 86400000000000LL));",
+          "D = iec_temporal_add(D, TIME_t(86400000u));",
         );
         expect(code).toContain(
-          "D = DATE_FROM_DAYS(static_cast<int64_t>(D) + iec_floor_div(-static_cast<int64_t>(172800000000000LL), 86400000000000LL));",
+          "D = iec_temporal_sub(D, TIME_t(172800000u));",
         );
       });
 
@@ -76,13 +76,13 @@ END_PROGRAM
         );
         expect(r.errors).toEqual([]);
         expect(r.cppCode).toContain(
-          "TM = ((static_cast<int64_t>(M2) - static_cast<int64_t>(M1)) * 86400000000000LL);",
+          "TM = iec_temporal_sub(M2, M1);",
         );
         expect(r.cppCode).toContain(
-          "TO_DATE(DATE_OF_DT(IEC_DT(static_cast<int64_t>(M))))",
+          "TO_DATE(DATE_OF_DT(IEC_DT(static_cast<DT_t>(M))))",
         );
         expect(r.cppCode).toContain(
-          "TO_TOD(TOD_OF_DT(IEC_DT(static_cast<int64_t>(CONCAT_DATE_TOD(D, T)))))",
+          "TO_TOD(TOD_OF_DT(IEC_DT(static_cast<DT_t>(CONCAT_DATE_TOD(D, T)))))",
         );
       });
     });

@@ -10,9 +10,11 @@
  * Sub-Phase C: Validates type rules (assignment compatibility, conditions, FOR vars, function args).
  */
 
+import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import type {
   ASTNode,
   RefAssignStatement,
+  RefExpression,
   VarAccess,
   AssignmentStatement,
   Expression,
@@ -66,10 +68,12 @@ import {
   resolveAccessType,
   resolveArrayElementAccessType,
   resolveFieldDeclaration,
+  resolveArrayShapeByName,
   type AccessLookup,
   type AccessType,
 } from "./type-utils.js";
 import {
+  type GlobalItem,
   type GlobalOrder,
   orderConfigurationGlobals,
   orderGlobals,
@@ -79,6 +83,7 @@ import {
   addressFit,
   addressMisuse,
   addressSource,
+  isNarrowInteger,
   narrowAddressMessage,
 } from "./address-store.js";
 import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
@@ -100,6 +105,11 @@ import {
   fbInitInput,
   storedInstance,
 } from "./fb-init.js";
+import {
+  isUntypedIntegerConstant,
+  typeUntypedNot,
+  untypedNotTarget,
+} from "./untyped-not.js";
 
 // Re-export from type-utils for backward compatibility
 export { ELEMENTARY_TYPES, TYPE_CATEGORIES } from "./type-utils.js";
@@ -292,6 +302,52 @@ interface CallInput {
   name: string;
   type: AccessType;
   inOut: boolean;
+  /** Its place among all of the POU's VAR_INPUT, VAR_OUTPUT and VAR_IN_OUT, as a positional argument binds it. */
+  position?: number;
+  /** From a library manifest, which omits a REF_TO STRING / WSTRING target's length. */
+  lengthUnrecorded?: boolean;
+}
+
+/** The VAR_INPUT and VAR_IN_OUT of one POU's blocks, each with its positional place. */
+function callInputsOfBlocks(blocks: readonly VarBlock[]): CallInput[] {
+  const out: CallInput[] = [];
+  let position = 0;
+  for (const b of blocks) {
+    const parameter =
+      b.blockType === "VAR_INPUT" ||
+      b.blockType === "VAR_OUTPUT" ||
+      b.blockType === "VAR_IN_OUT";
+    if (!parameter) continue;
+    for (const d of b.declarations) {
+      for (const name of d.names) {
+        if (b.blockType !== "VAR_OUTPUT") {
+          out.push({
+            name,
+            type: d.type,
+            inOut: b.blockType === "VAR_IN_OUT",
+            position,
+          });
+        }
+        position++;
+      }
+    }
+  }
+  return out;
+}
+
+/** The input a call argument binds: by its name, or by its position. */
+function boundInput(
+  inputs: readonly CallInput[],
+  arg: Argument,
+  index: number,
+): CallInput | undefined {
+  const argName = arg.name?.toUpperCase();
+  if (argName !== undefined) {
+    return inputs.find((p) => p.name.toUpperCase() === argName);
+  }
+  return inputs.some((p) => p.position !== undefined)
+    ? inputs.find((p) => p.position === index)
+    : inputs[index];
 }
 
 /** `NULL` or `0`: the only initializers a pointer or reference keeps (it starts null anyway). */
@@ -301,6 +357,42 @@ function isNullInitializer(expr: Expression): boolean {
     (expr.literalType === "NULL" || expr.value === 0)
   );
 }
+
+/**
+ * Two plain STRINGs (or WSTRINGs) whose lengths are each a default, none
+ * written: 254, or the dialect's default (feature string_default_80).
+ */
+function defaultStringsOnly(a: AccessType, b: AccessType): boolean {
+  const plain = (t: AccessType): string | undefined => {
+    const upper = t.name.toUpperCase();
+    if (upper !== "STRING" && upper !== "WSTRING") return undefined;
+    if ((t.referenceKind ?? "none") !== "none") return undefined;
+    if (t.arrayDimensions !== undefined) return undefined;
+    const ref = t as { maxLength?: number | string; defaultLength?: true };
+    return ref.maxLength === undefined || ref.defaultLength === true
+      ? upper
+      : undefined;
+  };
+  const left = plain(a);
+  return left !== undefined && left === plain(b);
+}
+
+/** TIME, DATE, TOD and DT: the 32-bit date and time types. */
+const TEMPORAL32_NAMES: ReadonlySet<string> = new Set([
+  "TIME",
+  "DATE",
+  "TOD",
+  "DT",
+]);
+
+/** Every date and time type, 32-bit and long, by canonical name. */
+const TEMPORAL_ANY_NAMES: ReadonlySet<string> = new Set([
+  ...TEMPORAL32_NAMES,
+  "LTIME",
+  "LDATE",
+  "LTOD",
+  "LDT",
+]);
 
 /** `ADR(x)`. */
 function isAddressOf(expr: Expression): expr is FunctionCallExpression {
@@ -393,6 +485,34 @@ const TEMPORAL_STORAGE: Readonly<Record<string, string>> = {
   LDT: "dt",
 };
 
+/** Calls that take a variable's address or size, not its value. */
+const NOT_READING_CALLS: ReadonlySet<string> = new Set([
+  "ADR",
+  "REF",
+  "SIZEOF",
+  "XSIZEOF",
+]);
+
+/** Calls that take an address: an index into their operand is still evaluated. */
+const ADDRESS_CALLS: ReadonlySet<string> = new Set(["ADR", "REF"]);
+
+/** Calls whose first argument, an array of fixed bounds, is not read. */
+const BOUND_CALLS: ReadonlySet<string> = new Set([
+  "LOWER_BOUND",
+  "UPPER_BOUND",
+]);
+
+/** The index expressions of a variable access (`a[i].b[j]`: i and j). */
+function accessIndices(expr: VariableExpression): Expression[] {
+  if (expr.accessChain === undefined) return expr.subscripts;
+  return expr.accessChain.flatMap((s) =>
+    s.kind === "subscript" ? s.indices : [],
+  );
+}
+
+/** A call's parameters in declaration order, outputs marked. */
+type OutputParams = Array<{ name: string; type: AccessType; output: boolean }>;
+
 const COMPARISON_OPS: ReadonlySet<string> = new Set([
   "=",
   "<>",
@@ -446,6 +566,18 @@ function strictKind(name: string): StrictKind | undefined {
   if (/^U?(SINT|INT|DINT|LINT)$/.test(n)) return "int";
   if (STRICT_BIT_STRINGS.has(n)) return "bit";
   return undefined;
+}
+
+/** `to` is the Ed. 3 long form of `from` (TIME into LTIME and the like). */
+function isLongFormOf(to: string, from: string): boolean {
+  const f = canonicalElementaryName(from);
+  const t = canonicalElementaryName(to);
+  return (
+    (f === "TIME" && t === "LTIME") ||
+    (f === "DATE" && t === "LDATE") ||
+    (f === "DT" && t === "LDT") ||
+    (f === "TOD" && t === "LTOD")
+  );
 }
 
 function strictConversionMessage(from: string, to: string): string {
@@ -532,7 +664,14 @@ export class TypeChecker {
     for (const root of roots) {
       walkAST(root, (node) => {
         if (node.kind === "FunctionCallExpression") {
-          this.checkOutputBindings(node as FunctionCallExpression, scope);
+          const call = node as FunctionCallExpression;
+          // A built-in operator (XSIZEOF) is marked for codegen, as in a POU.
+          this.vendorOperatorCallType(
+            call,
+            call.functionName.toUpperCase(),
+            scope,
+          );
+          this.checkOutputBindings(call, scope);
         }
       });
     }
@@ -552,6 +691,8 @@ export class TypeChecker {
     this.errors = [];
     this.warnings = [];
     this.ast = ast;
+    // The initial values' types, as a POU's are checked
+    this.checkVarBlocks(varBlocks as VarBlock[], scope);
     for (const block of varBlocks) {
       for (const decl of block.declarations) {
         if (decl.initialValue === undefined) continue;
@@ -570,9 +711,7 @@ export class TypeChecker {
               0) === 0
           ) {
             this.checkAddressStore(
-              target !== undefined
-                ? typeNameUtil(target)
-                : this.accessedTypeName(stmt.target, scope),
+              this.storeTargetTypeName(stmt.target, target, scope),
               stmt.value,
             );
           }
@@ -713,7 +852,7 @@ export class TypeChecker {
       this.currentFBName = undefined;
     }
 
-    this.refuseMixedStringComparisonsInInitialValues(ast);
+    this.checkInitialValueOperators(ast);
 
     return {
       errors: this.errors,
@@ -722,18 +861,21 @@ export class TypeChecker {
   }
 
   /**
-   * A STRING/WSTRING comparison in an initial value the checks above do not
-   * type (a STRUCT field default, an array or structure initializer, a global's
-   * initial value) is refused as in a body. Operand types come from literals,
-   * declared variables and types already resolved; nothing is inferred anew.
+   * Operators in an initial value the checks above do not type (a STRUCT
+   * field default, an array or structure initializer, a global's initial
+   * value) are refused as in a body: a mixed STRING/WSTRING comparison and a
+   * negated TIME constant. Operand types come from literals, declared
+   * variables and types already resolved; nothing is inferred anew.
    */
-  private refuseMixedStringComparisonsInInitialValues(
-    ast: CompilationUnit,
-  ): void {
+  private checkInitialValueOperators(ast: CompilationUnit): void {
     const global = this.symbolTables.globalScope;
     const visit = (value: Expression | undefined, scope: Scope): void => {
       if (value === undefined) return;
       walkAST(value, (node) => {
+        if (node.kind === "UnaryExpression") {
+          this.refuseNegatedTimeConstant(node as UnaryExpression, scope);
+          return;
+        }
         if (node.kind !== "BinaryExpression") return;
         const expr = node as BinaryExpression;
         if (
@@ -785,6 +927,7 @@ export class TypeChecker {
       }
     }
     for (const type of ast.types) {
+      visit(type.defaultValue, global);
       if (type.definition.kind !== "StructDefinition") continue;
       for (const field of type.definition.fields) {
         visit(field.initialValue, global);
@@ -1273,6 +1416,11 @@ export class TypeChecker {
     // Declarations of a function block, with the block as the context of
     // its initializers, then every other declaration.
     const seen = new Set<VarDeclaration>();
+    const fields = new Set<VarDeclaration>(
+      ast.types.flatMap((t) =>
+        t.definition.kind === "StructDefinition" ? t.definition.fields : [],
+      ),
+    );
     const visit = (root: ASTNode, context: string | undefined): void =>
       walkAST(root, (node) => {
         if (node.kind !== "VarDeclaration") return;
@@ -1281,6 +1429,8 @@ export class TypeChecker {
         seen.add(decl);
         if (decl.initialValue) {
           this.checkInitializerElements(decl.type, decl.initialValue, context);
+          this.refuseLtimeTimeDefault(decl, fields.has(decl));
+          this.typeInitializerNots(decl.type, decl.initialValue);
         }
       });
     for (const fb of ast.functionBlocks) visit(fb, fb.name);
@@ -1289,7 +1439,58 @@ export class TypeChecker {
       if (t.defaultValue && t.definition.kind === "TypeReference") {
         this.checkCharInitialValue(t.name, t.defaultValue);
       }
+      if (t.defaultValue) {
+        this.typeInitializerNots(
+          { name: t.name, referenceKind: "none" },
+          t.defaultValue,
+        );
+      }
     }
+  }
+
+  /**
+   * An LTIME as the initial value of a TIME declared through an alias, or of
+   * a TIME STRUCT field, is refused as `x : TIME := LTIME#3ms` is (a plain
+   * TIME variable is refused by the elementary initial value check).
+   */
+  private refuseLtimeTimeDefault(
+    decl: VarDeclaration,
+    structField: boolean,
+  ): void {
+    const value = decl.initialValue;
+    const type = decl.type;
+    if (
+      value === undefined ||
+      (type.referenceKind ?? "none") !== "none" ||
+      type.referenceChain !== undefined ||
+      type.arrayDimensions !== undefined ||
+      this.reportedCharValues.has(value) ||
+      canonicalElementaryName(this.aliasBase(type.name)) !== "TIME" ||
+      (!structField && ELEMENTARY_TYPES[type.name.toUpperCase()] !== undefined)
+    ) {
+      return;
+    }
+    let inner = value;
+    while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
+    const valueType =
+      inner.kind === "LiteralExpression"
+        ? inner.literalType
+        : inner.resolvedType?.typeKind === "elementary"
+          ? this.aliasBase((inner.resolvedType as ElementaryType).name)
+          : undefined;
+    if (
+      valueType === undefined ||
+      canonicalElementaryName(valueType) !== "LTIME"
+    ) {
+      return;
+    }
+    this.reportedCharValues.add(value);
+    this.addError(
+      `Cannot assign LTIME to ${type.name.toUpperCase()}`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
   }
 
   /**
@@ -1918,6 +2119,14 @@ export class TypeChecker {
   ): IECType | undefined {
     let leftType = this.resolveExprType(expr.left, scope);
     let rightType = this.resolveExprType(expr.right, scope);
+    // `w = NOT 16#00F0`: the NOT takes the other operand's type
+    if (COMPARISON_OPS.has(expr.operator)) {
+      if (this.typeNotFromExpected(expr.left, rightType)) {
+        leftType = expr.left.resolvedType;
+      } else if (this.typeNotFromExpected(expr.right, leftType)) {
+        rightType = expr.right.resolvedType;
+      }
+    }
     delete expr.comparesReferences;
     if (
       (expr.operator === "=" || expr.operator === "<>") &&
@@ -1926,6 +2135,8 @@ export class TypeChecker {
     ) {
       expr.comparesReferences = true;
     }
+
+    if (this.refuseTemporalOperands(expr, scope)) return undefined;
 
     if (leftType === undefined || rightType === undefined) {
       // `p^ MOD i`: a dereference has no expression type here; its declared one decides
@@ -1968,8 +2179,50 @@ export class TypeChecker {
     }
     // Logical operators return BOOL
     else if (["AND", "OR", "XOR"].includes(expr.operator)) {
-      type =
-        this.bitwiseResultType(leftType, rightType) ?? ELEMENTARY_TYPES["BOOL"];
+      this.refuseIntegerBitwise(expr, leftType, rightType);
+      delete expr.computeAs;
+      // Untyped constants only: typed by context, as before (BOOL here)
+      // An untyped constant takes the type of the other operand when that is
+      // an integer or a bit string (BOOL included); otherwise as before
+      const ordinal = (t: IECType): boolean =>
+        this.isIntegerType(t) ||
+        (t.typeKind === "elementary" &&
+          (STRICT_BIT_STRINGS.has(this.aliasBase((t as ElementaryType).name)) ||
+            this.aliasBase((t as ElementaryType).name) === "BOOL"));
+      type = this.isUntypedBitConstant(expr)
+        ? ELEMENTARY_TYPES["BOOL"]
+        : this.isUntypedBitConstant(expr.left) && ordinal(rightType)
+          ? rightType
+          : this.isUntypedBitConstant(expr.right) && ordinal(leftType)
+            ? leftType
+            : (this.bitwiseResultType(leftType, rightType) ??
+              ELEMENTARY_TYPES["BOOL"]);
+      // Mixed signedness: C++ computes in the widened type, not by its promotion
+      const widened =
+        this.isIntegerType(leftType) && this.isIntegerType(rightType)
+          ? this.mixedSignCommonType(leftType, rightType)
+          : undefined;
+      if (widened !== undefined && type === widened) {
+        expr.computeAs = (widened as ElementaryType).name.toUpperCase();
+      }
+      const names = [leftType, rightType].map((t) =>
+        t.typeKind === "elementary"
+          ? this.aliasBase((t as ElementaryType).name)
+          : "",
+      );
+      if (
+        names.includes("LINT") &&
+        names.includes("ULINT") &&
+        !this.strict &&
+        !this.inOutErrors
+      ) {
+        this.addWarning(
+          `LINT and ULINT have no common integer type: ${expr.operator} of them is a LINT`,
+          expr.sourceSpan.startLine,
+          expr.sourceSpan.startCol,
+          expr.sourceSpan.file,
+        );
+      }
     }
     // IEC 61131-3 date/time arithmetic (table 30 of the standard).
     // Date types are int64_t aliases at the C++ level so the operator-
@@ -1987,6 +2240,10 @@ export class TypeChecker {
       isDateTimeArithmetic(leftType, rightType, expr.operator)
     ) {
       type = resolveDateTimeArithmetic(leftType, rightType, expr.operator);
+    }
+    // TOD or DT MOD a TIME: the time within that period, of the instant's type
+    else if (expr.operator === "MOD" && this.temporalPeriodMod(expr, scope)) {
+      type = leftType;
     }
     // Arithmetic operators return the "wider" type
     else if (["+", "-", "*", "/", "MOD", "**"].includes(expr.operator)) {
@@ -2084,8 +2341,116 @@ export class TypeChecker {
       const name = this.aliasBase((t as ElementaryType).name);
       return STRICT_BIT_STRINGS.has(name) ? [ELEMENTARY_TYPES[name]!] : [];
     });
-    if (bits.length === 0) return undefined;
-    return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
+    if (bits.length > 0) {
+      return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
+    }
+    // Two integers (a vendor extension): their common integer type; a signed
+    // and an unsigned one take the smallest signed type holding both (Figure 11)
+    if (this.isIntegerType(leftType) && this.isIntegerType(rightType)) {
+      return (
+        this.mixedSignCommonType(leftType, rightType) ??
+        getCommonType(leftType, rightType) ??
+        leftType
+      );
+    }
+    return undefined;
+  }
+
+  /**
+   * A signed and an unsigned integer: the smallest signed type wider than the
+   * unsigned one and at least as wide as the signed one (SINT and USINT give
+   * INT). LINT and ULINT have none: LINT. Undefined for the same signedness.
+   */
+  private mixedSignCommonType(a: IECType, b: IECType): IECType | undefined {
+    const name = (t: IECType): string =>
+      this.aliasBase((t as ElementaryType).name).toUpperCase();
+    const [an, bn] = [name(a), name(b)];
+    const aUnsigned = an.startsWith("U");
+    if (aUnsigned === bn.startsWith("U")) return undefined;
+    const bitsOf: Record<string, number> = {
+      SINT: 8,
+      INT: 16,
+      DINT: 32,
+      LINT: 64,
+    };
+    const [signedName, unsignedName] = aUnsigned ? [bn, an] : [an, bn];
+    const need = Math.max(
+      bitsOf[signedName]!,
+      bitsOf[unsignedName.slice(1)]! * 2,
+    );
+    const fit = ["SINT", "INT", "DINT", "LINT"].find((n) => bitsOf[n]! >= need);
+    return ELEMENTARY_TYPES[fit ?? "LINT"];
+  }
+
+  private isIntegerType(t: IECType): boolean {
+    return (
+      t.typeKind === "elementary" &&
+      /^U?(SINT|INT|DINT|LINT)$/.test(
+        this.aliasBase((t as ElementaryType).name),
+      )
+    );
+  }
+
+  /**
+   * IEC 61131-3 Ed. 3 Table 31 defines AND, OR and XOR on ANY_BIT only:
+   * under iec-3 and `--strict` an integer operand is refused (an untyped
+   * constant beside a bit string or BOOL adapts to it).
+   */
+  private refuseIntegerBitwise(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): void {
+    if (!this.strict && !this.inOutErrors) return;
+    for (const [operand, type] of [
+      [expr.left, leftType],
+      [expr.right, rightType],
+    ] as const) {
+      // An untyped constant adapts; only a typed integer operand is refused,
+      // and an inner AND/OR/XOR was refused at its own operand already
+      let inner: Expression = operand;
+      while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
+      if (
+        !this.isIntegerType(type) ||
+        this.isUntypedBitConstant(operand) ||
+        (inner.kind === "BinaryExpression" &&
+          ["AND", "OR", "XOR"].includes(inner.operator))
+      ) {
+        continue;
+      }
+      const base = this.aliasBase(typeNameUtil(type));
+      this.addError(
+        `${expr.operator} takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${base}; convert it with ${base}_TO_WORD or the like`,
+        operand.sourceSpan.startLine,
+        operand.sourceSpan.startCol,
+        operand.sourceSpan.file,
+      );
+      return;
+    }
+  }
+
+  /**
+   * An untyped integer constant, or AND/OR/XOR/NOT of such constants only
+   * (`16#F0 OR 16#0F`, `1 AND 0`): its type comes from where it is used.
+   */
+  private isUntypedBitConstant(expr: Expression): boolean {
+    if (this.untypedConstantKind(expr) === "INT") return true;
+    switch (expr.kind) {
+      case "ParenthesizedExpression":
+        return this.isUntypedBitConstant(expr.expression);
+      case "UnaryExpression":
+        return (
+          expr.operator === "NOT" && this.isUntypedBitConstant(expr.operand)
+        );
+      case "BinaryExpression":
+        return (
+          ["AND", "OR", "XOR"].includes(expr.operator) &&
+          this.isUntypedBitConstant(expr.left) &&
+          this.isUntypedBitConstant(expr.right)
+        );
+      default:
+        return false;
+    }
   }
 
   /** The elementary type a variable path names through `^`, fields and subscripts, if any. */
@@ -2215,6 +2580,269 @@ export class TypeChecker {
   }
 
   /**
+   * `-T#5s`, `-C` (C a TIME constant, through aliases) or `-(T#5s - T#1s)`:
+   * a negative TIME, refused as a negative TIME literal is. A value of 0 is
+   * accepted; `-t` of a TIME variable wraps.
+   */
+  private refuseNegatedTimeConstant(expr: UnaryExpression, scope: Scope): void {
+    if (expr.operator !== "-" || this.reportedCharValues.has(expr)) return;
+    let operand: Expression = expr.operand;
+    while (operand.kind === "ParenthesizedExpression") {
+      operand = operand.expression;
+    }
+    const value = this.constantTimeNs(operand, scope);
+    const constant = this.timeConstantDeclaration(operand, scope) !== undefined;
+    if (value === undefined ? !constant : value <= 0n) return;
+    const shown =
+      operand.kind === "LiteralExpression"
+        ? `TIME literal '-${operand.rawValue}'`
+        : operand.kind === "VariableExpression"
+          ? `TIME value '-${operand.name}'`
+          : "The negated TIME expression";
+    this.reportedCharValues.add(expr);
+    this.addError(
+      `${shown} is negative; a TIME holds T#0ms to T#49d17h2m47s295ms (an LTIME can be negative)`,
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
+  }
+
+  /**
+   * The value in ns of a constant TIME expression: a TIME literal, a TIME
+   * constant with such an initial value, and their sums, differences and
+   * negations. Undefined when not known here.
+   */
+  private constantTimeNs(
+    e: Expression,
+    scope: Scope,
+    depth = 0,
+  ): bigint | undefined {
+    if (depth > 16) return undefined;
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    switch (e.kind) {
+      case "LiteralExpression":
+        return e.literalType === "TIME"
+          ? exactTimeLiteralNanoseconds(e.rawValue)
+          : undefined;
+      case "UnaryExpression": {
+        if (e.operator !== "-") return undefined;
+        const v = this.constantTimeNs(e.operand, scope, depth + 1);
+        return v === undefined ? undefined : -v;
+      }
+      case "BinaryExpression": {
+        if (e.operator !== "+" && e.operator !== "-") return undefined;
+        const l = this.constantTimeNs(e.left, scope, depth + 1);
+        const r = this.constantTimeNs(e.right, scope, depth + 1);
+        if (l === undefined || r === undefined) return undefined;
+        return e.operator === "+" ? l + r : l - r;
+      }
+      case "VariableExpression": {
+        const init = this.timeConstantDeclaration(e, scope)?.initialValue;
+        return init === undefined
+          ? undefined
+          : this.constantTimeNs(init, scope, depth + 1);
+      }
+      default:
+        return undefined;
+    }
+  }
+
+  /** The declaration `e` names when it is a TIME constant (through aliases). */
+  private timeConstantDeclaration(
+    e: Expression,
+    scope: Scope,
+  ): VarDeclaration | undefined {
+    if (
+      e.kind !== "VariableExpression" ||
+      e.fieldAccess.length !== 0 ||
+      e.subscripts.length !== 0 ||
+      e.isDereference
+    ) {
+      return undefined;
+    }
+    const sym = scope.lookup(e.name);
+    if (sym?.kind !== "constant") return undefined;
+    const type = sym.declaration.type;
+    if (
+      (type.referenceKind ?? "none") !== "none" ||
+      type.arrayDimensions !== undefined
+    ) {
+      return undefined;
+    }
+    return canonicalElementaryName(this.aliasBase(type.name)) === "TIME"
+      ? sym.declaration
+      : undefined;
+  }
+
+  /**
+   * The canonical elementary type of an operand, through aliases,
+   * parentheses, an implicit REFERENCE TO, `p^` of a POINTER TO or REF_TO
+   * variable, and a standard SEL, MUX, LIMIT, MAX or MIN whose selected
+   * operands share one type. Undefined when not known here.
+   */
+  private operandElementaryName(
+    e: Expression,
+    scope: Scope,
+    depth = 0,
+  ): string | undefined {
+    if (depth > 16) return undefined;
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    let t = e.resolvedType;
+    if (t?.typeKind === "reference" && (t as ReferenceType).isImplicitDeref) {
+      t = (t as ReferenceType).referencedType;
+    }
+    if (t !== undefined) {
+      return t.typeKind === "elementary"
+        ? canonicalElementaryName(this.aliasBase((t as ElementaryType).name))
+        : undefined;
+    }
+    if (e.kind === "FunctionCallExpression") {
+      const name = e.functionName.toUpperCase();
+      const skip = CHAR_COMPARE_FUNCTIONS.get(name);
+      if (
+        skip === undefined ||
+        !CHAR_SELECTION_FUNCTIONS.has(name) ||
+        e.instance !== undefined ||
+        this.findUserFunction(name) ||
+        this.ownMethod(name)
+      ) {
+        return undefined;
+      }
+      const kinds = stripEnEno([...e.arguments])
+        .slice(skip)
+        .map((a) => this.operandElementaryName(a.value, scope, depth + 1));
+      return kinds.length > 0 && kinds.every((k) => k === kinds[0])
+        ? kinds[0]
+        : undefined;
+    }
+    if (
+      e.kind !== "VariableExpression" ||
+      !e.isDereference ||
+      e.fieldAccess.length !== 0 ||
+      e.subscripts.length !== 0 ||
+      (e.accessChain !== undefined &&
+        (e.accessChain.length !== 1 ||
+          e.accessChain[0]!.kind !== "dereference"))
+    ) {
+      return undefined;
+    }
+    const sym = scope.lookup(e.name);
+    if (sym?.kind !== "variable" && sym?.kind !== "constant") return undefined;
+    const type = sym.declaration.type;
+    if (
+      (type.referenceKind !== "pointer_to" &&
+        type.referenceKind !== "ref_to") ||
+      (type.referenceChain?.length ?? 1) !== 1 ||
+      type.arrayDimensions !== undefined
+    ) {
+      return undefined;
+    }
+    return canonicalElementaryName(this.aliasBase(type.name));
+  }
+
+  /** `tod MOD T#1h`, `dt MOD t`: a TOD or DT MOD a TIME. */
+  private temporalPeriodMod(expr: BinaryExpression, scope: Scope): boolean {
+    const l = this.operandElementaryName(expr.left, scope);
+    return (
+      (l === "TOD" || l === "DT") &&
+      this.operandElementaryName(expr.right, scope) === "TIME"
+    );
+  }
+
+  /** Binary expressions refused by refuseTemporalOperands. */
+  private refusedTemporalOperands = new WeakSet<BinaryExpression>();
+
+  /**
+   * `*`, `**`, `/` and MOD with a TIME, DATE, TOD or DT operand that mean
+   * nothing: a product of two dates or times, any power, and `/` or MOD of a
+   * number by one or of two different kinds. Kept: the same kind, TIME with
+   * LTIME, and TOD or DT MOD a TIME. True when refused.
+   */
+  private refuseTemporalOperands(
+    expr: BinaryExpression,
+    scope: Scope,
+  ): boolean {
+    const op = expr.operator;
+    if (op !== "*" && op !== "**" && op !== "/" && op !== "MOD") return false;
+    if (this.refusedTemporalOperands.has(expr)) return true;
+    const l = this.operandElementaryName(expr.left, scope);
+    const r = this.operandElementaryName(expr.right, scope);
+    const is32 = (k: string | undefined): boolean =>
+      k !== undefined && TEMPORAL32_NAMES.has(k);
+    if (!is32(l) && !is32(r)) return false;
+    const lt = l !== undefined && TEMPORAL_ANY_NAMES.has(l);
+    const rt = r !== undefined && TEMPORAL_ANY_NAMES.has(r);
+    const duration = (k: string | undefined): boolean =>
+      k === "TIME" || k === "LTIME";
+    let message: string | undefined;
+    if (op === "**") {
+      message = `Operator '**' does not apply to ${is32(l) ? l! : r!}`;
+    } else if (op === "*") {
+      if (lt && rt) {
+        message = `Operator '*' does not apply to ${l} and ${r}; multiply a duration by a number`;
+      }
+    } else if (
+      lt
+        ? rt &&
+          l !== r &&
+          !(duration(l) && duration(r)) &&
+          !(op === "MOD" && (l === "TOD" || l === "DT") && r === "TIME")
+        : l !== undefined
+    ) {
+      message = `Operator '${op}' does not apply to ${l!} and ${r!}`;
+    }
+    if (message === undefined) return false;
+    this.refusedTemporalOperands.add(expr);
+    this.addError(
+      message,
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /**
+   * DIV_TIME and MUL_TIME take a duration and a number: a date or time as the
+   * second argument is refused, as `/` and `*` refuse it (DIV_TIME of two
+   * values of the same type is their quotient, as `/`).
+   */
+  private refuseTemporalTimeFunction(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): boolean {
+    const name = expr.functionName.toUpperCase();
+    if (
+      (name !== "DIV_TIME" && name !== "MUL_TIME") ||
+      expr.instance !== undefined ||
+      this.findUserFunction(name) ||
+      this.ownMethod(name)
+    ) {
+      return false;
+    }
+    const args = stripEnEno([...expr.arguments]);
+    if (args.length !== 2) return false;
+    const a = this.operandElementaryName(args[0]!.value, scope);
+    const b = this.operandElementaryName(args[1]!.value, scope);
+    if (
+      b === undefined ||
+      !TEMPORAL_ANY_NAMES.has(b) ||
+      (!TEMPORAL32_NAMES.has(b) && !TEMPORAL32_NAMES.has(a ?? "")) ||
+      (name === "DIV_TIME" && a === b)
+    ) {
+      return false;
+    }
+    this.addError(
+      `${name} takes a duration and a number: got ${a ?? "an operand"} and ${b}`,
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /**
    * Infer type of a unary expression.
    */
   private inferUnaryType(
@@ -2237,10 +2865,26 @@ export class TypeChecker {
       return undefined;
     }
 
+    if (expr.operator === "-") this.refuseNegatedTimeConstant(expr, scope);
+
     let type: IECType | undefined;
     if (expr.operator === "NOT") {
       // NOT preserves the operand type for bit types (NOT BYTE returns BYTE)
       type = operandType;
+      // Table 31: NOT on a typed integer is refused under iec-3 and --strict
+      if (
+        (this.strict || this.inOutErrors) &&
+        this.isIntegerType(operandType) &&
+        !isUntypedIntegerConstant(expr.operand)
+      ) {
+        const base = this.aliasBase(typeNameUtil(operandType));
+        this.addError(
+          `NOT takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${base}; convert it with ${base}_TO_WORD or the like`,
+          expr.operand.sourceSpan.startLine,
+          expr.operand.sourceSpan.startCol,
+          expr.operand.sourceSpan.file,
+        );
+      }
     } else {
       // Unary + and - preserve the operand type
       type = operandType;
@@ -2259,6 +2903,7 @@ export class TypeChecker {
     scope: Scope,
   ): IECType | undefined {
     const type = this.inferCallType(expr, scope);
+    if (this.refuseTemporalTimeFunction(expr, scope)) return undefined;
     const charType = this.charSelectionType(expr);
     if (charType === undefined) return type;
     expr.resolvedType = ELEMENTARY_TYPES[charType]!;
@@ -2302,13 +2947,14 @@ export class TypeChecker {
       this.isFBInstanceCall(expr, scope),
       expr,
     );
-    if (this.strict) {
+    {
       this.checkStrictArguments(
         this.callInputs(expr, scope) ??
           this.dottedMethodInputs(expr.functionName, scope),
         expr.arguments,
         scope,
       );
+      if (this.strict) this.checkStrictConversionArgument(expr, scope);
     }
 
     const nameUpper = expr.functionName.toUpperCase();
@@ -2496,6 +3142,14 @@ export class TypeChecker {
       const owner = this.memberChainOwner(expr.object, scope);
       const method = this.checkMemberChainCall(expr, expr.object, owner);
       const chainInputs = this.methodInputsOf(owner?.name, expr.methodName);
+      if (owner?.name !== undefined) {
+        this.bindOutputs(
+          this.methodParametersOf(owner.name, expr.methodName),
+          expr.arguments,
+          scope,
+        );
+      }
+      this.checkMemberFbOutputBindings(expr, owner?.name, scope);
       this.adaptCharArguments(chainInputs, expr.arguments);
       this.validateInterfaceArguments(chainInputs, expr.arguments);
       this.validateStructArguments(chainInputs, expr.arguments);
@@ -2508,7 +3162,7 @@ export class TypeChecker {
         false,
         expr,
       );
-      if (this.strict) {
+      {
         this.checkStrictArguments(
           this.methodInputsOf(owner?.name, expr.methodName),
           expr.arguments,
@@ -2521,6 +3175,14 @@ export class TypeChecker {
     }
 
     const methodInputs = this.methodInputs(objType, expr, scope);
+    this.checkMethodOutputBindings(expr, objType, scope);
+    if (objType?.typeKind === "elementary") {
+      this.checkMemberFbOutputBindings(
+        expr,
+        (objType as ElementaryType).name,
+        scope,
+      );
+    }
     this.adaptCharArguments(
       methodInputs ??
         (objType?.typeKind === "elementary"
@@ -2542,7 +3204,7 @@ export class TypeChecker {
       false,
       expr,
     );
-    if (this.strict) {
+    {
       this.checkStrictArguments(
         this.methodInputs(objType, expr, scope),
         expr.arguments,
@@ -3293,6 +3955,10 @@ export class TypeChecker {
             if (call.vendorOperator !== undefined) hasOperator = true;
           });
           const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
+          // NOT of an untyped constant takes the global's bit string type
+          if (decl.type.arrayDimensions === undefined) {
+            typeUntypedNot(value, this.aliasBase(decl.type.name).toUpperCase());
+          }
           // Any expression holding an operator, `(XSIZEOF(g))` or `XSIZEOF(g) + 1` too.
           const valueType =
             hasOperator &&
@@ -3508,12 +4174,138 @@ export class TypeChecker {
    * initial values that depend on each other cannot be created.
    */
   private checkGlobalInitialCycles(ast: CompilationUnit): void {
-    for (const ordered of [
-      orderGlobals(ast),
-      ...ast.configurations.map(orderConfigurationGlobals),
+    const topLevel = orderGlobals(ast);
+    for (const [ordered, outer] of [
+      [topLevel, []] as const,
+      // A CONFIGURATION global also sees the top-level globals
+      ...ast.configurations.map(
+        (c) => [orderConfigurationGlobals(c), topLevel.order] as const,
+      ),
     ]) {
       this.reportGlobalInitialCycles(ordered);
+      if (this.strict || this.inOutErrors) {
+        this.refuseDependentGlobalInitials(ordered, outer);
+      }
     }
+  }
+
+  /**
+   * Under iec-3 and `--strict`: an initial value is a constant expression, so
+   * a global's initial value reading another global that is no CONSTANT (as a
+   * value; ADR() of it is an address) is refused. No dialect flag keeps the
+   * automatic creation order.
+   */
+  private refuseDependentGlobalInitials(
+    { order }: GlobalOrder,
+    outer: readonly GlobalItem[],
+  ): void {
+    const own = new Set(order.map((i) => i.name.toUpperCase()));
+    // The scope's own globals hide outer ones of the same name
+    const visible = [
+      ...order,
+      ...outer.filter((i) => !own.has(i.name.toUpperCase())),
+    ];
+    const constant = new Set(
+      visible
+        .filter((i) => i.block.isConstant === true)
+        .map((i) => i.name.toUpperCase()),
+    );
+    const known = new Set(visible.map((i) => i.name.toUpperCase()));
+    const declared = new Map(
+      visible.map((i) => [i.name.toUpperCase(), i.decl.type] as const),
+    );
+    for (const item of order) {
+      const value = item.decl.initialValue;
+      if (value === undefined || item.decl.names[0] !== item.name) continue;
+      const reported = new Set<string>();
+      const visit = (node: ASTNode): boolean | void => {
+        // ADR(g) and REF(g) take an address, SIZEOF(g) a size: none reads g
+        if (node.kind === "RefExpression") {
+          this.walkOperandIndices((node as RefExpression).operand, visit);
+          return false;
+        }
+        if (node.kind === "FunctionCallExpression") {
+          const call = node as FunctionCallExpression;
+          const upper = call.functionName.toUpperCase();
+          if (NOT_READING_CALLS.has(upper)) {
+            if (ADDRESS_CALLS.has(upper)) {
+              for (const a of call.arguments) {
+                this.walkOperandIndices(a.value, visit);
+              }
+            }
+            return false;
+          }
+          // UPPER_BOUND(arr, n) of a fixed array: a constant, arr is not read
+          const [arr, ...rest] = stripEnEno([...call.arguments]);
+          if (
+            BOUND_CALLS.has(upper) &&
+            !call.instance &&
+            arr?.value.kind === "VariableExpression" &&
+            this.hasFixedGlobalBounds(arr.value, declared)
+          ) {
+            this.walkOperandIndices(arr.value, visit);
+            for (const a of rest) walkAST(a.value, visit);
+            return false;
+          }
+        }
+        if (node.kind !== "VariableExpression") return;
+        const v = node as VariableExpression;
+        const upper = v.name.toUpperCase();
+        if (!known.has(upper) || constant.has(upper) || reported.has(upper)) {
+          return;
+        }
+        reported.add(upper);
+        this.addError(
+          `The initial value of global '${item.name}' reads global '${v.name}', which is no CONSTANT: an initial value is a constant expression`,
+          v.sourceSpan.startLine,
+          v.sourceSpan.startCol,
+          v.sourceSpan.file,
+        );
+      };
+      walkAST(value, visit);
+    }
+  }
+
+  /** Walk the index expressions of an address operand, which are evaluated. */
+  private walkOperandIndices(
+    operand: Expression,
+    visit: (node: ASTNode) => boolean | void,
+  ): void {
+    if (operand.kind !== "VariableExpression") return;
+    for (const index of accessIndices(operand)) {
+      walkAST(index, visit);
+    }
+  }
+
+  /**
+   * `expr` reaches, with no dereference, an array of fixed bounds through a
+   * global of `declared` (upper-case names): its bounds are constants.
+   */
+  private hasFixedGlobalBounds(
+    expr: VariableExpression,
+    declared: ReadonlyMap<string, TypeReference>,
+  ): boolean {
+    const base = declared.get(expr.name.toUpperCase());
+    if (
+      base === undefined ||
+      expr.isDereference ||
+      expr.accessChain?.some((s) => s.kind === "dereference") === true
+    ) {
+      return false;
+    }
+    const type = this.hasMemberAccess(expr)
+      ? resolveAccessType(base, expr, this.accessLookup)
+      : base;
+    if (type === undefined || (type.referenceKind ?? "none") !== "none") {
+      return false;
+    }
+    if (type.arrayDimensions !== undefined) {
+      return type.arrayDimensions.length > 0;
+    }
+    const shape = this.ast
+      ? resolveArrayShapeByName(type.name, this.ast)
+      : undefined;
+    return shape !== undefined && shape.dims.every((d) => d !== null);
   }
 
   /** Report each cycle of `ordered`, at its first global. */
@@ -3930,11 +4722,12 @@ export class TypeChecker {
     }
   }
 
-  /** A user FUNCTION named ADR, which a call of ADR reaches. */
+  /** A user FUNCTION named ADR, which a call of ADR reaches; a library's ADR is the operator. */
   private userAddressFunction(): boolean {
     return (
       this.findUserFunction("ADR") !== undefined ||
-      this.symbolTables.lookupFunction("ADR") !== undefined
+      (this.symbolTables.lookupFunction("ADR") !== undefined &&
+        !this.symbolTables.globalScope.definedByLibrary("ADR"))
     );
   }
 
@@ -3954,9 +4747,11 @@ export class TypeChecker {
     value: Expression,
   ): boolean {
     if (typeName === undefined) return false;
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
     // `ADR(x) * 2` into an integer: no address, no offset of one.
     if (
-      addressMisuse(value) &&
+      addressMisuse(value, user) &&
       addressFit(typeName, this.ast?.types ?? []) !== undefined &&
       !this.userAddressFunction()
     ) {
@@ -3968,8 +4763,8 @@ export class TypeChecker {
       );
       return true;
     }
-    const source = addressSource(value);
-    if (source === undefined) return false;
+    const source = addressSource(value, user);
+    if (source === undefined) return this.checkXwordStore(typeName, value);
     // A user FUNCTION named ADR is called, not the operator.
     if (source.op === "ADR" && this.userAddressFunction()) return false;
     const fit = addressFit(typeName, this.ast?.types ?? []);
@@ -3991,7 +4786,13 @@ export class TypeChecker {
       return fit !== undefined;
     }
     if (fit === undefined) return false;
-    if (fit === "wide") return true;
+    if (fit === "wide") {
+      // An alias or subrange is a plain integer in C++, and a REF no pointer.
+      if (source.op === "REF" || addressFit(typeName, []) !== "wide") {
+        value.addressInto = typeName;
+      }
+      return true;
+    }
     if (this.addressStoresReported.has(key)) return true;
     this.addressStoresReported.add(key);
     this.addError(
@@ -4003,11 +4804,160 @@ export class TypeChecker {
     return true;
   }
 
-  /** The declared type a variable access reaches (`pu^`, `s.pu^`), when it is no reference. */
-  private accessedTypeName(
+  /**
+   * An `__XWORD` value (a PVOID, an XWORD), which holds an address, stored
+   * into an integer narrower than 64 bits: refused as an ADR is.
+   */
+  private checkXwordStore(typeName: string, value: Expression): boolean {
+    const valueType = value.resolvedType;
+    if (
+      valueType === undefined ||
+      typeNameUtil(valueType).toUpperCase() !== "__XWORD" ||
+      this.isAddressDifference(value)
+    ) {
+      return false;
+    }
+    const fit = addressFit(typeName, this.ast?.types ?? []);
+    if (typeof fit !== "object" || !isNarrowInteger(fit.narrow)) return false;
+    const span = value.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+    if (!this.addressStoresReported.has(key)) {
+      this.addressStoresReported.add(key);
+      this.addError(
+        narrowAddressMessage("__XWORD", fit.narrow),
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    }
+    return true;
+  }
+
+  /** `a - b` of two addresses (ADR, REF or __XWORD values): an offset, no address. */
+  private isAddressDifference(value: Expression): boolean {
+    let v = value;
+    while (v.kind === "ParenthesizedExpression") v = v.expression;
+    if (v.kind !== "BinaryExpression" || v.operator !== "-") return false;
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    const isAddress = (e: Expression): boolean =>
+      addressSource(e, user) !== undefined ||
+      (e.resolvedType !== undefined &&
+        typeNameUtil(e.resolvedType).toUpperCase() === "__XWORD");
+    return isAddress(v.left) && isAddress(v.right);
+  }
+
+  /**
+   * An address as a CASE selector (`CASE ADR(x) OF`), refused once per
+   * position; the feature gate and the operand check come first, as for a
+   * store (checkAddressStore). True when refused.
+   */
+  private refuseAddressSelector(selector: Expression): boolean {
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    const source = addressSource(selector, user);
+    if (source === undefined && !addressMisuse(selector, user)) return false;
+    if (this.userAddressFunction()) return false;
+    if (source?.op === "ADR" && !this.features.has("pointer_to")) return true;
+    if (source !== undefined && source.operand?.kind !== "VariableExpression") {
+      return true;
+    }
+    const span = selector.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+    if (!this.addressStoresReported.has(key)) {
+      this.addressStoresReported.add(key);
+      this.addError(
+        "A CASE selector cannot be an address",
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    }
+    return true;
+  }
+
+  /** The type name an assignment stores into: resolved, the result, a variable access or a property. */
+  private storeTargetTypeName(
     target: Expression,
+    resolved: IECType | undefined,
     scope: Scope,
   ): string | undefined {
+    const declared = this.storeTargetDeclaredType(target, scope);
+    // A POINTER TO, REF_TO or REFERENCE TO takes an address whole.
+    if (
+      (declared?.referenceKind ?? "none") !== "none" ||
+      resolved?.typeKind === "reference"
+    ) {
+      return undefined;
+    }
+    return resolved !== undefined ? typeNameUtil(resolved) : declared?.name;
+  }
+
+  /**
+   * The declared type, references included, that a store reaches: the
+   * FUNCTION or METHOD result, a variable access (`p`, `s.f`, `pu^`) or a
+   * PROPERTY.
+   */
+  private storeTargetDeclaredType(
+    target: Expression,
+    scope: Scope,
+  ): Pick<TypeReference, "name" | "referenceKind"> | undefined {
+    return (
+      this.resultTargetType(target) ??
+      this.accessedType(target, scope) ??
+      this.propertyTargetType(target, scope)
+    );
+  }
+
+  /** The type of a PROPERTY set by `fb.Pr :=`, `itf.Pr :=` or `THIS^.Pr :=`. */
+  private propertyTargetType(
+    target: Expression,
+    scope: Scope,
+  ): TypeReference | undefined {
+    if (
+      target.kind !== "VariableExpression" ||
+      target.fieldAccess.length !== 1 ||
+      target.subscripts.length > 0 ||
+      (target.accessChain ?? []).some((st) => st.kind !== "field") ||
+      !this.ast
+    ) {
+      return undefined;
+    }
+    const sym = scope.lookup(target.name);
+    const owner =
+      target.name.toUpperCase() === "THIS"
+        ? this.currentFBName
+        : sym?.kind === "variable"
+          ? (sym.declaration as VarDeclaration | undefined)?.type.name
+          : undefined;
+    const prop = target.fieldAccess[0]!.toUpperCase();
+    const pending = owner !== undefined ? [owner.toUpperCase()] : [];
+    const seen = new Set<string>();
+    while (pending.length > 0) {
+      const name = pending.shift()!;
+      if (seen.has(name) || seen.size > 64) continue;
+      seen.add(name);
+      const fb = this.ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name,
+      );
+      const itf = this.ast.interfaces.find(
+        (i) => i.name.toUpperCase() === name,
+      );
+      const found = (fb?.properties ?? itf?.properties ?? []).find(
+        (p) => p.name.toUpperCase() === prop,
+      );
+      if (found) return found.type;
+      if (fb?.extends !== undefined) pending.push(fb.extends.toUpperCase());
+      for (const base of itf?.extends ?? []) pending.push(base.toUpperCase());
+    }
+    return undefined;
+  }
+
+  /** The declared type a variable access reaches (`p`, `pu^`, `s.pu^`). */
+  private accessedType(
+    target: Expression,
+    scope: Scope,
+  ): Pick<TypeReference, "name" | "referenceKind"> | undefined {
     if (target.kind !== "VariableExpression") return undefined;
     const sym = scope.lookup(target.name);
     const declared =
@@ -4015,10 +4965,7 @@ export class TypeChecker {
         ? (sym.declaration as VarDeclaration | undefined)?.type
         : undefined;
     if (declared === undefined) return undefined;
-    const reached = resolveAccessType(declared, target, this.accessLookup);
-    return reached !== undefined && (reached.referenceKind ?? "none") === "none"
-      ? reached.name
-      : undefined;
+    return resolveAccessType(declared, target, this.accessLookup);
   }
 
   /** `p^`, `s.p^`, `p^.x`: a store that reaches through a dereference. */
@@ -4030,14 +4977,15 @@ export class TypeChecker {
     );
   }
 
-  /** The declared result type name when `target` is the bare FUNCTION or METHOD result. */
-  private resultTargetType(target: Expression): string | undefined {
+  /** The declared result type when `target` is the bare FUNCTION or METHOD result. */
+  private resultTargetType(target: Expression): TypeReference | undefined {
     return this.currentReturn !== undefined &&
       target.kind === "VariableExpression" &&
       target.fieldAccess.length === 0 &&
       target.subscripts.length === 0 &&
+      !target.isDereference &&
       target.name.toUpperCase() === this.currentReturn.name.toUpperCase()
-      ? this.currentReturn.type.name
+      ? this.currentReturn.type
       : undefined;
   }
 
@@ -4132,9 +5080,13 @@ export class TypeChecker {
     scope: Scope,
   ): void {
     const args = stripEnEno(expr.arguments);
+    const method = this.dottedMethod(expr.functionName, scope);
+    const methodParams = method ? this.methodParameters(method) : undefined;
     const inputs =
       this.callInputs(expr, scope) ??
-      this.dottedMethodInputs(expr.functionName, scope);
+      this.dottedMethodInputs(expr.functionName, scope) ??
+      methodParams?.filter((p) => !p.output) ??
+      this.libraryShapedFunctionInputs(expr, scope);
     if (inputs) {
       let positional = 0;
       for (const arg of args) {
@@ -4144,7 +5096,8 @@ export class TypeChecker {
           argName === undefined
             ? inputs[positional++]
             : inputs.find((p) => p.name.toUpperCase() === argName);
-        if (input === undefined) continue;
+        // A VAR_IN_OUT binds, it stores nothing (the binding check refuses an ADR).
+        if (input === undefined || input.inOut) continue;
         if ((input.type.referenceKind ?? "none") !== "none") continue;
         this.checkAddressStore(input.type.name, arg.value);
       }
@@ -4157,7 +5110,11 @@ export class TypeChecker {
             name: o.name,
             kind: o.referenceKind ?? "none",
           }))
-        : (this.calledFunctionParameters(expr.functionName) ?? [])
+        : (
+            this.calledFunctionParameters(expr.functionName) ??
+            methodParams ??
+            []
+          )
             .filter((p) => p.output)
             .map((p) => ({
               name: p.name,
@@ -4174,12 +5131,24 @@ export class TypeChecker {
       ) {
         continue;
       }
-      const target = this.resolveExprType(arg.value, scope);
-      const fit =
-        target === undefined
-          ? undefined
-          : addressFit(typeNameUtil(target), this.ast.types);
-      if (fit === undefined || fit === "wide") continue;
+      const target = this.storeTargetTypeName(
+        arg.value,
+        this.resolveExprType(arg.value, scope),
+        scope,
+      );
+      if (target === undefined) continue;
+      const fit = addressFit(target, this.ast.types);
+      if (fit === undefined) continue;
+      if (fit === "wide") {
+        // A FUNCTION's output binds by reference: an integer takes a copy.
+        if (fbType === undefined) {
+          arg.inOutCopy = true;
+          arg.addressInto = target;
+        } else if (out.kind === "ref_to" || addressFit(target, []) !== "wide") {
+          arg.addressInto = target;
+        }
+        continue;
+      }
       this.addError(
         narrowAddressMessage(
           `The output '${out.name.toUpperCase()}'`,
@@ -4283,6 +5252,21 @@ export class TypeChecker {
             ),
           );
         }
+        // NOT of an untyped constant into a result or through `p^`
+        if (targetType === undefined) {
+          this.typeNotFromExpected(
+            stmt.value,
+            stmt.target.kind === "VariableExpression" &&
+              this.currentReturn !== undefined &&
+              stmt.target.fieldAccess.length === 0 &&
+              stmt.target.subscripts.length === 0 &&
+              !stmt.target.isDereference &&
+              stmt.target.name.toUpperCase() ===
+                this.currentReturn.name.toUpperCase()
+              ? this.currentReturn.type.name
+              : this.dereferencedType(stmt.target, scope),
+          );
+        }
         this.validateInOutMemberWrite(stmt.target, scope);
         // An address stored in an integer, also through a dereference (a
         // POINTER TO or reference target takes it whole).
@@ -4291,10 +5275,7 @@ export class TypeChecker {
             (this.declaredReferenceShape(stmt.target, scope)?.chain.length ??
               0) === 0) &&
           this.checkAddressStore(
-            targetType !== undefined
-              ? typeNameUtil(targetType)
-              : (this.resultTargetType(stmt.target) ??
-                  this.accessedTypeName(stmt.target, scope)),
+            this.storeTargetTypeName(stmt.target, targetType, scope),
             stmt.value,
           )
         ) {
@@ -4420,7 +5401,8 @@ export class TypeChecker {
       case "CaseStatement": {
         this.checkStrictTerminator(stmt);
         const selectorType = this.resolveExprType(stmt.selector, scope);
-        if (selectorType) {
+        // An address selector is refused once, not also as a non-integer.
+        if (!this.refuseAddressSelector(stmt.selector) && selectorType) {
           this.validateCaseSelector(selectorType, stmt.selector);
         }
         for (const c of stmt.cases) {
@@ -4428,6 +5410,8 @@ export class TypeChecker {
           for (const label of c.labels) {
             this.resolveExprType(label.start, scope);
             if (label.end) this.resolveExprType(label.end, scope);
+            this.typeNotFromExpected(label.start, selectorType);
+            if (label.end) this.typeNotFromExpected(label.end, selectorType);
             // A CHAR selector takes 'a' and CHAR#'a' labels, of its own type only.
             if (selectorChar !== undefined) {
               for (const bound of label.end
@@ -4493,6 +5477,26 @@ export class TypeChecker {
 
         // Validate control variable type
         const controlSym = scope.lookup(stmt.controlVariable);
+        // Start, end and step are stored in the control variable.
+        const addressBound = new Set<Expression>();
+        const controlDeclared =
+          controlSym?.kind === "variable"
+            ? (controlSym.declaration as VarDeclaration | undefined)?.type
+            : undefined;
+        if (
+          controlSym?.kind === "variable" &&
+          controlSym.type &&
+          (controlDeclared?.referenceKind ?? "none") === "none"
+        ) {
+          for (const bound of [stmt.start, stmt.end, stmt.step]) {
+            if (
+              bound !== undefined &&
+              this.checkAddressStore(typeNameUtil(controlSym.type), bound)
+            ) {
+              addressBound.add(bound);
+            }
+          }
+        }
         if (
           controlSym?.kind === "variable" ||
           controlSym?.kind === "constant"
@@ -4511,6 +5515,7 @@ export class TypeChecker {
           if (
             ctrlType &&
             startType &&
+            !addressBound.has(stmt.start) &&
             !this.isUntypedNumericLiteral(stmt.start)
           ) {
             if (
@@ -4526,7 +5531,12 @@ export class TypeChecker {
               );
             }
           }
-          if (ctrlType && endType && !this.isUntypedNumericLiteral(stmt.end)) {
+          if (
+            ctrlType &&
+            endType &&
+            !addressBound.has(stmt.end) &&
+            !this.isUntypedNumericLiteral(stmt.end)
+          ) {
             if (
               ctrlType.typeKind === "elementary" &&
               endType.typeKind === "elementary" &&
@@ -4617,6 +5627,10 @@ export class TypeChecker {
     value: Expression,
   ): void {
     if (this.adaptCharLiteral(value, this.charTypeOf(targetType))) {
+      valueType = value.resolvedType;
+    }
+    // `w := NOT 16#00F0`: NOT of an untyped constant takes the target's type
+    if (this.typeNotFromExpected(value, targetType)) {
       valueType = value.resolvedType;
     }
     const targetInterface = this.interfaceTypeOf(targetType);
@@ -5377,6 +6391,11 @@ export class TypeChecker {
     }
     const mismatch = this.inOutTypeMismatch(input.type, argType);
     if (mismatch === undefined) return;
+    // STRING and STRING of two default lengths (80 and 254): copied, unremarked
+    if (defaultStringsOnly(input.type, argType)) {
+      arg.inOutCopy = true;
+      return;
+    }
     this.inOutDiagnostic(
       `VAR_IN_OUT '${input.name}' of type ${mismatch.param} is bound to a variable of type ${mismatch.arg}`,
       "it is passed by copy-in / copy-out, not by reference",
@@ -5828,6 +6847,19 @@ export class TypeChecker {
     args: readonly Argument[],
   ): void {
     if (!inputs) return;
+    // `F(NOT 16#00F0)` into a WORD input: NOT takes the input's type
+    stripEnEno([...args]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (!input || input.inOut || input.type.arrayDimensions !== undefined) {
+        return;
+      }
+      typeUntypedNot(arg.value, this.aliasBase(input.type.name).toUpperCase());
+    });
     stripEnEno([...args]).forEach((arg, i) => {
       if (arg.isOutput) return;
       const argName = arg.name?.toUpperCase();
@@ -5992,11 +7024,94 @@ export class TypeChecker {
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
-    if (this.strict) this.checkStrictFbOutputs(expr, scope);
-    if (expr.instance || expr.functionName.includes(".")) return;
-    if (this.calledInstance(expr.functionName, scope)) return;
-    const params = this.calledFunctionParameters(expr.functionName);
+    this.checkFbOutputBindings(expr, scope);
+    if (expr.instance) return;
+    let params: OutputParams | undefined;
+    if (expr.functionName.includes(".")) {
+      params = this.dottedMethodParameters(expr.functionName, scope);
+    } else {
+      if (this.calledInstance(expr.functionName, scope)) return;
+      params = this.calledFunctionParameters(expr.functionName);
+    }
+    this.bindOutputs(params, expr.arguments, scope);
+  }
+
+  /** `obj.M(o => v)` (a method call on an array element or member): see checkOutputBindings. */
+  private checkMethodOutputBindings(
+    expr: MethodCallExpression,
+    objType: IECType | undefined,
+    scope: Scope,
+  ): void {
+    if (objType?.typeKind !== "elementary") return;
+    this.bindOutputs(
+      this.methodParametersOf(
+        (objType as ElementaryType).name,
+        expr.methodName,
+      ),
+      expr.arguments,
+      scope,
+    );
+  }
+
+  /** The parameters of `owner.M`: a method of a FUNCTION_BLOCK this unit declares. */
+  private dottedMethodParameters(
+    functionName: string,
+    scope: Scope,
+  ): OutputParams | undefined {
+    const parts = functionName.split(".");
+    if (parts.length !== 2) return undefined;
+    const owner = this.callOwnerType(parts[0]!, scope);
+    return owner === undefined
+      ? undefined
+      : this.methodParametersOf(owner, parts[1]!);
+  }
+
+  /** The parameters of method `methodName` of FB `fbType` or a base; undefined otherwise. */
+  private methodParametersOf(
+    fbType: string,
+    methodName: string,
+  ): OutputParams | undefined {
+    const upper = this.aliasBase(fbType).toUpperCase();
+    if (
+      this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper) !==
+      true
+    ) {
+      return undefined;
+    }
+    const method = this.lookupChainMethod(upper, methodName);
+    return typeof method === "object"
+      ? this.parametersOfBlocks(method.varBlocks)
+      : undefined;
+  }
+
+  /** VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT of a POU's blocks, in order. */
+  private parametersOfBlocks(blocks: readonly VarBlock[]): OutputParams {
+    return blocks
+      .filter(
+        (b) =>
+          b.blockType === "VAR_INPUT" ||
+          b.blockType === "VAR_IN_OUT" ||
+          b.blockType === "VAR_OUTPUT",
+      )
+      .flatMap((b) =>
+        b.declarations.flatMap((d) =>
+          d.names.map((n) => ({
+            name: n,
+            type: d.type as AccessType,
+            output: b.blockType === "VAR_OUTPUT",
+          })),
+        ),
+      );
+  }
+
+  /** Check each output argument against its parameter (see checkOutputBinding). */
+  private bindOutputs(
+    params: OutputParams | undefined,
+    args: readonly Argument[],
+    scope: Scope,
+  ): void {
     if (params === undefined || !params.some((p) => p.output)) return;
+    const expr = { arguments: args };
     const claimed = new Set(
       expr.arguments.flatMap((a) =>
         a.name === undefined ? [] : [a.name.toUpperCase()],
@@ -6205,6 +7320,102 @@ export class TypeChecker {
     if (base === "STRING" || base === "WSTRING") return undefined;
     const storage = INTEGER_STORAGE[base] ?? TEMPORAL_STORAGE[base] ?? base;
     return `${base === name.toUpperCase() ? "iec" : "raw"}:${storage}`;
+  }
+
+  /** A type name through aliases and subranges (`TYPE SR : INT (0..10)` is INT). */
+  private ordinalBase(name: string): string {
+    let upper = this.aliasBase(name);
+    for (let i = 0; i < 32; i++) {
+      const current = upper;
+      const def = this.ast?.types.find(
+        (td) => td.name.toUpperCase() === current,
+      )?.definition;
+      if (def?.kind !== "SubrangeDefinition") return upper;
+      upper = this.aliasBase(def.baseType.name);
+    }
+    return upper;
+  }
+
+  /**
+   * Type each NOT of an untyped constant in `value` from the type the context
+   * expects of it. True when `value` itself is such a NOT, now typed.
+   */
+  private typeNotFromExpected(
+    value: Expression,
+    expected: IECType | string | undefined,
+  ): boolean {
+    if (expected === undefined) return false;
+    const name =
+      typeof expected === "string" ? expected : typeNameUtil(expected);
+    typeUntypedNot(value, this.aliasBase(name).toUpperCase());
+    return untypedNotTarget(value) !== undefined;
+  }
+
+  /**
+   * Type the NOTs of an initial value from its declared type, element by
+   * element through ARRAY and STRUCT initialisers.
+   */
+  private typeInitializerNots(
+    type: AccessType | undefined,
+    value: Expression,
+  ): void {
+    if (
+      !this.ast ||
+      !type ||
+      type.referenceKind !== "none" ||
+      type.referenceChain !== undefined
+    ) {
+      return;
+    }
+    if (value.kind === "ArrayLiteralExpression") {
+      const element: AccessType | undefined =
+        type.arrayDimensions !== undefined
+          ? type.elementTypeName !== undefined &&
+            type.elementReferenceChain === undefined
+            ? { name: type.elementTypeName, referenceKind: "none" }
+            : undefined
+          : resolveArrayElementAccessType(type.name, this.ast);
+      for (const e of value.elements) this.typeInitializerNots(element, e);
+      return;
+    }
+    if (type.arrayDimensions !== undefined) return;
+    if (value.kind !== "StructInitializerExpression") {
+      this.typeNotFromExpected(value, type.name);
+      return;
+    }
+    const upper = this.aliasBase(type.name);
+    for (const el of value.elements) {
+      const field = resolveFieldDeclaration(upper, el.name, this.ast);
+      if (field) this.typeInitializerNots(field.type, el.value);
+    }
+  }
+
+  /** The type `p^` designates, for a pointer or REF_TO variable `p`. */
+  private dereferencedType(
+    target: Expression,
+    scope: Scope,
+  ): string | undefined {
+    if (
+      target.kind !== "VariableExpression" ||
+      !target.isDereference ||
+      target.fieldAccess.length > 0 ||
+      target.subscripts.length > 0 ||
+      (target.accessChain !== undefined &&
+        (target.accessChain.length !== 1 ||
+          target.accessChain[0]!.kind !== "dereference"))
+    ) {
+      return undefined;
+    }
+    const sym = scope.lookup(target.name);
+    if (sym?.kind !== "variable") return undefined;
+    const type = (sym.declaration as VarDeclaration | undefined)?.type;
+    return type !== undefined &&
+      (type.referenceKind === "pointer_to" ||
+        type.referenceKind === "ref_to") &&
+      type.referenceChain === undefined &&
+      type.arrayDimensions === undefined
+      ? type.name
+      : undefined;
   }
 
   private aliasBase(name: string): string {
@@ -6505,20 +7716,7 @@ export class TypeChecker {
     expr: FunctionCallExpression,
     scope: Scope,
   ): CallInput[] | undefined {
-    const fromBlocks = (blocks: readonly VarBlock[]): CallInput[] =>
-      blocks
-        .filter(
-          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
-        )
-        .flatMap((b) =>
-          b.declarations.flatMap((d) =>
-            d.names.map((name) => ({
-              name,
-              type: d.type,
-              inOut: b.blockType === "VAR_IN_OUT",
-            })),
-          ),
-        );
+    const fromBlocks = callInputsOfBlocks;
     const ownMethod = this.ownMethod(expr.functionName);
     if (ownMethod) return fromBlocks(ownMethod.varBlocks);
     const fn = this.calledInstance(expr.functionName, scope)
@@ -6535,18 +7733,59 @@ export class TypeChecker {
   }
 
   /**
-   * `--strict`: an FB call's `o => v` follows the strict conversion rules of
-   * `v := o`, as a FUNCTION's output does (checkOutputBindings).
+   * An FB call's `o => v` follows the rules of the assignment `v := o`, as a
+   * FUNCTION's output does (checkOutputBindings): its refusals, its narrowing
+   * warning, and its `--strict` errors. The value is copied out by assignment.
    */
-  private checkStrictFbOutputs(
+  private checkFbOutputBindings(
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
     if (!expr.arguments.some((a) => a.isOutput)) return;
     const fbType = this.calledFbType(expr, scope);
     if (fbType === undefined) return;
+    this.checkFbOutputs(fbType, expr.arguments, scope);
+  }
+
+  /**
+   * `a.b.inst(o => v)`, `arr[i].inst(o => v)`: a call of an FB instance that
+   * is a member of `ownerType`, checked as `checkFbOutputBindings` does.
+   */
+  private checkMemberFbOutputBindings(
+    expr: MethodCallExpression,
+    ownerType: string | undefined,
+    scope: Scope,
+  ): void {
+    if (ownerType === undefined) return;
+    if (!expr.arguments.some((a) => a.isOutput)) return;
+    if (this.methodParametersOf(ownerType, expr.methodName) !== undefined) {
+      return;
+    }
+    const fbType = this.resolveFieldTypeAnywhere(
+      this.aliasBase(ownerType),
+      expr.methodName,
+    );
+    if (fbType === undefined || !this.isFunctionBlockName(fbType)) return;
+    this.checkFbOutputs(fbType, expr.arguments, scope);
+  }
+
+  /** True when `name` (through aliases) is a FUNCTION_BLOCK this unit declares. */
+  private isFunctionBlockName(name: string): boolean {
+    const upper = this.aliasBase(name).toUpperCase();
+    return (
+      this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper) ===
+      true
+    );
+  }
+
+  /** Each `o => v` of a call of FB type `fbType`, checked as `v := o`. */
+  private checkFbOutputs(
+    fbType: string,
+    args: readonly Argument[],
+    scope: Scope,
+  ): void {
     const outputs = this.fbOutputsOf(fbType);
-    for (const arg of expr.arguments) {
+    for (const arg of args) {
       if (!arg.isOutput || arg.name === undefined) continue;
       if (arg.value.kind !== "VariableExpression") continue;
       const upper = arg.name.toUpperCase();
@@ -6559,6 +7798,15 @@ export class TypeChecker {
       ) {
         continue;
       }
+      if (scope.lookup(arg.value.name)?.kind === "constant") {
+        this.addError(
+          `Cannot assign to CONSTANT variable '${arg.value.name}'`,
+          arg.value.sourceSpan.startLine,
+          arg.value.sourceSpan.startCol,
+          arg.value.sourceSpan.file,
+        );
+        continue;
+      }
       const bound = this.boundAccessType(arg.value, scope);
       const boundType =
         bound === undefined
@@ -6566,7 +7814,7 @@ export class TypeChecker {
           : this.resolveNamedType(bound.name);
       if (boundType === undefined) continue;
       const outType = this.resolveNamedType(out.typeName);
-      this.checkStrictConversion(boundType, {
+      this.validateAssignment(boundType, outType, arg.value, {
         kind: "VariableExpression",
         sourceSpan: arg.value.sourceSpan,
         name: out.name,
@@ -6585,8 +7833,20 @@ export class TypeChecker {
   ): string | undefined {
     if (expr.instance !== undefined) {
       const t = this.resolveExprType(expr.instance, scope);
-      return t?.typeKind === "elementary"
-        ? (t as ElementaryType).name
+      if (t?.typeKind === "elementary") return (t as ElementaryType).name;
+      // `p^(...)`: the type the pointer is declared to
+      const inst = expr.instance;
+      if (
+        inst.kind !== "VariableExpression" ||
+        !inst.isDereference ||
+        inst.fieldAccess.length > 0 ||
+        inst.subscripts.length > 0
+      ) {
+        return undefined;
+      }
+      const sym = scope.lookup(inst.name);
+      return sym?.kind === "variable"
+        ? (sym.declaration as VarDeclaration | undefined)?.type.name
         : undefined;
     }
     const parts = expr.functionName.split(".");
@@ -6725,8 +7985,37 @@ export class TypeChecker {
     }
     return params.flatMap((p) => {
       const type = (p.declaration as VarDeclaration | undefined)?.type;
-      return type ? [{ name: p.name, type, inOut: p.isInOut }] : [];
+      return type
+        ? [{ name: p.name, type, inOut: p.isInOut, lengthUnrecorded: true }]
+        : [];
     });
+  }
+
+  /**
+   * The inputs and in-outs of a library FUNCTION whose archive records its
+   * parameters' POINTER TO, REF_TO and ARRAY shapes; undefined otherwise.
+   */
+  private libraryShapedFunctionInputs(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): CallInput[] | undefined {
+    const name = expr.functionName;
+    if (expr.instance || name.includes(".")) return undefined;
+    if (this.calledInstance(name, scope) || this.ownMethod(name)) {
+      return undefined;
+    }
+    const fn = this.symbolTables.lookupFunction(name);
+    if (fn?.parameterShapes !== true || this.findUserFunction(name)) {
+      return undefined;
+    }
+    return fn.parameters
+      .filter((p) => p.isInput || p.isInOut)
+      .flatMap((p) => {
+        const type = (p.declaration as VarDeclaration | undefined)?.type;
+        return type
+          ? [{ name: p.name, type, inOut: p.isInOut, lengthUnrecorded: true }]
+          : [];
+      });
   }
 
   /** The REF_TO check for each argument passed to a REF_TO input. */
@@ -6734,7 +8023,9 @@ export class TypeChecker {
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
-    const inputs = this.callInputs(expr, scope);
+    const inputs =
+      this.callInputs(expr, scope) ??
+      this.libraryShapedFunctionInputs(expr, scope);
     if (!inputs) return;
     stripEnEno(expr.arguments).forEach((arg, i) => {
       if (arg.isOutput) return;
@@ -6745,7 +8036,17 @@ export class TypeChecker {
           : inputs.find((p) => p.name.toUpperCase() === argName);
       if (!input) return;
       const shape = referenceShapeOf(input.type);
-      if (shape) this.validateReferenceValue(shape, arg.value, scope);
+      if (!shape) return;
+      // A manifest's REF_TO STRING carries no length: compare the base only.
+      const unrecorded =
+        input.lengthUnrecorded === true &&
+        shape.length === undefined &&
+        isStringBase(shape.base);
+      this.validateReferenceValue(
+        unrecorded ? { ...shape, lengthUnknown: true } : shape,
+        arg.value,
+        scope,
+      );
     });
   }
 
@@ -6845,6 +8146,20 @@ export class TypeChecker {
     if (!_isTypeInCategory(condType, "ANY_BIT")) {
       this.addError(
         `Condition must be a boolean or bit type, got ${typeNameUtil(condType)}`,
+        condExpr.sourceSpan.startLine,
+        condExpr.sourceSpan.startCol,
+        condExpr.sourceSpan.file,
+      );
+      return;
+    }
+    // --strict: a condition is a BOOL, not a bit string.
+    if (
+      this.strict &&
+      condType.typeKind === "elementary" &&
+      this.aliasBase((condType as ElementaryType).name) !== "BOOL"
+    ) {
+      this.addError(
+        `Condition must be BOOL under --strict, got ${typeNameUtil(condType)}; compare it, e.g. ${typeNameUtil(condType)} <> 0`,
         condExpr.sourceSpan.startLine,
         condExpr.sourceSpan.startCol,
         condExpr.sourceSpan.file,
@@ -7018,9 +8333,16 @@ export class TypeChecker {
     selectorExpr: Expression,
   ): void {
     // CASE selector must be ANY_INT, ANY_BIT, or enum (IEC 61131-3: ordinal types)
+    // An alias of an elementary type is checked as that type.
+    const base =
+      selectorType.typeKind === "elementary"
+        ? (ELEMENTARY_TYPES[
+            this.ordinalBase((selectorType as ElementaryType).name)
+          ] ?? selectorType)
+        : selectorType;
     if (
-      !_isTypeInCategory(selectorType, "ANY_INT") &&
-      !_isTypeInCategory(selectorType, "ANY_BIT") &&
+      !_isTypeInCategory(base, "ANY_INT") &&
+      !_isTypeInCategory(base, "ANY_BIT") &&
       selectorType.typeKind !== "enum" &&
       this.charTypeOf(selectorType) === undefined
     ) {
@@ -7700,27 +9022,93 @@ export class TypeChecker {
     }
   }
 
-  /** Strict conversion check for each input argument of a call. */
+  /**
+   * `--strict`: the argument of a typed conversion `X_TO_Y` is an X, so it
+   * follows the strict conversion rules into X (`BYTE_TO_INT(w)` with a WORD).
+   */
+  private checkStrictConversionArgument(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    // A user callable of the name (a FUNCTION, a method of this POU, an FB
+    // instance or PROGRAM, a dotted method call) is not the conversion.
+    if (
+      expr.instance !== undefined ||
+      expr.functionName.includes(".") ||
+      this.findUserFunction(expr.functionName) ||
+      this.ownMethod(expr.functionName) !== undefined ||
+      this.calledInstance(expr.functionName, scope)
+    ) {
+      return;
+    }
+    const fn = this.symbolTables.lookupFunction(expr.functionName);
+    if (fn !== undefined && fn.libraryName !== STD_FUNCTIONS_LIBRARY) return;
+    const conv = this.stdRegistry?.resolveConversion(
+      expr.functionName.toUpperCase(),
+    );
+    const from = conv ? ELEMENTARY_TYPES[conv.fromType] : undefined;
+    const arg = stripEnEno(expr.arguments)[0];
+    if (from === undefined || arg === undefined) return;
+    if (this.checkStrictConversion(from, arg.value)) return;
+    // Kinds the integer/REAL/BOOL/bit rules leave open (durations, dates,
+    // strings, characters): the argument is an X, or its implicit long form.
+    const value = this.strictExprType(arg.value);
+    if (value?.typeKind !== "elementary") return;
+    const v = canonicalElementaryName(
+      this.aliasBase((value as ElementaryType).name),
+    );
+    const t = canonicalElementaryName(conv!.fromType);
+    if (v === t || ELEMENTARY_TYPES[v] === undefined) return;
+    if (strictKind(v) !== undefined && strictKind(t) !== undefined) return;
+    if (_isAssignable(from, ELEMENTARY_TYPES[v]) && isLongFormOf(t, v)) return;
+    this.addStrictError(strictConversionMessage(v, t), arg.value);
+  }
+
+  /** Strict conversion check for each input argument of a call (the BOOL narrowing warning outside `--strict`). */
   private checkStrictArguments(
-    inputs: Array<{ name: string; type: AccessType }> | undefined,
+    inputs: CallInput[] | undefined,
     args: readonly Argument[],
     _scope: Scope,
   ): void {
     if (!inputs) return;
     stripEnEno([...args]).forEach((arg, i) => {
       if (arg.isOutput) return;
-      const argName = arg.name?.toUpperCase();
-      const input =
-        argName === undefined
-          ? inputs[i]
-          : inputs.find((p) => p.name.toUpperCase() === argName);
+      const input = boundInput(inputs, arg, i);
       if (!input) return;
       const refKind = input.type.referenceKind;
       if (refKind !== undefined && refKind !== "none") return;
       if (input.type.arrayDimensions !== undefined) return;
       const declared = ELEMENTARY_TYPES[input.type.name.toUpperCase()];
-      if (declared) this.checkStrictConversion(declared, arg.value);
+      if (this.strict) {
+        if (declared) this.checkStrictConversion(declared, arg.value);
+        return;
+      }
+      // A VAR_IN_OUT mismatch has its own diagnostic (validateInOutArguments)
+      if (input.inOut) return;
+      this.warnBoolInputNarrowing(input.type.name, arg.value);
     });
+  }
+
+  /**
+   * Outside `--strict`: a non-BOOL value bound to a BOOL input gets the
+   * narrowing warning its assignment `b := i` gets (an untyped constant adapts).
+   */
+  private warnBoolInputNarrowing(inputType: string, value: Expression): void {
+    if (this.aliasBase(inputType).toUpperCase() !== "BOOL") return;
+    if (this.untypedConstantKind(value) !== undefined) return;
+    const valueType = value.resolvedType;
+    if (valueType?.typeKind !== "elementary") return;
+    const vName = this.aliasBase(
+      (valueType as ElementaryType).name,
+    ).toUpperCase();
+    if (vName === "BOOL" || ELEMENTARY_TYPES[vName] === undefined) return;
+    if (!isNarrowingConversion("BOOL", vName)) return;
+    this.addWarning(
+      `Implicit narrowing conversion from ${vName} to BOOL`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
   }
 
   /** The input parameters of the method a method-call expression names. */
@@ -7817,21 +9205,7 @@ export class TypeChecker {
     const method = itf.methods.find(
       (m) => m.name.toUpperCase() === methodName.toUpperCase(),
     );
-    if (method) {
-      return method.varBlocks
-        .filter(
-          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
-        )
-        .flatMap((b) =>
-          b.declarations.flatMap((d) =>
-            d.names.map((n) => ({
-              name: n,
-              type: d.type,
-              inOut: b.blockType === "VAR_IN_OUT",
-            })),
-          ),
-        );
-    }
+    if (method) return callInputsOfBlocks(method.varBlocks);
     for (const base of itf.extends ?? []) {
       const found = this.interfaceMethodInputs(base, methodName, depth + 1);
       if (found) return found;
@@ -7880,19 +9254,7 @@ export class TypeChecker {
   ): CallInput[] | undefined {
     if (!this.ast) return undefined;
     const inputsOf = (method: MethodDeclaration): CallInput[] =>
-      method.varBlocks
-        .filter(
-          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
-        )
-        .flatMap((b) =>
-          b.declarations.flatMap((d) =>
-            d.names.map((n) => ({
-              name: n,
-              type: d.type,
-              inOut: b.blockType === "VAR_IN_OUT",
-            })),
-          ),
-        );
+      callInputsOfBlocks(method.varBlocks);
     let current = fbTypeName?.toUpperCase();
     for (let depth = 0; current !== undefined && depth < 32; depth++) {
       const name: string = current;
@@ -7916,6 +9278,85 @@ export class TypeChecker {
       current = fb.extends?.toUpperCase();
     }
     return undefined;
+  }
+
+  /**
+   * The METHOD a dotted call reaches: `fb.M`, `itf.M`, `THIS^.M`, `SUPER^.M`
+   * or `PRG.M`, through base FBs and extended interfaces.
+   */
+  private dottedMethod(
+    functionName: string,
+    scope: Scope,
+  ): MethodDeclaration | undefined {
+    const parts = functionName.split(".");
+    if (parts.length !== 2 || !this.ast) return undefined;
+    const head = parts[0]!.toUpperCase();
+    const current = this.currentFBName?.toUpperCase();
+    let owner: string | undefined;
+    if (head === "THIS" && current !== undefined) {
+      owner = current;
+    } else if (head === "SUPER" && current !== undefined) {
+      owner = this.ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === current,
+      )?.extends;
+    } else {
+      const sym = scope.lookup(parts[0]!);
+      owner =
+        sym?.kind === "program"
+          ? sym.name
+          : sym?.kind === "variable"
+            ? (sym.declaration as VarDeclaration | undefined)?.type.name
+            : undefined;
+    }
+    const method = parts[1]!.toUpperCase();
+    const pending = owner !== undefined ? [owner.toUpperCase()] : [];
+    const seen = new Set<string>();
+    while (pending.length > 0) {
+      const name = pending.shift()!;
+      if (seen.has(name) || seen.size > 64) continue;
+      seen.add(name);
+      const pou =
+        this.ast.functionBlocks.find((f) => f.name.toUpperCase() === name) ??
+        this.ast.interfaces.find((i) => i.name.toUpperCase() === name) ??
+        this.ast.programs.find((p) => p.name.toUpperCase() === name);
+      const found = pou?.methods.find((m) => m.name.toUpperCase() === method);
+      if (found) return found;
+      if (
+        pou?.kind === "FunctionBlockDeclaration" &&
+        pou.extends !== undefined
+      ) {
+        pending.push(pou.extends.toUpperCase());
+      } else if (pou?.kind === "InterfaceDeclaration") {
+        for (const base of pou.extends ?? []) pending.push(base.toUpperCase());
+      }
+    }
+    return undefined;
+  }
+
+  /** VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT of a METHOD, in order (see calledFunctionParameters). */
+  private methodParameters(method: MethodDeclaration): Array<{
+    name: string;
+    type: AccessType;
+    output: boolean;
+    inOut: boolean;
+  }> {
+    return method.varBlocks
+      .filter(
+        (b) =>
+          b.blockType === "VAR_INPUT" ||
+          b.blockType === "VAR_IN_OUT" ||
+          b.blockType === "VAR_OUTPUT",
+      )
+      .flatMap((b) =>
+        b.declarations.flatMap((d) =>
+          d.names.map((n) => ({
+            name: n,
+            type: d.type as AccessType,
+            output: b.blockType === "VAR_OUTPUT",
+            inOut: b.blockType === "VAR_IN_OUT",
+          })),
+        ),
+      );
   }
 
   // ===========================================================================
