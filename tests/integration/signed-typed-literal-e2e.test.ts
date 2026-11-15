@@ -3,7 +3,8 @@
 /**
  * A sign after the type prefix of a typed literal (IEC 61131-3 Ed. 3 Table 5
  * feature 9, Table 8 features 2a/2b; Annex A `Int_Literal`, `Real_Literal`,
- * `Duration`): `INT#-123`, `LREAL#-0.9`, `DINT#+5`, `T#-14ms`.
+ * `Duration`): `INT#-123`, `LREAL#-0.9`, `DINT#+5`, `LTIME#-14ms` (a TIME is
+ * unsigned).
  *
  * Covered here: the analyzer accepts it and range-checks a signed integer
  * against its prefix type, codegen lowers it to the source value (the most
@@ -31,7 +32,7 @@ describe("signed typed literals — analysis and codegen", () => {
         a : INT := INT#-123;
         b : LREAL := LREAL#-0.9;
         c : DINT := DINT#+5;
-        d : TIME := T#-14ms;
+        d : LTIME := LTIME#-14ms;
         e : TIME := TIME#+1s;
         f : REAL := REAL#-1;
       END_VAR
@@ -55,7 +56,7 @@ describe("signed typed literals — analysis and codegen", () => {
         di : DINT := DINT#-2147483648;
         l : LINT := LINT#-9223372036854775808;
         r : LREAL := LREAL#-0.9;
-        t : TIME := T#-14ms;
+        t : LTIME := LTIME#-14ms;
       END_VAR
       END_PROGRAM`);
     expect(r.errors).toEqual([]);
@@ -134,14 +135,14 @@ describe.skipIf(!hasGpp)("signed typed literals — g++ e2e", () => {
         di : DINT := DINT#-2147483648;
         l : LINT := LINT#-9223372036854775808;
         r : LREAL := LREAL#-0.9;
-        t : TIME := T#-14ms;
+        t : LTIME := LTIME#-14ms;
         st : ST_Lim;
         tw : DINT;
         tms : DINT;
         hit : INT;
       END_VAR
         tw := Twice(DINT#-21);
-        tms := TIME_TO_DINT(t);
+        tms := LTIME_TO_DINT(t / 1000000);
         CASE a OF
           INT#-123: hit := 1;
         ELSE
