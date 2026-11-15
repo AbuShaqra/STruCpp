@@ -31,6 +31,7 @@ import type {
 import { createDefaultSourceSpan } from "../frontend/ast.js";
 import { isPragmaDefineName } from "../frontend/conditional-pragmas.js";
 import { ELEMENTARY_TYPES } from "../semantic/type-utils.js";
+import { lowerDefaultStringLength } from "../semantic/string-default-length.js";
 
 /**
  * Error thrown when a library manifest fails validation.
@@ -73,24 +74,16 @@ function makeTypeRef(
 }
 
 /**
- * A plain STRING or WSTRING of a library compiled with another default length
- * (manifest `stringDefaultLength`) has that length, marked as a default.
+ * A STRING or WSTRING without a length of a library compiled with another
+ * default length (manifest `stringDefaultLength`), an ARRAY element or an
+ * ARRAY[*] parameter's included, has that length, marked as a default.
  */
 function applyStringDefaultLength(
   ref: TypeReference,
   stringDefaultLength: number | undefined,
 ): void {
-  const upper = ref.name.toUpperCase();
-  if (
-    stringDefaultLength === undefined ||
-    (upper !== "STRING" && upper !== "WSTRING") ||
-    ref.maxLength !== undefined ||
-    ref.arrayDimensions !== undefined
-  ) {
-    return;
-  }
-  ref.maxLength = stringDefaultLength;
-  ref.defaultLength = true;
+  if (stringDefaultLength === undefined) return;
+  lowerDefaultStringLength(ref, stringDefaultLength);
 }
 
 function isReferenceKind(
@@ -114,6 +107,7 @@ function isReferenceKind(
  */
 function buildLibraryTypeDefinition(
   t: LibraryTypeEntry,
+  stringDefaultLength?: number,
 ): StructDefinition | TypeReference {
   if (
     (t.kind === "struct" || t.kind === "union") &&
@@ -124,18 +118,22 @@ function buildLibraryTypeDefinition(
       kind: "StructDefinition",
       ...(t.kind === "union" ? { isUnion: true as const } : {}),
       sourceSpan: createDefaultSourceSpan(),
-      fields: t.fields.map((f) => ({
-        kind: "VarDeclaration" as const,
-        sourceSpan: createDefaultSourceSpan(),
-        names: [f.name],
-        type: {
+      fields: t.fields.map((f) => {
+        const type: TypeReference = {
           kind: "TypeReference" as const,
           sourceSpan: createDefaultSourceSpan(),
           name: f.type,
           isReference: false,
           referenceKind: "none" as const,
-        },
-      })),
+        };
+        applyStringDefaultLength(type, stringDefaultLength);
+        return {
+          kind: "VarDeclaration" as const,
+          sourceSpan: createDefaultSourceSpan(),
+          names: [f.name],
+          type,
+        };
+      }),
     };
   }
   return {
@@ -471,7 +469,10 @@ export function registerLibrarySymbols(
           // only ever type-checked, and wrong the moment a RETAINed library
           // block held one — the struct's fields simply never reached the
           // retain blob, so the instance restored around a hole.
-          definition: buildLibraryTypeDefinition(t),
+          definition: buildLibraryTypeDefinition(
+            t,
+            manifest.stringDefaultLength,
+          ),
         },
         resolvedType,
       });

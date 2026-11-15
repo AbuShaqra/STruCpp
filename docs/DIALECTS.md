@@ -950,6 +950,11 @@ test file); without the feature it is 254.
 - A plain STRING bound to a library's plain STRING `VAR_IN_OUT` of the other default length is passed by
   copy-in / copy-out with no warning; a length written on either side still warns. A plain STRING bound
   to a `REFERENCE TO STRING` of the other length is refused, as for any two lengths.
-  The same copy applies to a library FUNCTION_BLOCK METHOD's VAR_IN_OUT and VAR_OUTPUT.
-- The debugger shows strings of 254 characters only: a plain STRING or WSTRING (80) and an ARRAY element
-  of one are left out of the debug table with a build warning (`Declare it as STRING(254) to expose it`).
+  The same copy applies to a library FUNCTION's or FUNCTION_BLOCK METHOD's VAR_IN_OUT and VAR_OUTPUT,
+  element by element to an `ARRAY OF STRING` one, and to an `ARRAY[*] OF STRING` VAR_IN_OUT of a library
+  FUNCTION; a copy back is cut at the variable's length.
+- A library's array elements, `ARRAY[*]` parameters and STRUCT fields written as a plain STRING keep the
+  library's length too.
+- The debugger shows strings of 254 characters only: a plain STRING or WSTRING (80) is left out of the
+  debug table with a build warning (`Declare it as STRING(254) to expose it`); an ARRAY of them is left
+  out whole, with one warning (`Declare them as STRING(254) to expose them`).

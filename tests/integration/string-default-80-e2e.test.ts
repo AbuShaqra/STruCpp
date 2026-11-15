@@ -4,7 +4,10 @@
  * E2E for feature string_default_80: a plain STRING holds 80 characters
  * (SIZEOF 81, WSTRING 162), a longer value stored is cut at 80, and a library
  * compiled with the feature keeps its 80 when a program without it binds a
- * plain STRING to its VAR_IN_OUT (copied in and out, cut at 80). g++ and run.
+ * plain STRING to its VAR_IN_OUT (copied in and out, cut at 80). A 254
+ * library's FUNCTION and METHOD in-outs (STRING, WSTRING, ARRAY OF STRING,
+ * ARRAY[*] OF STRING) take a program's 80-character strings by copy, and an
+ * 80 library's METHOD and ARRAY[*] parameters bind at 80. g++ and run.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -201,4 +204,144 @@ END_PROGRAM
     // t: 'abx'; u: 'abxy'
     expect(stdout).toBe("3 4 81 0 0");
   });
+
+  /** Compile `src` against `lib` (compiled with `libFeature`), build, run and print `print`. */
+  const runWithLibrary = (
+    lib: string,
+    libFeature: boolean,
+    src: string,
+    feature: boolean,
+    print: string,
+    testName: string,
+  ): string => {
+    const compiled = compileStlib([{ source: lib, fileName: "l.st" }], {
+      name: "lib",
+      version: "1.0.0",
+      namespace: "lib",
+      ...(libFeature ? { features: ["+string_default_80"] } : {}),
+    });
+    expect(compiled.errors).toEqual([]);
+    const archive = loadStlibArchive(
+      JSON.parse(JSON.stringify(compiled.archive)),
+    );
+    const result = compile(src, {
+      headerFileName: "generated.hpp",
+      libraries: [archive],
+      ...(feature ? { features: ["+string_default_80"] } : {}),
+    });
+    expect(result.errors).toEqual([]);
+    return compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName,
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << ${print} << std::endl;
+    return 0;
+}
+`,
+    });
+  };
+
+  it("a plain STRING, WSTRING and ARRAY[*] OF STRING passed to a 254 library's FUNCTION in-out are copied, cut at 80", () => {
+    const stdout = runWithLibrary(
+      `FUNCTION F_IO : DINT
+VAR_IN_OUT q : STRING; END_VAR
+q := CONCAT(q, 'z'); F_IO := LEN(q);
+END_FUNCTION
+FUNCTION F_W : DINT
+VAR_IN_OUT q : WSTRING; END_VAR
+q := CONCAT(q, "w"); F_W := LEN(q);
+END_FUNCTION
+FUNCTION F_V : DINT
+VAR_IN_OUT a : ARRAY[*] OF STRING; END_VAR
+a[1] := CONCAT(a[1], 'f'); F_V := LEN(a[1]);
+END_FUNCTION
+`,
+      false,
+      `TYPE ST_A : STRUCT s : STRING; END_STRUCT; END_TYPE
+PROGRAM Main
+VAR t : STRING := 'ab'; u : STRING := 'c'; sv : ST_A; w : WSTRING := "w";
+  long : STRING := '${"a".repeat(80)}'; x : ARRAY[0..1] OF STRING;
+  r1, r2, r3, r4, r5, r6 : DINT; END_VAR
+sv.s := 's'; x[1] := 'a';
+r1 := F_IO(q := t);
+r2 := F_IO(u);
+r3 := F_IO(sv.s);
+r4 := F_W(q := w);
+r5 := F_IO(q := long);
+r6 := F_V(a := x);
+END_PROGRAM
+`,
+      true,
+      `p.R1 << " " << LEN(p.T) << " " << p.R2 << " " << LEN(p.U) << " " << p.R3 << " " << LEN(p.SV.S) << " " << p.R4 << " " << LEN(p.W) << " " << p.R5 << " " << LEN(p.LONG) << " " << p.R6 << " " << p.X[1].c_str()`,
+      "string80_lib_function",
+    );
+    // The 254 function sees 81 characters for 'long'; the copy back cuts at 80.
+    expect(stdout).toBe("3 3 2 2 2 2 2 2 81 80 2 af");
+  });
+
+  it("an ARRAY OF STRING passed to a 254 library's METHOD in-out is copied element-wise, cut at 80", () => {
+    const stdout = runWithLibrary(
+      `FUNCTION_BLOCK FB_L
+METHOD MA
+VAR_IN_OUT a : ARRAY[0..1] OF STRING; END_VAR
+a[0] := CONCAT(a[0], '${"b".repeat(90)}');
+a[1] := CONCAT(a[1], 'x');
+END_METHOD
+END_FUNCTION_BLOCK
+`,
+      false,
+      `PROGRAM Main
+VAR f : FB_L; x : ARRAY[0..1] OF STRING; END_VAR
+x[1] := 'a';
+f.MA(a := x);
+END_PROGRAM
+`,
+      true,
+      `LEN(p.X[0]) << " " << p.X[1].c_str()`,
+      "string80_lib_method_array",
+    );
+    expect(stdout).toBe("80 ax");
+  });
+
+  for (const feature of [false, true]) {
+    it(`an 80 library's METHOD ARRAY OF STRING in-out and output, and its FUNCTION ARRAY[*] in-out, bind (program ${feature ? "with" : "without"} the feature)`, () => {
+      const stdout = runWithLibrary(
+        `FUNCTION_BLOCK FB_L
+METHOD MA
+VAR_IN_OUT a : ARRAY[0..1] OF STRING; END_VAR
+a[1] := CONCAT(a[1], 'x');
+END_METHOD
+METHOD MO
+VAR_OUTPUT a : ARRAY[0..1] OF STRING; END_VAR
+a[1] := 'o';
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION F_V : DINT
+VAR_IN_OUT a : ARRAY[*] OF STRING; END_VAR
+a[1] := CONCAT(a[1], 'f'); F_V := LEN(a[1]);
+END_FUNCTION
+`,
+        true,
+        `PROGRAM Main
+VAR f : FB_L; x : ARRAY[0..1] OF STRING; y : ARRAY[0..1] OF STRING; r : DINT; END_VAR
+x[1] := 'a';
+f.MA(a := x);
+f.MO(a => y);
+r := F_V(a := x);
+END_PROGRAM
+`,
+        feature,
+        `p.X[1].c_str() << " " << p.Y[1].c_str() << " " << p.R`,
+        `string80_lib80_arrays_${feature ? "on" : "off"}`,
+      );
+      expect(stdout).toBe("axf o 3");
+    });
+  }
 });

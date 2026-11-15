@@ -756,6 +756,9 @@ export class CodeGenerator {
 
   /** Library functions by upper-cased name, and their parsed declarations. */
   private libraryFunctions: Map<string, LibraryFunctionEntry> = new Map();
+  /** The default STRING length of the library declaring each function, when not 254. */
+  private libraryFunctionStringDefaults: Map<LibraryFunctionEntry, number> =
+    new Map();
   /** Every library FUNCTION, keyed `LIBRARY:NAME` (upper case), shadowed ones included. */
   private libraryFunctionsByLibrary: Map<string, LibraryFunctionEntry> =
     new Map();
@@ -1350,7 +1353,11 @@ export class CodeGenerator {
    */
   registerLibraryArchives(archives: StlibArchive[]): void {
     for (const archive of archives) {
+      const stringDefault = archive.manifest.stringDefaultLength;
       for (const fn of archive.manifest.functions) {
+        if (stringDefault !== undefined) {
+          this.libraryFunctionStringDefaults.set(fn, stringDefault);
+        }
         const upper = fn.name.toUpperCase();
         if (!this.libraryFunctions.has(upper)) {
           this.libraryFunctions.set(upper, fn);
@@ -1361,7 +1368,7 @@ export class CodeGenerator {
         );
       }
       for (const fb of archive.manifest.functionBlocks) {
-        const methods = libraryMethodDeclarations(fb);
+        const methods = libraryMethodDeclarations(fb, stringDefault);
         if (methods !== undefined && methods.length > 0) {
           this.libraryMethods.set(fb.name.toUpperCase(), methods);
         }
@@ -5484,6 +5491,18 @@ export class CodeGenerator {
           !isCompositeGlobal(value) &&
           !isUnionMember(value) &&
           !rendersBound(value) &&
+          this.fixedStringElementDiffers(param.type, value)
+        ) {
+          // ARRAY OF STRING(n) over elements of another known length: copied
+          // element-wise into a temporary of the parameter's type and back.
+          result.push({
+            value,
+            cppType: this.inOutParamType(param.type),
+          });
+        } else if (
+          !isCompositeGlobal(value) &&
+          !isUnionMember(value) &&
+          !rendersBound(value) &&
           this.vlaStringElementDiffers(param.type, value)
         ) {
           // ARRAY[*] OF STRING(n) over elements of another length: a copy
@@ -5580,14 +5599,61 @@ export class CodeGenerator {
     const blocks = this.libraryFunctionDeclaration(
       call.functionName,
     )?.varBlocks;
-    const sized = blocks?.some(
-      (b) =>
-        (b.blockType === "VAR_OUTPUT" || b.blockType === "VAR_IN_OUT") &&
-        b.declarations.some(
-          (d) => this.sizedStringLength(d.type) !== undefined,
-        ),
+    const byReference = (blocks ?? []).filter(
+      (b) => b.blockType === "VAR_OUTPUT" || b.blockType === "VAR_IN_OUT",
     );
-    return sized === true ? blocks : undefined;
+    const not254 = (element: string | undefined): boolean =>
+      element !== undefined && !element.endsWith("(254)");
+    const sized = byReference.some((b) =>
+      b.declarations.some(
+        (d) =>
+          this.sizedStringLength(d.type) !== undefined ||
+          not254(this.arrayStringElementLength(d.type)) ||
+          (this.vlaStringElementCpp(d.type) !== undefined &&
+            d.type.elementMaxLength !== undefined &&
+            String(d.type.elementMaxLength) !== "254"),
+      ),
+    );
+    if (sized) return blocks;
+    // A STRING, ARRAY OF STRING or ARRAY[*] OF STRING parameter of 254, only
+    // when an argument holds strings of another length (else nothing to copy).
+    const stringParam = byReference.some((b) =>
+      b.declarations.some(
+        (d) =>
+          isPlainString(d.type) ||
+          this.arrayStringElementLength(d.type) !== undefined ||
+          this.vlaStringElementCpp(d.type) !== undefined,
+      ),
+    );
+    return stringParam &&
+      call.arguments.some((a) => this.holdsOtherLength(a.value))
+      ? blocks
+      : undefined;
+  }
+
+  /** True when `value` is a variable of a STRING, or an ARRAY of STRING, of a known length other than 254. */
+  private holdsOtherLength(value: Expression): boolean {
+    if (value.kind !== "VariableExpression") return false;
+    const type = this.variableTypeOf(value);
+    if (type === undefined) return false;
+    if (this.sizedStringLength(type) !== undefined) return true;
+    const element = this.arrayStringElementLength(type);
+    return element !== undefined && !element.endsWith("(254)");
+  }
+
+  /** The declared type of `value` after its subscripts and fields; undefined when unknown. */
+  private variableTypeOf(value: VariableExpression): TypeShape | undefined {
+    const hasAccess =
+      value.subscripts.length > 0 ||
+      value.fieldAccess.length > 0 ||
+      value.isDereference ||
+      (value.accessChain !== undefined && value.accessChain.length > 0);
+    const root =
+      this.currentScopeVarTypeRefs.get(value.name.toUpperCase()) ??
+      this.namespaceGlobalTypeRef(value.name.toUpperCase());
+    return root !== undefined && hasAccess
+      ? resolveAccessType(root, value, this.accessLookup)
+      : root;
   }
 
   /**
@@ -5685,6 +5751,23 @@ export class CodeGenerator {
         ? resolveAccessType(root, value, this.accessLookup)
         : root;
     return type === undefined || this.arrayStringElementLength(type) !== want;
+  }
+
+  /**
+   * True when `param` is a fixed ARRAY of STRING and `value` an ARRAY of
+   * STRING whose element length is known and differs.
+   */
+  private fixedStringElementDiffers(
+    param: TypeShape,
+    value: VariableExpression,
+  ): boolean {
+    if (VLA_TYPE_NAME.test(param.name)) return false;
+    const want = this.arrayStringElementLength(param);
+    if (want === undefined) return false;
+    const type = this.variableTypeOf(value);
+    if (type === undefined || VLA_TYPE_NAME.test(type.name)) return false;
+    const have = this.arrayStringElementLength(type);
+    return have !== undefined && have !== want;
   }
 
   /** The length of a STRING or WSTRING variable other than 254; undefined otherwise or when unknown. */
@@ -8555,7 +8638,13 @@ export class CodeGenerator {
         : this.libraryFunctions.get(upper);
     if (!entry) return undefined;
     if (!this.libraryFunctionDecls.has(key)) {
-      this.libraryFunctionDecls.set(key, libraryFunctionDeclaration(entry));
+      this.libraryFunctionDecls.set(
+        key,
+        libraryFunctionDeclaration(
+          entry,
+          this.libraryFunctionStringDefaults.get(entry),
+        ),
+      );
     }
     return this.libraryFunctionDecls.get(key);
   }

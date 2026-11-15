@@ -600,6 +600,55 @@ export function generateDebugTable(
     return undefined;
   };
 
+  /** What to declare a skipped string as so the debugger can show it. */
+  const stringAdvice = (name: string): string =>
+    stringDefault === DISPATCH_STRING_CAPACITY
+      ? `a plain ${name}`
+      : `${name}(${DISPATCH_STRING_CAPACITY})`;
+
+  /**
+   * Why an array whose elements are STRING / WSTRING of another length than
+   * the dispatch's is left out whole (one warning, not one per element);
+   * undefined for any other element, aliases followed.
+   */
+  const stringArrayReason = (
+    elementTypeName: string,
+    elementLength: { maxLength?: number | string; defaultLength?: true },
+  ): string | undefined => {
+    let name = elementTypeName.toUpperCase();
+    let length = elementLength;
+    const seen = new Set<string>();
+    while (name !== "STRING" && name !== "WSTRING") {
+      if (seen.has(name) || IEC_NAME_TO_TAG[name] !== undefined) {
+        return undefined;
+      }
+      seen.add(name);
+      const def = symbolTables.lookupType(name)?.declaration?.definition;
+      if (def?.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+        return undefined;
+      }
+      if (def.referenceKind !== undefined && def.referenceKind !== "none") {
+        return undefined;
+      }
+      name = def.name.toUpperCase();
+      length = {
+        ...(def.maxLength !== undefined ? { maxLength: def.maxLength } : {}),
+        ...(def.defaultLength === true ? { defaultLength: true as const } : {}),
+      };
+    }
+    const max = length.maxLength;
+    if (max === undefined || max === DISPATCH_STRING_CAPACITY) return undefined;
+    const declared =
+      length.defaultLength === true
+        ? `its elements are ${name} without a length, which holds ${max} characters here`
+        : `its elements are declared ${name}(${max})`;
+    return (
+      `${declared}, but the debug dispatch addresses strings as ` +
+      `${name}(${DISPATCH_STRING_CAPACITY}). Declare them as ` +
+      `${stringAdvice(name)} to expose them.`
+    );
+  };
+
   // visitTypeRef walks a TypeReference: elementary type → leaf, inline array
   // → per-element recursion, named user type (struct / FB / elementary alias)
   // → recurse into definition.
@@ -633,6 +682,22 @@ export function generateDebugTable(
         skipped.push({ path, reason: arrayOfReferencesReason(elementKind) });
         return;
       }
+      const elementLength = {
+        ...(typeRef.elementMaxLength !== undefined
+          ? { maxLength: typeRef.elementMaxLength }
+          : {}),
+        ...(typeRef.elementDefaultLength === true
+          ? { defaultLength: true as const }
+          : {}),
+      };
+      const stringReason = stringArrayReason(
+        typeRef.elementTypeName,
+        elementLength,
+      );
+      if (stringReason !== undefined) {
+        skipped.push({ path, reason: stringReason });
+        return;
+      }
       walkArrayDims(
         path,
         cppExpr,
@@ -641,14 +706,7 @@ export function generateDebugTable(
         typeRef.elementTypeName,
         flags,
         [],
-        {
-          ...(typeRef.elementMaxLength !== undefined
-            ? { maxLength: typeRef.elementMaxLength }
-            : {}),
-          ...(typeRef.elementDefaultLength === true
-            ? { defaultLength: true as const }
-            : {}),
-        },
+        elementLength,
       );
       return;
     }
@@ -688,16 +746,12 @@ export function generateDebugTable(
           typeRef.defaultLength === true
             ? `${name} without a length holds ${typeRef.maxLength} characters here`
             : `declared ${name}(${typeRef.maxLength})`;
-        const advice =
-          stringDefault === DISPATCH_STRING_CAPACITY
-            ? `a plain ${name}`
-            : `${name}(${DISPATCH_STRING_CAPACITY})`;
         skipped.push({
           path,
           reason:
             `${declared}, but the debug dispatch ` +
             `addresses strings as ${name}(${DISPATCH_STRING_CAPACITY}). ` +
-            `Declare it as ${advice} to expose it.`,
+            `Declare it as ${stringAdvice(name)} to expose it.`,
         });
         return;
       }
@@ -746,6 +800,22 @@ export function generateDebugTable(
           skipped.push({ path, reason: `array bounds not constant` });
           return;
         }
+        const elementLength = {
+          ...(def.elementType.maxLength !== undefined
+            ? { maxLength: def.elementType.maxLength }
+            : {}),
+          ...(def.elementType.defaultLength === true
+            ? { defaultLength: true as const }
+            : {}),
+        };
+        const stringReason = stringArrayReason(
+          def.elementType.name,
+          elementLength,
+        );
+        if (stringReason !== undefined) {
+          skipped.push({ path, reason: stringReason });
+          return;
+        }
         walkArrayDims(
           path,
           cppExpr,
@@ -754,14 +824,7 @@ export function generateDebugTable(
           def.elementType.name,
           flags,
           [],
-          {
-            ...(def.elementType.maxLength !== undefined
-              ? { maxLength: def.elementType.maxLength }
-              : {}),
-            ...(def.elementType.defaultLength === true
-              ? { defaultLength: true as const }
-              : {}),
-          },
+          elementLength,
         );
         return;
       }
