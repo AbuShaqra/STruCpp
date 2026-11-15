@@ -102,6 +102,8 @@ export interface FunctionSymbol extends BaseSymbol {
   parameters: VariableSymbol[];
   /** Name of the library this function came from, set only by `registerLibrarySymbols`. */
   libraryName?: string;
+  /** A library function whose parameters carry their POINTER TO, REF_TO and ARRAY shapes. */
+  parameterShapes?: true;
 }
 
 /**

@@ -10,6 +10,7 @@
 import type {
   LibraryCompileError,
   LibraryCompileResult,
+  LibraryFunctionEntry,
   StlibCompileResult,
   StlibArchive,
 } from "./library-manifest.js";
@@ -112,6 +113,34 @@ function serializeVarType(
     entry.referenceChain = typeRef.referenceChain;
   }
   return entry;
+}
+
+/**
+ * The POINTER TO / REF_TO levels and inline-array shape of a FUNCTION
+ * parameter that is not a by-reference REFERENCE TO, for the manifest.
+ */
+function parameterShape(
+  type: TypeReference,
+): Partial<LibraryFunctionEntry["parameters"][number]> {
+  if (type.referenceKind === "reference_to") return {};
+  const shape = serializeVarType("", type);
+  return {
+    ...(shape.referenceKind !== undefined
+      ? { referenceKind: shape.referenceKind }
+      : {}),
+    ...(shape.referenceChain !== undefined
+      ? { referenceChain: shape.referenceChain }
+      : {}),
+    ...(shape.arrayDimensions !== undefined
+      ? { arrayDimensions: shape.arrayDimensions }
+      : {}),
+    ...(shape.elementTypeName !== undefined
+      ? { elementTypeName: shape.elementTypeName }
+      : {}),
+    ...(shape.elementReferenceChain !== undefined
+      ? { elementReferenceChain: shape.elementReferenceChain }
+      : {}),
+  };
 }
 
 /** The declared length of a STRING / WSTRING output or in/out (passed by reference). */
@@ -767,6 +796,7 @@ export function compileLibrary(
   const builtManifest: LibraryManifest = {
     name: options.name,
     version: options.version,
+    parameterShapes: true,
     namespace: options.namespace,
     functions: ast.functions.map((fn) =>
       tagDocumentation(
@@ -798,7 +828,7 @@ export function compileLibrary(
                   ...(initialValue !== undefined ? { initialValue } : {}),
                   ...(byReference
                     ? { referenceKind: "reference_to" as const }
-                    : {}),
+                    : parameterShape(decl.type)),
                 }));
               });
             }),
