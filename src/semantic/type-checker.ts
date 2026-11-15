@@ -738,6 +738,28 @@ export class TypeChecker {
   }
 
   /**
+   * LOWER_BOUND / UPPER_BOUND calls in a test file's statements, which no
+   * typing reaches: checked as an untyped call (see checkBoundCall). Initial
+   * values are typed, and their calls checked, by checkTestAddressStores.
+   */
+  checkTestBoundCalls(
+    roots: readonly ASTNode[],
+    scope: Scope,
+    ast: CompilationUnit | undefined,
+  ): { errors: CompileError[]; warnings: CompileError[] } {
+    this.errors = [];
+    this.warnings = [];
+    this.ast = ast;
+    for (const root of roots) {
+      walkAST(root, (node) => {
+        if (node.kind !== "FunctionCallExpression") return;
+        this.checkBoundCall(node as FunctionCallExpression, scope, true);
+      });
+    }
+    return { errors: [...this.errors], warnings: [...this.warnings] };
+  }
+
+  /**
    * Check types for a complete compilation unit.
    * Walks all POUs, resolves expression types, and validates type rules.
    */
@@ -886,6 +908,10 @@ export class TypeChecker {
       walkAST(value, (node) => {
         if (node.kind === "UnaryExpression") {
           this.refuseNegatedTimeConstant(node as UnaryExpression, scope);
+          return;
+        }
+        if (node.kind === "FunctionCallExpression") {
+          this.checkInitialBoundCall(node as FunctionCallExpression, scope);
           return;
         }
         if (node.kind !== "BinaryExpression") return;
@@ -3400,7 +3426,7 @@ export class TypeChecker {
       return undefined;
     }
 
-    this.checkBoundDimension(expr, scope);
+    this.checkBoundCall(expr, scope, false);
 
     // SEL / MUX of values of one enumeration yield that enumeration.
     const selected = this.selectionEnumResult(expr);
@@ -4654,7 +4680,11 @@ export class TypeChecker {
             return false;
           }
           // UPPER_BOUND(arr, n) of a fixed array: a constant, arr is not read
-          const [arr, ...rest] = stripEnEno([...call.arguments]);
+          const args = stripEnEno([...call.arguments]);
+          const arr =
+            args.find((a) => a.name?.toUpperCase() === "ARR") ??
+            (args[0]?.name === undefined ? args[0] : undefined);
+          const rest = args.filter((a) => a !== arr);
           if (
             BOUND_CALLS.has(upper) &&
             !call.instance &&
@@ -8673,56 +8703,218 @@ export class TypeChecker {
     );
   }
 
-  /** Calls already checked by checkBoundDimension. */
-  private checkedBoundDimensions = new WeakSet<FunctionCallExpression>();
+  /** Calls already checked by checkBoundCall. */
+  private checkedBoundCalls = new WeakSet<FunctionCallExpression>();
 
   /**
-   * LOWER_BOUND / UPPER_BOUND (arr, dim) of a fixed array of two or three
-   * dimensions with a literal `dim` it does not have. (A one-dimensional
-   * array answers any dim, so it is left alone.)
+   * LOWER_BOUND / UPPER_BOUND (ARR, DIM), named or positional: ARR must be an
+   * array (a dereferenced pointer or reference is), and a constant DIM below 1
+   * is refused, as is a literal DIM above the rank of a two- or
+   * three-dimensional array declared as one or of its ARRAY type. A
+   * one-dimensional array answers any positive DIM. A DIM of a known
+   * enumeration is refused; with `checkDimType` (the call is not typed
+   * otherwise) so is any other known type that is no integer. The argument
+   * count is the analyzer's.
    */
-  private checkBoundDimension(
+  private checkBoundCall(
+    expr: FunctionCallExpression,
+    scope: Scope,
+    checkDimType: boolean,
+  ): void {
+    const upper = expr.functionName.toUpperCase();
+    if (upper !== "LOWER_BOUND" && upper !== "UPPER_BOUND") return;
+    if (expr.instance || this.findUserFunction(upper)) return;
+    if (this.ownMethod(upper) || this.libraryOverload(expr)) return;
+    if (scope.lookup(upper)?.kind === "variable") return;
+    if (this.checkedBoundCalls.has(expr)) return;
+    this.checkedBoundCalls.add(expr);
+    const args = stripEnEno([...expr.arguments]);
+    if (args.length !== 2) return;
+    const pick = (name: string, idx: number): Expression | undefined =>
+      args.find((a) => a.name?.toUpperCase() === name)?.value ??
+      (args[idx]?.name === undefined ? args[idx]?.value : undefined);
+    const arr = pick("ARR", 0);
+    const dim = pick("DIM", 1);
+    if (arr === undefined || dim === undefined) return;
+    const operand = this.boundOperand(arr, scope);
+    if (operand !== undefined && "refused" in operand) {
+      this.addError(
+        `ARR of ${upper} must be an array, got ${operand.refused}`,
+        arr.sourceSpan.startLine,
+        arr.sourceSpan.startCol,
+        arr.sourceSpan.file,
+      );
+    }
+    const dimType =
+      dim.kind === "LiteralExpression" && dim.literalType !== "INT"
+        ? { name: dim.literalType, isEnum: false }
+        : this.knownDimType(dim, scope);
+    // A typed call's elementary arguments are checked by validateFunctionCallArgs
+    if (dimType !== undefined && (checkDimType || dimType.isEnum)) {
+      this.addError(
+        `Argument 'DIM' of '${upper}' expects ANY_INT, got ${dimType.name}`,
+        dim.sourceSpan.startLine,
+        dim.sourceSpan.startCol,
+        dim.sourceSpan.file,
+      );
+      return;
+    }
+    if (operand !== undefined && "refused" in operand) return;
+    const rank = operand?.rank;
+    const value = this.constantIntegerValue(dim);
+    // A DIM above the rank is checked on a direct 2- or 3-D array only
+    const shapeRank = operand?.direct === true ? rank : undefined;
+    const literal =
+      dim.kind === "LiteralExpression" && typeof dim.value === "number"
+        ? dim.value
+        : undefined;
+    const outOfShape =
+      shapeRank !== undefined &&
+      shapeRank >= 2 &&
+      shapeRank <= 3 &&
+      literal !== undefined &&
+      !(Number.isInteger(literal) && literal >= 1 && literal <= shapeRank);
+    if (!outOfShape && (value === undefined || value >= 1n)) return;
+    const shown = value !== undefined ? String(value) : String(literal);
+    this.addError(
+      rank !== undefined
+        ? `${upper} has no dimension ${shown}: the array has ${rank}`
+        : `${upper} has no dimension ${shown}: dimensions count from 1`,
+      dim.sourceSpan.startLine,
+      dim.sourceSpan.startCol,
+      dim.sourceSpan.file,
+    );
+  }
+
+  /**
+   * A known type of DIM that is no integer; undefined otherwise. An
+   * enumeration is also known untyped: a typed value (`E#A`) or a variable
+   * declared of the type.
+   */
+  private knownDimType(
+    dim: Expression,
+    scope: Scope,
+  ): { name: string; isEnum: boolean } | undefined {
+    let e = dim;
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    const enumNamed = (name: string): IECType | undefined => {
+      const sym = scope.lookup(name);
+      return sym?.kind === "type" && sym.resolvedType.typeKind === "enum"
+        ? sym.resolvedType
+        : undefined;
+    };
+    let type = this.knownOperandType(dim, scope);
+    if (type === undefined && e.kind === "VariableExpression") {
+      if (e.typedLiteral === true) {
+        type = enumNamed(e.name);
+      } else if (
+        e.fieldAccess.length === 0 &&
+        e.subscripts.length === 0 &&
+        !e.isDereference
+      ) {
+        const sym = scope.lookup(e.name);
+        const declared =
+          sym?.kind === "variable" || sym?.kind === "constant"
+            ? (sym.declaration as VarDeclaration | undefined)?.type
+            : undefined;
+        if (
+          declared !== undefined &&
+          declared.arrayDimensions === undefined &&
+          (declared.referenceKind ?? "none") === "none"
+        ) {
+          type = enumNamed(declared.name);
+        }
+      }
+    }
+    if (type === undefined) return undefined;
+    if (type.typeKind === "enum") {
+      return { name: typeNameUtil(type), isEnum: true };
+    }
+    if (type.typeKind !== "elementary") return undefined;
+    return _isTypeInCategory(type, "ANY_INT")
+      ? undefined
+      : { name: typeNameUtil(type), isEnum: false };
+  }
+
+  /**
+   * The ARR operand of LOWER_BOUND / UPPER_BOUND: an array of a rank, or what
+   * it is instead. Undefined when not known here (a call's result, a library
+   * type).
+   */
+  private boundOperand(
+    arr: Expression,
+    scope: Scope,
+  ): { rank: number; direct: boolean } | { refused: string } | undefined {
+    let e = arr;
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    if (
+      e.kind === "LiteralExpression" ||
+      e.kind === "ArrayLiteralExpression" ||
+      e.kind === "StructInitializerExpression"
+    ) {
+      return { refused: "a literal" };
+    }
+    if (e.kind !== "VariableExpression") return undefined;
+    const sym = scope.lookup(e.name);
+    if (sym?.kind !== "variable" && sym?.kind !== "constant") return undefined;
+    const declared = (sym.declaration as VarDeclaration | undefined)?.type;
+    if (declared === undefined) return undefined;
+    const type = this.hasMemberAccess(e)
+      ? resolveAccessType(declared, e, this.accessLookup)
+      : declared;
+    return type === undefined ? undefined : this.arrayShapeOf(type);
+  }
+
+  /**
+   * The rank of an array type through aliases, or what the type is instead.
+   * `direct` when the type is the array or names its ARRAY type.
+   */
+  private arrayShapeOf(
+    type: AccessType,
+  ): { rank: number; direct: boolean } | { refused: string } | undefined {
+    let current: AccessType = type;
+    for (let depth = 0; depth < 32; depth++) {
+      const kind = current.referenceKind ?? "none";
+      if (kind === "pointer_to" || kind === "ref_to") {
+        const shown = kind === "pointer_to" ? "POINTER TO" : "REF_TO";
+        return { refused: `a ${shown}: dereference it with ^` };
+      }
+      if (kind !== "none") return undefined;
+      if (current.arrayDimensions !== undefined) {
+        return { rank: current.arrayDimensions.length, direct: depth === 0 };
+      }
+      const upper = current.name.toUpperCase();
+      const vla = /^__VLA_(\d+)D_/.exec(upper);
+      if (vla) return { rank: Number(vla[1]), direct: false };
+      const def = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === upper,
+      )?.definition;
+      if (def === undefined) {
+        const elementary = ELEMENTARY_TYPES[canonicalElementaryName(upper)];
+        return elementary ? { refused: elementary.name } : undefined;
+      }
+      if (def.kind === "ArrayDefinition") {
+        return { rank: def.dimensions.length, direct: depth === 0 };
+      }
+      if (def.kind !== "TypeReference") return { refused: current.name };
+      current = def;
+    }
+    return undefined;
+  }
+
+  /**
+   * A LOWER_BOUND / UPPER_BOUND call in an initial value that no typing
+   * reached: its named arguments are bound and the call checked.
+   */
+  private checkInitialBoundCall(
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
     const upper = expr.functionName.toUpperCase();
     if (upper !== "LOWER_BOUND" && upper !== "UPPER_BOUND") return;
-    if (expr.instance || this.findUserFunction(upper)) return;
-    if (this.checkedBoundDimensions.has(expr)) return;
-    this.checkedBoundDimensions.add(expr);
-    const [arr, dim] = stripEnEno([...expr.arguments]);
-    if (arr?.value.kind !== "VariableExpression" || dim === undefined) return;
-    if (
-      dim.value.kind !== "LiteralExpression" ||
-      typeof dim.value.value !== "number"
-    ) {
-      return;
-    }
-    const sym = scope.lookup(arr.value.name);
-    if (sym?.kind !== "variable") return;
-    const declared = (sym.declaration as VarDeclaration | undefined)?.type;
-    if (declared === undefined) return;
-    const type = this.hasMemberAccess(arr.value)
-      ? resolveAccessType(declared, arr.value, this.accessLookup)
-      : declared;
-    if (type === undefined) return;
-    let rank = type.arrayDimensions?.length;
-    if (rank === undefined && (type.referenceKind ?? "none") === "none") {
-      const named = type.name.toUpperCase();
-      const def = this.ast?.types.find(
-        (t) => t.name.toUpperCase() === named,
-      )?.definition;
-      if (def?.kind === "ArrayDefinition") rank = def.dimensions.length;
-    }
-    if (rank === undefined || rank < 2 || rank > 3) return;
-    const value = dim.value.value;
-    if (Number.isInteger(value) && value >= 1 && value <= rank) return;
-    this.addError(
-      `${upper} has no dimension ${String(value)}: the array has ${rank}`,
-      dim.value.sourceSpan.startLine,
-      dim.value.sourceSpan.startCol,
-      dim.value.sourceSpan.file,
-    );
+    if (this.checkedBoundCalls.has(expr)) return;
+    this.bindStdFunctionCallArguments(expr, scope);
+    this.checkBoundCall(expr, scope, true);
   }
 
   /**

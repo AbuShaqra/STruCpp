@@ -73,6 +73,7 @@ import { generateReplMain } from "../backend/repl-main-gen.js";
 import { parseTestFile } from "../testing/test-parser.js";
 import {
   generateTestMain,
+  TestMainCodegenError,
   buildPOUInfoFromAST,
 } from "../backend/test-main-gen.js";
 import { analyzeTestFile } from "../semantic/analyzer.js";
@@ -1100,7 +1101,15 @@ function runTestMode(options: CLIOptions): void {
   if (result.resolvedLibraries) {
     testMainOpts.libraryArchives = result.resolvedLibraries;
   }
-  const testMainCpp = generateTestMain(testFiles, testMainOpts);
+  let testMainCpp: string;
+  try {
+    testMainCpp = generateTestMain(testFiles, testMainOpts);
+  } catch (err: unknown) {
+    if (!(err instanceof TestMainCodegenError)) throw err;
+    console.error("Error in test files:\n");
+    printDiagnostics(err.errors, testSources);
+    process.exit(1);
+  }
 
   // 5. Write to temp directory
   const tempDir = mkdtempSync(join(tmpdir(), "strucpp-test-"));

@@ -41,6 +41,22 @@ import { withYieldedFunctions } from "../library/yield-library.js";
 import { TestCodeGenerator } from "./test-codegen.js";
 import { TypeCodeGenerator } from "./type-codegen.js";
 import type { StlibArchive } from "../library/library-manifest.js";
+import type { CompileError } from "../types.js";
+
+/**
+ * Thrown by generateTestMain when code generation refused a construct in a
+ * test file (a malformed call the analysis let through): the C++ would not
+ * be the test as written. `errors` locates each one.
+ */
+export class TestMainCodegenError extends Error {
+  readonly errors: CompileError[];
+
+  constructor(errors: CompileError[]) {
+    super(errors.map((e) => e.message).join("\n"));
+    this.name = "TestMainCodegenError";
+    this.errors = errors;
+  }
+}
 
 /**
  * Information about a POU (Program Organization Unit) from compilation.
@@ -369,6 +385,19 @@ export function generateTestMain(
   }
   lines.push("}");
   lines.push("");
+
+  const errors = testCodegen.collectedErrors();
+  if (errors.length > 0) {
+    throw new TestMainCodegenError(
+      errors.map((e) => ({
+        message: e.message,
+        line: e.line ?? 0,
+        column: e.column ?? 0,
+        severity: "error",
+        ...(e.file !== undefined ? { file: e.file } : {}),
+      })),
+    );
+  }
 
   return lines.join("\n");
 }

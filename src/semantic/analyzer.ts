@@ -4476,6 +4476,62 @@ export class SemanticAnalyzer {
       }
     }
     this.callOwner = {};
+    this.validateInitialValueCallCounts(ast);
+  }
+
+  /**
+   * Argument counts of the standard function calls in initial values, which
+   * the statement walk does not reach (`hi : DINT := UPPER_BOUND();` failed in
+   * codegen). Counts only: the other call checks stay with the bodies.
+   */
+  private validateInitialValueCallCounts(ast: CompilationUnit): void {
+    const visit = (
+      blocks: VarBlock[],
+      varTypeMap: ReadonlyMap<string, string>,
+    ): void => {
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          if (decl.initialValue === undefined) continue;
+          walkAST(decl.initialValue, (node) => {
+            if (node.kind !== "FunctionCallExpression") return;
+            const call = node as FunctionCallExpression;
+            if (call.functionName.includes(".")) return;
+            this.checkStdFunctionArgs(call, varTypeMap, true);
+          });
+        }
+      }
+    };
+    const merged = (
+      outer: ReadonlyMap<string, string>,
+      blocks: VarBlock[],
+    ): Map<string, string> => {
+      const map = new Map(outer);
+      for (const [k, v] of this.buildVarTypeMap(blocks)) map.set(k, v);
+      return map;
+    };
+    this.callOwner = {};
+    visit(ast.globalVarBlocks, new Map());
+    for (const config of ast.configurations) visit(config.varBlocks, new Map());
+    for (const func of ast.functions) {
+      visit(func.varBlocks, this.buildVarTypeMap(func.varBlocks));
+    }
+    for (const prog of ast.programs) {
+      this.callOwner = { programName: prog.name };
+      const varTypeMap = this.buildVarTypeMap(prog.varBlocks);
+      visit(prog.varBlocks, varTypeMap);
+      for (const method of prog.methods) {
+        visit(method.varBlocks, merged(varTypeMap, method.varBlocks));
+      }
+    }
+    for (const fb of ast.functionBlocks) {
+      this.callOwner = { fbName: fb.name };
+      const varTypeMap = this.buildVarTypeMap(fb.varBlocks);
+      visit(fb.varBlocks, varTypeMap);
+      for (const method of fb.methods) {
+        visit(method.varBlocks, merged(varTypeMap, method.varBlocks));
+      }
+    }
+    this.callOwner = {};
   }
 
   /**
@@ -4694,6 +4750,8 @@ export class SemanticAnalyzer {
   private checkStdFunctionArgs(
     expr: FunctionCallExpression,
     varTypeMap: ReadonlyMap<string, string>,
+    /** Check the argument count of a standard function only. */
+    countsOnly = false,
   ): void {
     const nameUpper = expr.functionName.toUpperCase();
     // A method of the enclosing block is called, not a function of its name.
@@ -4770,10 +4828,11 @@ export class SemanticAnalyzer {
       // (the C++ compiler for library functions, or silent zero-fill for
       // user functions). Function-block invocations resolve to a variable,
       // not a function, so their optional inputs never reach this path.
-      if (sym?.kind === "function") {
+      if (sym?.kind === "function" && !countsOnly) {
         this.checkRequiredFunctionInputs(expr, sym, userArgs);
       }
     }
+    if (countsOnly) return;
 
     if (nameUpper === "ADR" && !userFunction) {
       this.requireFeature("pointer_to", "ADR", expr.sourceSpan);
@@ -7325,6 +7384,26 @@ export class SemanticAnalyzer {
       });
     }
 
+    // Argument counts of standard function calls, as in a POU's body
+    this.callOwner = {};
+    const setupBlocks = testFile.setup?.varBlocks ?? [];
+    const setupVarTypes = this.buildVarTypeMap(setupBlocks);
+    this.checkTestCallCounts(
+      [
+        ...setupBlocks,
+        ...(testFile.setup?.body ?? []),
+        ...(testFile.teardown?.body ?? []),
+      ],
+      setupVarTypes,
+    );
+    for (const tc of testFile.testCases) {
+      const varTypes = new Map(setupVarTypes);
+      for (const [k, v] of this.buildVarTypeMap(tc.varBlocks)) {
+        varTypes.set(k, v);
+      }
+      this.checkTestCallCounts([...tc.varBlocks, ...tc.body], varTypes);
+    }
+
     // Walk each TEST body with scope = SETUP vars + TEST-local vars
     for (const tc of testFile.testCases) {
       const testScope = this.buildTestScope(tc.varBlocks, setupScope);
@@ -7401,7 +7480,28 @@ export class SemanticAnalyzer {
     }
   }
 
-  /** Addresses stored in narrow integers in a test's VARs and statements. */
+  /**
+   * The argument count of each standard function call under `roots` (a test
+   * file's VARs and statements), as checkStdFunctionArgs counts a POU's.
+   */
+  private checkTestCallCounts(
+    roots: ReadonlyArray<VarBlock | TestStatement>,
+    varTypeMap: ReadonlyMap<string, string>,
+  ): void {
+    for (const root of roots) {
+      walkAST(root as ASTNode, (node) => {
+        if (node.kind !== "FunctionCallExpression") return;
+        const call = node as FunctionCallExpression;
+        if (call.functionName.includes(".")) return;
+        this.checkStdFunctionArgs(call, varTypeMap, true);
+      });
+    }
+  }
+
+  /**
+   * LOWER_BOUND / UPPER_BOUND calls, and addresses stored in narrow integers,
+   * in a test's VARs and statements.
+   */
   private checkTestAddressStores(
     varBlocks: readonly VarBlock[],
     stmts: readonly TestStatement[],
@@ -7414,6 +7514,13 @@ export class SemanticAnalyzer {
       false,
       this.testFileDialect?.features ?? DEFAULT_FEATURES,
     );
+    const bounds = checker.checkTestBoundCalls(
+      stmts as readonly ASTNode[],
+      scope,
+      sourceAst,
+    );
+    this.errors.push(...bounds.errors);
+    this.warnings.push(...bounds.warnings);
     const found = checker.checkTestAddressStores(
       varBlocks,
       stmts as readonly ASTNode[],
