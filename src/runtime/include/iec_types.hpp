@@ -283,6 +283,15 @@ inline IecTemporal32<K> operator%(IecTemporal32<K> a, IecTemporal32<K> b) noexce
     return IecTemporal32<K>(detail::temporal_modulo(a.raw, b.raw));
 }
 
+/** A TOD MOD a TIME (both ms): the time within that period; MOD T#0s gives 0. */
+inline IecTemporal32<IEC_KIND_TOD> iec_mod_period(IecTemporal32<IEC_KIND_TOD> a, IecTemporal32<IEC_KIND_TIME> p) noexcept {
+    return IecTemporal32<IEC_KIND_TOD>(detail::temporal_modulo(a.raw, p.raw));
+}
+/** A DT (s) MOD a TIME (ms): the remainder in ms, truncated to whole seconds; MOD T#0s gives 0. */
+inline IecTemporal32<IEC_KIND_DT> iec_mod_period(IecTemporal32<IEC_KIND_DT> a, IecTemporal32<IEC_KIND_TIME> p) noexcept {
+    return IecTemporal32<IEC_KIND_DT>(p.raw == 0u ? 0u : static_cast<uint32_t>(static_cast<uint64_t>(a.raw) * 1000u % p.raw / 1000u));
+}
+
 template<int K> constexpr bool operator==(IecTemporal32<K> a, IecTemporal32<K> b) noexcept { return a.raw == b.raw; }
 template<int K> constexpr bool operator!=(IecTemporal32<K> a, IecTemporal32<K> b) noexcept { return a.raw != b.raw; }
 template<int K> constexpr bool operator<(IecTemporal32<K> a, IecTemporal32<K> b) noexcept { return a.raw < b.raw; }

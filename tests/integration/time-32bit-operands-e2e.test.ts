@@ -7,7 +7,10 @@
  * a TIME FUNCTION or METHOD input (named or positional) or STRUCT initialiser
  * field; MOD by an integer or a duration (0 gives 0), also through a
  * REFERENCE TO; TIME / TIME; a REAL divisor computed in double; a ULINT
- * divisor at or above 2^63. g++ and run.
+ * divisor at or above 2^63. g++ and run. Also an LTIME into an input or
+ * STRUCT field of an alias of TIME, TOD or DT MOD a TIME (the time within
+ * that period; DT in s, truncated), and TIME with LTIME in MOD and `/`
+ * (widened to LTIME).
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -125,6 +128,85 @@ int main() {
       "1",
       "1",
       "0",
+      "0",
+    ]);
+  });
+
+  it("converts an LTIME into an alias of TIME and mixes date and time kinds in MOD and /", () => {
+    const result = compile(
+      `TYPE MyT : TIME; END_TYPE
+TYPE S2 : STRUCT b : MyT; END_STRUCT; END_TYPE
+FUNCTION FA : TIME
+VAR_INPUT a : MyT; END_VAR
+FA := a;
+END_FUNCTION
+FUNCTION_BLOCK FB
+VAR_INPUT pa : MyT; END_VAR
+VAR_OUTPUT o : MyT; END_VAR
+o := pa;
+END_FUNCTION_BLOCK
+PROGRAM MAIN
+VAR
+  lt : LTIME := LTIME#1500us; fb : FB; s : S2 := (b := LTIME#4ms);
+  tod1 : TOD := TOD#01:00:00.500; dt1 : DT := DT#2024-01-01-10:00:10;
+  t : TIME := T#1s; t7 : TIME := T#7s; l3 : LTIME := LTIME#3s; t0 : TIME; l0 : LTIME;
+  r : ARRAY[1..20] OF LINT;
+END_VAR
+r[1] := TIME_TO_LINT(FA(lt));
+r[2] := TIME_TO_LINT(FA(a := lt));
+fb(pa := lt);
+r[3] := TIME_TO_LINT(fb.o);
+r[4] := TIME_TO_LINT(s.b);
+r[5] := TOD_TO_LINT(tod1 MOD T#1h);
+r[6] := DT_TO_LINT(dt1 MOD T#1h);
+r[7] := DT_TO_LINT(dt1 MOD T#1500ms);
+r[8] := TOD_TO_LINT(tod1 MOD t0);
+r[9] := DT_TO_LINT(dt1 MOD t0);
+r[10] := LTIME_TO_LINT(t7 MOD l3);
+r[11] := LTIME_TO_LINT(t7 / l3);
+r[12] := LTIME_TO_LINT(l3 MOD t);
+r[13] := LTIME_TO_LINT(l3 / t);
+r[14] := LTIME_TO_LINT(t7 MOD l0);
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "time32_alias_mixed",
+      extraFlags: ["-fsanitize=undefined", "-fno-sanitize-recover=undefined"],
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    for (int i = 1; i <= 14; ++i) std::cout << p.R[i].get() << " ";
+    std::cout << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout.split(" ")).toEqual([
+      // an LTIME into an input or STRUCT field of an alias of TIME (1-4), ms
+      "1",
+      "1",
+      "1",
+      "4",
+      // TOD MOD TIME in ms; DT MOD TIME in s, truncated; MOD T#0s is 0 (5-9)
+      "500",
+      "10",
+      "1",
+      "0",
+      "0",
+      // TIME with LTIME: LTIME ns, a quotient for / (10-14)
+      "1000000000",
+      "2",
+      "0",
+      "3",
       "0",
     ]);
   });

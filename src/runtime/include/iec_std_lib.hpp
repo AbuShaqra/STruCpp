@@ -1809,6 +1809,12 @@ inline auto iec_temporal_mod(const A& a, const N& n) -> decltype(iec_unwrap(a) %
     return iec_unwrap(a) % iec_unwrap(n);
 }
 
+/** A TOD or DT MOD a TIME: the time within that period, in the instant's type (iec_mod_period). */
+template<typename A, typename P>
+inline auto iec_temporal_mod_period(const A& a, const P& p) -> decltype(iec_mod_period(iec_unwrap(a), iec_unwrap(p))) {
+    return iec_mod_period(iec_unwrap(a), iec_unwrap(p));
+}
+
 
 /** DIVTIME(a, b), a duration by a duration: b = 0 is a run-time fault, as for integers. */
 template<typename A, typename B>

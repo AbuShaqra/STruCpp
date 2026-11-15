@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Autonomy®
 /**
  * E2E: the Table 36 functions concatenate and split dates and times correctly
- * under g++ (leap day, pre-1970 date, Sunday is 0), and with OSCAT loaded its
- * own DAY_OF_WEEK (Sunday is 7) is the one that runs.
+ * under g++ (leap day, Sunday is 0; a date before 1970 wraps, DATE and DT
+ * being unsigned 32-bit seconds), and with OSCAT loaded its own DAY_OF_WEEK
+ * (Sunday is 7) is the one that runs.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -108,6 +109,54 @@ describe.skipIf(!hasGpp || !libsAvailable)(
         expect(run("none", options)).toBe(values(0, 3));
       });
     }
+
+    it("wraps a date before 1970 into 2106 (unsigned 32-bit seconds)", () => {
+      const result = compile(
+        `PROGRAM Main
+VAR
+  d : DATE; dt : DT; ok : BOOL; wd : INT;
+  y : UINT; mo : USINT; dd : USINT; dy : UINT; dmo : USINT; ddd : USINT;
+  h : USINT; mi : USINT; s : USINT; ms : UINT;
+END_VAR
+d := CONCAT_DATE(1969, 12, 31);
+dt := CONCAT_DT(1969, 12, 31, 23, 59, 58, 500);
+ok := SPLIT_DATE(IN := d, YEAR => dy, MONTH => dmo, DAY => ddd);
+ok := SPLIT_DT(IN := dt, YEAR => y, MONTH => mo, DAY => dd, HOUR => h, MINUTE => mi, SECOND => s, MILLISECOND => ms);
+wd := DAY_OF_WEEK(d);
+END_PROGRAM
+`,
+        {
+          headerFileName: "generated.hpp",
+          libraries: discoverStlibs(LIBS_DIR).filter(
+            (a) => a.manifest.name !== "oscat-basic",
+          ),
+        },
+      );
+      expect(result.errors).toEqual([]);
+      const out = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: "t36_pre1970_wrap",
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.D.get() << " " << p.DT.get() << " "
+              << p.DY.get() << "-" << int(p.DMO.get()) << "-" << int(p.DDD.get()) << " "
+              << p.Y.get() << "-" << int(p.MO.get()) << "-" << int(p.DD.get()) << "T"
+              << int(p.H.get()) << ":" << int(p.MI.get()) << ":" << int(p.S.get()) << "."
+              << p.MS.get() << " " << p.WD.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      // 1969-12-31 is -86400 s, modulo 2^32 then floored to a day: 2106-02-06
+      // (a Saturday); the DT 2 s before 1970 is 2^32 - 2 s, its ms dropped.
+      expect(out).toBe("4294857600 4294967294 2106-2-6 2106-2-7T6:28:14.0 6");
+    });
 
     it("runs OSCAT's DAY_OF_WEEK when OSCAT is loaded", () => {
       // OSCAT counts Monday 1 to Sunday 7.

@@ -7139,6 +7139,30 @@ export class CodeGenerator {
       return `${l} ${cppOp} ${r}`;
     }
 
+    const lk = this.temporalBase(expr.left);
+    const rk = this.temporalBase(expr.right);
+    // TOD or DT MOD a TIME: the time within that period
+    if (
+      expr.operator === "MOD" &&
+      (lk === "TOD" || lk === "DT") &&
+      rk === "TIME"
+    ) {
+      return `iec_temporal_mod_period(${left}, ${right})`;
+    }
+    // TIME with LTIME in MOD or `/`: the TIME widens to an LTIME
+    if (
+      (expr.operator === "MOD" || expr.operator === "/") &&
+      lk !== rk &&
+      (lk === "TIME" || lk === "LTIME") &&
+      (rk === "TIME" || rk === "LTIME")
+    ) {
+      const wl = lk === "TIME" ? `TO_LTIME(${left})` : left;
+      const wr = rk === "TIME" ? `TO_LTIME(${right})` : right;
+      return expr.operator === "MOD"
+        ? `iec_mod(${wl}, ${wr})`
+        : `iec_div(${wl}, ${wr}, ${this.faultSite(expr)})`;
+    }
+
     // TIME, DATE, TOD or DT MOD an integer or a duration: unsigned, MOD 0 is 0
     if (expr.operator === "MOD" && this.isTemporal32(expr.left)) {
       return `iec_temporal_mod(${left}, ${right})`;
@@ -7270,7 +7294,13 @@ export class CodeGenerator {
     ) {
       name = this.currentResultTypeName();
     }
-    for (let i = 0; i < 32 && name !== undefined; i++) {
+    return name === undefined ? undefined : this.elementaryThroughAliases(name);
+  }
+
+  /** The canonical elementary name a type name stands for, through user aliases (`TYPE MyT : TIME`). */
+  private elementaryThroughAliases(typeName: string): string {
+    let name = typeName.toUpperCase();
+    for (let i = 0; i < 32; i++) {
       const upper = name;
       const def = this.ast?.types.find(
         (d) => d.name.toUpperCase() === upper,
@@ -7280,7 +7310,7 @@ export class CodeGenerator {
       }
       name = def.name.toUpperCase();
     }
-    return name === undefined ? undefined : canonicalElementaryName(name);
+    return canonicalElementaryName(name);
   }
 
   /** The selected or compared operands of a standard SEL, MUX, LIMIT, MAX or MIN call. */
@@ -8767,7 +8797,7 @@ export class CodeGenerator {
       return code;
     }
     return this.ltimeIntoTime(
-      canonicalElementaryName(type.name.toUpperCase()),
+      this.elementaryThroughAliases(type.name),
       value,
       code,
     );
@@ -10913,7 +10943,7 @@ export class CodeGenerator {
         this.ltimeIntoTime(
           stTypeName === undefined
             ? undefined
-            : canonicalElementaryName(stTypeName.toUpperCase()),
+            : this.elementaryThroughAliases(stTypeName),
           value,
           this.generateExpression(value),
         ),
