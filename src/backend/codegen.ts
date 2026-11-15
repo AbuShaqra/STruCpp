@@ -41,7 +41,7 @@ import type {
   Visibility,
   ASTNode,
 } from "../frontend/ast.js";
-import { charLiteralUnits } from "../literal-utils.js";
+import { charLiteralUnits, exactIntegerValue } from "../literal-utils.js";
 import { isEnEnoArgument, walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry, SourceSpan } from "../types.js";
@@ -3140,6 +3140,8 @@ export class CodeGenerator {
       }
     }
 
+    this.emitSubrangeInputChecks(method.varBlocks);
+
     // Generate body
     if (method.body.length > 0) {
       this.generateStatements(method.body);
@@ -3455,6 +3457,7 @@ export class CodeGenerator {
       this.emit("    if (__mocked_) { __mock_state_.call_count++; return; }");
     }
     this.enterScope(fb.varBlocks);
+    this.emitSubrangeInputChecks(fb.varBlocks);
     if (fb.body.length > 0) {
       this.generateStatements(fb.body);
     } else if (this.options.sourceComments) {
@@ -3636,6 +3639,8 @@ export class CodeGenerator {
           }
         }
       }
+
+      this.emitSubrangeInputChecks(func.varBlocks);
 
       if (func.body.length > 0) {
         this.generateStatements(func.body);
@@ -4903,7 +4908,8 @@ export class CodeGenerator {
       this.programExternals.has(stmt.target.name.toUpperCase())
     ) {
       const value = this.generateExpression(stmt.value);
-      this.emit(`${indent}${stmt.target.name}->write(${value});`);
+      const checked = this.subrangeStore(stmt.target, value, stmt.value);
+      this.emit(`${indent}${stmt.target.name}->write(${checked ?? value});`);
       return;
     }
 
@@ -4924,7 +4930,144 @@ export class CodeGenerator {
       return;
     }
 
-    this.emit(`${indent}${target} = ${value};`);
+    const checked = this.subrangeStore(stmt.target, value, stmt.value);
+    this.emit(`${indent}${target} = ${checked ?? value};`);
+  }
+
+  /**
+   * A store into a variable of a subrange type: the value through
+   * `iec_subrange_store`, which faults when it is outside the range.
+   * Undefined for any other target.
+   */
+  private subrangeStore(
+    target: Expression,
+    value: string,
+    valueExpr?: Expression,
+  ): string | undefined {
+    if (target.kind !== "VariableExpression") return undefined;
+    const upper = target.name.toUpperCase();
+    const hasAccess =
+      target.subscripts.length > 0 ||
+      target.fieldAccess.length > 0 ||
+      target.isDereference ||
+      (target.accessChain !== undefined && target.accessChain.length > 0);
+    // A local or member, else the result of the FUNCTION or METHOD (or a field of it), else a global
+    const root =
+      this.currentScopeVarTypeRefs.get(upper) ??
+      (this.currentFunctionName?.toUpperCase() === upper &&
+      this.currentFunctionResultType !== undefined
+        ? {
+            name: this.currentFunctionResultType,
+            referenceKind: "none" as const,
+          }
+        : undefined) ??
+      this.globalVarTypeRef(upper);
+    if (root === undefined) return undefined;
+    const type = hasAccess
+      ? resolveAccessType(root, target, this.accessLookup)
+      : root;
+    const shown = [target.name, ...target.fieldAccess].join(".");
+    return this.subrangeChecked(type, value, valueExpr, shown, target);
+  }
+
+  /**
+   * A VAR_INPUT of a subrange type, checked on entry to the FUNCTION, METHOD or
+   * FUNCTION_BLOCK: the caller stored its argument into it.
+   */
+  private emitSubrangeInputChecks(blocks: readonly VarBlock[]): void {
+    for (const block of blocks) {
+      if (block.blockType !== "VAR_INPUT") continue;
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          const member = this.localCppName(name);
+          const checked = this.subrangeChecked(
+            decl.type,
+            member,
+            undefined,
+            name,
+            decl,
+          );
+          if (checked !== undefined) this.emit(`    ${member} = ${checked};`);
+        }
+      }
+    }
+  }
+
+  /** The declared type of a global (a global variable list's or a CONFIGURATION's) of this name. */
+  private globalVarTypeRef(upper: string): TypeReference | undefined {
+    const blocks = [
+      ...(this.ast?.globalVarBlocks ?? []),
+      ...(this.ast?.configurations.flatMap((c) => c.varBlocks) ?? []),
+    ];
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (decl.names.some((n) => n.toUpperCase() === upper)) return decl.type;
+      }
+    }
+    return undefined;
+  }
+
+  /** The subrange TYPE a declared type is, through aliases; undefined for any other. */
+  private subrangeTypeOf(
+    type: TypeShape | undefined,
+  ): TypeDeclaration | undefined {
+    if (
+      type === undefined ||
+      type.arrayDimensions !== undefined ||
+      (type.referenceKind ?? "none") !== "none"
+    ) {
+      return undefined;
+    }
+    let name = type.name.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const current = name;
+      const decl = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === current,
+      );
+      if (decl === undefined) return undefined;
+      if (decl.definition.kind === "SubrangeDefinition") return decl;
+      if (
+        decl.definition.kind !== "TypeReference" ||
+        decl.definition.arrayDimensions !== undefined
+      ) {
+        return undefined;
+      }
+      name = decl.definition.name.toUpperCase();
+    }
+    return undefined;
+  }
+
+  /**
+   * `value`, stored into `shown` of declared type `type`, checked against
+   * its range when that is a subrange: undefined for any other type. An
+   * integer literal inside the range needs no check.
+   */
+  private subrangeChecked(
+    type: TypeShape | undefined,
+    value: string,
+    valueExpr: Expression | undefined,
+    shown: string,
+    site: { sourceSpan: SourceSpan },
+  ): string | undefined {
+    const decl = this.subrangeTypeOf(type);
+    if (decl === undefined || decl.definition.kind !== "SubrangeDefinition") {
+      return undefined;
+    }
+    const constant =
+      valueExpr === undefined ? undefined : exactIntegerValue(valueExpr);
+    const lo = exactIntegerValue(decl.definition.lowerBound);
+    const hi = exactIntegerValue(decl.definition.upperBound);
+    if (
+      constant !== undefined &&
+      lo !== undefined &&
+      hi !== undefined &&
+      constant >= lo &&
+      constant <= hi
+    ) {
+      return undefined;
+    }
+    // Qualified: a variable named SR_MIN or SR_MAX would hide the bound
+    return `strucpp::iec_subrange_store(${value}, ::strucpp::${decl.name}_MIN, ::strucpp::${decl.name}_MAX, "${shown}", ${this.faultSite(site)})`;
   }
 
   /**
@@ -4979,7 +5122,8 @@ export class CodeGenerator {
     indent: string,
   ): void {
     const tmp = `__gwv_${this.tempVarCounter++}`;
-    const value = this.generateExpression(valueExpr);
+    const generated = this.generateExpression(valueExpr);
+    const value = this.subrangeStore(target, generated, valueExpr) ?? generated;
     // In a block of its own: a declaration directly under a CASE label would
     // be jumped over by the next label (C++ "jump to case label").
     const inner = indent + this.options.indent;
@@ -10086,6 +10230,8 @@ export class CodeGenerator {
     source: string,
     indent: string,
   ): void {
+    // An output or copy-back into a subrange variable is a store too
+    source = this.subrangeStore(target, source) ?? source;
     if (
       target.kind === "VariableExpression" &&
       !target.isDereference &&
