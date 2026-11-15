@@ -4267,7 +4267,8 @@ export class TypeChecker {
     const inputs =
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope) ??
-      methodParams?.filter((p) => !p.output);
+      methodParams?.filter((p) => !p.output) ??
+      this.libraryShapedFunctionInputs(expr, scope);
     if (inputs) {
       let positional = 0;
       for (const arg of args) {
@@ -6901,6 +6902,31 @@ export class TypeChecker {
       const type = (p.declaration as VarDeclaration | undefined)?.type;
       return type ? [{ name: p.name, type, inOut: p.isInOut }] : [];
     });
+  }
+
+  /**
+   * The inputs and in-outs of a library FUNCTION whose archive records its
+   * parameters' POINTER TO, REF_TO and ARRAY shapes; undefined otherwise.
+   */
+  private libraryShapedFunctionInputs(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): CallInput[] | undefined {
+    const name = expr.functionName;
+    if (expr.instance || name.includes(".")) return undefined;
+    if (this.calledInstance(name, scope) || this.ownMethod(name)) {
+      return undefined;
+    }
+    const fn = this.symbolTables.lookupFunction(name);
+    if (fn?.parameterShapes !== true || this.findUserFunction(name)) {
+      return undefined;
+    }
+    return fn.parameters
+      .filter((p) => p.isInput || p.isInOut)
+      .flatMap((p) => {
+        const type = (p.declaration as VarDeclaration | undefined)?.type;
+        return type ? [{ name: p.name, type, inOut: p.isInOut }] : [];
+      });
   }
 
   /** The REF_TO check for each argument passed to a REF_TO input. */
