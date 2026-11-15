@@ -68,6 +68,7 @@ import {
   unionTypeLines,
   type UnionMemberSpelling,
 } from "./union-codegen.js";
+import { untypedNotCpp, untypedNotTarget } from "../semantic/untyped-not.js";
 
 /**
  * Options for type code generation
@@ -915,6 +916,15 @@ export class TypeCodeGenerator {
         return parenthesizedCpp(expr, this.expressionToCpp(expr.expression));
       case "FunctionCallExpression":
         // `NOT (x)` is parsed as a call: it is the operator NOT on x
+        {
+          const notType = untypedNotTarget(expr);
+          if (notType !== undefined) {
+            return untypedNotCpp(
+              notType,
+              this.expressionToCpp(expr.arguments[0]!.value),
+            );
+          }
+        }
         if (
           expr.functionName.toUpperCase() === "NOT" &&
           expr.arguments.length === 1 &&
@@ -1164,6 +1174,11 @@ export class TypeCodeGenerator {
 
   private unaryExprToCpp(expr: UnaryExpression): string {
     const operand = this.expressionToCpp(expr.operand);
+    // NOT of an untyped constant typed from the element (`w : WORD := NOT 16#0F`)
+    const contextType = untypedNotTarget(expr);
+    if (contextType !== undefined) {
+      return untypedNotCpp(contextType, operand);
+    }
     if (expr.operator === "NOT") return this.notToCpp(expr.operand, operand);
 
     const opMap: Record<string, string> = {

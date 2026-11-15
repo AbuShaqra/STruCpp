@@ -2583,7 +2583,11 @@ export class STParser extends CstParser {
    */
   public testCase = this.RULE("testCase", () => {
     this.CONSUME(tokens.TEST);
-    this.CONSUME(tokens.StringLiteral); // Test name
+    // Test name, in single or double quotes
+    this.OR([
+      { ALT: (): IToken => this.CONSUME(tokens.StringLiteral) },
+      { ALT: (): IToken => this.CONSUME(tokens.WideStringLiteral) },
+    ]);
     this.MANY(() => {
       this.SUBRULE(this.varBlock);
     });
