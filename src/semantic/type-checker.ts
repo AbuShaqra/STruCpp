@@ -14,6 +14,7 @@ import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import type {
   ASTNode,
   RefAssignStatement,
+  RefExpression,
   VarAccess,
   AssignmentStatement,
   Expression,
@@ -67,6 +68,7 @@ import {
   resolveAccessType,
   resolveArrayElementAccessType,
   resolveFieldDeclaration,
+  resolveArrayShapeByName,
   type AccessLookup,
   type AccessType,
 } from "./type-utils.js";
@@ -446,6 +448,23 @@ const NOT_READING_CALLS: ReadonlySet<string> = new Set([
   "SIZEOF",
   "XSIZEOF",
 ]);
+
+/** Calls that take an address: an index into their operand is still evaluated. */
+const ADDRESS_CALLS: ReadonlySet<string> = new Set(["ADR", "REF"]);
+
+/** Calls whose first argument, an array of fixed bounds, is not read. */
+const BOUND_CALLS: ReadonlySet<string> = new Set([
+  "LOWER_BOUND",
+  "UPPER_BOUND",
+]);
+
+/** The index expressions of a variable access (`a[i].b[j]`: i and j). */
+function accessIndices(expr: VariableExpression): Expression[] {
+  if (expr.accessChain === undefined) return expr.subscripts;
+  return expr.accessChain.flatMap((s) =>
+    s.kind === "subscript" ? s.indices : [],
+  );
+}
 
 /** A call's parameters in declaration order, outputs marked. */
 type OutputParams = Array<{ name: string; type: AccessType; output: boolean }>;
@@ -4114,20 +4133,42 @@ export class TypeChecker {
         .map((i) => i.name.toUpperCase()),
     );
     const known = new Set(visible.map((i) => i.name.toUpperCase()));
+    const declared = new Map(
+      visible.map((i) => [i.name.toUpperCase(), i.decl.type] as const),
+    );
     for (const item of order) {
       const value = item.decl.initialValue;
       if (value === undefined || item.decl.names[0] !== item.name) continue;
       const reported = new Set<string>();
-      walkAST(value, (node): boolean | void => {
+      const visit = (node: ASTNode): boolean | void => {
         // ADR(g) and REF(g) take an address, SIZEOF(g) a size: none reads g
-        if (
-          node.kind === "RefExpression" ||
-          (node.kind === "FunctionCallExpression" &&
-            NOT_READING_CALLS.has(
-              (node as FunctionCallExpression).functionName.toUpperCase(),
-            ))
-        ) {
+        if (node.kind === "RefExpression") {
+          this.walkOperandIndices((node as RefExpression).operand, visit);
           return false;
+        }
+        if (node.kind === "FunctionCallExpression") {
+          const call = node as FunctionCallExpression;
+          const upper = call.functionName.toUpperCase();
+          if (NOT_READING_CALLS.has(upper)) {
+            if (ADDRESS_CALLS.has(upper)) {
+              for (const a of call.arguments) {
+                this.walkOperandIndices(a.value, visit);
+              }
+            }
+            return false;
+          }
+          // UPPER_BOUND(arr, n) of a fixed array: a constant, arr is not read
+          const [arr, ...rest] = stripEnEno([...call.arguments]);
+          if (
+            BOUND_CALLS.has(upper) &&
+            !call.instance &&
+            arr?.value.kind === "VariableExpression" &&
+            this.hasFixedGlobalBounds(arr.value, declared)
+          ) {
+            this.walkOperandIndices(arr.value, visit);
+            for (const a of rest) walkAST(a.value, visit);
+            return false;
+          }
         }
         if (node.kind !== "VariableExpression") return;
         const v = node as VariableExpression;
@@ -4142,8 +4183,51 @@ export class TypeChecker {
           v.sourceSpan.startCol,
           v.sourceSpan.file,
         );
-      });
+      };
+      walkAST(value, visit);
     }
+  }
+
+  /** Walk the index expressions of an address operand, which are evaluated. */
+  private walkOperandIndices(
+    operand: Expression,
+    visit: (node: ASTNode) => boolean | void,
+  ): void {
+    if (operand.kind !== "VariableExpression") return;
+    for (const index of accessIndices(operand)) {
+      walkAST(index, visit);
+    }
+  }
+
+  /**
+   * `expr` reaches, with no dereference, an array of fixed bounds through a
+   * global of `declared` (upper-case names): its bounds are constants.
+   */
+  private hasFixedGlobalBounds(
+    expr: VariableExpression,
+    declared: ReadonlyMap<string, TypeReference>,
+  ): boolean {
+    const base = declared.get(expr.name.toUpperCase());
+    if (
+      base === undefined ||
+      expr.isDereference ||
+      expr.accessChain?.some((s) => s.kind === "dereference") === true
+    ) {
+      return false;
+    }
+    const type = this.hasMemberAccess(expr)
+      ? resolveAccessType(base, expr, this.accessLookup)
+      : base;
+    if (type === undefined || (type.referenceKind ?? "none") !== "none") {
+      return false;
+    }
+    if (type.arrayDimensions !== undefined) {
+      return type.arrayDimensions.length > 0;
+    }
+    const shape = this.ast
+      ? resolveArrayShapeByName(type.name, this.ast)
+      : undefined;
+    return shape !== undefined && shape.dims.every((d) => d !== null);
   }
 
   /** Report each cycle of `ordered`, at its first global. */
