@@ -4,10 +4,7 @@
  * Shared utility functions for C++ code generation.
  */
 
-import type {
-  ElementaryType,
-  Expression,
-} from "../frontend/ast.js";
+import type { ElementaryType, Expression } from "../frontend/ast.js";
 import { exactIntegerLiteralValue } from "../literal-utils.js";
 import { cp1252Byte } from "../byte-utils.js";
 
