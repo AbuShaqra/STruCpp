@@ -108,7 +108,7 @@ describe("method call named arguments", () => {
   it("accepts inputs, in/outs, outputs and EN/ENO", () => {
     expect(
       errors({
-        call: "Body := N(EN := TRUE, io := v, q => v, b := 1) + SUPER.M(a := 1);",
+        call: "Body := N(EN := TRUE, io := v, q => v, b := 1);\nBody := Body + SUPER.M(a := 1);",
         prg: "y := PM(k := 1);",
         main: "x := itf.M(a := 1) + d.M(a := 2) + r.N(b := 1, io := x);",
       }),
