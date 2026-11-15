@@ -636,8 +636,8 @@ const MEMBER_KIND: Partial<Record<VarBlock["blockType"], MemberKind>> = {
 export class TypeChecker {
   private errors: CompileError[] = [];
   private warnings: CompileError[] = [];
-  /** How many of `errors` are struct_compare refusals, which gate no later pass. */
-  private refusals = 0;
+  /** The struct_compare refusals added to `errors`, which gate no later pass. */
+  private refusals = new Set<CompileError>();
   private ast: CompilationUnit | undefined;
 
   constructor(
@@ -805,7 +805,7 @@ export class TypeChecker {
   } {
     this.errors = [];
     this.warnings = [];
-    this.refusals = 0;
+    this.refusals.clear();
     this.strictReported.clear();
     this.addressStoresReported.clear();
     this.misalignedReported.clear();
@@ -928,7 +928,8 @@ export class TypeChecker {
     return {
       errors: this.errors,
       warnings: this.warnings,
-      refusals: this.refusals,
+      // Only refusals still in `errors`: a silent typing pass may drop some
+      refusals: this.errors.filter((e) => this.refusals.has(e)).length,
     };
   }
 
@@ -6540,7 +6541,8 @@ export class TypeChecker {
       expr.sourceSpan.startCol,
       expr.sourceSpan.file,
     );
-    this.refusals++;
+    const added = this.errors[this.errors.length - 1];
+    if (added !== undefined) this.refusals.add(added);
   }
 
   /**
