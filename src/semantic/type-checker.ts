@@ -102,6 +102,11 @@ import {
   fbInitInput,
   storedInstance,
 } from "./fb-init.js";
+import {
+  isUntypedIntegerConstant,
+  typeUntypedNot,
+  untypedNotTarget,
+} from "./untyped-not.js";
 
 // Re-export from type-utils for backward compatibility
 export { ELEMENTARY_TYPES, TYPE_CATEGORIES } from "./type-utils.js";
@@ -412,6 +417,9 @@ const TEMPORAL_STORAGE: Readonly<Record<string, string>> = {
   LDT: "dt",
 };
 
+/** A call's parameters in declaration order, outputs marked. */
+type OutputParams = Array<{ name: string; type: AccessType; output: boolean }>;
+
 const COMPARISON_OPS: ReadonlySet<string> = new Set([
   "=",
   "<>",
@@ -465,6 +473,18 @@ function strictKind(name: string): StrictKind | undefined {
   if (/^U?(SINT|INT|DINT|LINT)$/.test(n)) return "int";
   if (STRICT_BIT_STRINGS.has(n)) return "bit";
   return undefined;
+}
+
+/** `to` is the Ed. 3 long form of `from` (TIME into LTIME and the like). */
+function isLongFormOf(to: string, from: string): boolean {
+  const f = canonicalElementaryName(from);
+  const t = canonicalElementaryName(to);
+  return (
+    (f === "TIME" && t === "LTIME") ||
+    (f === "DATE" && t === "LDATE") ||
+    (f === "DT" && t === "LDT") ||
+    (f === "TOD" && t === "LTOD")
+  );
 }
 
 function strictConversionMessage(from: string, to: string): string {
@@ -551,7 +571,14 @@ export class TypeChecker {
     for (const root of roots) {
       walkAST(root, (node) => {
         if (node.kind === "FunctionCallExpression") {
-          this.checkOutputBindings(node as FunctionCallExpression, scope);
+          const call = node as FunctionCallExpression;
+          // A built-in operator (XSIZEOF) is marked for codegen, as in a POU.
+          this.vendorOperatorCallType(
+            call,
+            call.functionName.toUpperCase(),
+            scope,
+          );
+          this.checkOutputBindings(call, scope);
         }
       });
     }
@@ -571,6 +598,8 @@ export class TypeChecker {
     this.errors = [];
     this.warnings = [];
     this.ast = ast;
+    // The initial values' types, as a POU's are checked
+    this.checkVarBlocks(varBlocks as VarBlock[], scope);
     for (const block of varBlocks) {
       for (const decl of block.declarations) {
         if (decl.initialValue === undefined) continue;
@@ -1308,6 +1337,7 @@ export class TypeChecker {
         if (decl.initialValue) {
           this.checkInitializerElements(decl.type, decl.initialValue, context);
           this.refuseLtimeTimeDefault(decl, fields.has(decl));
+          this.typeInitializerNots(decl.type, decl.initialValue);
         }
       });
     for (const fb of ast.functionBlocks) visit(fb, fb.name);
@@ -1315,6 +1345,12 @@ export class TypeChecker {
     for (const t of ast.types) {
       if (t.defaultValue && t.definition.kind === "TypeReference") {
         this.checkCharInitialValue(t.name, t.defaultValue);
+      }
+      if (t.defaultValue) {
+        this.typeInitializerNots(
+          { name: t.name, referenceKind: "none" },
+          t.defaultValue,
+        );
       }
     }
   }
@@ -1990,6 +2026,14 @@ export class TypeChecker {
   ): IECType | undefined {
     let leftType = this.resolveExprType(expr.left, scope);
     let rightType = this.resolveExprType(expr.right, scope);
+    // `w = NOT 16#00F0`: the NOT takes the other operand's type
+    if (COMPARISON_OPS.has(expr.operator)) {
+      if (this.typeNotFromExpected(expr.left, rightType)) {
+        leftType = expr.left.resolvedType;
+      } else if (this.typeNotFromExpected(expr.right, leftType)) {
+        rightType = expr.right.resolvedType;
+      }
+    }
     delete expr.comparesReferences;
     if (
       (expr.operator === "=" || expr.operator === "<>") &&
@@ -2033,8 +2077,50 @@ export class TypeChecker {
     }
     // Logical operators return BOOL
     else if (["AND", "OR", "XOR"].includes(expr.operator)) {
-      type =
-        this.bitwiseResultType(leftType, rightType) ?? ELEMENTARY_TYPES["BOOL"];
+      this.refuseIntegerBitwise(expr, leftType, rightType);
+      delete expr.computeAs;
+      // Untyped constants only: typed by context, as before (BOOL here)
+      // An untyped constant takes the type of the other operand when that is
+      // an integer or a bit string (BOOL included); otherwise as before
+      const ordinal = (t: IECType): boolean =>
+        this.isIntegerType(t) ||
+        (t.typeKind === "elementary" &&
+          (STRICT_BIT_STRINGS.has(this.aliasBase((t as ElementaryType).name)) ||
+            this.aliasBase((t as ElementaryType).name) === "BOOL"));
+      type = this.isUntypedBitConstant(expr)
+        ? ELEMENTARY_TYPES["BOOL"]
+        : this.isUntypedBitConstant(expr.left) && ordinal(rightType)
+          ? rightType
+          : this.isUntypedBitConstant(expr.right) && ordinal(leftType)
+            ? leftType
+            : (this.bitwiseResultType(leftType, rightType) ??
+              ELEMENTARY_TYPES["BOOL"]);
+      // Mixed signedness: C++ computes in the widened type, not by its promotion
+      const widened =
+        this.isIntegerType(leftType) && this.isIntegerType(rightType)
+          ? this.mixedSignCommonType(leftType, rightType)
+          : undefined;
+      if (widened !== undefined && type === widened) {
+        expr.computeAs = (widened as ElementaryType).name.toUpperCase();
+      }
+      const names = [leftType, rightType].map((t) =>
+        t.typeKind === "elementary"
+          ? this.aliasBase((t as ElementaryType).name)
+          : "",
+      );
+      if (
+        names.includes("LINT") &&
+        names.includes("ULINT") &&
+        !this.strict &&
+        !this.inOutErrors
+      ) {
+        this.addWarning(
+          `LINT and ULINT have no common integer type: ${expr.operator} of them is a LINT`,
+          expr.sourceSpan.startLine,
+          expr.sourceSpan.startCol,
+          expr.sourceSpan.file,
+        );
+      }
     }
     // IEC 61131-3 date/time arithmetic (table 30 of the standard).
     // Date types are int64_t aliases at the C++ level so the operator-
@@ -2153,8 +2239,116 @@ export class TypeChecker {
       const name = this.aliasBase((t as ElementaryType).name);
       return STRICT_BIT_STRINGS.has(name) ? [ELEMENTARY_TYPES[name]!] : [];
     });
-    if (bits.length === 0) return undefined;
-    return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
+    if (bits.length > 0) {
+      return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
+    }
+    // Two integers (a vendor extension): their common integer type; a signed
+    // and an unsigned one take the smallest signed type holding both (Figure 11)
+    if (this.isIntegerType(leftType) && this.isIntegerType(rightType)) {
+      return (
+        this.mixedSignCommonType(leftType, rightType) ??
+        getCommonType(leftType, rightType) ??
+        leftType
+      );
+    }
+    return undefined;
+  }
+
+  /**
+   * A signed and an unsigned integer: the smallest signed type wider than the
+   * unsigned one and at least as wide as the signed one (SINT and USINT give
+   * INT). LINT and ULINT have none: LINT. Undefined for the same signedness.
+   */
+  private mixedSignCommonType(a: IECType, b: IECType): IECType | undefined {
+    const name = (t: IECType): string =>
+      this.aliasBase((t as ElementaryType).name).toUpperCase();
+    const [an, bn] = [name(a), name(b)];
+    const aUnsigned = an.startsWith("U");
+    if (aUnsigned === bn.startsWith("U")) return undefined;
+    const bitsOf: Record<string, number> = {
+      SINT: 8,
+      INT: 16,
+      DINT: 32,
+      LINT: 64,
+    };
+    const [signedName, unsignedName] = aUnsigned ? [bn, an] : [an, bn];
+    const need = Math.max(
+      bitsOf[signedName]!,
+      bitsOf[unsignedName.slice(1)]! * 2,
+    );
+    const fit = ["SINT", "INT", "DINT", "LINT"].find((n) => bitsOf[n]! >= need);
+    return ELEMENTARY_TYPES[fit ?? "LINT"];
+  }
+
+  private isIntegerType(t: IECType): boolean {
+    return (
+      t.typeKind === "elementary" &&
+      /^U?(SINT|INT|DINT|LINT)$/.test(
+        this.aliasBase((t as ElementaryType).name),
+      )
+    );
+  }
+
+  /**
+   * IEC 61131-3 Ed. 3 Table 31 defines AND, OR and XOR on ANY_BIT only:
+   * under iec-3 and `--strict` an integer operand is refused (an untyped
+   * constant beside a bit string or BOOL adapts to it).
+   */
+  private refuseIntegerBitwise(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): void {
+    if (!this.strict && !this.inOutErrors) return;
+    for (const [operand, type] of [
+      [expr.left, leftType],
+      [expr.right, rightType],
+    ] as const) {
+      // An untyped constant adapts; only a typed integer operand is refused,
+      // and an inner AND/OR/XOR was refused at its own operand already
+      let inner: Expression = operand;
+      while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
+      if (
+        !this.isIntegerType(type) ||
+        this.isUntypedBitConstant(operand) ||
+        (inner.kind === "BinaryExpression" &&
+          ["AND", "OR", "XOR"].includes(inner.operator))
+      ) {
+        continue;
+      }
+      const base = this.aliasBase(typeNameUtil(type));
+      this.addError(
+        `${expr.operator} takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${base}; convert it with ${base}_TO_WORD or the like`,
+        operand.sourceSpan.startLine,
+        operand.sourceSpan.startCol,
+        operand.sourceSpan.file,
+      );
+      return;
+    }
+  }
+
+  /**
+   * An untyped integer constant, or AND/OR/XOR/NOT of such constants only
+   * (`16#F0 OR 16#0F`, `1 AND 0`): its type comes from where it is used.
+   */
+  private isUntypedBitConstant(expr: Expression): boolean {
+    if (this.untypedConstantKind(expr) === "INT") return true;
+    switch (expr.kind) {
+      case "ParenthesizedExpression":
+        return this.isUntypedBitConstant(expr.expression);
+      case "UnaryExpression":
+        return (
+          expr.operator === "NOT" && this.isUntypedBitConstant(expr.operand)
+        );
+      case "BinaryExpression":
+        return (
+          ["AND", "OR", "XOR"].includes(expr.operator) &&
+          this.isUntypedBitConstant(expr.left) &&
+          this.isUntypedBitConstant(expr.right)
+        );
+      default:
+        return false;
+    }
   }
 
   /**
@@ -2550,6 +2744,20 @@ export class TypeChecker {
     if (expr.operator === "NOT") {
       // NOT preserves the operand type for bit types (NOT BYTE returns BYTE)
       type = operandType;
+      // Table 31: NOT on a typed integer is refused under iec-3 and --strict
+      if (
+        (this.strict || this.inOutErrors) &&
+        this.isIntegerType(operandType) &&
+        !isUntypedIntegerConstant(expr.operand)
+      ) {
+        const base = this.aliasBase(typeNameUtil(operandType));
+        this.addError(
+          `NOT takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${base}; convert it with ${base}_TO_WORD or the like`,
+          expr.operand.sourceSpan.startLine,
+          expr.operand.sourceSpan.startCol,
+          expr.operand.sourceSpan.file,
+        );
+      }
     } else {
       // Unary + and - preserve the operand type
       type = operandType;
@@ -2619,6 +2827,7 @@ export class TypeChecker {
         expr.arguments,
         scope,
       );
+      this.checkStrictConversionArgument(expr, scope);
     }
 
     const nameUpper = expr.functionName.toUpperCase();
@@ -2806,6 +3015,14 @@ export class TypeChecker {
       const owner = this.memberChainOwner(expr.object, scope);
       const method = this.checkMemberChainCall(expr, expr.object, owner);
       const chainInputs = this.methodInputsOf(owner?.name, expr.methodName);
+      if (owner?.name !== undefined) {
+        this.bindOutputs(
+          this.methodParametersOf(owner.name, expr.methodName),
+          expr.arguments,
+          scope,
+        );
+      }
+      this.checkMemberFbOutputBindings(expr, owner?.name, scope);
       this.adaptCharArguments(chainInputs, expr.arguments);
       this.validateInterfaceArguments(chainInputs, expr.arguments);
       this.validateStructArguments(chainInputs, expr.arguments);
@@ -2831,6 +3048,14 @@ export class TypeChecker {
     }
 
     const methodInputs = this.methodInputs(objType, expr, scope);
+    this.checkMethodOutputBindings(expr, objType, scope);
+    if (objType?.typeKind === "elementary") {
+      this.checkMemberFbOutputBindings(
+        expr,
+        (objType as ElementaryType).name,
+        scope,
+      );
+    }
     this.adaptCharArguments(
       methodInputs ??
         (objType?.typeKind === "elementary"
@@ -3603,6 +3828,10 @@ export class TypeChecker {
             if (call.vendorOperator !== undefined) hasOperator = true;
           });
           const targetType = ELEMENTARY_TYPES[decl.type.name.toUpperCase()];
+          // NOT of an untyped constant takes the global's bit string type
+          if (decl.type.arrayDimensions === undefined) {
+            typeUntypedNot(value, this.aliasBase(decl.type.name).toUpperCase());
+          }
           // Any expression holding an operator, `(XSIZEOF(g))` or `XSIZEOF(g) + 1` too.
           const valueType =
             hasOperator &&
@@ -4769,6 +4998,21 @@ export class TypeChecker {
             ),
           );
         }
+        // NOT of an untyped constant into a result or through `p^`
+        if (targetType === undefined) {
+          this.typeNotFromExpected(
+            stmt.value,
+            stmt.target.kind === "VariableExpression" &&
+              this.currentReturn !== undefined &&
+              stmt.target.fieldAccess.length === 0 &&
+              stmt.target.subscripts.length === 0 &&
+              !stmt.target.isDereference &&
+              stmt.target.name.toUpperCase() ===
+                this.currentReturn.name.toUpperCase()
+              ? this.currentReturn.type.name
+              : this.dereferencedType(stmt.target, scope),
+          );
+        }
         this.validateInOutMemberWrite(stmt.target, scope);
         // An address stored in an integer, also through a dereference (a
         // POINTER TO or reference target takes it whole).
@@ -4912,6 +5156,8 @@ export class TypeChecker {
           for (const label of c.labels) {
             this.resolveExprType(label.start, scope);
             if (label.end) this.resolveExprType(label.end, scope);
+            this.typeNotFromExpected(label.start, selectorType);
+            if (label.end) this.typeNotFromExpected(label.end, selectorType);
             // A CHAR selector takes 'a' and CHAR#'a' labels, of its own type only.
             if (selectorChar !== undefined) {
               for (const bound of label.end
@@ -5127,6 +5373,10 @@ export class TypeChecker {
     value: Expression,
   ): void {
     if (this.adaptCharLiteral(value, this.charTypeOf(targetType))) {
+      valueType = value.resolvedType;
+    }
+    // `w := NOT 16#00F0`: NOT of an untyped constant takes the target's type
+    if (this.typeNotFromExpected(value, targetType)) {
       valueType = value.resolvedType;
     }
     const targetInterface = this.interfaceTypeOf(targetType);
@@ -6338,6 +6588,19 @@ export class TypeChecker {
     args: readonly Argument[],
   ): void {
     if (!inputs) return;
+    // `F(NOT 16#00F0)` into a WORD input: NOT takes the input's type
+    stripEnEno([...args]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (!input || input.inOut || input.type.arrayDimensions !== undefined) {
+        return;
+      }
+      typeUntypedNot(arg.value, this.aliasBase(input.type.name).toUpperCase());
+    });
     stripEnEno([...args]).forEach((arg, i) => {
       if (arg.isOutput) return;
       const argName = arg.name?.toUpperCase();
@@ -6502,11 +6765,94 @@ export class TypeChecker {
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
-    if (this.strict) this.checkStrictFbOutputs(expr, scope);
-    if (expr.instance || expr.functionName.includes(".")) return;
-    if (this.calledInstance(expr.functionName, scope)) return;
-    const params = this.calledFunctionParameters(expr.functionName);
+    this.checkFbOutputBindings(expr, scope);
+    if (expr.instance) return;
+    let params: OutputParams | undefined;
+    if (expr.functionName.includes(".")) {
+      params = this.dottedMethodParameters(expr.functionName, scope);
+    } else {
+      if (this.calledInstance(expr.functionName, scope)) return;
+      params = this.calledFunctionParameters(expr.functionName);
+    }
+    this.bindOutputs(params, expr.arguments, scope);
+  }
+
+  /** `obj.M(o => v)` (a method call on an array element or member): see checkOutputBindings. */
+  private checkMethodOutputBindings(
+    expr: MethodCallExpression,
+    objType: IECType | undefined,
+    scope: Scope,
+  ): void {
+    if (objType?.typeKind !== "elementary") return;
+    this.bindOutputs(
+      this.methodParametersOf(
+        (objType as ElementaryType).name,
+        expr.methodName,
+      ),
+      expr.arguments,
+      scope,
+    );
+  }
+
+  /** The parameters of `owner.M`: a method of a FUNCTION_BLOCK this unit declares. */
+  private dottedMethodParameters(
+    functionName: string,
+    scope: Scope,
+  ): OutputParams | undefined {
+    const parts = functionName.split(".");
+    if (parts.length !== 2) return undefined;
+    const owner = this.callOwnerType(parts[0]!, scope);
+    return owner === undefined
+      ? undefined
+      : this.methodParametersOf(owner, parts[1]!);
+  }
+
+  /** The parameters of method `methodName` of FB `fbType` or a base; undefined otherwise. */
+  private methodParametersOf(
+    fbType: string,
+    methodName: string,
+  ): OutputParams | undefined {
+    const upper = this.aliasBase(fbType).toUpperCase();
+    if (
+      this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper) !==
+      true
+    ) {
+      return undefined;
+    }
+    const method = this.lookupChainMethod(upper, methodName);
+    return typeof method === "object"
+      ? this.parametersOfBlocks(method.varBlocks)
+      : undefined;
+  }
+
+  /** VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT of a POU's blocks, in order. */
+  private parametersOfBlocks(blocks: readonly VarBlock[]): OutputParams {
+    return blocks
+      .filter(
+        (b) =>
+          b.blockType === "VAR_INPUT" ||
+          b.blockType === "VAR_IN_OUT" ||
+          b.blockType === "VAR_OUTPUT",
+      )
+      .flatMap((b) =>
+        b.declarations.flatMap((d) =>
+          d.names.map((n) => ({
+            name: n,
+            type: d.type as AccessType,
+            output: b.blockType === "VAR_OUTPUT",
+          })),
+        ),
+      );
+  }
+
+  /** Check each output argument against its parameter (see checkOutputBinding). */
+  private bindOutputs(
+    params: OutputParams | undefined,
+    args: readonly Argument[],
+    scope: Scope,
+  ): void {
     if (params === undefined || !params.some((p) => p.output)) return;
+    const expr = { arguments: args };
     const claimed = new Set(
       expr.arguments.flatMap((a) =>
         a.name === undefined ? [] : [a.name.toUpperCase()],
@@ -6715,6 +7061,102 @@ export class TypeChecker {
     if (base === "STRING" || base === "WSTRING") return undefined;
     const storage = INTEGER_STORAGE[base] ?? TEMPORAL_STORAGE[base] ?? base;
     return `${base === name.toUpperCase() ? "iec" : "raw"}:${storage}`;
+  }
+
+  /** A type name through aliases and subranges (`TYPE SR : INT (0..10)` is INT). */
+  private ordinalBase(name: string): string {
+    let upper = this.aliasBase(name);
+    for (let i = 0; i < 32; i++) {
+      const current = upper;
+      const def = this.ast?.types.find(
+        (td) => td.name.toUpperCase() === current,
+      )?.definition;
+      if (def?.kind !== "SubrangeDefinition") return upper;
+      upper = this.aliasBase(def.baseType.name);
+    }
+    return upper;
+  }
+
+  /**
+   * Type each NOT of an untyped constant in `value` from the type the context
+   * expects of it. True when `value` itself is such a NOT, now typed.
+   */
+  private typeNotFromExpected(
+    value: Expression,
+    expected: IECType | string | undefined,
+  ): boolean {
+    if (expected === undefined) return false;
+    const name =
+      typeof expected === "string" ? expected : typeNameUtil(expected);
+    typeUntypedNot(value, this.aliasBase(name).toUpperCase());
+    return untypedNotTarget(value) !== undefined;
+  }
+
+  /**
+   * Type the NOTs of an initial value from its declared type, element by
+   * element through ARRAY and STRUCT initialisers.
+   */
+  private typeInitializerNots(
+    type: AccessType | undefined,
+    value: Expression,
+  ): void {
+    if (
+      !this.ast ||
+      !type ||
+      type.referenceKind !== "none" ||
+      type.referenceChain !== undefined
+    ) {
+      return;
+    }
+    if (value.kind === "ArrayLiteralExpression") {
+      const element: AccessType | undefined =
+        type.arrayDimensions !== undefined
+          ? type.elementTypeName !== undefined &&
+            type.elementReferenceChain === undefined
+            ? { name: type.elementTypeName, referenceKind: "none" }
+            : undefined
+          : resolveArrayElementAccessType(type.name, this.ast);
+      for (const e of value.elements) this.typeInitializerNots(element, e);
+      return;
+    }
+    if (type.arrayDimensions !== undefined) return;
+    if (value.kind !== "StructInitializerExpression") {
+      this.typeNotFromExpected(value, type.name);
+      return;
+    }
+    const upper = this.aliasBase(type.name);
+    for (const el of value.elements) {
+      const field = resolveFieldDeclaration(upper, el.name, this.ast);
+      if (field) this.typeInitializerNots(field.type, el.value);
+    }
+  }
+
+  /** The type `p^` designates, for a pointer or REF_TO variable `p`. */
+  private dereferencedType(
+    target: Expression,
+    scope: Scope,
+  ): string | undefined {
+    if (
+      target.kind !== "VariableExpression" ||
+      !target.isDereference ||
+      target.fieldAccess.length > 0 ||
+      target.subscripts.length > 0 ||
+      (target.accessChain !== undefined &&
+        (target.accessChain.length !== 1 ||
+          target.accessChain[0]!.kind !== "dereference"))
+    ) {
+      return undefined;
+    }
+    const sym = scope.lookup(target.name);
+    if (sym?.kind !== "variable") return undefined;
+    const type = (sym.declaration as VarDeclaration | undefined)?.type;
+    return type !== undefined &&
+      (type.referenceKind === "pointer_to" ||
+        type.referenceKind === "ref_to") &&
+      type.referenceChain === undefined &&
+      type.arrayDimensions === undefined
+      ? type.name
+      : undefined;
   }
 
   private aliasBase(name: string): string {
@@ -7045,18 +7487,59 @@ export class TypeChecker {
   }
 
   /**
-   * `--strict`: an FB call's `o => v` follows the strict conversion rules of
-   * `v := o`, as a FUNCTION's output does (checkOutputBindings).
+   * An FB call's `o => v` follows the rules of the assignment `v := o`, as a
+   * FUNCTION's output does (checkOutputBindings): its refusals, its narrowing
+   * warning, and its `--strict` errors. The value is copied out by assignment.
    */
-  private checkStrictFbOutputs(
+  private checkFbOutputBindings(
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
     if (!expr.arguments.some((a) => a.isOutput)) return;
     const fbType = this.calledFbType(expr, scope);
     if (fbType === undefined) return;
+    this.checkFbOutputs(fbType, expr.arguments, scope);
+  }
+
+  /**
+   * `a.b.inst(o => v)`, `arr[i].inst(o => v)`: a call of an FB instance that
+   * is a member of `ownerType`, checked as `checkFbOutputBindings` does.
+   */
+  private checkMemberFbOutputBindings(
+    expr: MethodCallExpression,
+    ownerType: string | undefined,
+    scope: Scope,
+  ): void {
+    if (ownerType === undefined) return;
+    if (!expr.arguments.some((a) => a.isOutput)) return;
+    if (this.methodParametersOf(ownerType, expr.methodName) !== undefined) {
+      return;
+    }
+    const fbType = this.resolveFieldTypeAnywhere(
+      this.aliasBase(ownerType),
+      expr.methodName,
+    );
+    if (fbType === undefined || !this.isFunctionBlockName(fbType)) return;
+    this.checkFbOutputs(fbType, expr.arguments, scope);
+  }
+
+  /** True when `name` (through aliases) is a FUNCTION_BLOCK this unit declares. */
+  private isFunctionBlockName(name: string): boolean {
+    const upper = this.aliasBase(name).toUpperCase();
+    return (
+      this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper) ===
+      true
+    );
+  }
+
+  /** Each `o => v` of a call of FB type `fbType`, checked as `v := o`. */
+  private checkFbOutputs(
+    fbType: string,
+    args: readonly Argument[],
+    scope: Scope,
+  ): void {
     const outputs = this.fbOutputsOf(fbType);
-    for (const arg of expr.arguments) {
+    for (const arg of args) {
       if (!arg.isOutput || arg.name === undefined) continue;
       if (arg.value.kind !== "VariableExpression") continue;
       const upper = arg.name.toUpperCase();
@@ -7069,6 +7552,15 @@ export class TypeChecker {
       ) {
         continue;
       }
+      if (scope.lookup(arg.value.name)?.kind === "constant") {
+        this.addError(
+          `Cannot assign to CONSTANT variable '${arg.value.name}'`,
+          arg.value.sourceSpan.startLine,
+          arg.value.sourceSpan.startCol,
+          arg.value.sourceSpan.file,
+        );
+        continue;
+      }
       const bound = this.boundAccessType(arg.value, scope);
       const boundType =
         bound === undefined
@@ -7076,7 +7568,7 @@ export class TypeChecker {
           : this.resolveNamedType(bound.name);
       if (boundType === undefined) continue;
       const outType = this.resolveNamedType(out.typeName);
-      this.checkStrictConversion(boundType, {
+      this.validateAssignment(boundType, outType, arg.value, {
         kind: "VariableExpression",
         sourceSpan: arg.value.sourceSpan,
         name: out.name,
@@ -7095,8 +7587,20 @@ export class TypeChecker {
   ): string | undefined {
     if (expr.instance !== undefined) {
       const t = this.resolveExprType(expr.instance, scope);
-      return t?.typeKind === "elementary"
-        ? (t as ElementaryType).name
+      if (t?.typeKind === "elementary") return (t as ElementaryType).name;
+      // `p^(...)`: the type the pointer is declared to
+      const inst = expr.instance;
+      if (
+        inst.kind !== "VariableExpression" ||
+        !inst.isDereference ||
+        inst.fieldAccess.length > 0 ||
+        inst.subscripts.length > 0
+      ) {
+        return undefined;
+      }
+      const sym = scope.lookup(inst.name);
+      return sym?.kind === "variable"
+        ? (sym.declaration as VarDeclaration | undefined)?.type.name
         : undefined;
     }
     const parts = expr.functionName.split(".");
@@ -7359,6 +7863,20 @@ export class TypeChecker {
         condExpr.sourceSpan.startCol,
         condExpr.sourceSpan.file,
       );
+      return;
+    }
+    // --strict: a condition is a BOOL, not a bit string.
+    if (
+      this.strict &&
+      condType.typeKind === "elementary" &&
+      this.aliasBase((condType as ElementaryType).name) !== "BOOL"
+    ) {
+      this.addError(
+        `Condition must be BOOL under --strict, got ${typeNameUtil(condType)}; compare it, e.g. ${typeNameUtil(condType)} <> 0`,
+        condExpr.sourceSpan.startLine,
+        condExpr.sourceSpan.startCol,
+        condExpr.sourceSpan.file,
+      );
     }
   }
 
@@ -7528,9 +8046,16 @@ export class TypeChecker {
     selectorExpr: Expression,
   ): void {
     // CASE selector must be ANY_INT, ANY_BIT, or enum (IEC 61131-3: ordinal types)
+    // An alias of an elementary type is checked as that type.
+    const base =
+      selectorType.typeKind === "elementary"
+        ? (ELEMENTARY_TYPES[
+            this.ordinalBase((selectorType as ElementaryType).name)
+          ] ?? selectorType)
+        : selectorType;
     if (
-      !_isTypeInCategory(selectorType, "ANY_INT") &&
-      !_isTypeInCategory(selectorType, "ANY_BIT") &&
+      !_isTypeInCategory(base, "ANY_INT") &&
+      !_isTypeInCategory(base, "ANY_BIT") &&
       selectorType.typeKind !== "enum" &&
       this.charTypeOf(selectorType) === undefined
     ) {
@@ -8208,6 +8733,48 @@ export class TypeChecker {
         return;
       }
     }
+  }
+
+  /**
+   * `--strict`: the argument of a typed conversion `X_TO_Y` is an X, so it
+   * follows the strict conversion rules into X (`BYTE_TO_INT(w)` with a WORD).
+   */
+  private checkStrictConversionArgument(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    // A user callable of the name (a FUNCTION, a method of this POU, an FB
+    // instance or PROGRAM, a dotted method call) is not the conversion.
+    if (
+      expr.instance !== undefined ||
+      expr.functionName.includes(".") ||
+      this.findUserFunction(expr.functionName) ||
+      this.ownMethod(expr.functionName) !== undefined ||
+      this.calledInstance(expr.functionName, scope)
+    ) {
+      return;
+    }
+    const fn = this.symbolTables.lookupFunction(expr.functionName);
+    if (fn !== undefined && fn.libraryName !== STD_FUNCTIONS_LIBRARY) return;
+    const conv = this.stdRegistry?.resolveConversion(
+      expr.functionName.toUpperCase(),
+    );
+    const from = conv ? ELEMENTARY_TYPES[conv.fromType] : undefined;
+    const arg = stripEnEno(expr.arguments)[0];
+    if (from === undefined || arg === undefined) return;
+    if (this.checkStrictConversion(from, arg.value)) return;
+    // Kinds the integer/REAL/BOOL/bit rules leave open (durations, dates,
+    // strings, characters): the argument is an X, or its implicit long form.
+    const value = this.strictExprType(arg.value);
+    if (value?.typeKind !== "elementary") return;
+    const v = canonicalElementaryName(
+      this.aliasBase((value as ElementaryType).name),
+    );
+    const t = canonicalElementaryName(conv!.fromType);
+    if (v === t || ELEMENTARY_TYPES[v] === undefined) return;
+    if (strictKind(v) !== undefined && strictKind(t) !== undefined) return;
+    if (_isAssignable(from, ELEMENTARY_TYPES[v]) && isLongFormOf(t, v)) return;
+    this.addStrictError(strictConversionMessage(v, t), arg.value);
   }
 
   /** Strict conversion check for each input argument of a call. */

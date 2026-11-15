@@ -8,6 +8,7 @@ import type {
   ElementaryType,
   Expression,
   LiteralExpression,
+  ParenthesizedExpression,
 } from "../frontend/ast.js";
 import { exactIntegerLiteralValue } from "../literal-utils.js";
 import { cp1252Byte } from "../byte-utils.js";
@@ -508,4 +509,37 @@ export function literalTemporalType(expr: Expression): string | undefined {
     t === "LDATE_AND_TIME"
     ? t
     : undefined;
+}
+
+/** The integer and bit string types (BOOL aside) a folded constant is cast to. */
+const FOLDED_CAST_TYPES: ReadonlySet<string> = new Set([
+  "BYTE",
+  "WORD",
+  "DWORD",
+  "LWORD",
+  "SINT",
+  "INT",
+  "DINT",
+  "LINT",
+  "USINT",
+  "UINT",
+  "UDINT",
+  "ULINT",
+]);
+
+/**
+ * `(inner)`, or for a typed global constant folded into a STRUCT default a
+ * cast to its declared type, so it computes in that width as a typed literal does.
+ */
+export function parenthesizedCpp(
+  expr: ParenthesizedExpression,
+  inner: string,
+): string {
+  const t = expr.resolvedType;
+  if (expr.foldedConstant === true && t?.typeKind === "elementary") {
+    const name = (t as ElementaryType).name.toUpperCase();
+    if (FOLDED_CAST_TYPES.has(name))
+      return `static_cast<IEC_${name}>(${inner})`;
+  }
+  return `(${inner})`;
 }

@@ -40,6 +40,7 @@ import type {
   PropertyDeclaration,
   Visibility,
   ASTNode,
+  AssertCall,
 } from "../frontend/ast.js";
 import { charLiteralUnits, exactIntegerValue } from "../literal-utils.js";
 import { isEnEnoArgument, walkAST } from "../ast-utils.js";
@@ -100,6 +101,7 @@ import {
   isComparison,
   isComparisonExpr,
   literalStringComparison,
+  parenthesizedCpp,
   isNonZeroIntegerLiteral,
   literalTemporalType,
   translateIECString,
@@ -137,6 +139,7 @@ import {
   type StructInitEmitter,
 } from "./struct-init-codegen.js";
 import { vendorOperatorCpp } from "../semantic/vendor-operators.js";
+import { untypedNotCpp, untypedNotTarget } from "../semantic/untyped-not.js";
 import { bitPlaceOf, bitRunMemberName } from "./bit-runs.js";
 import type { StructDefinition } from "../frontend/ast.js";
 
@@ -4838,7 +4841,10 @@ export class CodeGenerator {
         );
         break;
       case "AssertCall":
-        // Assert calls only appear in test files, not in normal source compilation
+        // Only in test files: emitted by the test generator, nested ones too
+        for (const line of this.assertEmitter?.(stmt, indent) ?? []) {
+          this.emit(line);
+        }
         break;
       default: {
         const _exhaustive: never = stmt;
@@ -6130,6 +6136,10 @@ export class CodeGenerator {
    */
   /** When set, a RETURN returns this C++ value: `true` in a TEST body, which passes. */
   protected returnValueOverride: string | undefined;
+  /** Test files: the C++ lines of an ASSERT_* met inside IF, a loop or CASE. */
+  protected assertEmitter:
+    | ((stmt: AssertCall, indent: string) => string[])
+    | undefined;
 
   private generateReturnStatement(indent: string): void {
     if (this.returnValueOverride !== undefined) {
@@ -6236,7 +6246,7 @@ export class CodeGenerator {
       case "UnaryExpression":
         return this.generateUnaryExpression(expr);
       case "ParenthesizedExpression":
-        return `(${this.generateExpression(expr.expression)})`;
+        return parenthesizedCpp(expr, this.generateExpression(expr.expression));
       case "FunctionCallExpression":
         return this.wrapGlobalInOutCall(expr, () =>
           this.generateFunctionCallExpression(expr),
@@ -7120,6 +7130,10 @@ export class CodeGenerator {
       expr.operator === "OR" ||
       expr.operator === "XOR"
     ) {
+      if (expr.computeAs !== undefined) {
+        const t = `${expr.computeAs}_t`;
+        return `static_cast<${t}>(${left}) ${cppOp} static_cast<${t}>(${right})`;
+      }
       return `(${left}) ${cppOp} (${right})`;
     }
 
@@ -7488,6 +7502,11 @@ export class CodeGenerator {
    * or for a variable reached through `^` or a REFERENCE TO, by its
    * declaration. Undefined for anything else.
    */
+  /** The STRUCT type an operand of `=` / `<>` is compared as, if any. */
+  protected structOperandName(expr: Expression): string | undefined {
+    return this.comparedStructName(expr);
+  }
+
   private comparedStructName(expr: Expression): string | undefined {
     const rt = expr.resolvedType;
     if (rt !== undefined && "name" in rt && typeof rt.name === "string") {
@@ -7579,6 +7598,11 @@ export class CodeGenerator {
 
     switch (expr.operator) {
       case "NOT": {
+        // NOT of an untyped constant typed from its use (`w := NOT 16#00F0`)
+        const contextType = untypedNotTarget(expr);
+        if (contextType !== undefined) {
+          return untypedNotCpp(contextType, operand);
+        }
         // NOT on non-BOOL ANY_BIT types must use bitwise complement (~)
         const opType = this.inferExprType(expr.operand);
         if (opType) {
@@ -8335,6 +8359,15 @@ export class CodeGenerator {
         ) {
           return `iec_div(${this.generateExpression(dividend)}, ${this.generateExpression(divisor)}, ${this.faultSite(expr)})`;
         }
+      }
+
+      // `NOT (16#F0)` typed from its use, as `NOT 16#F0` is
+      const notType = untypedNotTarget(expr);
+      if (notType !== undefined) {
+        return untypedNotCpp(
+          notType,
+          this.generateExpression(expr.arguments[0]!.value),
+        );
       }
 
       // 0. ADR(x) → &(x) (CODESYS address-of operator)

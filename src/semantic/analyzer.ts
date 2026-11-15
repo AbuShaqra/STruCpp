@@ -1053,6 +1053,8 @@ export class SemanticAnalyzer {
     for (const ifaceName of fb.implements) {
       const required = this.collectInterfaceProperties(ifaceName, ifaceDecls);
       for (const [key, req] of required) {
+        // An unnamed property prototype is refused by the parser already.
+        if (req.name === "") continue;
         const own = provided.get(key);
         if (!own) {
           this.addError(
@@ -2029,33 +2031,110 @@ export class SemanticAnalyzer {
         this.literalsReported.add(literal);
       }
     });
-    const charKind = (typeName: string): "CHAR" | "WCHAR" | undefined => {
+    const baseOf = (typeName: string): string => {
       let upper = typeName.toUpperCase();
       for (let i = 0; i < 32; i++) {
-        if (upper === "CHAR" || upper === "WCHAR") return upper;
         const current = upper;
         const def = ast.types.find(
           (t) => t.name.toUpperCase() === current,
         )?.definition;
-        if (def?.kind !== "TypeReference") return undefined;
+        if (
+          def?.kind !== "TypeReference" ||
+          def.arrayDimensions !== undefined
+        ) {
+          return upper;
+        }
         upper = def.name.toUpperCase();
       }
-      return undefined;
+      return upper;
     };
-    const adapt = (value: Expression, typeName: string | undefined): void => {
-      const kind = typeName === undefined ? undefined : charKind(typeName);
-      if (kind === undefined || value.kind !== "LiteralExpression") return;
-      const want = kind === "CHAR" ? "STRING" : "WSTRING";
-      if (value.literalType !== want || (value.typePrefix ?? "") !== "") return;
-      const raw = `${kind}#${value.rawValue}`;
-      if (charLiteralUnits(raw).units.length !== 1) return;
-      value.literalType = kind;
-      value.rawValue = raw;
-      value.value = raw;
+    // A STRING literal into a CHAR, WCHAR or WSTRING, settled as the type
+    // checks would: the character it holds, or the error they give.
+    const adapt = (
+      value: Expression,
+      typeName: string | undefined,
+      param?: string,
+    ): void => {
+      if (typeName === undefined || value.kind !== "LiteralExpression") return;
+      if (value.literalType !== "STRING" || (value.typePrefix ?? "") !== "") {
+        return;
+      }
+      const base = baseOf(typeName);
+      if (base !== "CHAR" && base !== "WCHAR" && base !== "WSTRING") return;
+      // The call check takes a STRING literal into a WSTRING input.
+      if (param !== undefined && base === "WSTRING") return;
+      if (base === "CHAR") {
+        const raw = `CHAR#${value.rawValue}`;
+        if (charLiteralUnits(raw).units.length === 1) {
+          value.literalType = "CHAR";
+          value.rawValue = raw;
+          value.value = raw;
+          return;
+        }
+      }
+      const target = typeName.toUpperCase();
+      const span = value.sourceSpan;
+      this.literalsReported.add(value);
+      // The type checks ran and reported it already.
+      if (at.has(`${span.file ?? ""}:${span.startLine}:${span.startCol}`))
+        return;
+      this.addError(
+        param === undefined
+          ? `Cannot assign STRING to ${target}`
+          : `Cannot assign STRING to parameter '${param}' of type ${target}`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    };
+    // A callable's VAR_INPUT and VAR_IN_OUT in declaration order: the call
+    // check binds the i-th argument to the i-th of them.
+    type Param = { name: string; type: string; input: boolean };
+    const paramsOf = (blocks: readonly VarBlock[]): Param[] =>
+      blocks
+        .filter(
+          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
+        )
+        .flatMap((b) =>
+          b.declarations.flatMap((d) =>
+            d.names.map((n) => ({
+              name: n,
+              type: d.type.name,
+              input:
+                b.blockType === "VAR_INPUT" &&
+                d.type.arrayDimensions === undefined &&
+                (d.type.referenceKind ?? "none") === "none",
+            })),
+          ),
+        );
+    const functionParams = new Map<string, Param[]>();
+    for (const f of ast.functions) {
+      functionParams.set(f.name.toUpperCase(), paramsOf(f.varBlocks));
+    }
+    /** The methods a bare call in an FB (its bases' too) or PROGRAM reaches. */
+    const methodsOf = (owner: {
+      methods: readonly { name: string; varBlocks: VarBlock[] }[];
+      extends?: string;
+    }): Map<string, Param[]> => {
+      const out = new Map<string, Param[]>();
+      const seen = new Set<string>();
+      let current: typeof owner | undefined = owner;
+      while (current) {
+        for (const m of current.methods) {
+          const upper = m.name.toUpperCase();
+          if (!out.has(upper)) out.set(upper, paramsOf(m.varBlocks));
+        }
+        const base: string | undefined = current.extends?.toUpperCase();
+        if (base === undefined || seen.has(base)) break;
+        seen.add(base);
+        current = ast.functionBlocks.find((f) => f.name.toUpperCase() === base);
+      }
+      return out;
     };
     const visitPou = (
       blocks: readonly VarBlock[],
       bodies: readonly Statement[][],
+      methods: ReadonlyMap<string, Param[]> = new Map(),
     ): void => {
       const types = new Map<string, string>();
       for (const b of [...ast.globalVarBlocks, ...blocks]) {
@@ -2069,6 +2148,26 @@ export class SemanticAnalyzer {
       for (const body of bodies) {
         for (const stmt of body) {
           walkAST(stmt as ASTNode, (n) => {
+            if (n.kind === "FunctionCallExpression") {
+              const call = n as FunctionCallExpression;
+              const upper = call.functionName.toUpperCase();
+              // A variable of the name (an FB instance) is what the call invokes.
+              if (call.instance !== undefined || types.has(upper)) return;
+              const params = methods.get(upper) ?? functionParams.get(upper);
+              if (params === undefined) return;
+              stripEnEno(call.arguments).forEach((arg, i) => {
+                const param =
+                  arg.name === undefined
+                    ? params[i]
+                    : params.find(
+                        (p) => p.name.toUpperCase() === arg.name!.toUpperCase(),
+                      );
+                if (param?.input === true && !arg.isOutput) {
+                  adapt(arg.value, param.type, param.name);
+                }
+              });
+              return;
+            }
             if (n.kind !== "AssignmentStatement") return;
             const a = n as AssignmentStatement;
             if (
@@ -2083,12 +2182,15 @@ export class SemanticAnalyzer {
         }
       }
     };
-    for (const p of ast.programs) visitPou(p.varBlocks, [p.body]);
+    for (const p of ast.programs) {
+      visitPou(p.varBlocks, [p.body], methodsOf(p));
+    }
     for (const f of ast.functions) visitPou(f.varBlocks, [f.body]);
     for (const fb of ast.functionBlocks) {
-      visitPou(fb.varBlocks, [fb.body]);
+      const own = methodsOf(fb);
+      visitPou(fb.varBlocks, [fb.body], own);
       for (const m of fb.methods) {
-        visitPou([...fb.varBlocks, ...m.varBlocks], [m.body]);
+        visitPou([...fb.varBlocks, ...m.varBlocks], [m.body], own);
       }
     }
   }
@@ -3434,7 +3536,8 @@ export class SemanticAnalyzer {
             }),
           );
           for (const reqMethod of requiredMethods) {
-            if (!fbMethodNames.has(reqMethod)) {
+            // An unnamed method prototype is refused by the parser already.
+            if (reqMethod !== "" && !fbMethodNames.has(reqMethod)) {
               this.addError(
                 `FUNCTION_BLOCK '${fb.name}' implements '${ifaceName}' but does not provide method '${reqMethod}'.`,
                 fb.sourceSpan.startLine,
@@ -5154,6 +5257,8 @@ export class SemanticAnalyzer {
 
     // For inline arrays, validate the element type instead
     const nameToCheck = typeRef.elementTypeName ?? typeRef.name;
+    // A name the parser could not read (`ARRAY[0..2] OF ;`) is refused already.
+    if (nameToCheck === "") return;
 
     // A platform type is lowered where its feature is on.
     if (
@@ -5168,8 +5273,10 @@ export class SemanticAnalyzer {
       return;
     }
     if (!this.isKnownType(nameToCheck)) {
+      // A POU the parser left unnamed is not named in the message.
+      const where = context.includes("''") ? "" : context;
       this.addError(
-        `Undefined type '${nameToCheck}'${context ? " in " + context : ""}`,
+        `Undefined type '${nameToCheck}'${where ? " in " + where : ""}`,
         typeRef.sourceSpan.startLine,
         typeRef.sourceSpan.startCol,
         typeRef.sourceSpan.file,
@@ -5224,7 +5331,7 @@ export class SemanticAnalyzer {
       validateVarBlocks(fb.varBlocks, `FUNCTION_BLOCK '${fb.name}'`);
 
       // EXTENDS clause
-      if (fb.extends) {
+      if (fb.extends !== undefined && fb.extends !== "") {
         if (!this.isKnownType(fb.extends)) {
           this.addError(
             `Undefined type '${fb.extends}' in EXTENDS clause of FUNCTION_BLOCK '${fb.name}'`,
@@ -5238,7 +5345,7 @@ export class SemanticAnalyzer {
       // IMPLEMENTS clause
       if (fb.implements) {
         for (const ifaceName of fb.implements) {
-          if (!this.isKnownType(ifaceName)) {
+          if (ifaceName !== "" && !this.isKnownType(ifaceName)) {
             this.addError(
               `Undefined type '${ifaceName}' in IMPLEMENTS clause of FUNCTION_BLOCK '${fb.name}'`,
               fb.sourceSpan.startLine,
@@ -5276,7 +5383,7 @@ export class SemanticAnalyzer {
     for (const iface of ast.interfaces) {
       if (iface.extends) {
         for (const baseName of iface.extends) {
-          if (!this.isKnownType(baseName)) {
+          if (baseName !== "" && !this.isKnownType(baseName)) {
             this.addError(
               `Undefined type '${baseName}' in EXTENDS clause of INTERFACE '${iface.name}'`,
               iface.sourceSpan.startLine,
@@ -6210,6 +6317,9 @@ export class SemanticAnalyzer {
         case "DeleteStatement":
           this.checkExpressionForUndeclaredVars(stmt.pointer, scope, ctx);
           break;
+        case "AssertCall":
+          this.checkAssertCall(stmt, scope, ctx);
+          break;
         case "ForStatement":
           this.checkNameDeclared(
             stmt.controlVariable,
@@ -6821,6 +6931,11 @@ export class SemanticAnalyzer {
 
     // Walk SETUP body
     if (testFile.setup) {
+      this.checkTestInitialValueNames(
+        testFile.setup.varBlocks,
+        setupScope,
+        sourceAst,
+      );
       this.walkTestStatementsForUndeclaredVars(testFile.setup.body, setupScope);
       this.checkTestMemberAccess(testFile.setup.body, setupScope);
     }
@@ -6856,6 +6971,7 @@ export class SemanticAnalyzer {
     // Walk each TEST body with scope = SETUP vars + TEST-local vars
     for (const tc of testFile.testCases) {
       const testScope = this.buildTestScope(tc.varBlocks, setupScope);
+      this.checkTestInitialValueNames(tc.varBlocks, testScope, sourceAst);
       this.walkTestStatementsForUndeclaredVars(tc.body, testScope);
       this.checkTestMemberAccess(
         tc.body,
@@ -6951,13 +7067,45 @@ export class SemanticAnalyzer {
     this.warnings.push(...found.warnings);
   }
 
+  /** The names a SETUP or TEST VAR's initial values read: declared in its scope. */
+  private checkTestInitialValueNames(
+    blocks: readonly VarBlock[],
+    scope: Scope,
+    sourceAst: CompilationUnit | undefined,
+  ): void {
+    const ctx: UndeclaredVarContext = { checkContinue: true };
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (decl.initialValue === undefined) continue;
+        if (sourceAst !== undefined) {
+          this.checkInitialValueNames(
+            decl.initialValue,
+            scope,
+            ctx,
+            sourceAst,
+            this.declaredTypeName(decl.type),
+          );
+        } else {
+          this.checkExpressionForUndeclaredVars(decl.initialValue, scope, ctx);
+        }
+      }
+    }
+  }
+
   /** Output bindings in test bodies: checked as assignments, copied out where needed. */
   private checkTestOutputBindings(
     stmts: readonly TestStatement[],
     scope: Scope,
     sourceAst: CompilationUnit | undefined,
   ): void {
-    const checker = new TypeChecker(this.symbolTables, this.stdRegistry);
+    // The run's features apply in test files too (XSIZEOF, __ISVALIDREF)
+    const checker = new TypeChecker(
+      this.symbolTables,
+      this.stdRegistry,
+      false,
+      this.features,
+      (feature, construct) => this.featureMessage(feature, construct),
+    );
     const found = checker.checkTestOutputBindings(
       stmts as readonly ASTNode[],
       scope,
@@ -7156,10 +7304,7 @@ export class SemanticAnalyzer {
     for (const stmt of stmts) {
       switch (stmt.kind) {
         case "AssertCall":
-          this.validateAssertArgCount(stmt);
-          for (const arg of stmt.args) {
-            this.checkExpressionForUndeclaredVars(arg, scope, ctx);
-          }
+          this.checkAssertCall(stmt, scope, ctx);
           break;
         case "AdvanceTimeStatement":
           this.checkExpressionForUndeclaredVars(stmt.duration, scope, ctx);
@@ -7199,6 +7344,21 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * Check an assert wherever it stands, at the top of a test block or nested
+   * in a statement: its argument count, then its arguments for undeclared names.
+   */
+  private checkAssertCall(
+    assert: AssertCall,
+    scope: Scope,
+    ctx: UndeclaredVarContext,
+  ): void {
+    this.validateAssertArgCount(assert);
+    for (const arg of assert.args) {
+      this.checkExpressionForUndeclaredVars(arg, scope, ctx);
+    }
+  }
+
+  /**
    * Validate assert call argument count matches the expected count for each assert type.
    */
   private validateAssertArgCount(assert: AssertCall): void {
@@ -7215,10 +7375,19 @@ export class SemanticAnalyzer {
     };
     const expected = expectedArgCounts[assert.assertType];
     if (expected !== undefined && assert.args.length !== expected) {
+      const last = assert.args[assert.args.length - 1];
+      const quotedMessage =
+        assert.args.length === expected + 1 &&
+        last?.kind === "LiteralExpression" &&
+        last.literalType === "WSTRING";
       this.addError(
-        `${assert.assertType} expects ${expected} argument${expected !== 1 ? "s" : ""}, got ${assert.args.length}`,
+        `${assert.assertType} expects ${expected} argument${expected !== 1 ? "s" : ""}, got ${assert.args.length}` +
+          (quotedMessage
+            ? ": the message is a STRING literal in single quotes"
+            : ""),
         assert.sourceSpan.startLine,
         assert.sourceSpan.startCol,
+        assert.sourceSpan.file,
       );
     }
   }
@@ -7299,8 +7468,12 @@ export function analyzeTestFile(
   testFile: TestFile,
   sourceSymbolTables: SymbolTables,
   sourceAst?: CompilationUnit,
+  /** The run's dialect: its features apply in the test file too. */
+  dialect?: ResolvedDialect,
 ): { errors: CompileError[]; warnings: CompileError[] } {
-  const analyzer = new SemanticAnalyzer();
+  const analyzer = new SemanticAnalyzer(
+    dialect !== undefined ? { dialect } : {},
+  );
   return analyzer.analyzeTestFile(testFile, sourceSymbolTables, sourceAst);
 }
 
