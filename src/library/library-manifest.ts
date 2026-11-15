@@ -41,9 +41,19 @@ export interface LibraryFunctionEntry {
      *  initial values in the source ST — including ST produced by the CODESYS
      *  v2/v3 importers, which preserve declarations verbatim. */
     initialValue?: string;
-    /** "reference_to" for a REFERENCE TO input, bound to its argument. Absent
-     *  for any other parameter, and in archives written before it was kept. */
-    referenceKind?: "reference_to";
+    /** The outermost reference level: "reference_to" for a REFERENCE TO
+     *  input bound to its argument; "pointer_to" / "ref_to" in archives with
+     *  `parameterShapes`. Absent for a value parameter. */
+    referenceKind?: ReferenceKind;
+    /** Every reference level, outermost first, when there is more than one
+     *  (archives with `parameterShapes`). */
+    referenceChain?: ReferenceKind[];
+    /** Dimensions of an inline array parameter (archives with `parameterShapes`). */
+    arrayDimensions?: Array<{ start: number; end: number }>;
+    /** Element type of an inline array parameter. */
+    elementTypeName?: string;
+    /** Element reference levels of an inline array of pointers or references. */
+    elementReferenceChain?: ReferenceKind[];
     /** Length of a STRING / WSTRING output or in/out declared with one, which
      *  its C++ reference carries. Absent otherwise and in older archives. */
     maxLength?: number | string;
@@ -301,6 +311,9 @@ export interface LibraryManifest {
   displayName?: string;
   /** Library version */
   version: string;
+  /** Function parameters record their POINTER TO, REF_TO and ARRAY shapes,
+   *  not only REFERENCE TO. Absent in archives written before. */
+  parameterShapes?: true;
   /** Human-readable description */
   description?: string;
   /** C++ namespace for the library */

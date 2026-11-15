@@ -137,7 +137,8 @@ Programs without an explicit interval default to 20ms.
 | INT, DINT, etc. | Decimal | Decimal number |
 | REAL, LREAL | Decimal with precision | Decimal number |
 | BYTE, WORD, DWORD, LWORD | Hex (`16#NN`) | Hex (`16#NN` or `0xNN`) or decimal |
-| TIME | Formatted duration | Nanoseconds as integer |
+| TIME | Formatted duration | Milliseconds as integer |
+| LTIME | Formatted duration | Nanoseconds as integer |
 | STRING | Text (max 254 chars), shown as UTF-8 | UTF-8 text; a character Windows-1252 lacks makes the input invalid |
 
 ## Interactive Features

@@ -30,6 +30,7 @@ import type {
   CompilationUnit,
   FunctionDeclaration,
   VarBlock,
+  TypeReference,
   VarDeclaration,
   Statement,
   Expression,
@@ -272,9 +273,9 @@ export function generateTestMain(
   }
 
   for (const testFile of testFiles) {
-    // Generate SETUP/TEARDOWN struct if present
+    // Generate SETUP/TEARDOWN struct if either is present
     let setupStructName: string | undefined;
-    if (testFile.setup) {
+    if (testFile.setup || testFile.teardown) {
       setupIndex++;
       setupStructName = `TestSetup_${setupIndex}`;
       const gen = new TestFunctionGenerator(
@@ -416,9 +417,10 @@ class TestFunctionGenerator {
    */
   generateSetupStruct(
     structName: string,
-    setup: SetupBlock,
+    setup: SetupBlock | undefined,
     teardown?: TeardownBlock,
   ): string {
+    const setupVarBlocks = setup?.varBlocks ?? [];
     const lines: string[] = [];
     lines.push(`struct ${structName} {`);
 
@@ -426,45 +428,61 @@ class TestFunctionGenerator {
     this.testCodegen.clearSetupVars();
     // Build scope from setup vars so codegen can detect FB/program invocations
     const varTypes = new Map<string, string>();
-    for (const varBlock of setup.varBlocks) {
+    const varTypeRefs = new Map<string, TypeReference>();
+    for (const varBlock of setupVarBlocks) {
       for (const decl of varBlock.declarations) {
         for (const name of decl.names) {
           varTypes.set(name, decl.type.name);
+          varTypeRefs.set(name, decl.type);
         }
       }
     }
-    this.testCodegen.setScopeFromVarTypes(varTypes);
+    this.testCodegen.setScopeFromVarTypes(varTypes, varTypeRefs);
 
     // Member variables from SETUP VAR blocks
-    for (const varBlock of setup.varBlocks) {
+    for (const varBlock of setupVarBlocks) {
       for (const decl of varBlock.declarations) {
         const cppType = this.testCodegen.resolveType(decl.type);
         const shared = this.testCodegen.sharedInstanceOfType(decl.type.name);
+        // A SETUP variable starts from its initial value, as a TEST local does
+        const init =
+          decl.initialValue !== undefined
+            ? ` = ${this.testCodegen.emitInitializer(
+                decl.initialValue,
+                cppType,
+                decl.type.name,
+              )}`
+            : "";
         for (const name of decl.names) {
           lines.push(
             shared !== undefined
               ? `    ${cppType}& ${name} = ${shared};`
-              : `    ${cppType} ${name};`,
+              : `    ${cppType} ${name}${init};`,
           );
         }
       }
     }
     lines.push("");
 
-    // setup() method; a RETURN in SETUP or TEARDOWN ends that block (void).
-    this.returnValueCpp = "";
-    lines.push("    void setup() {");
+    // setup() and teardown() return false when an assertion in them fails;
+    // a RETURN ends that block, passing.
+    this.returnValueCpp = " true";
+    this.testCodegen.setReturnValue("true");
+    lines.push("    bool setup(strucpp::TestContext& ctx) {");
+    lines.push("        (void)ctx;");
     const savedIndent = this.indent;
     this.indent = "        ";
-    for (const stmt of setup.body) {
+    for (const stmt of setup?.body ?? []) {
       this.generateTestStatement(lines, stmt);
     }
+    lines.push("        return true;");
     this.indent = savedIndent;
     lines.push("    }");
     lines.push("");
 
     // teardown() method
-    lines.push("    void teardown() {");
+    lines.push("    bool teardown(strucpp::TestContext& ctx) {");
+    lines.push("        (void)ctx;");
     if (teardown) {
       this.indent = "        ";
       for (const stmt of teardown.body) {
@@ -472,8 +490,9 @@ class TestFunctionGenerator {
       }
       this.indent = savedIndent;
     }
+    lines.push("        return true;");
     lines.push("    }");
-    this.returnValueCpp = " true";
+    this.testCodegen.setReturnValue(undefined);
 
     lines.push("};");
     return lines.join("\n");
@@ -504,6 +523,7 @@ class TestFunctionGenerator {
 
     // Build variable-to-type map for codegen scope (POU invocation detection)
     const varTypes = new Map<string, string>();
+    const varTypeRefs = new Map<string, TypeReference>();
 
     // Include SETUP variables in the type map
     if (setup) {
@@ -511,6 +531,7 @@ class TestFunctionGenerator {
         for (const decl of varBlock.declarations) {
           for (const name of decl.names) {
             varTypes.set(name, decl.type.name);
+            varTypeRefs.set(name, decl.type);
           }
         }
       }
@@ -520,16 +541,20 @@ class TestFunctionGenerator {
       for (const decl of varBlock.declarations) {
         for (const name of decl.names) {
           varTypes.set(name, decl.type.name);
+          varTypeRefs.set(name, decl.type);
         }
       }
     }
 
-    this.testCodegen.setScopeFromVarTypes(varTypes);
+    this.testCodegen.setScopeFromVarTypes(varTypes, varTypeRefs);
 
     // If there's a SETUP, create the struct instance and call setup()
     if (setupStructName) {
       lines.push(`${this.indent}${setupStructName} s;`);
-      lines.push(`${this.indent}s.setup();`);
+      // A failed assertion or a run-time fault in SETUP fails the test; TEARDOWN still runs.
+      lines.push(
+        `${this.indent}try { if (!s.setup(ctx)) { s.teardown(ctx); return false; } } catch (...) { s.teardown(ctx); throw; }`,
+      );
       // Track setup var names so we prefix accesses with s.
       this.setupVarNames = new Set<string>();
       if (setup) {
@@ -556,7 +581,9 @@ class TestFunctionGenerator {
 
     if (setupStructName) {
       // Wrap body in a lambda so assert failures (return false) don't skip teardown
-      lines.push(`${this.indent}bool __passed = [&]() -> bool {`);
+      // A run-time fault in the body: TEARDOWN runs, then the runner reports it
+      lines.push(`${this.indent}bool __passed = false;`);
+      lines.push(`${this.indent}try { __passed = [&]() -> bool {`);
       const savedIndent = this.indent;
       this.indent += "    ";
       for (const stmt of tc.body) {
@@ -564,9 +591,11 @@ class TestFunctionGenerator {
       }
       lines.push(`${this.indent}return true;`);
       this.indent = savedIndent;
-      lines.push(`${this.indent}}();`);
-      lines.push(`${this.indent}s.teardown();`);
-      lines.push(`${this.indent}return __passed;`);
+      lines.push(
+        `${this.indent}}(); } catch (...) { s.teardown(ctx); throw; }`,
+      );
+      lines.push(`${this.indent}const bool __torn_down = s.teardown(ctx);`);
+      lines.push(`${this.indent}return __passed && __torn_down;`);
     } else {
       // No teardown: generate body directly with early returns
       for (const stmt of tc.body) {
@@ -612,6 +641,18 @@ class TestFunctionGenerator {
   }
 
   private generateTestStatement(lines: string[], stmt: TestStatement): void {
+    // An ASSERT_* nested in IF, a loop or CASE is checked as a top-level one.
+    this.testCodegen.setAssertEmitter((nested, indent) => {
+      const out: string[] = [];
+      const saved = this.indent;
+      this.indent = indent;
+      try {
+        this.generateAssertCall(out, nested);
+      } finally {
+        this.indent = saved;
+      }
+      return out;
+    });
     switch (stmt.kind) {
       case "AssertCall":
         this.generateAssertCall(lines, stmt);
@@ -662,7 +703,7 @@ class TestFunctionGenerator {
   ): void {
     const durationExpr = this.testCodegen.emitExpression(stmt.duration);
     lines.push(
-      `${this.indent}strucpp::__CURRENT_TIME_NS += static_cast<int64_t>(${durationExpr});`,
+      `${this.indent}strucpp::__CURRENT_TIME_NS += strucpp::iec_duration_ns(${durationExpr});`,
     );
   }
 
@@ -757,10 +798,23 @@ class TestFunctionGenerator {
             `${assert.assertType} requires 2 arguments at ${this.fileName}:${line}`,
           );
         }
-        const actualExpr = this.testCodegen.emitExpression(assert.args[0]!);
-        const expectedExpr = this.testCodegen.emitExpression(assert.args[1]!);
         const actualStr = this.expressionToString(assert.args[0]!);
         const expectedStr = this.expressionToString(assert.args[1]!);
+        // Two STRUCTs: compared memberwise, as `a = b` is (no C++ operator==)
+        const structEq = this.testCodegen.emitStructComparison(
+          assert.assertType === "ASSERT_EQ" ? "=" : "<>",
+          assert.args[0]!,
+          assert.args[1]!,
+        );
+        if (structEq !== undefined) {
+          const op = assert.assertType === "ASSERT_EQ" ? "=" : "<>";
+          lines.push(
+            `${this.indent}if (!ctx.assert_true(${structEq}, "${escapeString(`${actualStr} ${op} ${expectedStr}`)}", ${line}${msgArg})) return false;`,
+          );
+          break;
+        }
+        const actualExpr = this.testCodegen.emitExpression(assert.args[0]!);
+        const expectedExpr = this.testCodegen.emitExpression(assert.args[1]!);
         const method =
           assert.assertType === "ASSERT_EQ" ? "assert_eq" : "assert_neq";
         lines.push(

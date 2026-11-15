@@ -24,6 +24,7 @@ import {
   RUNTIME_INCLUDE_PATH,
   cxxEnv,
 } from "./test-helpers.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 const describeIfGpp = hasGpp ? describe : describe.skip;
 
@@ -335,7 +336,7 @@ END_PROGRAM`),
       expect(code).toContain("M.DRIVE(GAX->value)");
       expect(code).toContain("F_BUMP(GAX2->value)");
       expect(code).toContain("M.SWAP(GAX->value, GAX2->value);");
-      expect(code).toContain("F_INC(GARR->value.at(I).CNT);");
+      expect(withoutSites(code)).toContain("F_INC(GARR->value.at(I).CNT);");
       // Nothing copied in or out for an in-out, and no call inside a lock.
       expect(code).not.toContain("__gio_");
       for (const body of withLockBodies(code)) {

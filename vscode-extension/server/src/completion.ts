@@ -64,6 +64,8 @@ export function getCompletions(
       break;
   }
 
+  // A POU, variable or member the parser recovered without a name offers nothing.
+  items = items.filter((item) => item.label.trim() !== "");
   // Restore original casing. The compiler uppercases all identifiers,
   // but users expect completions to match their coding style.
   return restoreOriginalCasing(items, source, caseMap);
