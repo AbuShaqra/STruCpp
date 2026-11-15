@@ -142,16 +142,17 @@ describe.skipIf(!hasGpp)("VAR_TEMP and VAR_INST at run time — g++ e2e", () => 
   });
   afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
-  for (const [label, options] of [
-    ["no dialect", {}],
-    ["iec-3", { dialect: "iec-3" }],
-    ["strict", { strict: true }],
+  // VAR_INST and SUPER^ need var_inst and bare_self_caret, off in iec-3: kept here.
+  for (const [label, options, keep] of [
+    ["no dialect", {}, []],
+    ["iec-3", { dialect: "iec-3" }, ["+var_inst", "+bare_self_caret"]],
+    ["strict", { strict: true }, []],
   ] as const) {
     it(`resets VAR_TEMP per call and initialises VAR_INST once (${label})`, () => {
       const result = compile(SOURCE, {
         ...options,
         headerFileName: "generated.hpp",
-        features: ["+program_methods"],
+        features: [...keep, "+program_methods"],
       });
       expect(result.errors).toEqual([]);
       const stdout = compileAndRunStandalone({
@@ -178,6 +179,7 @@ int main() {
       const result = compile(SOURCE2, {
         ...options,
         headerFileName: "generated.hpp",
+        features: [...keep],
       });
       expect(result.errors).toEqual([]);
       const stdout = compileAndRunStandalone({
@@ -204,7 +206,7 @@ int main() {
       const result = compile(SOURCE3, {
         ...options,
         headerFileName: "generated.hpp",
-        features: ["+pointer_to"],
+        features: [...keep, "+pointer_to"],
       });
       expect(result.errors).toEqual([]);
       const stdout = compileAndRunStandalone({
@@ -231,7 +233,7 @@ int main() {
       const result = compile(SOURCE4, {
         ...options,
         headerFileName: "generated.hpp",
-        features: ["+pointer_to"],
+        features: [...keep, "+pointer_to"],
       });
       expect(result.errors).toEqual([]);
       const stdout = compileAndRunStandalone({
@@ -258,7 +260,7 @@ int main() {
       const result = compile(SOURCE5, {
         ...options,
         headerFileName: "generated.hpp",
-        features: ["+pointer_to"],
+        features: [...keep, "+pointer_to"],
       });
       expect(result.errors).toEqual([]);
       const stdout = compileAndRunStandalone({

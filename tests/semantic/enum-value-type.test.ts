@@ -24,7 +24,8 @@ END_VAR
 
 function errorsFor(body: string, dialect?: "iec-3"): string[] {
   const result = compile(`${HEADER}${body}\nEND_PROGRAM\n`, {
-    ...(dialect ? { dialect } : {}),
+    // E2.B is the feature enum_dot_qualify, off in iec-3: kept here.
+    ...(dialect ? { dialect, features: ["+enum_dot_qualify"] } : {}),
   });
   return result.errors.map((e) => e.message);
 }

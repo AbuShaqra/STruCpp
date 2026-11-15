@@ -230,7 +230,8 @@ END_PROGRAM
 `;
   for (const [mode, opts] of [
     ["no flag", {}],
-    ["iec-3", { dialect: "iec-3" }],
+    // The ACTION needs st_actions, off in iec-3: kept here.
+    ["iec-3", { dialect: "iec-3", features: ["+st_actions"] }],
   ] as const) {
     it(`refuses a variable, an action and the body (${mode})`, () => {
       const src = `${ACT}PROGRAM MAIN

@@ -636,6 +636,8 @@ const MEMBER_KIND: Partial<Record<VarBlock["blockType"], MemberKind>> = {
 export class TypeChecker {
   private errors: CompileError[] = [];
   private warnings: CompileError[] = [];
+  /** The struct_compare refusals added to `errors`, which gate no later pass. */
+  private refusals = new Set<CompileError>();
   private ast: CompilationUnit | undefined;
 
   constructor(
@@ -760,15 +762,50 @@ export class TypeChecker {
   }
 
   /**
+   * `=` and `<>` of two STRUCTs in TEST, SETUP and TEARDOWN bodies, which are
+   * not otherwise type-checked: refused where struct_compare is off.
+   */
+  checkTestStructComparisons(
+    roots: readonly ASTNode[],
+    scope: Scope,
+    ast: CompilationUnit | undefined,
+  ): CompileError[] {
+    if (this.features.has("struct_compare")) return [];
+    this.errors = [];
+    this.warnings = [];
+    this.ast = ast;
+    const refusals: CompileError[] = [];
+    for (const root of roots) {
+      walkAST(root, (node) => {
+        if (node.kind !== "BinaryExpression") return;
+        const expr = node as BinaryExpression;
+        if (expr.operator !== "=" && expr.operator !== "<>") return;
+        const left = this.resolveExprType(expr.left, scope);
+        const right = this.resolveExprType(expr.right, scope);
+        const before = this.errors.length;
+        this.requireStructCompare(expr, left, right, scope);
+        refusals.push(...this.errors.slice(before));
+      });
+    }
+    // Only the refusals: the test body's other rules are checked elsewhere.
+    this.errors = [];
+    this.warnings = [];
+    return refusals;
+  }
+
+  /**
    * Check types for a complete compilation unit.
    * Walks all POUs, resolves expression types, and validates type rules.
    */
   check(ast: CompilationUnit): {
     errors: CompileError[];
     warnings: CompileError[];
+    /** How many of `errors` are struct_compare refusals, which gate no later pass. */
+    refusals: number;
   } {
     this.errors = [];
     this.warnings = [];
+    this.refusals.clear();
     this.strictReported.clear();
     this.addressStoresReported.clear();
     this.misalignedReported.clear();
@@ -891,6 +928,8 @@ export class TypeChecker {
     return {
       errors: this.errors,
       warnings: this.warnings,
+      // Only refusals still in `errors`: a silent typing pass may drop some
+      refusals: this.errors.filter((e) => this.refusals.has(e)).length,
     };
   }
 
@@ -2194,6 +2233,7 @@ export class TypeChecker {
     }
 
     if (this.refuseTemporalOperands(expr, scope)) return undefined;
+    this.requireStructCompare(expr, leftType, rightType, scope);
 
     if (leftType === undefined || rightType === undefined) {
       // `p^ MOD i`: a dereference has no expression type here; its declared one decides
@@ -6461,6 +6501,89 @@ export class TypeChecker {
     }
   }
 
+  /** `=` or `<>` of two STRUCT values (compared field by field) needs the feature struct_compare. */
+  private requireStructCompare(
+    expr: BinaryExpression,
+    left: IECType | undefined,
+    right: IECType | undefined,
+    scope: Scope,
+  ): void {
+    if (this.features.has("struct_compare")) return;
+    if (expr.operator !== "=" && expr.operator !== "<>") return;
+    // A POINTER TO or REF_TO itself compares the reference, not the STRUCT.
+    if (
+      this.isReferenceItself(unparenthesized(expr.left), scope) ||
+      this.isReferenceItself(unparenthesized(expr.right), scope)
+    ) {
+      return;
+    }
+    const leftName = this.structOperandName(expr.left, left, scope);
+    if (
+      leftName === undefined ||
+      this.structOperandName(expr.right, right, scope) === undefined
+    ) {
+      return;
+    }
+    const upper = leftName.toUpperCase();
+    const isUnion =
+      this.ast?.types.some(
+        (t) =>
+          t.name.toUpperCase() === upper &&
+          t.definition.kind === "StructDefinition" &&
+          t.definition.isUnion === true,
+      ) ?? false;
+    this.addError(
+      this.featureMessage(
+        "struct_compare",
+        `${expr.operator} of two ${isUnion ? "UNION" : "STRUCT"} values`,
+      ),
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
+    const added = this.errors[this.errors.length - 1];
+    if (added !== undefined) this.refusals.add(added);
+  }
+
+  /**
+   * The STRUCT type name of an operand: by its expression type, or, where
+   * that is unknown (`r^`), by the declared type of the access.
+   */
+  private structOperandName(
+    expr: Expression,
+    type: IECType | undefined,
+    scope: Scope,
+  ): string | undefined {
+    if (type?.typeKind === "struct") return (type as StructType).name;
+    let name: string | undefined;
+    if (type?.typeKind === "elementary") {
+      name = (type as ElementaryType).name;
+    } else if (type === undefined) {
+      const inner =
+        expr.kind === "ParenthesizedExpression" ? expr.expression : expr;
+      if (inner.kind !== "VariableExpression") return undefined;
+      const sym = scope.lookup(inner.name);
+      if (sym?.kind !== "variable") return undefined;
+      const declared = sym.declaration as VarDeclaration | undefined;
+      if (!declared) return undefined;
+      const access = resolveAccessType(declared.type, inner, this.accessLookup);
+      if (
+        access === undefined ||
+        access.arrayDimensions !== undefined ||
+        (access.referenceKind ?? "none") !== "none"
+      ) {
+        return undefined;
+      }
+      name = access.name;
+    }
+    if (name === undefined) return undefined;
+    const target = this.aliasTarget(name);
+    return this.isStructType(target) ||
+      this.symbolTables.lookupType(target)?.resolvedType?.typeKind === "struct"
+      ? target
+      : undefined;
+  }
+
   /** A STRUCT (or UNION) TYPE of this unit. */
   private isStructType(name: string): boolean {
     const upper = name.toUpperCase();
@@ -10131,4 +10254,11 @@ function elementarySize(
     name: name.toUpperCase(),
     bytes: BigInt(Math.max(1, Math.floor(bits / 8))),
   };
+}
+
+/** `expr` without its enclosing parentheses, at any depth. */
+function unparenthesized(expr: Expression): Expression {
+  let inner = expr;
+  while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
+  return inner;
 }

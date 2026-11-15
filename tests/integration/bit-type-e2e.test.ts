@@ -17,7 +17,8 @@ const PROFILE: DialectProfile = {
   id: "codesys3",
   name: "codesys3",
   extends: "iec-3",
-  features: ["pointer_to", "bit_type", "union"],
+  // struct_compare keeps the STRUCT comparisons of SOURCE, off in iec-3.
+  features: ["pointer_to", "bit_type", "union", "struct_compare"],
   semantics: {},
 };
 

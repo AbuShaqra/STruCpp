@@ -199,7 +199,8 @@ END_PROGRAM
 `,
       " Program_MAIN p;\n p.run(); p.run();\n std::cout << p.TOTAL.get() << std::endl;",
       "action_strict_iec",
-      { strict: true, dialect: "iec-3" },
+      // An ACTION needs st_actions, off in iec-3: kept here.
+      { strict: true, dialect: "iec-3", features: ["+st_actions"] },
     );
     expect(out).toBe("12");
   });

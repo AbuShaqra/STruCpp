@@ -264,7 +264,8 @@ compiled without threading gets no such warning. API callers pass `threaded: tru
 | `--print-dialect`       | Print the resolved dialect as JSON (`{"id":...,"features":[...]}`) and exit             |
 
 With no `--dialect` and no `--dialect-file` the compiler runs with the default features
-`pointer_to`, `reference_to` and `ref_assign` (its behaviour before profiles). `--dialect iec-3`
+`pointer_to`, `reference_to`, `ref_assign`, `fb_property`, `st_actions`, `bare_self_caret`,
+`enum_dot_qualify`, `struct_compare`, `dynamic_memory` and `var_inst` (its behaviour before profiles). `--dialect iec-3`
 enables no feature; `--dialect iec` is refused with an error naming `iec-3`. The flags apply in every mode that compiles ST (compile, build, `--test`,
 `--compile-lib`, `--import-lib`, `--check`); a bad profile prints one `error:` line and exits 1
 (2 with `--check`). A profile may not take the id `iec-3` unless it is the built-in profile itself, a profile id

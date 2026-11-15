@@ -12,7 +12,8 @@ type Options = Parameters<typeof compile>[1];
 
 const MODES: { name: string; options: Options }[] = [
   { name: "no dialect", options: {} },
-  { name: "iec-3", options: { dialect: "iec-3" } },
+  // FB_M's ACTION needs st_actions, off in iec-3: kept here.
+  { name: "iec-3", options: { dialect: "iec-3", features: ["+st_actions"] } },
 ];
 
 const TYPES = `FUNCTION_BLOCK FB_Sub

@@ -41,7 +41,10 @@ function errorsIn(body: string, dialect?: "iec-3"): string[] {
     END_PROGRAM`,
     {
       libraries: discoverStlibs("libs"),
-      features: ["+struct_extends"],
+      // FB_A's PROPERTY needs fb_property, off in iec-3: kept here.
+      features: dialect
+        ? ["+struct_extends", "+fb_property"]
+        : ["+struct_extends"],
       ...(dialect ? { dialect } : {}),
     },
   ).errors.map((e) => e.message);

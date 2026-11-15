@@ -9,7 +9,8 @@ import { compile } from "../../src/index.js";
 type Options = Parameters<typeof compile>[1];
 const MODES: Array<[string, Options]> = [
   ["no dialect", { features: ["+property"] }],
-  ["iec-3", { dialect: "iec-3", features: ["+property"] }],
+  // FB properties need fb_property, off in iec-3: kept here.
+  ["iec-3", { dialect: "iec-3", features: ["+property", "+fb_property"] }],
   ["strict", { strict: true, features: ["+property"] }],
 ];
 

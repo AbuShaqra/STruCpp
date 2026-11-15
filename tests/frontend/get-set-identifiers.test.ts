@@ -16,9 +16,9 @@ function build(source: string) {
 }
 
 function errorsIn(source: string, dialect?: "iec-3"): string[] {
-  return compile(source, dialect ? { dialect } : {}).errors.map(
-    (e) => e.message,
-  );
+  // An ACTION is the feature st_actions, off in iec-3: kept here.
+  const options = dialect ? { dialect, features: ["+st_actions"] } : {};
+  return compile(source, options).errors.map((e) => e.message);
 }
 
 describe("GET / SET as identifiers", () => {

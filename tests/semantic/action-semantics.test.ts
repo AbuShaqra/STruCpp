@@ -14,6 +14,9 @@ import { lowerActions } from "../../src/semantic/lower-actions.js";
 const lines = (r: ReturnType<typeof compile>): string[] =>
   r.errors.map((e) => `${e.line}:${e.column}: ${e.message}`);
 
+/** iec-3 with ACTIONs kept: the forms below are checked, not the feature. */
+const IEC_ACTIONS = { dialect: "iec-3", features: ["+st_actions"] };
+
 const messages = (r: ReturnType<typeof compile>): string[] =>
   r.errors.map((e) => e.message);
 
@@ -239,7 +242,7 @@ END_PROGRAM
 });
 
 describe("ACTION semantics", () => {
-  it("program action needs no feature under iec-3", () => {
+  it("program action needs the feature st_actions under iec-3", () => {
     const src = `PROGRAM MAIN
 VAR n : INT; END_VAR
   Count();
@@ -252,7 +255,11 @@ ACTION MAIN.Twice
   Count();
 END_ACTION
 `;
-    expect(compile(src, { dialect: "iec-3" }).errors).toEqual([]);
+    expect(lines(compile(src, { dialect: "iec-3" }))).toEqual([
+      "8:1: ACTION needs the feature st_actions",
+      "4:3: ACTION needs the feature st_actions",
+    ]);
+    expect(compile(src, IEC_ACTIONS).errors).toEqual([]);
     expect(compile(src).errors).toEqual([]);
   });
 
@@ -275,7 +282,7 @@ ACTION MAIN.Sum
   g := n;
 END_ACTION
 `;
-    expect(compile(src, { dialect: "iec-3", strict: true }).errors).toEqual([]);
+    expect(compile(src, { ...IEC_ACTIONS, strict: true }).errors).toEqual([]);
   });
 
   it("an undeclared name inside an action is an error", () => {
@@ -334,7 +341,7 @@ VAR b : Fb; END_VAR
   b.Reset();
 END_PROGRAM
 `;
-    expect(compile(src, { strict: true, dialect: "iec-3" }).errors).toEqual([]);
+    expect(compile(src, { ...IEC_ACTIONS, strict: true }).errors).toEqual([]);
   });
 
   it("MAIN.Name() from another POU is refused with C12's message", () => {
@@ -382,7 +389,7 @@ VAR mode : (Idle, Running) := Idle; END_VAR
   END_ACTION
 END_PROGRAM
 `;
-    expect(compile(src, { dialect: "iec-3" }).errors).toEqual([]);
+    expect(compile(src, IEC_ACTIONS).errors).toEqual([]);
   });
 
   it("an action calls another action of the same program", () => {
@@ -398,6 +405,6 @@ VAR n : INT; END_VAR
   END_ACTION
 END_PROGRAM
 `;
-    expect(compile(src, { dialect: "iec-3" }).errors).toEqual([]);
+    expect(compile(src, IEC_ACTIONS).errors).toEqual([]);
   });
 });

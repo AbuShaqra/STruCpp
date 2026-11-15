@@ -61,8 +61,9 @@ describe("--help", () => {
       expect(featureHelp).toMatch(new RegExp(`[ :,]${f}[,]?(?: |$)`));
     }
     const dStart = lines.findIndex((l) => l.startsWith("  --dialect "));
+    const dEnd = lines.findIndex((l, i) => i > dStart && l.startsWith("  --"));
     const dialectHelp = lines
-      .slice(dStart, dStart + 4)
+      .slice(dStart, dEnd)
       .join(" ")
       .replace(/\s+/g, " ");
     expect(dialectHelp).toContain(
@@ -70,7 +71,7 @@ describe("--help", () => {
     );
     for (const l of [
       ...lines.slice(start, end),
-      ...lines.slice(dStart, dStart + 4),
+      ...lines.slice(dStart, dEnd),
     ]) {
       expect(l.length).toBeLessThanOrEqual(80);
     }
@@ -83,7 +84,18 @@ describe("--print-dialect", () => {
     expect(r.status).toBe(0);
     expect(JSON.parse(r.out)).toEqual({
       id: null,
-      features: ["pointer_to", "ref_assign", "reference_to"],
+      features: [
+        "bare_self_caret",
+        "dynamic_memory",
+        "enum_dot_qualify",
+        "fb_property",
+        "pointer_to",
+        "ref_assign",
+        "reference_to",
+        "st_actions",
+        "struct_compare",
+        "var_inst",
+      ],
     });
   });
 
@@ -174,7 +186,18 @@ describe("bad dialect input", () => {
       expect(r.status).toBe(0);
       expect(JSON.parse(r.out)).toEqual({
         id: null,
-        features: ["pointer_to", "ref_assign", "reference_to"],
+        features: [
+          "bare_self_caret",
+          "dynamic_memory",
+          "enum_dot_qualify",
+          "fb_property",
+          "pointer_to",
+          "ref_assign",
+          "reference_to",
+          "st_actions",
+          "struct_compare",
+          "var_inst",
+        ],
       });
       for (const line of r.err.trimEnd().split("\n")) {
         expect(line).toMatch(
@@ -201,7 +224,7 @@ describe("bad dialect input", () => {
       /^error: dialect file .*bad-semantics\.json: semantics key 'trunc_result' is not known$/,
     );
     expect(msg("unknown-feature")).toMatch(
-      /^error: unknown feature 'no_such_feature' in dialect file .*bad-feature\.json \(known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators\, type_colon_optional, conditional_return\, platform_types, bit_type, string_default_80\)$/,
+      /^error: unknown feature 'no_such_feature' in dialect file .*bad-feature\.json \(known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators\, type_colon_optional, conditional_return\, platform_types, bit_type, string_default_80, fb_property, st_actions, bare_self_caret, enum_dot_qualify, struct_compare, dynamic_memory, var_inst\)$/,
     );
     expect(msg("wrong-id")).toMatch(
       /^error: dialect file .*bad-id\.json: id 'another-id' does not match the file name$/,
@@ -215,7 +238,7 @@ describe("bad dialect input", () => {
     const f = run(["--feature", "+goto", "--print-dialect"]);
     expect(f.status).toBe(1);
     expect(f.err.trim()).toBe(
-      "error: unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators, type_colon_optional, conditional_return, platform_types, bit_type, string_default_80)",
+      "error: unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators, type_colon_optional, conditional_return, platform_types, bit_type, string_default_80, fb_property, st_actions, bare_self_caret, enum_dot_qualify, struct_compare, dynamic_memory, var_inst)",
     );
   });
 
@@ -224,7 +247,7 @@ describe("bad dialect input", () => {
       const r = run(["--feature", spec, "--print-dialect"]);
       expect(r.status).toBe(1);
       expect(r.err.trim()).toBe(
-        `error: --feature '${spec}' names no feature: write +id, -id or id (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators, type_colon_optional, conditional_return, platform_types, bit_type, string_default_80)`,
+        `error: --feature '${spec}' names no feature: write +id, -id or id (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators, type_colon_optional, conditional_return, platform_types, bit_type, string_default_80, fb_property, st_actions, bare_self_caret, enum_dot_qualify, struct_compare, dynamic_memory, var_inst)`,
       );
     }
   });

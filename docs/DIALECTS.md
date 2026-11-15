@@ -9,7 +9,7 @@ shipped here.
 
 | Given                                       | Features in effect                                          |
 | ------------------------------------------- | ----------------------------------------------------------- |
-| no `--dialect`, no `--dialect-file`         | the default set: `pointer_to`, `reference_to`, `ref_assign` |
+| no `--dialect`, no `--dialect-file`         | the default set: `pointer_to`, `reference_to`, `ref_assign`, `fb_property`, `st_actions`, `bare_self_caret`, `enum_dot_qualify`, `struct_compare`, `dynamic_memory`, `var_inst` |
 | `--dialect iec-3`                           | none                                                        |
 | `--dialect <id>`                            | the profile's features plus those it inherits               |
 | one `--dialect-file <path>`, no `--dialect` | that file's profile                                         |
@@ -17,7 +17,11 @@ shipped here.
 | `--dialect-path` only, no `--dialect`       | the default set (the folder's profiles are only checked)    |
 
 The default set is the compiler's behaviour before profiles existed, so a build with no dialect flag
-behaves exactly as before. `iec-3` is the strict profile: it enables no feature. The default is not
+behaves exactly as before. `iec-3` is the strict profile: it enables no feature. A vendor form the compiler
+accepted before profiles is a feature in the default set and off in `iec-3`, so `iec-3` refuses it while a
+build with no flag is unchanged. A profile that `extends: "iec-3"` accepts such a form only when it lists the
+feature (`fb_property`, `st_actions`, `bare_self_caret`, `enum_dot_qualify`, `struct_compare`,
+`dynamic_memory`, `var_inst`). The default is not
 `iec-3`: it selects no profile, so `--print-dialect` and `--check --json` report its id as `null`.
 
 The id `iec` is reserved and is not an alias: `--dialect iec`, a profile with `"extends": "iec"` and a
@@ -47,7 +51,7 @@ profile object), so the order the sources are given in never decides which profi
 
 ```bash
 $ strucpp --print-dialect
-{"id":null,"features":["pointer_to","ref_assign","reference_to"]}
+{"id":null,"features":["bare_self_caret","dynamic_memory","enum_dot_qualify","fb_property","pointer_to","ref_assign","reference_to","st_actions","struct_compare","var_inst"]}
 $ strucpp --dialect iec-3 --feature +program_methods --print-dialect
 {"id":"iec-3","features":["program_methods"]}
 ```
@@ -103,6 +107,13 @@ the root. A profile without `extends` has only its own features.
 | `platform_types`     | the types `__XINT`/`XINT`, `__UXINT`/`UXINT`, `XWORD` and `PVOID` ([below](#platform-types)) |
 | `bit_type`           | `BIT` as the type of a STRUCT member, packed into shared bytes ([below](#bit-members)) |
 | `string_default_80`  | a STRING or WSTRING written without a length holds 80 characters, not 254 ([below](#default-string-length)) |
+| `fb_property`        | `PROPERTY` with GET/SET in a `FUNCTION_BLOCK` (default set)  |
+| `st_actions`         | `ACTION` blocks in a `PROGRAM` or `FUNCTION_BLOCK`, and `ACTION Owner.Name` (default set) |
+| `bare_self_caret`    | bare `THIS^`, and `SUPER^()`, `SUPER^.M()` and `SUPER^.x` (default set) |
+| `enum_dot_qualify`   | an enumeration value written `E.M` (IEC writes `E#M`) (default set) |
+| `struct_compare`     | `=` and `<>` of two STRUCT values, compared field by field (default set) |
+| `dynamic_memory`     | `__NEW(type)` and `__DELETE(p)` (default set)                |
+| `var_inst`           | `VAR_INST` blocks in a METHOD (default set)                  |
 
 ## Bitwise operators on integers
 
@@ -169,15 +180,26 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `__POSITION()`                              | `vendor_operators`   | `__POSITION needs the feature vendor_operators` (at the call)                         |
 | `BITADR(x)`                                 | `vendor_operators`   | `BITADR needs the feature vendor_operators` (at the call)                             |
 | `a : BIT;` in a STRUCT                      | `bit_type`           | `BIT as a STRUCT member needs the feature bit_type` (at the type)                    |
+| `PROPERTY` in a `FUNCTION_BLOCK`            | `fb_property`        | `PROPERTY in a FUNCTION_BLOCK needs the feature fb_property` (at `PROPERTY`)         |
+| `ACTION Name:` and `ACTION Owner.Name`      | `st_actions`         | `ACTION needs the feature st_actions` (at `ACTION`)                                  |
+| bare `THIS^`                                | `bare_self_caret`    | `THIS^ needs the feature bare_self_caret`                                            |
+| `SUPER^()`, `SUPER^.M()`, `SUPER^.x`        | `bare_self_caret`    | `SUPER^ needs the feature bare_self_caret`                                           |
+| `E_S.Idle` (enumeration value)              | `enum_dot_qualify`   | `E_S.IDLE needs the feature enum_dot_qualify; write E_S#IDLE`                        |
+| `p = q`, `p <> q` (two STRUCT values)       | `struct_compare`     | `= of two STRUCT values needs the feature struct_compare` (at the left operand)      |
+| `__NEW(INT)`                                | `dynamic_memory`     | `__NEW needs the feature dynamic_memory`                                             |
+| `__DELETE(p);`                              | `dynamic_memory`     | `__DELETE needs the feature dynamic_memory`                                          |
+| `VAR_INST ... END_VAR`                      | `var_inst`           | `VAR_INST needs the feature var_inst` (at `VAR_INST`)                                |
 | `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive). With the feature on, `{define}`/`{undefine}` are accepted ([below](#conditional-pragmas)) |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.
 `POINTER TO` and `REFERENCE TO` are refused wherever a type is written, CONFIGURATION `VAR_GLOBAL` blocks
-included, and `ADR` both in statements and in a declaration's initial value. IEC
-`REF_TO`, `REF()` and `^` need no feature. `--test` files are analysed with the default set, so most
-constructs are not refused there under `iec-3`. The exceptions follow the dialect flags of the run, which
-`--test` resolves for the test files too (and `-D`): conditional pragmas, `POINTER TO` and `ADR`
-(`pointer_to`), `RETURN (cond);` and the platform types.
+included, and `ADR` both in statements and in a declaration's initial value, an array index included
+(`a[ADR(x)]`). IEC `REF_TO`, `REF()` and `^` need no feature. A `--test` file follows the dialect flags of
+the run, which `--test` resolves for the test files too (and `-D`): conditional pragmas, `POINTER TO` and
+`ADR` (`pointer_to`), `REFERENCE TO` (`reference_to`), `RETURN (cond);`, the platform types, `E.M`
+(`enum_dot_qualify`), `=`/`<>` of two STRUCTs (`struct_compare`) and `__NEW`/`__DELETE` (`dynamic_memory`)
+are refused there as in a source. A PROPERTY, an ACTION, `VAR_INST` and the caret forms are declared in the
+sources, whose refusal stops the run.
 
 A `REFERENCE TO` declared with an initial value `r : REFERENCE TO INT := REF(x);` is bound to `x` when it
 is created (a PROGRAM, FUNCTION_BLOCK, FUNCTION or METHOD variable, a global), and `x` is checked as the
@@ -209,16 +231,19 @@ type 'MYINT' is not supported yet`), as it does for `r REF= x` with `x` of an al
 `THIS.M()`, `SUPER.x` and `SUPER.M()` need no feature, and `SUPER.M()` reaches the nearest base that
 declares `M`. `THIS^.x` means the same as `THIS.x`. `REF=` on a THIS member (`THIS.r REF= x`) needs
 `ref_assign`, and `self_caret` as well when written `THIS^.r`. Bare `THIS^` and the forms `SUPER^.M()`,
-`SUPER^.x` and `SUPER^()` are not IEC either, but they were accepted before profiles and still are, in every
-dialect.
+`SUPER^.x` and `SUPER^()` are not IEC either: they need `bare_self_caret`, which is in the default set (they
+were accepted before profiles) and off in `iec-3`. IEC writes them `THIS`, `SUPER.M()`, `SUPER.x` and
+`SUPER()`.
 
 `=` and `<>` on two STRUCT values (compared field by field) are not IEC 61131-3 Ed. 3 either, whose
-comparison functions take elementary values. They were accepted by analysis before they compiled and still
-are, in every dialect, `iec-3` included; refusing them under `iec-3` is a candidate for the iec-3 audit.
+comparison functions take elementary values. They need `struct_compare`, which is in the default set and off
+in `iec-3`; this covers a STRUCT reached through `^` (`r1^ = r2^`), an alias of a STRUCT and a UNION
+(`= of two UNION values ...`) too. A comparison of two references (`r = q`, also `(r) = (q)`) stays accepted.
 
 `property` is in neither the default set nor `iec-3`: IEC 61131-3 Ed. 3 has no PROPERTY, and its interfaces
-hold method prototypes only. A `PROPERTY` in a `FUNCTION_BLOCK` (with GET/SET bodies) needs no feature and is
-accepted in every dialect. In an `INTERFACE`, a property prototype names its accessors explicitly, with no
+hold method prototypes only. A `PROPERTY` in a `FUNCTION_BLOCK` (with GET/SET bodies) needs `fb_property`,
+which is in the default set (it was accepted before profiles) and off in `iec-3`; the declaration is refused,
+and a use of a refused property needs no second message. In an `INTERFACE`, a property prototype names its accessors explicitly, with no
 bodies:
 
 ```
@@ -537,9 +562,10 @@ method is a plain (non-virtual) member function of `Program_<NAME>`, declared af
 vtable is the same as without methods. It sees the program's VARs and reaches its `VAR_EXTERNAL`s exactly as
 `run()` does; `Name()` and `MAIN.Name()` inside MAIN both call it on the same instance.
 
-`ACTION` blocks need no feature, in a `PROGRAM` or a `FUNCTION_BLOCK`, under every dialect: an action is
-lowered to a parameterless method of its owner that is exempt from `program_methods`, and the same
-inside-the-program rule applies to a program's actions.
+`ACTION` blocks, in a `PROGRAM` or a `FUNCTION_BLOCK` or written `ACTION Owner.Name`, need `st_actions`,
+which is in the default set and off in `iec-3` (Ed. 3 has actions only in SFC). An action is lowered to a
+parameterless method of its owner that is exempt from `program_methods`, and the same inside-the-program rule
+applies to a program's actions.
 
 ### A program reached by name
 

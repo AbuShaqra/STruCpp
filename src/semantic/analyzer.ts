@@ -593,6 +593,7 @@ export class SemanticAnalyzer {
     // so the rest of a refused method is still checked.
     this.validateProgramMethodFeature(ast);
     this.validateInterfaceProperties(ast);
+    this.validateVendorFormFeatures(ast);
     this.validatePostfixEnumBases(ast);
     this.validateConfigurationGlobalsHoldNoFB(ast);
     this.validateDeclaredEno(ast);
@@ -625,16 +626,18 @@ export class SemanticAnalyzer {
 
     if (this.options.strict === true) this.validateReservedNames(ast);
 
-    // Pass 2: Type checking
+    // Pass 2: Type checking. Its struct_compare refusals are located and gate nothing.
+    let typeRefusals = 0;
     if (this.errors.length - typeReferenceErrors === 0) {
       const typeResult = this.typeChecker.check(ast);
       this.errors.push(...typeResult.errors);
       this.warnings.push(...typeResult.warnings);
+      typeRefusals = typeResult.refusals;
     }
 
     // Pass 3: Semantic validation. After an error it does not run, except
     // its literal checks, which need no resolved type.
-    if (this.errors.length - typeReferenceErrors === 0) {
+    if (this.errors.length - typeReferenceErrors - typeRefusals === 0) {
       this.validateSemantics(ast);
     } else {
       this.prepareLiteralFallback(ast);
@@ -856,6 +859,144 @@ export class SemanticAnalyzer {
           method.sourceSpan,
         );
       }
+    }
+  }
+
+  /**
+   * Vendor forms the default set keeps and `iec-3` refuses: an FB PROPERTY
+   * (fb_property), an ACTION (st_actions), VAR_INST (var_inst), `__NEW` and
+   * `__DELETE` (dynamic_memory), bare `THIS^` and the `SUPER^` forms
+   * (bare_self_caret). Each is reported at the construct.
+   */
+  private validateVendorFormFeatures(ast: CompilationUnit): void {
+    for (const fb of ast.functionBlocks) {
+      for (const prop of fb.properties) {
+        this.requireFeature(
+          "fb_property",
+          "PROPERTY in a FUNCTION_BLOCK",
+          prop.sourceSpan,
+        );
+      }
+    }
+    // A lowered ACTION is a `fromAction` method; one not lowered stays listed.
+    const actionSpans: SourceSpan[] = [
+      ...ast.actions.map((a) => a.sourceSpan),
+      ...[...ast.programs, ...ast.functionBlocks].flatMap((owner) => [
+        ...owner.actions.map((a) => a.sourceSpan),
+        ...owner.methods
+          .filter((m) => m.fromAction === true)
+          .map((m) => m.sourceSpan),
+      ]),
+    ];
+    for (const span of actionSpans) {
+      this.requireFeature("st_actions", "ACTION", span);
+    }
+    // A type default `:= E.M`, which the name checks do not reach.
+    for (const typeDecl of ast.types) {
+      const value = typeDecl.defaultValue;
+      if (
+        value?.kind !== "VariableExpression" ||
+        value.typedLiteral === true ||
+        value.fieldAccess.length !== 1
+      ) {
+        continue;
+      }
+      const sym = this.symbolTables.globalScope.lookup(value.name);
+      if (
+        sym?.kind !== "type" ||
+        sym.resolvedType?.typeKind !== "enum" ||
+        (sym.declaration as TypeDeclaration | undefined)?.inline
+      ) {
+        continue;
+      }
+      const member = value.fieldAccess[0]!;
+      this.requireFeature(
+        "enum_dot_qualify",
+        `${value.name}.${member}`,
+        value.sourceSpan,
+        `; write ${value.name}#${member}`,
+      );
+    }
+    // A CONFIGURATION global's initial value, which the name checks do not reach either.
+    for (const config of ast.configurations) {
+      for (const block of config.varBlocks) {
+        for (const decl of block.declarations) {
+          if (decl.initialValue === undefined) continue;
+          walkAST(decl.initialValue, (node) => {
+            if (node.kind === "VariableExpression") {
+              this.requireEnumDotFeature(node as VariableExpression);
+            }
+          });
+        }
+      }
+    }
+    const visit = (node: ASTNode): void => this.requireNodeFeatures(node);
+    walkAST(ast, visit);
+    // Action bodies, also one not lowered (an owner or name error); a repeat is dropped.
+    for (const action of [
+      ...ast.actions,
+      ...[...ast.programs, ...ast.functionBlocks].flatMap((o) => o.actions),
+    ]) {
+      for (const stmt of action.body) walkAST(stmt, visit);
+    }
+  }
+
+  /** `E.M` of a global enumeration type E needs the feature enum_dot_qualify. */
+  private requireEnumDotFeature(expr: VariableExpression): void {
+    if (expr.typedLiteral === true || expr.enumType !== undefined) return;
+    const member =
+      expr.fieldAccess[0] ??
+      expr.accessChain?.find((step) => step.kind === "field")?.name;
+    if (member === undefined) return;
+    const sym = this.symbolTables.globalScope.lookup(expr.name);
+    if (
+      sym?.kind !== "type" ||
+      sym.resolvedType?.typeKind !== "enum" ||
+      (sym.declaration as TypeDeclaration | undefined)?.inline
+    ) {
+      return;
+    }
+    this.requireFeature(
+      "enum_dot_qualify",
+      `${expr.name}.${member}`,
+      expr.sourceSpan,
+      `; write ${expr.name}#${member}`,
+    );
+  }
+
+  /** The feature refusals of one node: VAR_INST, `__NEW`, `__DELETE`, the caret forms. */
+  private requireNodeFeatures(node: ASTNode): void {
+    switch (node.kind) {
+      case "VarBlock":
+        if ((node as VarBlock).blockType === "VAR_INST") {
+          this.requireFeature("var_inst", "VAR_INST", node.sourceSpan);
+        }
+        break;
+      case "NewExpression":
+        this.requireFeature("dynamic_memory", "__NEW", node.sourceSpan);
+        break;
+      case "DeleteStatement":
+        this.requireFeature("dynamic_memory", "__DELETE", node.sourceSpan);
+        break;
+      case "VariableExpression":
+      case "FunctionCallExpression": {
+        const expr = node as VariableExpression | FunctionCallExpression;
+        if (expr.bareCaret !== true) break;
+        const self =
+          expr.kind === "VariableExpression"
+            ? expr.name
+            : expr.functionName.split(".")[0]!;
+        this.requireFeature(
+          "bare_self_caret",
+          `${self.toUpperCase()}^`,
+          (expr.kind === "VariableExpression"
+            ? expr.bareCaretSpan
+            : undefined) ?? expr.sourceSpan,
+        );
+        break;
+      }
+      default:
+        break;
     }
   }
 
@@ -3646,10 +3787,12 @@ export class SemanticAnalyzer {
     feature: FeatureId,
     construct: string,
     span: { startLine: number; startCol: number; file?: string | undefined },
+    /** Appended to the message, e.g. `; write E#M`. */
+    hint = "",
   ): void {
     if (this.features.has(feature)) return;
     // One refusal per position (a repeated array-literal element is one).
-    const message = this.featureMessage(feature, construct);
+    const message = this.featureMessage(feature, construct) + hint;
     if (
       this.errors.some(
         (e) =>
@@ -4690,6 +4833,7 @@ export class SemanticAnalyzer {
     // Check bit access bounds on variable expressions
     if (expr.kind === "VariableExpression") {
       this.checkBitAccess(expr, varTypeMap, ast, expr.subscripts.length > 0);
+      this.requireAdrFeatureInIndices(expr, varTypeMap);
     }
 
     if (
@@ -4725,6 +4869,35 @@ export class SemanticAnalyzer {
       }
     } else if (expr.kind === "ParenthesizedExpression") {
       this.validateExpression(expr.expression, varTypeMap, ast);
+    }
+  }
+
+  /**
+   * `ADR` inside an array index (`a[ADR(x)]`) needs the feature pointer_to,
+   * as elsewhere; the expression walk does not enter indices.
+   */
+  private requireAdrFeatureInIndices(
+    expr: VariableExpression,
+    varTypeMap: ReadonlyMap<string, string>,
+  ): void {
+    if (this.features.has("pointer_to")) return;
+    for (const index of indexExpressions(expr)) {
+      walkAST(index, (node) => {
+        if (node.kind !== "FunctionCallExpression") return;
+        const call = node as FunctionCallExpression;
+        if (call.functionName.toUpperCase() !== "ADR" || call.instance) return;
+        if (this.hasOwnMethod("ADR", this.callOwner)) return;
+        if (this.isVisibleVariable("ADR", varTypeMap)) return;
+        const sym = this.symbolTables.globalScope.lookup("ADR");
+        if (sym?.kind === "program") return;
+        if (
+          sym?.kind === "function" &&
+          !this.symbolTables.globalScope.definedByLibrary("ADR")
+        ) {
+          return;
+        }
+        this.requireFeature("pointer_to", "ADR", call.sourceSpan);
+      });
     }
   }
 
@@ -5650,6 +5823,11 @@ export class SemanticAnalyzer {
         break;
       case "StructInitializerExpression":
         for (const el of expr.elements) this.requireAdrFeatureIn(el.value);
+        break;
+      case "VariableExpression":
+        for (const index of indexExpressions(expr)) {
+          this.requireAdrFeatureIn(index);
+        }
         break;
       default:
         break;
@@ -6931,6 +7109,23 @@ export class SemanticAnalyzer {
       return;
     }
 
+    // `E.M` is a vendor spelling of the enumeration value `E#M`; a hoisted
+    // inline enumeration's value is the compiler's spelling, not the user's.
+    if (sym.kind === "type" && sym.resolvedType?.typeKind === "enum") {
+      if ((sym.declaration as TypeDeclaration | undefined)?.inline) return;
+      const member =
+        expr.fieldAccess[0] ??
+        expr.accessChain?.find((step) => step.kind === "field")?.name ??
+        "";
+      this.requireFeature(
+        "enum_dot_qualify",
+        `${expr.name}.${member}`,
+        expr.sourceSpan,
+        `; write ${expr.name}#${member}`,
+      );
+      return;
+    }
+
     // `PRG_A.x` from another POU is validated by validateProgramAccess.
     if (sym.kind === "program" && this.reachedMemberNodes.has(expr)) return;
 
@@ -7373,6 +7568,10 @@ export class SemanticAnalyzer {
     this.validateStringLiteralCharset(testRoots);
     // EN/ENO in SETUP, TEARDOWN and TEST bodies as in the sources
     this.validateEnEnoPlacement(testRoots);
+    // The dialect's refusals of `__NEW`, `__DELETE` and the caret forms
+    for (const root of testRoots) {
+      walkAST(root, (node) => this.requireNodeFeatures(node));
+    }
     // TIME, DATE, TOD and DT literals fit their 32-bit types
     for (const root of testRoots) {
       walkAST(root, (node) => {
@@ -7416,6 +7615,22 @@ export class SemanticAnalyzer {
       );
       this.checkTestOutputBindings(tc.body, testScope, sourceAst);
       this.checkTestAddressStores(tc.varBlocks, tc.body, testScope, sourceAst);
+      this.checkTestStructComparisons(
+        [...tc.varBlocks, ...tc.body],
+        testScope,
+        sourceAst,
+      );
+    }
+    if (testFile.setup) {
+      this.checkTestStructComparisons(
+        [
+          ...testFile.setup.varBlocks,
+          ...testFile.setup.body,
+          ...(testFile.teardown?.body ?? []),
+        ],
+        setupScope,
+        sourceAst,
+      );
     }
     if (testFile.setup) {
       this.checkTestOutputBindings(
@@ -7554,6 +7769,29 @@ export class SemanticAnalyzer {
         }
       }
     }
+  }
+
+  /** `=` and `<>` of two STRUCTs in test bodies, where struct_compare is off. */
+  private checkTestStructComparisons(
+    roots: ReadonlyArray<VarBlock | TestStatement>,
+    scope: Scope,
+    sourceAst: CompilationUnit | undefined,
+  ): void {
+    if (this.features.has("struct_compare")) return;
+    const checker = new TypeChecker(
+      this.symbolTables,
+      this.stdRegistry,
+      false,
+      this.features,
+      (feature, construct) => this.featureMessage(feature, construct),
+    );
+    this.errors.push(
+      ...checker.checkTestStructComparisons(
+        roots as readonly ASTNode[],
+        scope,
+        sourceAst,
+      ),
+    );
   }
 
   /** Output bindings in test bodies: checked as assignments, copied out where needed. */
@@ -7939,6 +8177,15 @@ export function analyzeTestFile(
     dialect !== undefined ? { dialect } : {},
   );
   return analyzer.analyzeTestFile(testFile, sourceSymbolTables, sourceAst);
+}
+
+/** The index expressions of a variable access, each once (`a[i].b[j]`: i, j). */
+function indexExpressions(expr: VariableExpression): Expression[] {
+  return expr.accessChain
+    ? expr.accessChain.flatMap((step) =>
+        step.kind === "subscript" ? step.indices : [],
+      )
+    : expr.subscripts;
 }
 
 /** The parameters of a method the C++ signature carries, in order. */
