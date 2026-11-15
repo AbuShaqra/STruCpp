@@ -21,6 +21,7 @@ import type {
   Expression,
   FunctionBlockDeclaration,
   FunctionCallExpression,
+  FunctionCallStatement,
   InterfaceDeclaration,
   LiteralExpression,
   MethodCallExpression,
@@ -105,6 +106,7 @@ import {
 } from "./type-utils.js";
 import {
   isEnArgument,
+  isEnEnoArgument,
   isEnoArgument,
   stripEnEno,
   walkAST,
@@ -2000,6 +2002,9 @@ export class SemanticAnalyzer {
     // Validate bit access bounds and ADR l-value targets
     this.validateExpressions(ast);
 
+    // EN/ENO only on a call written as a statement or a whole right-hand side
+    this.validateEnEnoPlacement(ast);
+
     // Validate array initializer shape/size and subscript counts
     this.validateArrayShapes(ast);
 
@@ -2016,6 +2021,55 @@ export class SemanticAnalyzer {
     // - Check CASE statement coverage
     // - Validate reference operations
     // - Check for unreachable code
+  }
+
+  /**
+   * EN and ENO are honoured only on a call that is a statement or the whole
+   * right-hand side of an assignment, where codegen wraps it. Anywhere else
+   * (inside an expression, a condition, another call's argument, an initial
+   * value) they are refused at the EN/ENO argument. A standard MAX, MIN,
+   * LIMIT, comparison, SEL or MUX of CHAR or WCHAR keeps its nested EN/ENO.
+   */
+  private validateEnEnoPlacement(ast: CompilationUnit): void {
+    const wrapped = new Set<Expression>();
+    walkAST(ast, (node) => {
+      if (node.kind === "FunctionCallStatement") {
+        wrapped.add((node as FunctionCallStatement).call);
+      } else if (node.kind === "AssignmentStatement") {
+        const value = (node as AssignmentStatement).value;
+        if (
+          value.kind === "FunctionCallExpression" ||
+          value.kind === "MethodCallExpression"
+        ) {
+          wrapped.add(value);
+        }
+      }
+    });
+    walkAST(ast, (node) => {
+      if (
+        node.kind !== "FunctionCallExpression" &&
+        node.kind !== "MethodCallExpression"
+      ) {
+        return;
+      }
+      const call = node as FunctionCallExpression | MethodCallExpression;
+      if (wrapped.has(call)) return;
+      const arg = call.arguments.find(isEnEnoArgument);
+      if (arg === undefined) return;
+      if (
+        call.kind === "FunctionCallExpression" &&
+        this.typeChecker.isCharStdCall(call)
+      ) {
+        return;
+      }
+      const at = arg.sourceSpan ?? arg.value.sourceSpan;
+      this.addError(
+        "EN/ENO are only supported on a call written as a statement or as the whole right-hand side of an assignment",
+        at.startLine,
+        at.startCol,
+        at.file,
+      );
+    });
   }
 
   /**
