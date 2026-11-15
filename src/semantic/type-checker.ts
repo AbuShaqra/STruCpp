@@ -7405,6 +7405,26 @@ export class TypeChecker {
       : undefined;
   }
 
+  /**
+   * True when the call is a standard MAX, MIN, LIMIT, comparison, SEL or MUX
+   * with a CHAR or WCHAR operand: its EN/ENO also works nested in an
+   * expression. Valid after `check` has resolved the operand types.
+   */
+  isCharStdCall(expr: FunctionCallExpression): boolean {
+    const name = expr.functionName.toUpperCase();
+    if (
+      !CHAR_COMPARE_FUNCTIONS.has(name) ||
+      expr.instance !== undefined ||
+      expr.libraryFunction !== undefined ||
+      !this.isStdCharFunction(name)
+    ) {
+      return false;
+    }
+    return stripEnEno(expr.arguments).some(
+      (a) => this.charTypeOf(a.value.resolvedType) !== undefined,
+    );
+  }
+
   /** True when `name` is the standard function, not a user or library one. */
   private isStdCharFunction(name: string): boolean {
     if (this.findUserFunction(name)) return false;

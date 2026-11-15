@@ -21,6 +21,7 @@ import type {
   Expression,
   FunctionBlockDeclaration,
   FunctionCallExpression,
+  FunctionCallStatement,
   InterfaceDeclaration,
   LiteralExpression,
   MethodCallExpression,
@@ -105,6 +106,7 @@ import {
 } from "./type-utils.js";
 import {
   isEnArgument,
+  isEnEnoArgument,
   isEnoArgument,
   stripEnEno,
   walkAST,
@@ -2000,6 +2002,9 @@ export class SemanticAnalyzer {
     // Validate bit access bounds and ADR l-value targets
     this.validateExpressions(ast);
 
+    // EN/ENO only on a call written as a statement or a whole right-hand side
+    this.validateEnEnoPlacement([ast]);
+
     // Validate array initializer shape/size and subscript counts
     this.validateArrayShapes(ast);
 
@@ -2016,6 +2021,63 @@ export class SemanticAnalyzer {
     // - Check CASE statement coverage
     // - Validate reference operations
     // - Check for unreachable code
+  }
+
+  /**
+   * EN and ENO are honoured only on a call that is a statement or the whole
+   * right-hand side of an assignment, where codegen wraps it. Anywhere else
+   * (inside an expression, a condition, another call's argument, an initial
+   * value) they are refused at the EN/ENO argument. A standard MAX, MIN,
+   * LIMIT, comparison, SEL or MUX of CHAR or WCHAR keeps its nested EN/ENO.
+   */
+  private validateEnEnoPlacement(roots: readonly ASTNode[]): void {
+    const wrapped = new Set<Expression>();
+    const visit = (visitor: (node: ASTNode) => void): void => {
+      for (const root of roots) walkAST(root, visitor);
+    };
+    // A TYPE's initial value is reached twice; one error per position
+    const reported = new Set<string>();
+    visit((node) => {
+      if (node.kind === "FunctionCallStatement") {
+        wrapped.add((node as FunctionCallStatement).call);
+      } else if (node.kind === "AssignmentStatement") {
+        const value = (node as AssignmentStatement).value;
+        if (
+          value.kind === "FunctionCallExpression" ||
+          value.kind === "MethodCallExpression"
+        ) {
+          wrapped.add(value);
+        }
+      }
+    });
+    visit((node) => {
+      if (
+        node.kind !== "FunctionCallExpression" &&
+        node.kind !== "MethodCallExpression"
+      ) {
+        return;
+      }
+      const call = node as FunctionCallExpression | MethodCallExpression;
+      if (wrapped.has(call)) return;
+      const arg = call.arguments.find(isEnEnoArgument);
+      if (arg === undefined) return;
+      if (
+        call.kind === "FunctionCallExpression" &&
+        this.typeChecker.isCharStdCall(call)
+      ) {
+        return;
+      }
+      const at = arg.sourceSpan ?? arg.value.sourceSpan;
+      const key = `${at.file}:${at.startLine}:${at.startCol}`;
+      if (reported.has(key)) return;
+      reported.add(key);
+      this.addError(
+        "EN/ENO are only supported on a call written as a statement or as the whole right-hand side of an assignment",
+        at.startLine,
+        at.startCol,
+        at.file,
+      );
+    });
   }
 
   /**
@@ -7309,6 +7371,8 @@ export class SemanticAnalyzer {
     ] as ASTNode[];
     // STRING literals (assertion messages included) hold Windows-1252 characters
     this.validateStringLiteralCharset(testRoots);
+    // EN/ENO in SETUP, TEARDOWN and TEST bodies as in the sources
+    this.validateEnEnoPlacement(testRoots);
     // TIME, DATE, TOD and DT literals fit their 32-bit types
     for (const root of testRoots) {
       walkAST(root, (node) => {

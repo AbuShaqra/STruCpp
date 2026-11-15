@@ -5058,6 +5058,21 @@ export class CodeGenerator {
             : undefined;
         if (memberInstanceCall !== undefined) {
           this.generateFBInvocation(memberInstanceCall, indent);
+        } else if (
+          stmt.call.kind === "MethodCallExpression" &&
+          this.hasEnEno(stmt.call.arguments)
+        ) {
+          // Method call statement with EN/ENO, as a function call's below
+          const { enExpr, enoVar, filteredArgs } = this.extractEnEno(
+            stmt.call.arguments,
+          );
+          const callExpr = this.generateMethodCallExpression({
+            ...stmt.call,
+            arguments: filteredArgs,
+          });
+          this.emitEnEnoWrapper(indent, enExpr, enoVar, (bi) => {
+            this.emit(`${bi}${callExpr};`);
+          });
         } else if (stmt.call.kind === "MethodCallExpression") {
           this.emit(
             `${indent}${this.generateMethodCallExpression(stmt.call)};`,
@@ -5178,6 +5193,35 @@ export class CodeGenerator {
     stmt: AssignmentStatement,
     indent: string,
   ): void {
+    // EN/ENO on a function or method call assignment:
+    // result := func(EN := cond, args..., ENO => eno_var);
+    // → if (cond) { <the store without EN/ENO>; eno_var = true; } else { eno_var = false; }
+    if (
+      (stmt.value.kind === "FunctionCallExpression" ||
+        stmt.value.kind === "MethodCallExpression") &&
+      this.hasEnEno(stmt.value.arguments)
+    ) {
+      const { enExpr, enoVar, filteredArgs } = this.extractEnEno(
+        stmt.value.arguments,
+      );
+      const stripped: AssignmentStatement = {
+        ...stmt,
+        value: { ...stmt.value, arguments: filteredArgs },
+      };
+      // An interface-returning method's result store is a `return`: ENO first
+      const storeReturns =
+        this.interfaceReturnMethod &&
+        this.currentFunctionName !== undefined &&
+        this.generateLvalue(stmt.target) ===
+          `${this.currentFunctionName}_result`;
+      this.emitEnEnoWrapper(indent, enExpr, enoVar, (bi) => {
+        if (storeReturns && enoVar !== null)
+          this.emit(`${bi}${enoVar} = true;`);
+        this.generateAssignmentStatement(stripped, bi);
+      });
+      return;
+    }
+
     // Check for property write: m.Speed := 75 → m.set_Speed(75)
     const propWrite = this.detectPropertyWrite(stmt.target);
     if (propWrite) {
@@ -5230,28 +5274,6 @@ export class CodeGenerator {
       this.emit(
         `${indent}${baseCode} = (${baseCode} & ~(1ULL << ${bitIdx})) | ((${value} ? 1ULL : 0ULL) << ${bitIdx});`,
       );
-      return;
-    }
-
-    // EN/ENO on function call assignment:
-    // result := func(EN := cond, args..., ENO => eno_var);
-    // → if (cond) { result = func(args); eno_var = true; } else { eno_var = false; }
-    if (
-      stmt.value.kind === "FunctionCallExpression" &&
-      this.hasEnEno(stmt.value.arguments)
-    ) {
-      const { enExpr, enoVar, filteredArgs } = this.extractEnEno(
-        stmt.value.arguments,
-      );
-      const target = this.generateLvalue(stmt.target);
-      const modifiedCall: FunctionCallExpression = {
-        ...stmt.value,
-        arguments: filteredArgs,
-      };
-      const callExpr = this.generateFunctionCallExpression(modifiedCall);
-      this.emitEnEnoWrapper(indent, enExpr, enoVar, (bi) => {
-        this.emit(`${bi}${target} = ${callExpr};`);
-      });
       return;
     }
 
