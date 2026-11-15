@@ -2054,7 +2054,7 @@ export class SemanticAnalyzer {
    * stored in is cut to that length at run time: warn, in every mode.
    */
   private validateStringLiteralLengths(ast: CompilationUnit): void {
-    const typeDef = (name: string) =>
+    const typeDef = (name: string): TypeDeclaration["definition"] | undefined =>
       ast.types.find((t) => t.name.toUpperCase() === name.toUpperCase())
         ?.definition;
     // STRING / WSTRING and its length, through aliases of STRING(n)
