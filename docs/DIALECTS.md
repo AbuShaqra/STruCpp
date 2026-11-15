@@ -112,7 +112,8 @@ the usual narrowing warning. An untyped constant beside a typed integer takes th
 (`s AND 16#7F` with a SINT `s` is a SINT, so `s := s AND 16#7F` gets no warning); beside an operand that is
 neither an integer nor ANY_BIT (TIME, REAL, STRING) it is typed as before. A signed and an unsigned integer
 take the smallest signed type that holds both, as Figure 11 widens them, whatever their order (`si OR usi`
-is an INT, `i AND ui` a DINT, `di XOR udi` a LINT); LINT and ULINT have none, so their result is a LINT with
+is an INT, `i AND ui` a DINT, `di XOR udi` a LINT), and the generated C++ computes in that type, so
+`(di OR udi) < 0` is TRUE for a negative `di`; LINT and ULINT have none, so their result is a LINT with
 the warning `LINT and ULINT have no common integer type: AND of them is a LINT`. With no dialect flag this adds narrowing
 warnings that development did not give, where the wider result is stored back into a narrower variable:
 `udi := di OR udi` (DINT and UDINT) now warns `Implicit narrowing conversion from LINT to UDINT`. A refusal is reported once,
