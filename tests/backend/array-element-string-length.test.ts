@@ -5,6 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 type Options = Parameters<typeof compile>[1];
 const MODES: Array<[string, Options]> = [
@@ -43,18 +44,18 @@ END_PROGRAM
           options,
         );
         expect(errors).toEqual([]);
-        expect(r.headerCode).toContain(
+        expect(withoutSites(r.headerCode)).toContain(
           "using TA = Array1D<IECStringVar<3>, 0, 1>;",
         );
-        expect(r.headerCode).toContain(
+        expect(withoutSites(r.headerCode)).toContain(
           "using TR = Array1D<IEC_REF_TO<IECString<3>>, 0, 1>;",
         );
-        expect(r.headerCode).toContain("Array1D<IECStringVar<3>, 0, 1> A;");
-        expect(r.headerCode).toContain(
+        expect(withoutSites(r.headerCode)).toContain("Array1D<IECStringVar<3>, 0, 1> A;");
+        expect(withoutSites(r.headerCode)).toContain(
           "Array1D<IEC_REF_TO<IECString<3>>, 0, 1> RA;",
         );
-        expect(r.headerCode).toContain("Array1D<IECWStringVar<2>, 0, 1> W;");
-        expect(r.headerCode).toContain("Array1D<IECStringVar<4>, 0, 1> F{};");
+        expect(withoutSites(r.headerCode)).toContain("Array1D<IECWStringVar<2>, 0, 1> W;");
+        expect(withoutSites(r.headerCode)).toContain("Array1D<IECStringVar<4>, 0, 1> F{};");
       });
 
       it("refuses a REF_TO element holding a reference of another length", () => {
@@ -87,7 +88,7 @@ END_PROGRAM
         );
         expect(errors).toEqual([]);
         expect(r.warnings).toEqual([]);
-        expect(r.cppCode).toContain("I = F(A.at(0));");
+        expect(withoutSites(r.cppCode)).toContain("I = F(A.at(0));");
       });
 
       it("keeps arrays of another element length assignable and passable", () => {
@@ -109,13 +110,13 @@ END_PROGRAM
           options,
         );
         expect(errors).toEqual([]);
-        expect(r.cppCode).toMatch(
+        expect(withoutSites(r.cppCode)).toMatch(
           /Array1D<IEC_STRING, 0, 1> (__gio_\d+); \1 = A;/,
         );
-        expect(r.cppCode).toMatch(
+        expect(withoutSites(r.cppCode)).toMatch(
           /array_rebind_t<typename std::decay<decltype\(B\)>::type, IECStringVar<3>> (__gio_\d+); \1 = B;/,
         );
-        expect(r.cppCode).toContain("FV(A)");
+        expect(withoutSites(r.cppCode)).toContain("FV(A)");
       });
     });
   }

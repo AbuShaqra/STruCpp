@@ -79,6 +79,7 @@ import {
   addressFit,
   addressMisuse,
   addressSource,
+  isNarrowInteger,
   narrowAddressMessage,
 } from "./address-store.js";
 import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
@@ -579,9 +580,7 @@ export class TypeChecker {
               0) === 0
           ) {
             this.checkAddressStore(
-              target !== undefined
-                ? typeNameUtil(target)
-                : this.accessedTypeName(stmt.target, scope),
+              this.storeTargetTypeName(stmt.target, target, scope),
               stmt.value,
             );
           }
@@ -3905,11 +3904,12 @@ export class TypeChecker {
     }
   }
 
-  /** A user FUNCTION named ADR, which a call of ADR reaches. */
+  /** A user FUNCTION named ADR, which a call of ADR reaches; a library's ADR is the operator. */
   private userAddressFunction(): boolean {
     return (
       this.findUserFunction("ADR") !== undefined ||
-      this.symbolTables.lookupFunction("ADR") !== undefined
+      (this.symbolTables.lookupFunction("ADR") !== undefined &&
+        !this.symbolTables.globalScope.definedByLibrary("ADR"))
     );
   }
 
@@ -3929,9 +3929,11 @@ export class TypeChecker {
     value: Expression,
   ): boolean {
     if (typeName === undefined) return false;
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
     // `ADR(x) * 2` into an integer: no address, no offset of one.
     if (
-      addressMisuse(value) &&
+      addressMisuse(value, user) &&
       addressFit(typeName, this.ast?.types ?? []) !== undefined &&
       !this.userAddressFunction()
     ) {
@@ -3943,8 +3945,8 @@ export class TypeChecker {
       );
       return true;
     }
-    const source = addressSource(value);
-    if (source === undefined) return false;
+    const source = addressSource(value, user);
+    if (source === undefined) return this.checkXwordStore(typeName, value);
     // A user FUNCTION named ADR is called, not the operator.
     if (source.op === "ADR" && this.userAddressFunction()) return false;
     const fit = addressFit(typeName, this.ast?.types ?? []);
@@ -3966,7 +3968,13 @@ export class TypeChecker {
       return fit !== undefined;
     }
     if (fit === undefined) return false;
-    if (fit === "wide") return true;
+    if (fit === "wide") {
+      // An alias or subrange is a plain integer in C++, and a REF no pointer.
+      if (source.op === "REF" || addressFit(typeName, []) !== "wide") {
+        value.addressInto = typeName;
+      }
+      return true;
+    }
     if (this.addressStoresReported.has(key)) return true;
     this.addressStoresReported.add(key);
     this.addError(
@@ -3978,11 +3986,160 @@ export class TypeChecker {
     return true;
   }
 
-  /** The declared type a variable access reaches (`pu^`, `s.pu^`), when it is no reference. */
-  private accessedTypeName(
+  /**
+   * An `__XWORD` value (a PVOID, an XWORD), which holds an address, stored
+   * into an integer narrower than 64 bits: refused as an ADR is.
+   */
+  private checkXwordStore(typeName: string, value: Expression): boolean {
+    const valueType = value.resolvedType;
+    if (
+      valueType === undefined ||
+      typeNameUtil(valueType).toUpperCase() !== "__XWORD" ||
+      this.isAddressDifference(value)
+    ) {
+      return false;
+    }
+    const fit = addressFit(typeName, this.ast?.types ?? []);
+    if (typeof fit !== "object" || !isNarrowInteger(fit.narrow)) return false;
+    const span = value.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+    if (!this.addressStoresReported.has(key)) {
+      this.addressStoresReported.add(key);
+      this.addError(
+        narrowAddressMessage("__XWORD", fit.narrow),
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    }
+    return true;
+  }
+
+  /** `a - b` of two addresses (ADR, REF or __XWORD values): an offset, no address. */
+  private isAddressDifference(value: Expression): boolean {
+    let v = value;
+    while (v.kind === "ParenthesizedExpression") v = v.expression;
+    if (v.kind !== "BinaryExpression" || v.operator !== "-") return false;
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    const isAddress = (e: Expression): boolean =>
+      addressSource(e, user) !== undefined ||
+      (e.resolvedType !== undefined &&
+        typeNameUtil(e.resolvedType).toUpperCase() === "__XWORD");
+    return isAddress(v.left) && isAddress(v.right);
+  }
+
+  /**
+   * An address as a CASE selector (`CASE ADR(x) OF`), refused once per
+   * position; the feature gate and the operand check come first, as for a
+   * store (checkAddressStore). True when refused.
+   */
+  private refuseAddressSelector(selector: Expression): boolean {
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    const source = addressSource(selector, user);
+    if (source === undefined && !addressMisuse(selector, user)) return false;
+    if (this.userAddressFunction()) return false;
+    if (source?.op === "ADR" && !this.features.has("pointer_to")) return true;
+    if (source !== undefined && source.operand?.kind !== "VariableExpression") {
+      return true;
+    }
+    const span = selector.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+    if (!this.addressStoresReported.has(key)) {
+      this.addressStoresReported.add(key);
+      this.addError(
+        "A CASE selector cannot be an address",
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    }
+    return true;
+  }
+
+  /** The type name an assignment stores into: resolved, the result, a variable access or a property. */
+  private storeTargetTypeName(
     target: Expression,
+    resolved: IECType | undefined,
     scope: Scope,
   ): string | undefined {
+    const declared = this.storeTargetDeclaredType(target, scope);
+    // A POINTER TO, REF_TO or REFERENCE TO takes an address whole.
+    if (
+      (declared?.referenceKind ?? "none") !== "none" ||
+      resolved?.typeKind === "reference"
+    ) {
+      return undefined;
+    }
+    return resolved !== undefined ? typeNameUtil(resolved) : declared?.name;
+  }
+
+  /**
+   * The declared type, references included, that a store reaches: the
+   * FUNCTION or METHOD result, a variable access (`p`, `s.f`, `pu^`) or a
+   * PROPERTY.
+   */
+  private storeTargetDeclaredType(
+    target: Expression,
+    scope: Scope,
+  ): Pick<TypeReference, "name" | "referenceKind"> | undefined {
+    return (
+      this.resultTargetType(target) ??
+      this.accessedType(target, scope) ??
+      this.propertyTargetType(target, scope)
+    );
+  }
+
+  /** The type of a PROPERTY set by `fb.Pr :=`, `itf.Pr :=` or `THIS^.Pr :=`. */
+  private propertyTargetType(
+    target: Expression,
+    scope: Scope,
+  ): TypeReference | undefined {
+    if (
+      target.kind !== "VariableExpression" ||
+      target.fieldAccess.length !== 1 ||
+      target.subscripts.length > 0 ||
+      (target.accessChain ?? []).some((st) => st.kind !== "field") ||
+      !this.ast
+    ) {
+      return undefined;
+    }
+    const sym = scope.lookup(target.name);
+    const owner =
+      target.name.toUpperCase() === "THIS"
+        ? this.currentFBName
+        : sym?.kind === "variable"
+          ? (sym.declaration as VarDeclaration | undefined)?.type.name
+          : undefined;
+    const prop = target.fieldAccess[0]!.toUpperCase();
+    const pending = owner !== undefined ? [owner.toUpperCase()] : [];
+    const seen = new Set<string>();
+    while (pending.length > 0) {
+      const name = pending.shift()!;
+      if (seen.has(name) || seen.size > 64) continue;
+      seen.add(name);
+      const fb = this.ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name,
+      );
+      const itf = this.ast.interfaces.find(
+        (i) => i.name.toUpperCase() === name,
+      );
+      const found = (fb?.properties ?? itf?.properties ?? []).find(
+        (p) => p.name.toUpperCase() === prop,
+      );
+      if (found) return found.type;
+      if (fb?.extends !== undefined) pending.push(fb.extends.toUpperCase());
+      for (const base of itf?.extends ?? []) pending.push(base.toUpperCase());
+    }
+    return undefined;
+  }
+
+  /** The declared type a variable access reaches (`p`, `pu^`, `s.pu^`). */
+  private accessedType(
+    target: Expression,
+    scope: Scope,
+  ): Pick<TypeReference, "name" | "referenceKind"> | undefined {
     if (target.kind !== "VariableExpression") return undefined;
     const sym = scope.lookup(target.name);
     const declared =
@@ -3990,10 +4147,7 @@ export class TypeChecker {
         ? (sym.declaration as VarDeclaration | undefined)?.type
         : undefined;
     if (declared === undefined) return undefined;
-    const reached = resolveAccessType(declared, target, this.accessLookup);
-    return reached !== undefined && (reached.referenceKind ?? "none") === "none"
-      ? reached.name
-      : undefined;
+    return resolveAccessType(declared, target, this.accessLookup);
   }
 
   /** `p^`, `s.p^`, `p^.x`: a store that reaches through a dereference. */
@@ -4005,14 +4159,15 @@ export class TypeChecker {
     );
   }
 
-  /** The declared result type name when `target` is the bare FUNCTION or METHOD result. */
-  private resultTargetType(target: Expression): string | undefined {
+  /** The declared result type when `target` is the bare FUNCTION or METHOD result. */
+  private resultTargetType(target: Expression): TypeReference | undefined {
     return this.currentReturn !== undefined &&
       target.kind === "VariableExpression" &&
       target.fieldAccess.length === 0 &&
       target.subscripts.length === 0 &&
+      !target.isDereference &&
       target.name.toUpperCase() === this.currentReturn.name.toUpperCase()
-      ? this.currentReturn.type.name
+      ? this.currentReturn.type
       : undefined;
   }
 
@@ -4107,9 +4262,12 @@ export class TypeChecker {
     scope: Scope,
   ): void {
     const args = stripEnEno(expr.arguments);
+    const method = this.dottedMethod(expr.functionName, scope);
+    const methodParams = method ? this.methodParameters(method) : undefined;
     const inputs =
       this.callInputs(expr, scope) ??
-      this.dottedMethodInputs(expr.functionName, scope);
+      this.dottedMethodInputs(expr.functionName, scope) ??
+      methodParams?.filter((p) => !p.output);
     if (inputs) {
       let positional = 0;
       for (const arg of args) {
@@ -4119,7 +4277,8 @@ export class TypeChecker {
           argName === undefined
             ? inputs[positional++]
             : inputs.find((p) => p.name.toUpperCase() === argName);
-        if (input === undefined) continue;
+        // A VAR_IN_OUT binds, it stores nothing (the binding check refuses an ADR).
+        if (input === undefined || input.inOut) continue;
         if ((input.type.referenceKind ?? "none") !== "none") continue;
         this.checkAddressStore(input.type.name, arg.value);
       }
@@ -4132,7 +4291,11 @@ export class TypeChecker {
             name: o.name,
             kind: o.referenceKind ?? "none",
           }))
-        : (this.calledFunctionParameters(expr.functionName) ?? [])
+        : (
+            this.calledFunctionParameters(expr.functionName) ??
+            methodParams ??
+            []
+          )
             .filter((p) => p.output)
             .map((p) => ({
               name: p.name,
@@ -4149,12 +4312,24 @@ export class TypeChecker {
       ) {
         continue;
       }
-      const target = this.resolveExprType(arg.value, scope);
-      const fit =
-        target === undefined
-          ? undefined
-          : addressFit(typeNameUtil(target), this.ast.types);
-      if (fit === undefined || fit === "wide") continue;
+      const target = this.storeTargetTypeName(
+        arg.value,
+        this.resolveExprType(arg.value, scope),
+        scope,
+      );
+      if (target === undefined) continue;
+      const fit = addressFit(target, this.ast.types);
+      if (fit === undefined) continue;
+      if (fit === "wide") {
+        // A FUNCTION's output binds by reference: an integer takes a copy.
+        if (fbType === undefined) {
+          arg.inOutCopy = true;
+          arg.addressInto = target;
+        } else if (out.kind === "ref_to" || addressFit(target, []) !== "wide") {
+          arg.addressInto = target;
+        }
+        continue;
+      }
       this.addError(
         narrowAddressMessage(
           `The output '${out.name.toUpperCase()}'`,
@@ -4266,10 +4441,7 @@ export class TypeChecker {
             (this.declaredReferenceShape(stmt.target, scope)?.chain.length ??
               0) === 0) &&
           this.checkAddressStore(
-            targetType !== undefined
-              ? typeNameUtil(targetType)
-              : (this.resultTargetType(stmt.target) ??
-                  this.accessedTypeName(stmt.target, scope)),
+            this.storeTargetTypeName(stmt.target, targetType, scope),
             stmt.value,
           )
         ) {
@@ -4395,7 +4567,8 @@ export class TypeChecker {
       case "CaseStatement": {
         this.checkStrictTerminator(stmt);
         const selectorType = this.resolveExprType(stmt.selector, scope);
-        if (selectorType) {
+        // An address selector is refused once, not also as a non-integer.
+        if (!this.refuseAddressSelector(stmt.selector) && selectorType) {
           this.validateCaseSelector(selectorType, stmt.selector);
         }
         for (const c of stmt.cases) {
@@ -4468,6 +4641,26 @@ export class TypeChecker {
 
         // Validate control variable type
         const controlSym = scope.lookup(stmt.controlVariable);
+        // Start, end and step are stored in the control variable.
+        const addressBound = new Set<Expression>();
+        const controlDeclared =
+          controlSym?.kind === "variable"
+            ? (controlSym.declaration as VarDeclaration | undefined)?.type
+            : undefined;
+        if (
+          controlSym?.kind === "variable" &&
+          controlSym.type &&
+          (controlDeclared?.referenceKind ?? "none") === "none"
+        ) {
+          for (const bound of [stmt.start, stmt.end, stmt.step]) {
+            if (
+              bound !== undefined &&
+              this.checkAddressStore(typeNameUtil(controlSym.type), bound)
+            ) {
+              addressBound.add(bound);
+            }
+          }
+        }
         if (
           controlSym?.kind === "variable" ||
           controlSym?.kind === "constant"
@@ -4486,6 +4679,7 @@ export class TypeChecker {
           if (
             ctrlType &&
             startType &&
+            !addressBound.has(stmt.start) &&
             !this.isUntypedNumericLiteral(stmt.start)
           ) {
             if (
@@ -4501,7 +4695,12 @@ export class TypeChecker {
               );
             }
           }
-          if (ctrlType && endType && !this.isUntypedNumericLiteral(stmt.end)) {
+          if (
+            ctrlType &&
+            endType &&
+            !addressBound.has(stmt.end) &&
+            !this.isUntypedNumericLiteral(stmt.end)
+          ) {
             if (
               ctrlType.typeKind === "elementary" &&
               endType.typeKind === "elementary" &&
@@ -7891,6 +8090,85 @@ export class TypeChecker {
       current = fb.extends?.toUpperCase();
     }
     return undefined;
+  }
+
+  /**
+   * The METHOD a dotted call reaches: `fb.M`, `itf.M`, `THIS^.M`, `SUPER^.M`
+   * or `PRG.M`, through base FBs and extended interfaces.
+   */
+  private dottedMethod(
+    functionName: string,
+    scope: Scope,
+  ): MethodDeclaration | undefined {
+    const parts = functionName.split(".");
+    if (parts.length !== 2 || !this.ast) return undefined;
+    const head = parts[0]!.toUpperCase();
+    const current = this.currentFBName?.toUpperCase();
+    let owner: string | undefined;
+    if (head === "THIS" && current !== undefined) {
+      owner = current;
+    } else if (head === "SUPER" && current !== undefined) {
+      owner = this.ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === current,
+      )?.extends;
+    } else {
+      const sym = scope.lookup(parts[0]!);
+      owner =
+        sym?.kind === "program"
+          ? sym.name
+          : sym?.kind === "variable"
+            ? (sym.declaration as VarDeclaration | undefined)?.type.name
+            : undefined;
+    }
+    const method = parts[1]!.toUpperCase();
+    const pending = owner !== undefined ? [owner.toUpperCase()] : [];
+    const seen = new Set<string>();
+    while (pending.length > 0) {
+      const name = pending.shift()!;
+      if (seen.has(name) || seen.size > 64) continue;
+      seen.add(name);
+      const pou =
+        this.ast.functionBlocks.find((f) => f.name.toUpperCase() === name) ??
+        this.ast.interfaces.find((i) => i.name.toUpperCase() === name) ??
+        this.ast.programs.find((p) => p.name.toUpperCase() === name);
+      const found = pou?.methods.find((m) => m.name.toUpperCase() === method);
+      if (found) return found;
+      if (
+        pou?.kind === "FunctionBlockDeclaration" &&
+        pou.extends !== undefined
+      ) {
+        pending.push(pou.extends.toUpperCase());
+      } else if (pou?.kind === "InterfaceDeclaration") {
+        for (const base of pou.extends ?? []) pending.push(base.toUpperCase());
+      }
+    }
+    return undefined;
+  }
+
+  /** VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT of a METHOD, in order (see calledFunctionParameters). */
+  private methodParameters(method: MethodDeclaration): Array<{
+    name: string;
+    type: AccessType;
+    output: boolean;
+    inOut: boolean;
+  }> {
+    return method.varBlocks
+      .filter(
+        (b) =>
+          b.blockType === "VAR_INPUT" ||
+          b.blockType === "VAR_IN_OUT" ||
+          b.blockType === "VAR_OUTPUT",
+      )
+      .flatMap((b) =>
+        b.declarations.flatMap((d) =>
+          d.names.map((n) => ({
+            name: n,
+            type: d.type as AccessType,
+            output: b.blockType === "VAR_OUTPUT",
+            inOut: b.blockType === "VAR_IN_OUT",
+          })),
+        ),
+      );
   }
 
   // ===========================================================================
