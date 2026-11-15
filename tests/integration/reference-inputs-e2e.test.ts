@@ -146,7 +146,7 @@ describeIfGpp("REFERENCE TO inputs bound at the call, end to end", () => {
     expect(out).toBe("10 54 1001 22 7 9 37 1066 115 66 10 1001 6 37 42 115");
   });
 
-  it("an unbound REFERENCE TO input raises the NullReference fault", () => {
+  it("an unbound REFERENCE TO input raises the fault naming the reference, POU and line", () => {
     const out = run(
       `FUNCTION_BLOCK FB_R
 VAR_INPUT r : REFERENCE TO INT; k : INT; END_VAR
@@ -172,11 +172,11 @@ VAR f : FB_R; END_VAR
   f(k := 2);
 END_PROGRAM
 `,
-      ` Program_MAIN p;\n try { p.run(); std::cout << "no fault"; } catch (const NullReferenceException& e) { std::cout << "fault a=" << p.A.get() << " "; }\n Program_SECOND s;\n try { s.run(); std::cout << "no fault"; } catch (const NullReferenceException& e) { std::cout << e.what(); }\n std::cout << std::endl;`,
+      ` Program_MAIN p;\n try { p.run(); std::cout << "no fault"; } catch (const std::exception& e) { std::cout << "fault a=" << p.A.get() << " " << e.what() << "|"; }\n Program_SECOND s;\n try { s.run(); std::cout << "no fault"; } catch (const std::exception& e) { std::cout << e.what(); }\n std::cout << std::endl;`,
       "refinputs_unbound",
     );
     expect(out).toBe(
-      "fault a=3 Null reference dereference in REFERENCE TO",
+      "fault a=3 Unbound REFERENCE TO R in FB_M.M, line 8|Unbound REFERENCE TO R in FB_R, line 3",
     );
   });
 });

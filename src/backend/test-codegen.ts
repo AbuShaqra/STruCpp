@@ -17,6 +17,7 @@ import type {
   CompilationUnit,
   FunctionDeclaration,
   TypeReference,
+  AssertCall,
 } from "../frontend/ast.js";
 import type { POUInfo } from "./test-main-gen.js";
 import { CodeGenerator } from "./codegen.js";
@@ -139,10 +140,18 @@ export class TestCodeGenerator extends CodeGenerator {
   }
 
   /** Populate the scope's variable→type map for POU invocation detection. */
-  setScopeFromVarTypes(varTypes: Map<string, string>): void {
+  setScopeFromVarTypes(
+    varTypes: Map<string, string>,
+    typeRefs: ReadonlyMap<string, TypeReference> = new Map(),
+  ): void {
     this.currentScopeVarTypes.clear();
+    this.currentScopeVarTypeRefs.clear();
     for (const [name, typeName] of varTypes) {
       this.currentScopeVarTypes.set(name.toUpperCase(), typeName);
+    }
+    // The declared types, so `q = r` of two STRUCTs compares them memberwise
+    for (const [name, typeRef] of typeRefs) {
+      this.currentScopeVarTypeRefs.set(name.toUpperCase(), typeRef);
     }
   }
 
@@ -196,9 +205,40 @@ export class TestCodeGenerator extends CodeGenerator {
     return this.generateInitializer(expr, cppType, stTypeName);
   }
 
+  /**
+   * `a = b` / `a <> b` of two STRUCT values as C++ (memberwise), or undefined
+   * when an operand is not a STRUCT.
+   */
+  emitStructComparison(
+    operator: "=" | "<>",
+    left: Expression,
+    right: Expression,
+  ): string | undefined {
+    if (
+      this.structOperandName(left) === undefined ||
+      this.structOperandName(right) === undefined
+    ) {
+      return undefined;
+    }
+    return this.generateExpression({
+      kind: "BinaryExpression",
+      operator,
+      left,
+      right,
+      sourceSpan: left.sourceSpan,
+    });
+  }
+
   /** Generate C++ statement(s) and append to output buffer. */
   emitStatement(stmt: Statement, indent: string): void {
     this.generateStatement(stmt, indent);
+  }
+
+  /** Emit a nested ASSERT_* through `emitter` (undefined: drop it, as in a POU). */
+  setAssertEmitter(
+    emitter: ((stmt: AssertCall, indent: string) => string[]) | undefined,
+  ): void {
+    this.assertEmitter = emitter;
   }
 
   /** Make a RETURN in the statements emitted next return `value` (undefined: as in a POU). */
