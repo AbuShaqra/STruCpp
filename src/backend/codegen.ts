@@ -5372,8 +5372,9 @@ export class CodeGenerator {
       (this.programExternals.has(e.name.toUpperCase()) ||
         this.currentScopeVarRefKinds.get(e.name.toUpperCase()) ===
           "reference_to");
+    const calleeBlocks = this.calleeVarBlocks(call);
     const varBlocks =
-      this.calleeVarBlocks(call) ??
+      calleeBlocks ??
       this.librarySizedStringBlocks(call) ??
       (call.arguments.some((a) => a.inOutCopy === true) &&
       call.kind === "FunctionCallExpression"
@@ -5494,9 +5495,13 @@ export class CodeGenerator {
       ) {
         // A STRING(n) output binds only a variable of that length, an integer
         // output only one of its own C++ type: others go through a temporary.
+        const outType =
+          arg.addressInto !== undefined && calleeBlocks === undefined
+            ? this.libraryOutputReferenceType(call, param.name)
+            : undefined;
         result.push({
           value,
-          cppType: this.inOutParamType(param.type),
+          cppType: this.inOutParamType(outType ?? param.type),
           once: true as const,
           ...(arg.addressInto !== undefined
             ? { addressInto: arg.addressInto }
@@ -8527,6 +8532,46 @@ export class CodeGenerator {
       this.libraryFunctionDecls.set(key, libraryFunctionDeclaration(entry));
     }
     return this.libraryFunctionDecls.get(key);
+  }
+
+  /**
+   * The POINTER TO or REF_TO type of a library FUNCTION's output `name`, which
+   * the declaration built from the manifest leaves out; undefined otherwise.
+   */
+  private libraryOutputReferenceType(
+    call: FunctionCallExpression | MethodCallExpression,
+    name: string,
+  ): TypeReference | undefined {
+    if (call.kind !== "FunctionCallExpression") return undefined;
+    const upper = name.toUpperCase();
+    const param = this.libraryFunctions
+      .get(call.functionName.toUpperCase())
+      ?.parameters.find(
+        (p) => p.direction === "output" && p.name.toUpperCase() === upper,
+      );
+    const kind = param?.referenceKind;
+    if (param === undefined || (kind !== "pointer_to" && kind !== "ref_to")) {
+      return undefined;
+    }
+    return {
+      kind: "TypeReference",
+      sourceSpan: call.sourceSpan,
+      name: param.type,
+      isReference: true,
+      referenceKind: kind,
+      ...(param.referenceChain !== undefined
+        ? { referenceChain: param.referenceChain }
+        : {}),
+      ...(param.arrayDimensions !== undefined
+        ? { arrayDimensions: param.arrayDimensions }
+        : {}),
+      ...(param.elementTypeName !== undefined
+        ? { elementTypeName: param.elementTypeName }
+        : {}),
+      ...(param.elementReferenceChain !== undefined
+        ? { elementReferenceChain: param.elementReferenceChain }
+        : {}),
+    };
   }
 
   /**

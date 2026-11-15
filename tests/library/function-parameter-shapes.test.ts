@@ -4,7 +4,7 @@
  * A library FUNCTION's manifest records its parameters' POINTER TO, REF_TO
  * and ARRAY shapes (`parameterShapes`), so an address passed to a narrow
  * value input of it is refused; an archive written before, without the
- * marker, reads its parameters as before and refuses nothing new.
+ * marker, reads its parameters as before.
  */
 import { describe, it, expect } from "vitest";
 import { analyze, compileStlib } from "../../src/index.js";
@@ -49,6 +49,9 @@ VAR x : INT; dx : DINT; px : POINTER TO BYTE; arr : ARRAY[0..3] OF INT; ap : ARR
 n := F_Shapes(p := ADR(x), r := REF(dx), pp := ADR(px), a := arr, ap := ap, rr := x, d := ${d});
 END_PROGRAM
 `;
+
+const NARROW = (fn: string, type: string): string =>
+  `${fn} gives a 64-bit address, which ${type} cannot hold; use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT`;
 
 describe("library FUNCTION parameter shapes", () => {
   it("records POINTER TO, REF_TO and ARRAY parameters in the manifest", () => {
@@ -98,13 +101,13 @@ describe("library FUNCTION parameter shapes", () => {
     ]);
   });
 
-  // RR's REFERENCE TO is dropped too: an old archive with one reads every
-  // input by its bare name (P as INT), as before.
-  it("refuses nothing new from an archive written without parameterShapes", () => {
+  // A pre-parameterShapes archive keeps REFERENCE TO, so its inputs are
+  // checked, by their bare names: P as INT, R as DINT, PP as BYTE.
+  it("reads an archive written without parameterShapes as before", () => {
     const old = JSON.parse(JSON.stringify(library())) as StlibArchive;
     delete old.manifest.parameterShapes;
     for (const p of old.manifest.functions[0]!.parameters) {
-      delete p.referenceKind;
+      if (p.referenceKind !== "reference_to") delete p.referenceKind;
       delete p.referenceChain;
       delete p.arrayDimensions;
       delete p.elementTypeName;
@@ -112,7 +115,92 @@ describe("library FUNCTION parameter shapes", () => {
     }
     const archive = loadStlibArchive(old);
     expect(
-      analyze(CALL("0"), { features: FEATURES, libraries: [archive] }).errors,
-    ).toEqual([]);
+      archive.manifest.functions[0]!.parameters.find((p) => p.name === "RR")
+        ?.referenceKind,
+    ).toBe("reference_to");
+    expect(
+      analyze(CALL("0"), {
+        features: FEATURES,
+        libraries: [archive],
+      }).errors.map((e) => e.message),
+    ).toEqual([
+      NARROW("ADR", "INT"),
+      NARROW("REF", "DINT"),
+      NARROW("ADR", "BYTE"),
+    ]);
+  });
+
+  it("refuses REF of an INT into a REF_TO DINT input of a library FUNCTION", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `FUNCTION F_R : INT
+VAR_INPUT
+  r : REF_TO DINT;
+END_VAR
+F_R := 1;
+END_FUNCTION
+`,
+          fileName: "r.st",
+        },
+      ],
+      { name: "r", version: "1.0.0", namespace: "r", features: FEATURES },
+    );
+    expect(lib.errors).toEqual([]);
+    const opts = {
+      features: FEATURES,
+      libraries: [loadStlibArchive(JSON.parse(JSON.stringify(lib.archive)))],
+    };
+    const call = (arg: string): string[] =>
+      analyze(
+        `PROGRAM Main
+VAR x : INT; dx : DINT; rx : REF_TO INT; n : INT; END_VAR
+n := F_R(r := ${arg});
+END_PROGRAM
+`,
+        opts,
+      ).errors.map((e) => e.message);
+    expect(call("REF(dx)")).toEqual([]);
+    for (const arg of ["REF(x)", "rx"]) {
+      expect(call(arg)).toEqual([
+        expect.stringMatching(/^Cannot assign REF_TO INT to REF_TO DINT/),
+      ]);
+    }
+  });
+
+  it("refuses a POINTER TO output of a library FUNCTION captured into a DWORD", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `FUNCTION F_O : INT
+VAR_OUTPUT
+  po : POINTER TO INT;
+END_VAR
+F_O := 1;
+END_FUNCTION
+`,
+          fileName: "o.st",
+        },
+      ],
+      { name: "o", version: "1.0.0", namespace: "o", features: FEATURES },
+    );
+    expect(lib.errors).toEqual([]);
+    const opts = {
+      features: FEATURES,
+      libraries: [loadStlibArchive(JSON.parse(JSON.stringify(lib.archive)))],
+    };
+    const call = (target: string): string[] =>
+      analyze(
+        `PROGRAM Main
+VAR dw : DWORD; lw : LWORD; n : INT; END_VAR
+n := F_O(po => ${target});
+END_PROGRAM
+`,
+        opts,
+      ).errors.map((e) => e.message);
+    expect(call("lw")).toEqual([]);
+    expect(call("dw")).toEqual([
+      "The output 'PO' gives a 64-bit address, which DWORD cannot hold; use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT",
+    ]);
   });
 });

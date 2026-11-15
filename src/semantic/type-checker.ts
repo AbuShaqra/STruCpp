@@ -6934,7 +6934,9 @@ export class TypeChecker {
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
-    const inputs = this.callInputs(expr, scope);
+    const inputs =
+      this.callInputs(expr, scope) ??
+      this.libraryShapedFunctionInputs(expr, scope);
     if (!inputs) return;
     stripEnEno(expr.arguments).forEach((arg, i) => {
       if (arg.isOutput) return;
