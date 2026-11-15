@@ -7139,6 +7139,11 @@ export class CodeGenerator {
       return `${l} ${cppOp} ${r}`;
     }
 
+    // TIME, DATE, TOD or DT MOD an integer or a duration: unsigned, MOD 0 is 0
+    if (expr.operator === "MOD" && this.isTemporal32(expr.left)) {
+      return `iec_temporal_mod(${left}, ${right})`;
+    }
+
     // TIME, DATE, TOD or DT `/` a number that may be 0: a fault, as for integers
     if (
       expr.operator === "/" &&
@@ -8524,6 +8529,7 @@ export class CodeGenerator {
 
     // Positional arguments bound to REFERENCE TO inputs.
     if (calleeBlocks) {
+      this.ltimeIntoTimeInputs(args, expr.arguments, calleeBlocks);
       const supplied = args.slice(0, suppliedArgs);
       this.bindPositionalReferenceInputs(supplied, calleeBlocks);
       args.splice(0, suppliedArgs, ...supplied);
@@ -8703,10 +8709,68 @@ export class CodeGenerator {
     }
     const args = callArgs.map((a) => this.generateExpression(a.value));
     if (method) {
+      this.ltimeIntoTimeInputs(args, callArgs, method.varBlocks);
       this.bindPositionalReferenceInputs(args, method.varBlocks);
       this.padOmittedArguments(args, method.varBlocks);
     }
     return args;
+  }
+
+  /**
+   * Positional arguments: an LTIME bound to a TIME VAR_INPUT is converted as
+   * an LTIME stored in a TIME is. Only when every argument is positional.
+   */
+  private ltimeIntoTimeInputs(
+    args: string[],
+    callArgs: Argument[],
+    varBlocks: VarBlock[],
+  ): void {
+    if (callArgs.some((a) => a.name !== undefined || a.isOutput)) return;
+    let index = 0;
+    for (const block of varBlocks) {
+      if (
+        block.blockType !== "VAR_INPUT" &&
+        block.blockType !== "VAR_IN_OUT" &&
+        block.blockType !== "VAR_OUTPUT"
+      ) {
+        continue;
+      }
+      for (const decl of block.declarations) {
+        for (let n = 0; n < decl.names.length; n++, index++) {
+          if (index >= callArgs.length || block.blockType !== "VAR_INPUT") {
+            continue;
+          }
+          args[index] = this.ltimeIntoTimeInput(
+            decl.type,
+            callArgs[index]!.value,
+            args[index]!,
+          );
+        }
+      }
+    }
+  }
+
+  /** `code` for a value input of type `type`, an LTIME into a TIME converted. */
+  private ltimeIntoTimeInput(
+    type: {
+      readonly name: string;
+      readonly referenceKind?: string | undefined;
+      readonly arrayDimensions?: unknown;
+    },
+    value: Expression,
+    code: string,
+  ): string {
+    if (
+      (type.referenceKind ?? "none") !== "none" ||
+      type.arrayDimensions !== undefined
+    ) {
+      return code;
+    }
+    return this.ltimeIntoTime(
+      canonicalElementaryName(type.name.toUpperCase()),
+      value,
+      code,
+    );
   }
 
   /**
@@ -8801,8 +8865,13 @@ export class CodeGenerator {
       if (arg.name !== undefined) {
         const upperName = arg.name.toUpperCase();
         if (upperName === "EN" || upperName === "ENO") continue;
+        const param = params.find((p) => p.name === upperName);
+        const generated = this.generateExpression(arg.value);
         namedArgs.set(upperName, {
-          expr: this.generateExpression(arg.value),
+          expr:
+            param?.blockType === "VAR_INPUT" && !arg.isOutput
+              ? this.ltimeIntoTimeInput(param.type, arg.value, generated)
+              : generated,
           isOutput: arg.isOutput,
         });
         claimedSlots.add(upperName);
@@ -10314,15 +10383,8 @@ export class CodeGenerator {
     const inout = this.fbInoutParams.get(fbTypeName.toUpperCase());
     if (inout?.has(paramName.toUpperCase()) === true) return generated;
     const field = this.accessLookup.field(fbTypeName, paramName);
-    if (
-      field !== undefined &&
-      (field.type.referenceKind ?? "none") === "none"
-    ) {
-      generated = this.ltimeIntoTime(
-        canonicalElementaryName(field.type.name),
-        value,
-        generated,
-      );
+    if (field !== undefined) {
+      generated = this.ltimeIntoTimeInput(field.type, value, generated);
     }
     return field?.type.referenceKind === "reference_to"
       ? `ref_bind(${this.refWrapper(generated)})`
@@ -10847,7 +10909,14 @@ export class CodeGenerator {
    */
   private getStructInitEmitter(): StructInitEmitter {
     this.structInitEmitter ??= {
-      emitValue: (value: Expression): string => this.generateExpression(value),
+      emitValue: (value: Expression, stTypeName?: string): string =>
+        this.ltimeIntoTime(
+          stTypeName === undefined
+            ? undefined
+            : canonicalElementaryName(stTypeName.toUpperCase()),
+          value,
+          this.generateExpression(value),
+        ),
       memberName: (
         fieldName: string,
         ownerTypeName: string | undefined,

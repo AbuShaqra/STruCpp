@@ -215,24 +215,44 @@ template<typename N, std::enable_if_t<std::is_integral<N>::value, int> = 0>
 inline uint32_t temporal_scale(uint32_t raw, N n) noexcept {
     return static_cast<uint32_t>(static_cast<uint64_t>(raw) * static_cast<uint64_t>(n));
 }
-template<typename N, std::enable_if_t<std::is_floating_point<N>::value, int> = 0>
-inline uint32_t temporal_scale(uint32_t raw, N n) noexcept {
-    const double v = static_cast<double>(raw) * static_cast<double>(n);
-    if (!(v == v)) return 0u;
+/** A REAL result in the temporal unit: truncated toward zero, modulo 2^32 (not finite: 0). */
+inline uint32_t temporal_from_double(double v) noexcept {
+    if (!std::isfinite(v)) return 0u;
     const double t = v < 0 ? -std::floor(-v) : std::floor(v);
     const double m = std::fmod(t, 4294967296.0);
     return static_cast<uint32_t>(static_cast<int64_t>(m < 0 ? m + 4294967296.0 : m));
 }
+template<typename N, std::enable_if_t<std::is_floating_point<N>::value, int> = 0>
+inline uint32_t temporal_scale(uint32_t raw, N n) noexcept {
+    return temporal_from_double(static_cast<double>(raw) * static_cast<double>(n));
+}
 /** `raw / n`, truncated toward zero, modulo 2^32; by 0 it is 0. */
-template<typename N, std::enable_if_t<std::is_integral<N>::value, int> = 0>
+template<typename N, std::enable_if_t<std::is_integral<N>::value && std::is_signed<N>::value, int> = 0>
 inline uint32_t temporal_divide(uint32_t raw, N n) noexcept {
     if (n == 0) return 0u;
-    return static_cast<uint32_t>(static_cast<int64_t>(raw) / static_cast<int64_t>(n));
+    const int64_t v = static_cast<int64_t>(n);
+    const uint64_t mag = v < 0 ? 0u - static_cast<uint64_t>(v) : static_cast<uint64_t>(v);
+    const uint32_t q = static_cast<uint32_t>(static_cast<uint64_t>(raw) / mag);
+    return v < 0 ? static_cast<uint32_t>(0u - q) : q;
+}
+template<typename N, std::enable_if_t<std::is_integral<N>::value && !std::is_signed<N>::value, int> = 0>
+inline uint32_t temporal_divide(uint32_t raw, N n) noexcept {
+    if (n == 0) return 0u;
+    return static_cast<uint32_t>(static_cast<uint64_t>(raw) / static_cast<uint64_t>(n));
 }
 template<typename N, std::enable_if_t<std::is_floating_point<N>::value, int> = 0>
 inline uint32_t temporal_divide(uint32_t raw, N n) noexcept {
     if (n == 0) return 0u;
-    return temporal_scale(raw, 1.0 / static_cast<double>(n));
+    return temporal_from_double(static_cast<double>(raw) / static_cast<double>(n));
+}
+/** `raw MOD n`: the remainder by the divisor's magnitude; by 0 it is 0. */
+template<typename N, std::enable_if_t<std::is_integral<N>::value, int> = 0>
+inline uint32_t temporal_modulo(uint32_t raw, N n) noexcept {
+    if (n == 0) return 0u;
+    const uint64_t mag = std::is_signed<N>::value && static_cast<int64_t>(n) < 0
+        ? 0u - static_cast<uint64_t>(static_cast<int64_t>(n))
+        : static_cast<uint64_t>(n);
+    return static_cast<uint32_t>(static_cast<uint64_t>(raw) % mag);
 }
 }  // namespace detail
 
@@ -247,6 +267,20 @@ inline IecTemporal32<K> operator*(N n, IecTemporal32<K> a) noexcept {
 template<int K, typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
 inline IecTemporal32<K> operator/(IecTemporal32<K> a, N n) noexcept {
     return IecTemporal32<K>(detail::temporal_divide(a.raw, n));
+}
+
+/** A duration by a duration (TIME / TIME): the integer quotient of the raw values; by 0 it is 0. */
+template<int K>
+inline IecTemporal32<K> operator/(IecTemporal32<K> a, IecTemporal32<K> b) noexcept {
+    return IecTemporal32<K>(b.raw == 0u ? 0u : a.raw / b.raw);
+}
+template<int K, typename N, std::enable_if_t<std::is_integral<N>::value, int> = 0>
+inline IecTemporal32<K> operator%(IecTemporal32<K> a, N n) noexcept {
+    return IecTemporal32<K>(detail::temporal_modulo(a.raw, n));
+}
+template<int K>
+inline IecTemporal32<K> operator%(IecTemporal32<K> a, IecTemporal32<K> b) noexcept {
+    return IecTemporal32<K>(detail::temporal_modulo(a.raw, b.raw));
 }
 
 template<int K> constexpr bool operator==(IecTemporal32<K> a, IecTemporal32<K> b) noexcept { return a.raw == b.raw; }

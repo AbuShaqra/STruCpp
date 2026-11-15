@@ -522,6 +522,19 @@ template<int K, typename N>
 inline IECVar<IecTemporal32<K>> operator/(const IECVar<IecTemporal32<K>>& a, const IECVar<N>& n) noexcept {
     return IECVar<IecTemporal32<K>>(a.get() / n.get());
 }
+// A 32-bit temporal value (not a variable) by a number held in a variable
+template<int K, typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
+inline IecTemporal32<K> operator*(IecTemporal32<K> a, const IECVar<N>& n) noexcept {
+    return a * n.get();
+}
+template<int K, typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
+inline IecTemporal32<K> operator*(const IECVar<N>& n, IecTemporal32<K> a) noexcept {
+    return a * n.get();
+}
+template<int K, typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
+inline IecTemporal32<K> operator/(IecTemporal32<K> a, const IECVar<N>& n) noexcept {
+    return a / n.get();
+}
 template<int K>
 inline IECVar<IecTemporal32<K>> operator-(const IECVar<IecTemporal32<K>>& a) noexcept {
     return IECVar<IecTemporal32<K>>(-a.get());

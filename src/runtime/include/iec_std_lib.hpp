@@ -1784,21 +1784,31 @@ inline auto iec_div(const A& a, const B& b, iec_site site) -> decltype(a / b) {
     return a / b;
 }
 
-/**
- * A TIME, DATE, TOD or DT `/` a number (DIV_TIME too): a zero divisor is a
- * run-time fault naming the POU, line and task, as for integers.
- */
-template<typename A, typename N>
-inline auto iec_temporal_div(const A& a, const N& n, iec_site site) -> decltype(a / n) {
-    if (iec_unwrap(n) == 0) iec_site_fault(IecFault::DivideByZero, "Division by zero", site);
-    return a / n;
-}
-
 namespace detail {
 template<int K>
 constexpr bool temporal_zero(IecTemporal32<K> v) noexcept { return v.raw == 0u; }
-constexpr bool temporal_zero(int64_t v) noexcept { return v == 0; }
+template<typename N, std::enable_if_t<std::is_arithmetic<N>::value, int> = 0>
+constexpr bool temporal_zero(N v) noexcept { return v == 0; }
 }  // namespace detail
+
+/**
+ * A TIME, DATE, TOD or DT `/` a number or a duration (DIV_TIME too): a zero
+ * divisor is a run-time fault naming the POU, line and task, as for integers.
+ */
+template<typename A, typename N>
+inline auto iec_temporal_div(const A& a, const N& n, iec_site site)
+    -> decltype(iec_unwrap(a) / iec_unwrap(n)) {
+    const auto d = iec_unwrap(n);
+    if (detail::temporal_zero(d)) iec_site_fault(IecFault::DivideByZero, "Division by zero", site);
+    return iec_unwrap(a) / d;
+}
+
+/** A TIME, DATE, TOD or DT MOD an integer or a duration: unsigned 32-bit; MOD 0 gives 0. */
+template<typename A, typename N>
+inline auto iec_temporal_mod(const A& a, const N& n) -> decltype(iec_unwrap(a) % iec_unwrap(n)) {
+    return iec_unwrap(a) % iec_unwrap(n);
+}
+
 
 /** DIVTIME(a, b), a duration by a duration: b = 0 is a run-time fault, as for integers. */
 template<typename A, typename B>

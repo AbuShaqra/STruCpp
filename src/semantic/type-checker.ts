@@ -10,6 +10,7 @@
  * Sub-Phase C: Validates type rules (assignment compatibility, conditions, FOR vars, function args).
  */
 
+import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import type {
   ASTNode,
   RefAssignStatement,
@@ -301,6 +302,15 @@ function isNullInitializer(expr: Expression): boolean {
     expr.kind === "LiteralExpression" &&
     (expr.literalType === "NULL" || expr.value === 0)
   );
+}
+
+/** TIME, DATE, TOD or DT: the 32-bit date and time types. */
+function isTemporal32Type(t: IECType | undefined): boolean {
+  if (t?.typeKind !== "elementary") return false;
+  const name = canonicalElementaryName(
+    (t as ElementaryType).name.toUpperCase(),
+  );
+  return name === "TIME" || name === "DATE" || name === "TOD" || name === "DT";
 }
 
 /** `ADR(x)`. */
@@ -1978,6 +1988,24 @@ export class TypeChecker {
     ) {
       type = resolveDateTimeArithmetic(leftType, rightType, expr.operator);
     }
+    // A date or time multiplied by one, or raised to a power, means nothing
+    else if (
+      (expr.operator === "*" &&
+        isTemporal32Type(leftType) &&
+        isTemporal32Type(rightType)) ||
+      (expr.operator === "**" &&
+        (isTemporal32Type(leftType) || isTemporal32Type(rightType)))
+    ) {
+      this.addError(
+        expr.operator === "*"
+          ? `Operator '*' does not apply to ${typeNameUtil(leftType)} and ${typeNameUtil(rightType)}; multiply a duration by a number`
+          : `Operator '**' does not apply to ${typeNameUtil(isTemporal32Type(leftType) ? leftType : rightType)}`,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+      return undefined;
+    }
     // Arithmetic operators return the "wider" type
     else if (["+", "-", "*", "/", "MOD", "**"].includes(expr.operator)) {
       type = getCommonType(leftType, rightType) ?? leftType;
@@ -2180,6 +2208,42 @@ export class TypeChecker {
   }
 
   /**
+   * `-T#5s` or `-C` (C a TIME constant): a negative TIME, refused as a
+   * negative TIME literal is. `-t` of a TIME variable wraps.
+   */
+  private refuseNegatedTimeConstant(expr: UnaryExpression, scope: Scope): void {
+    let operand: Expression = expr.operand;
+    while (operand.kind === "ParenthesizedExpression") {
+      operand = operand.expression;
+    }
+    let shown: string | undefined;
+    if (operand.kind === "LiteralExpression") {
+      if (operand.literalType !== "TIME") return;
+      if (exactTimeLiteralNanoseconds(operand.rawValue) === 0n) return;
+      shown = `TIME literal '-${operand.rawValue}'`;
+    } else if (
+      operand.kind === "VariableExpression" &&
+      operand.fieldAccess.length === 0 &&
+      !operand.isDereference &&
+      scope.lookup(operand.name)?.kind === "constant" &&
+      isTemporal32Type(operand.resolvedType) &&
+      canonicalElementaryName(
+        (operand.resolvedType as ElementaryType).name.toUpperCase(),
+      ) === "TIME"
+    ) {
+      shown = `TIME value '-${operand.name}'`;
+    }
+    if (shown === undefined || this.reportedCharValues.has(expr)) return;
+    this.reportedCharValues.add(expr);
+    this.addError(
+      `${shown} is negative; a TIME holds T#0ms to T#49d17h2m47s295ms (an LTIME can be negative)`,
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
+  }
+
+  /**
    * Infer type of a unary expression.
    */
   private inferUnaryType(
@@ -2201,6 +2265,8 @@ export class TypeChecker {
       );
       return undefined;
     }
+
+    if (expr.operator === "-") this.refuseNegatedTimeConstant(expr, scope);
 
     let type: IECType | undefined;
     if (expr.operator === "NOT") {
