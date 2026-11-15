@@ -71,6 +71,7 @@ import {
   type AccessType,
 } from "./type-utils.js";
 import {
+  type GlobalItem,
   type GlobalOrder,
   orderConfigurationGlobals,
   orderGlobals,
@@ -416,6 +417,14 @@ const TEMPORAL_STORAGE: Readonly<Record<string, string>> = {
   LDATE_AND_TIME: "dt",
   LDT: "dt",
 };
+
+/** Calls that take a variable's address or size, not its value. */
+const NOT_READING_CALLS: ReadonlySet<string> = new Set([
+  "ADR",
+  "REF",
+  "SIZEOF",
+  "XSIZEOF",
+]);
 
 /** A call's parameters in declaration order, outputs marked. */
 type OutputParams = Array<{ name: string; type: AccessType; output: boolean }>;
@@ -4047,11 +4056,72 @@ export class TypeChecker {
    * initial values that depend on each other cannot be created.
    */
   private checkGlobalInitialCycles(ast: CompilationUnit): void {
-    for (const ordered of [
-      orderGlobals(ast),
-      ...ast.configurations.map(orderConfigurationGlobals),
+    const topLevel = orderGlobals(ast);
+    for (const [ordered, outer] of [
+      [topLevel, []] as const,
+      // A CONFIGURATION global also sees the top-level globals
+      ...ast.configurations.map(
+        (c) => [orderConfigurationGlobals(c), topLevel.order] as const,
+      ),
     ]) {
       this.reportGlobalInitialCycles(ordered);
+      if (this.strict || this.inOutErrors) {
+        this.refuseDependentGlobalInitials(ordered, outer);
+      }
+    }
+  }
+
+  /**
+   * Under iec-3 and `--strict`: an initial value is a constant expression, so
+   * a global's initial value reading another global that is no CONSTANT (as a
+   * value; ADR() of it is an address) is refused. No dialect flag keeps the
+   * automatic creation order.
+   */
+  private refuseDependentGlobalInitials(
+    { order }: GlobalOrder,
+    outer: readonly GlobalItem[],
+  ): void {
+    const own = new Set(order.map((i) => i.name.toUpperCase()));
+    // The scope's own globals hide outer ones of the same name
+    const visible = [
+      ...order,
+      ...outer.filter((i) => !own.has(i.name.toUpperCase())),
+    ];
+    const constant = new Set(
+      visible
+        .filter((i) => i.block.isConstant === true)
+        .map((i) => i.name.toUpperCase()),
+    );
+    const known = new Set(visible.map((i) => i.name.toUpperCase()));
+    for (const item of order) {
+      const value = item.decl.initialValue;
+      if (value === undefined || item.decl.names[0] !== item.name) continue;
+      const reported = new Set<string>();
+      walkAST(value, (node): boolean | void => {
+        // ADR(g) and REF(g) take an address, SIZEOF(g) a size: none reads g
+        if (
+          node.kind === "RefExpression" ||
+          (node.kind === "FunctionCallExpression" &&
+            NOT_READING_CALLS.has(
+              (node as FunctionCallExpression).functionName.toUpperCase(),
+            ))
+        ) {
+          return false;
+        }
+        if (node.kind !== "VariableExpression") return;
+        const v = node as VariableExpression;
+        const upper = v.name.toUpperCase();
+        if (!known.has(upper) || constant.has(upper) || reported.has(upper)) {
+          return;
+        }
+        reported.add(upper);
+        this.addError(
+          `The initial value of global '${item.name}' reads global '${v.name}', which is no CONSTANT: an initial value is a constant expression`,
+          v.sourceSpan.startLine,
+          v.sourceSpan.startCol,
+          v.sourceSpan.file,
+        );
+      });
     }
   }
 
