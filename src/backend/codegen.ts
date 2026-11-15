@@ -41,7 +41,7 @@ import type {
   Visibility,
   ASTNode,
 } from "../frontend/ast.js";
-import { charLiteralUnits } from "../literal-utils.js";
+import { charLiteralUnits, exactIntegerValue } from "../literal-utils.js";
 import { isEnEnoArgument, walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
 import type { LineMapEntry, SourceSpan } from "../types.js";
@@ -94,7 +94,6 @@ import {
   IEC_TO_CPP_VAR_TYPE,
   sizeOfTypeCpp,
 } from "./type-codegen.js";
-import { addressFit, addressSource } from "../semantic/address-store.js";
 import {
   dateArithmeticCpp,
   formatArrayType,
@@ -157,6 +156,8 @@ interface InOutCopyArg {
   cppType?: string;
   /** Reads and writes the variable through one reference (its index runs once). */
   once?: true;
+  /** A POINTER TO or REF_TO output captured into this 64-bit integer type: copied out as its address, not copied in. */
+  addressInto?: string;
 }
 
 /** The parts of a type reference that decide its C++ type. */
@@ -2098,10 +2099,18 @@ export class CodeGenerator {
    * complete, so it is emitted after the FB classes and late types.
    */
   private emitGvlGlobals(ast: CompilationUnit, late: boolean): void {
-    this.withFaultPou("VAR_GLOBAL", undefined, () =>
-      this.emitGvlGlobalsBody(ast, late),
-    );
+    this.atNamespaceScope = true;
+    try {
+      this.withFaultPou("VAR_GLOBAL", undefined, () =>
+        this.emitGvlGlobalsBody(ast, late),
+      );
+    } finally {
+      this.atNamespaceScope = false;
+    }
   }
+
+  /** Initial values emitted at namespace scope, where a lambda captures nothing. */
+  private atNamespaceScope = false;
 
   private emitGvlGlobalsBody(ast: CompilationUnit, late: boolean): void {
     const holdsFB = (typeRef: TypeReference): boolean =>
@@ -3140,6 +3149,8 @@ export class CodeGenerator {
       }
     }
 
+    this.emitSubrangeInputChecks(method.varBlocks);
+
     // Generate body
     if (method.body.length > 0) {
       this.generateStatements(method.body);
@@ -3455,6 +3466,7 @@ export class CodeGenerator {
       this.emit("    if (__mocked_) { __mock_state_.call_count++; return; }");
     }
     this.enterScope(fb.varBlocks);
+    this.emitSubrangeInputChecks(fb.varBlocks);
     if (fb.body.length > 0) {
       this.generateStatements(fb.body);
     } else if (this.options.sourceComments) {
@@ -3636,6 +3648,8 @@ export class CodeGenerator {
           }
         }
       }
+
+      this.emitSubrangeInputChecks(func.varBlocks);
 
       if (func.body.length > 0) {
         this.generateStatements(func.body);
@@ -4337,9 +4351,14 @@ export class CodeGenerator {
   }
 
   private emitFileScopeGlobals(): void {
-    this.withFaultPou("VAR_GLOBAL", undefined, () =>
-      this.emitFileScopeGlobalsBody(),
-    );
+    this.atNamespaceScope = true;
+    try {
+      this.withFaultPou("VAR_GLOBAL", undefined, () =>
+        this.emitFileScopeGlobalsBody(),
+      );
+    } finally {
+      this.atNamespaceScope = false;
+    }
   }
 
   private emitFileScopeGlobalsBody(): void {
@@ -4903,16 +4922,13 @@ export class CodeGenerator {
       this.programExternals.has(stmt.target.name.toUpperCase())
     ) {
       const value = this.generateExpression(stmt.value);
-      this.emit(`${indent}${stmt.target.name}->write(${value});`);
+      const checked = this.subrangeStore(stmt.target, value, stmt.value);
+      this.emit(`${indent}${stmt.target.name}->write(${checked ?? value});`);
       return;
     }
 
     const target = this.generateLvalue(stmt.target);
-    const value = this.addressIntoAlias(
-      stmt.target,
-      stmt.value,
-      this.generateExpression(stmt.value),
-    );
+    const value = this.generateExpression(stmt.value);
 
     // For interface-returning methods, convert assignment to result var into return statement
     if (
@@ -4924,43 +4940,144 @@ export class CodeGenerator {
       return;
     }
 
-    this.emit(`${indent}${target} = ${value};`);
+    const checked = this.subrangeStore(stmt.target, value, stmt.value);
+    this.emit(`${indent}${target} = ${checked ?? value};`);
   }
 
   /**
-   * An address stored in a variable whose type is a TYPE alias of a 64-bit
-   * integer (`TYPE T_L : LWORD`), held as the plain integer: the address
-   * converted to it. Otherwise `value` unchanged.
+   * A store into a variable of a subrange type: the value through
+   * `iec_subrange_store`, which faults when it is outside the range.
+   * Undefined for any other target.
    */
-  private addressIntoAlias(
+  private subrangeStore(
     target: Expression,
-    valueExpr: Expression,
     value: string,
-  ): string {
-    if (
-      target.kind !== "VariableExpression" ||
-      target.fieldAccess.length > 0 ||
+    valueExpr?: Expression,
+  ): string | undefined {
+    if (target.kind !== "VariableExpression") return undefined;
+    const upper = target.name.toUpperCase();
+    const hasAccess =
       target.subscripts.length > 0 ||
+      target.fieldAccess.length > 0 ||
       target.isDereference ||
-      (target.accessChain?.length ?? 0) > 0 ||
-      addressSource(valueExpr) === undefined ||
-      !this.ast ||
-      this.ast.functions.some((f) => f.name.toUpperCase() === "ADR")
-    ) {
-      return value;
+      (target.accessChain !== undefined && target.accessChain.length > 0);
+    // A local or member, else the result of the FUNCTION or METHOD (or a field of it), else a global
+    const root =
+      this.currentScopeVarTypeRefs.get(upper) ??
+      (this.currentFunctionName?.toUpperCase() === upper &&
+      this.currentFunctionResultType !== undefined
+        ? {
+            name: this.currentFunctionResultType,
+            referenceKind: "none" as const,
+          }
+        : undefined) ??
+      this.globalVarTypeRef(upper);
+    if (root === undefined) return undefined;
+    const type = hasAccess
+      ? resolveAccessType(root, target, this.accessLookup)
+      : root;
+    const shown = [target.name, ...target.fieldAccess].join(".");
+    return this.subrangeChecked(type, value, valueExpr, shown, target);
+  }
+
+  /**
+   * A VAR_INPUT of a subrange type, checked on entry to the FUNCTION, METHOD or
+   * FUNCTION_BLOCK: the caller stored its argument into it.
+   */
+  private emitSubrangeInputChecks(blocks: readonly VarBlock[]): void {
+    for (const block of blocks) {
+      if (block.blockType !== "VAR_INPUT") continue;
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          const member = this.localCppName(name);
+          const checked = this.subrangeChecked(
+            decl.type,
+            member,
+            undefined,
+            name,
+            decl,
+          );
+          if (checked !== undefined) this.emit(`    ${member} = ${checked};`);
+        }
+      }
     }
-    const typeName = this.rootVariableType(target.name.toUpperCase());
-    const alias = this.ast.types.find(
-      (t) => t.name.toUpperCase() === typeName?.toUpperCase(),
-    );
+  }
+
+  /** The declared type of a global (a global variable list's or a CONFIGURATION's) of this name. */
+  private globalVarTypeRef(upper: string): TypeReference | undefined {
+    const blocks = [
+      ...(this.ast?.globalVarBlocks ?? []),
+      ...(this.ast?.configurations.flatMap((c) => c.varBlocks) ?? []),
+    ];
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (decl.names.some((n) => n.toUpperCase() === upper)) return decl.type;
+      }
+    }
+    return undefined;
+  }
+
+  /** The subrange TYPE a declared type is, through aliases; undefined for any other. */
+  private subrangeTypeOf(
+    type: TypeShape | undefined,
+  ): TypeDeclaration | undefined {
     if (
-      alias === undefined ||
-      alias.definition.kind !== "TypeReference" ||
-      addressFit(alias.name, this.ast.types) !== "wide"
+      type === undefined ||
+      type.arrayDimensions !== undefined ||
+      (type.referenceKind ?? "none") !== "none"
     ) {
-      return value;
+      return undefined;
     }
-    return `static_cast<${alias.name}>(reinterpret_cast<std::uintptr_t>(${value}))`;
+    let name = type.name.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const current = name;
+      const decl = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === current,
+      );
+      if (decl === undefined) return undefined;
+      if (decl.definition.kind === "SubrangeDefinition") return decl;
+      if (
+        decl.definition.kind !== "TypeReference" ||
+        decl.definition.arrayDimensions !== undefined
+      ) {
+        return undefined;
+      }
+      name = decl.definition.name.toUpperCase();
+    }
+    return undefined;
+  }
+
+  /**
+   * `value`, stored into `shown` of declared type `type`, checked against
+   * its range when that is a subrange: undefined for any other type. An
+   * integer literal inside the range needs no check.
+   */
+  private subrangeChecked(
+    type: TypeShape | undefined,
+    value: string,
+    valueExpr: Expression | undefined,
+    shown: string,
+    site: { sourceSpan: SourceSpan },
+  ): string | undefined {
+    const decl = this.subrangeTypeOf(type);
+    if (decl === undefined || decl.definition.kind !== "SubrangeDefinition") {
+      return undefined;
+    }
+    const constant =
+      valueExpr === undefined ? undefined : exactIntegerValue(valueExpr);
+    const lo = exactIntegerValue(decl.definition.lowerBound);
+    const hi = exactIntegerValue(decl.definition.upperBound);
+    if (
+      constant !== undefined &&
+      lo !== undefined &&
+      hi !== undefined &&
+      constant >= lo &&
+      constant <= hi
+    ) {
+      return undefined;
+    }
+    // Qualified: a variable named SR_MIN or SR_MAX would hide the bound
+    return `strucpp::iec_subrange_store(${value}, ::strucpp::${decl.name}_MIN, ::strucpp::${decl.name}_MAX, "${shown}", ${this.faultSite(site)})`;
   }
 
   /**
@@ -4979,7 +5096,8 @@ export class CodeGenerator {
     indent: string,
   ): void {
     const tmp = `__gwv_${this.tempVarCounter++}`;
-    const value = this.generateExpression(valueExpr);
+    const generated = this.generateExpression(valueExpr);
+    const value = this.subrangeStore(target, generated, valueExpr) ?? generated;
     // In a block of its own: a declaration directly under a CASE label would
     // be jumped over by the next label (C++ "jump to case label").
     const inner = indent + this.options.indent;
@@ -5077,12 +5195,26 @@ export class CodeGenerator {
    * member's field type, so it binds the callee's `T&`).
    */
   private inOutCopy(
-    { value: arg, cppType, once }: InOutCopyArg,
+    { value: arg, cppType, once, addressInto }: InOutCopyArg,
     tmp: string,
   ): { declaration: string; copyOut: string } {
     const read = this.generateVariableExpression(arg);
     const copyIn = arg.unionMember === true ? `union_value(${read})` : read;
     const upper = arg.name.toUpperCase();
+    // A pointer output into an integer: no copy in, its address copied out.
+    if (addressInto !== undefined && cppType !== undefined) {
+      const out = this.addressAsInteger(addressInto, tmp);
+      const store =
+        this.bitStore(arg, out) ??
+        (this.compositeExternals.has(upper)
+          ? this.compositeGlobalStore(arg, out)
+          : this.programExternals.has(upper) &&
+              arg.fieldAccess.length === 0 &&
+              !arg.isDereference
+            ? `${arg.name}->write(${out});`
+            : `${read} = ${out};`);
+      return { declaration: `${cppType} ${tmp};`, copyOut: store };
+    }
     const bitStore = this.bitStore(arg, tmp);
     // A dereference, a REFERENCE TO or a bit is no lvalue a reference can hold.
     const plainLvalue =
@@ -5362,6 +5494,9 @@ export class CodeGenerator {
           value,
           cppType: this.inOutParamType(param.type),
           once: true as const,
+          ...(arg.addressInto !== undefined
+            ? { addressInto: arg.addressInto }
+            : {}),
         });
       } else if (
         (arg.isOutput || param.blockType === "VAR_OUTPUT") &&
@@ -6039,6 +6174,18 @@ export class CodeGenerator {
    * Returns the C++ expression as a string.
    */
   protected generateExpression(expr: Expression): string {
+    const code = this.generateExpressionUnconverted(expr);
+    return expr.addressInto === undefined
+      ? code
+      : this.addressAsInteger(expr.addressInto, code);
+  }
+
+  /** An address (a pointer, a REF, a POINTER TO value) as the 64-bit integer type `typeName`. */
+  private addressAsInteger(typeName: string, code: string): string {
+    return `static_cast<${this.typeCodeGen.mapTypeToCpp(typeName)}>(strucpp::address_bits(${code}))`;
+  }
+
+  private generateExpressionUnconverted(expr: Expression): string {
     switch (expr.kind) {
       case "LiteralExpression":
         return this.generateLiteralExpression(expr);
@@ -9873,9 +10020,12 @@ export class CodeGenerator {
     for (const arg of filteredArgs) {
       if (arg.name && arg.isOutput) {
         const member = `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`;
+        const source = kindOf(arg.name) === "ref" ? `(*${member})` : member;
         this.emitCaptureToLvalue(
           arg.value,
-          kindOf(arg.name) === "ref" ? `(*${member})` : member,
+          arg.addressInto === undefined
+            ? source
+            : this.addressAsInteger(arg.addressInto, source),
           indent,
         );
       }
@@ -10086,6 +10236,8 @@ export class CodeGenerator {
     source: string,
     indent: string,
   ): void {
+    // An output or copy-back into a subrange variable is a store too
+    source = this.subrangeStore(target, source) ?? source;
     if (
       target.kind === "VariableExpression" &&
       !target.isDereference &&
@@ -10505,9 +10657,11 @@ export class CodeGenerator {
     }
     if (
       this.externalPointerSuffix !== "" ||
-      this.externalPointerOf !== undefined
+      this.externalPointerOf !== undefined ||
+      (!this.atNamespaceScope && this.namesLocalVariable(value))
     ) {
-      // In a PROGRAM constructor the VAR_EXTERNAL parameters are captured.
+      // In a PROGRAM constructor the VAR_EXTERNAL parameters are captured;
+      // in a constructor or body, the members or locals the value names.
       return generateInitializerValue(
         value,
         cppType,
@@ -10521,6 +10675,25 @@ export class CodeGenerator {
       stTypeName,
       this.getStructInitEmitter(),
     );
+  }
+
+  /** `value` names a variable that is neither a file-level global nor an enumeration member. */
+  private namesLocalVariable(value: Expression): boolean {
+    const globals = this.fileScopeGlobalNames();
+    const enumMembers = new Set(
+      (this.ast?.types ?? []).flatMap((t) =>
+        t.definition.kind === "EnumDefinition"
+          ? t.definition.members.map((m) => m.name.toUpperCase())
+          : [],
+      ),
+    );
+    let found = false;
+    walkAST(value, (node) => {
+      if (node.kind !== "VariableExpression") return;
+      const name = (node as VariableExpression).name.toUpperCase();
+      if (!globals.has(name) && !enumMembers.has(name)) found = true;
+    });
+    return found;
   }
 
   /** The reference levels a TYPE alias (through aliases) adds: `T_R : REFERENCE TO INT`. */

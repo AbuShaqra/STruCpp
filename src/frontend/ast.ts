@@ -34,6 +34,12 @@ export interface ASTNode {
 export interface TypedNode extends ASTNode {
   /** Resolved type after type checking */
   resolvedType?: IECType;
+  /**
+   * Set by the type checker on an address (`ADR(x)`, `REF(x)`, `ADR(x) + n`)
+   * stored in a 64-bit integer that is a TYPE alias or subrange, or a REF
+   * stored in any 64-bit integer: that integer's type name, converted to.
+   */
+  addressInto?: string;
 }
 
 // =============================================================================
@@ -899,6 +905,12 @@ export interface Argument extends ASTNode {
    * copy-out instead of by reference.
    */
   inOutCopy?: true;
+  /**
+   * Set by the type checker on `o => v` capturing a POINTER TO or REF_TO
+   * output into a 64-bit integer that is a TYPE alias or subrange, or a
+   * REF_TO output into any 64-bit integer: that integer's type name.
+   */
+  addressInto?: string;
 }
 
 /**
