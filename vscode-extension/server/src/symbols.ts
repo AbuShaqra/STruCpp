@@ -30,6 +30,30 @@ import type {
 } from "strucpp";
 import { sourceSpanToRange } from "./lsp-utils.js";
 
+/** A node the parser recovered with no name or no place in the text gets no symbol. */
+function unplaced(
+  name: string,
+  span: { startLine: number; startCol: number } | undefined,
+): boolean {
+  return (
+    name.trim() === "" ||
+    span === undefined ||
+    span.startLine < 1 ||
+    span.startCol < 1
+  );
+}
+
+/** The symbols of `nodes`, the unplaced ones left out. */
+function placed<T>(
+  nodes: readonly T[],
+  build: (node: T) => DocumentSymbol | undefined,
+): DocumentSymbol[] {
+  return nodes.flatMap((n) => {
+    const symbol = build(n);
+    return symbol === undefined ? [] : [symbol];
+  });
+}
+
 /**
  * Get document symbols for a single file's analysis result.
  * When fileName is provided, only returns symbols defined in that file.
@@ -48,21 +72,16 @@ export function getDocumentSymbols(
   const inFile = (span?: { file?: string }) =>
     !fileName || !span?.file || span.file === fileName;
 
-  for (const prog of ast.programs) {
-    if (inFile(prog.sourceSpan)) symbols.push(buildProgramSymbol(prog));
-  }
-  for (const func of ast.functions) {
-    if (inFile(func.sourceSpan)) symbols.push(buildFunctionSymbol(func));
-  }
-  for (const fb of ast.functionBlocks) {
-    if (inFile(fb.sourceSpan)) symbols.push(buildFBSymbol(fb));
-  }
-  for (const iface of ast.interfaces) {
-    if (inFile(iface.sourceSpan)) symbols.push(buildInterfaceSymbol(iface));
-  }
-  for (const type of ast.types) {
-    if (inFile(type.sourceSpan)) symbols.push(buildTypeSymbol(type));
-  }
+  const own = <T extends { sourceSpan: { file?: string } }>(
+    nodes: readonly T[],
+  ): T[] => nodes.filter((n) => inFile(n.sourceSpan));
+  symbols.push(
+    ...placed(own(ast.programs), buildProgramSymbol),
+    ...placed(own(ast.functions), buildFunctionSymbol),
+    ...placed(own(ast.functionBlocks), buildFBSymbol),
+    ...placed(own(ast.interfaces), buildInterfaceSymbol),
+    ...placed(own(ast.types), buildTypeSymbol),
+  );
   for (const varBlock of ast.globalVarBlocks) {
     if (inFile(varBlock.sourceSpan)) symbols.push(...buildVarBlockSymbols(varBlock));
   }
@@ -97,7 +116,8 @@ export function getWorkspaceSymbols(
 // POU builders
 // ---------------------------------------------------------------------------
 
-function buildProgramSymbol(prog: ProgramDeclaration): DocumentSymbol {
+function buildProgramSymbol(prog: ProgramDeclaration): DocumentSymbol | undefined {
+  if (unplaced(prog.name, prog.sourceSpan)) return undefined;
   const range = sourceSpanToRange(prog.sourceSpan);
   const children: DocumentSymbol[] = [];
 
@@ -115,7 +135,8 @@ function buildProgramSymbol(prog: ProgramDeclaration): DocumentSymbol {
   );
 }
 
-function buildFunctionSymbol(func: FunctionDeclaration): DocumentSymbol {
+function buildFunctionSymbol(func: FunctionDeclaration): DocumentSymbol | undefined {
+  if (unplaced(func.name, func.sourceSpan)) return undefined;
   const range = sourceSpanToRange(func.sourceSpan);
   const children: DocumentSymbol[] = [];
 
@@ -133,19 +154,18 @@ function buildFunctionSymbol(func: FunctionDeclaration): DocumentSymbol {
   );
 }
 
-function buildFBSymbol(fb: FunctionBlockDeclaration): DocumentSymbol {
+function buildFBSymbol(fb: FunctionBlockDeclaration): DocumentSymbol | undefined {
+  if (unplaced(fb.name, fb.sourceSpan)) return undefined;
   const range = sourceSpanToRange(fb.sourceSpan);
   const children: DocumentSymbol[] = [];
 
   for (const vb of fb.varBlocks) {
     children.push(...buildVarBlockSymbols(vb));
   }
-  for (const method of fb.methods) {
-    children.push(buildMethodSymbol(method));
-  }
-  for (const prop of fb.properties) {
-    children.push(buildPropertySymbol(prop));
-  }
+  children.push(
+    ...placed(fb.methods, buildMethodSymbol),
+    ...placed(fb.properties, buildPropertySymbol),
+  );
 
   let detail = "FUNCTION_BLOCK";
   if (fb.extends) detail += ` EXTENDS ${fb.extends}`;
@@ -161,13 +181,12 @@ function buildFBSymbol(fb: FunctionBlockDeclaration): DocumentSymbol {
   );
 }
 
-function buildInterfaceSymbol(iface: InterfaceDeclaration): DocumentSymbol {
+function buildInterfaceSymbol(iface: InterfaceDeclaration): DocumentSymbol | undefined {
+  if (unplaced(iface.name, iface.sourceSpan)) return undefined;
   const range = sourceSpanToRange(iface.sourceSpan);
   const children: DocumentSymbol[] = [];
 
-  for (const method of iface.methods) {
-    children.push(buildMethodSymbol(method));
-  }
+  children.push(...placed(iface.methods, buildMethodSymbol));
 
   return DocumentSymbol.create(
     iface.name,
@@ -179,7 +198,8 @@ function buildInterfaceSymbol(iface: InterfaceDeclaration): DocumentSymbol {
   );
 }
 
-function buildMethodSymbol(method: MethodDeclaration): DocumentSymbol {
+function buildMethodSymbol(method: MethodDeclaration): DocumentSymbol | undefined {
+  if (unplaced(method.name, method.sourceSpan)) return undefined;
   const range = sourceSpanToRange(method.sourceSpan);
   const children: DocumentSymbol[] = [];
 
@@ -199,7 +219,8 @@ function buildMethodSymbol(method: MethodDeclaration): DocumentSymbol {
   );
 }
 
-function buildPropertySymbol(prop: PropertyDeclaration): DocumentSymbol {
+function buildPropertySymbol(prop: PropertyDeclaration): DocumentSymbol | undefined {
+  if (unplaced(prop.name, prop.sourceSpan)) return undefined;
   const range = sourceSpanToRange(prop.sourceSpan);
   return DocumentSymbol.create(
     prop.name,
@@ -214,7 +235,8 @@ function buildPropertySymbol(prop: PropertyDeclaration): DocumentSymbol {
 // Type builders
 // ---------------------------------------------------------------------------
 
-function buildTypeSymbol(type: TypeDeclaration): DocumentSymbol {
+function buildTypeSymbol(type: TypeDeclaration): DocumentSymbol | undefined {
+  if (unplaced(type.name, type.sourceSpan)) return undefined;
   const range = sourceSpanToRange(type.sourceSpan);
   const def = type.definition;
 
@@ -222,9 +244,10 @@ function buildTypeSymbol(type: TypeDeclaration): DocumentSymbol {
     case "StructDefinition": {
       const sd = def as StructDefinition;
       // Own fields only: the copies inherited through EXTENDS lie in the base's range.
-      const children = sd.fields
-        .slice(sd.inheritedDeclarations ?? 0)
-        .map((f) => buildFieldSymbol(f));
+      const children = placed(
+        sd.fields.slice(sd.inheritedDeclarations ?? 0),
+        buildFieldSymbol,
+      );
       return DocumentSymbol.create(
         type.name,
         sd.isUnion ? "UNION" : "STRUCT",
@@ -236,7 +259,7 @@ function buildTypeSymbol(type: TypeDeclaration): DocumentSymbol {
     }
     case "EnumDefinition": {
       const ed = def as EnumDefinition;
-      const children = ed.members.map((m) => buildEnumMemberSymbol(m));
+      const children = placed(ed.members, buildEnumMemberSymbol);
       return DocumentSymbol.create(
         type.name,
         "ENUM",
@@ -257,9 +280,10 @@ function buildTypeSymbol(type: TypeDeclaration): DocumentSymbol {
   }
 }
 
-function buildFieldSymbol(field: VarDeclaration): DocumentSymbol {
+function buildFieldSymbol(field: VarDeclaration): DocumentSymbol | undefined {
+  const name = field.names.filter((n) => n.trim() !== "").join(", ");
+  if (unplaced(name, field.sourceSpan)) return undefined;
   const range = sourceSpanToRange(field.sourceSpan);
-  const name = field.names.join(", ");
   return DocumentSymbol.create(
     name,
     `: ${field.type.name}`,
@@ -269,7 +293,8 @@ function buildFieldSymbol(field: VarDeclaration): DocumentSymbol {
   );
 }
 
-function buildEnumMemberSymbol(member: EnumMember): DocumentSymbol {
+function buildEnumMemberSymbol(member: EnumMember): DocumentSymbol | undefined {
+  if (unplaced(member.name, member.sourceSpan)) return undefined;
   const range = sourceSpanToRange(member.sourceSpan);
   return DocumentSymbol.create(
     member.name,
@@ -289,8 +314,10 @@ function buildVarBlockSymbols(vb: VarBlock): DocumentSymbol[] {
   const symbolKind = varBlockToSymbolKind(vb.blockType);
 
   for (const decl of vb.declarations) {
+    const names = decl.names.filter((n) => !unplaced(n, decl.sourceSpan));
+    if (names.length === 0) continue;
     const range = sourceSpanToRange(decl.sourceSpan);
-    for (const name of decl.names) {
+    for (const name of names) {
       symbols.push(
         DocumentSymbol.create(
           name,
