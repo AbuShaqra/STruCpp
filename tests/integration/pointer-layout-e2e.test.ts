@@ -95,7 +95,7 @@ PROGRAM Main
   END_FOR;
   pw := ADR(warr);
   w0 := pw^;
-  pw := pw + 1;
+  pw := pw + 2;            (* two bytes on, one WORD: pointer arithmetic counts bytes *)
   w1 := pw^;
   dw := DwordBytes(16#11223344);
   rb := RealBits(1.0);

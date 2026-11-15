@@ -11,6 +11,7 @@
 
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 /** Compile a program body and return just the `run()` method text. */
 function runBody(statements: string, vars: string): string {
@@ -21,7 +22,7 @@ function runBody(statements: string, vars: string): string {
     END_PROGRAM
   `);
   expect(result.success).toBe(true);
-  const lines = result.cppCode.split("\n");
+  const lines = withoutSites(result.cppCode).split("\n");
   const start = lines.findIndex((l) => l.includes("void Program_P::run"));
   expect(start).toBeGreaterThanOrEqual(0);
   const end = lines.findIndex((l, idx) => idx > start && l.trimEnd() === "}");

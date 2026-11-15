@@ -50,6 +50,11 @@ import { lowerAccessorLocals } from "./semantic/lower-accessor-locals.js";
 import { lowerProgramSelfMembers } from "./semantic/program-access.js";
 import { lowerPlatformTypes } from "./semantic/platform-types.js";
 import {
+  defaultStringLength,
+  IEC_DEFAULT_STRING_LENGTH,
+  lowerDefaultStringLength,
+} from "./semantic/string-default-length.js";
+import {
   implicitParameterPragmas,
   markImplicitParameters,
 } from "./semantic/implicit-parameters.js";
@@ -566,6 +571,8 @@ interface PipelineResult {
   mergedOptions: CompileOptions;
   /** True when the resolved dialect has the feature fb_init. */
   fbInit: boolean;
+  /** The length of a STRING or WSTRING declared without one. */
+  stringDefaultLength: number;
 }
 
 /**
@@ -592,6 +599,7 @@ function runPipeline(
 
   let dialect: ResolvedDialect;
   let fbInit = false;
+  let stringDefaultLength = IEC_DEFAULT_STRING_LENGTH;
   try {
     dialect = resolveDialect(
       dialectRequestFromOptions(mergedOptions),
@@ -612,6 +620,7 @@ function runPipeline(
       allArchives,
       mergedOptions,
       fbInit,
+      stringDefaultLength,
     };
   }
   for (const message of dialect.warnings) {
@@ -624,6 +633,7 @@ function runPipeline(
     });
   }
   fbInit = dialect.features.has("fb_init");
+  stringDefaultLength = defaultStringLength(dialect.features);
 
   const prep = sourcePrepFor(dialect, mergedOptions.pragmaDefines);
   const pragmaHint = prep.enabled ? "" : conditionalPragmaHint(dialect);
@@ -658,6 +668,7 @@ function runPipeline(
         allArchives,
         mergedOptions,
         fbInit,
+        stringDefaultLength,
       };
     }
   }
@@ -700,6 +711,7 @@ function runPipeline(
         allArchives,
         mergedOptions,
         fbInit,
+        stringDefaultLength,
       };
     }
   }
@@ -721,6 +733,7 @@ function runPipeline(
       allArchives,
       mergedOptions,
       fbInit,
+      stringDefaultLength,
     };
   }
 
@@ -830,6 +843,7 @@ function runPipeline(
         allArchives,
         mergedOptions,
         fbInit,
+        stringDefaultLength,
       };
     }
 
@@ -880,6 +894,9 @@ function runPipeline(
     ];
     // After the actions, so `PRG_A.x` in an action of PRG_A is lowered too.
     if (dialect.features.has("program_methods")) lowerProgramSelfMembers(ast);
+    if (dialect.features.has("string_default_80")) {
+      lowerDefaultStringLength(ast, defaultStringLength(dialect.features));
+    }
     if (dialect.features.has("platform_types")) {
       const libraryTypes = new Set<string>();
       for (const archive of mergedOptions.libraries ?? []) {
@@ -916,6 +933,7 @@ function runPipeline(
         allArchives,
         mergedOptions,
         fbInit,
+        stringDefaultLength,
       };
     }
   } catch (e) {
@@ -935,6 +953,7 @@ function runPipeline(
         allArchives,
         mergedOptions,
         fbInit,
+        stringDefaultLength,
       };
     }
     // In analyze mode, AST building failure is non-fatal — continue with
@@ -953,6 +972,7 @@ function runPipeline(
       allArchives,
       mergedOptions,
       fbInit,
+      stringDefaultLength,
     };
   }
   try {
@@ -993,6 +1013,7 @@ function runPipeline(
         allArchives,
         mergedOptions,
         fbInit,
+        stringDefaultLength,
       };
     }
     // In analyze mode, project model failure is non-fatal
@@ -1008,6 +1029,7 @@ function runPipeline(
       allArchives,
       mergedOptions,
       fbInit,
+      stringDefaultLength,
     };
   }
 
@@ -1026,6 +1048,7 @@ function runPipeline(
       allArchives,
       mergedOptions,
       fbInit,
+      stringDefaultLength,
     };
   }
 
@@ -1136,6 +1159,7 @@ function runPipeline(
     allArchives,
     mergedOptions,
     fbInit,
+    stringDefaultLength,
   };
 }
 
@@ -1295,7 +1319,10 @@ export function compile(
       pipeline.ast,
       pipeline.projectModel,
       pipeline.symbolTables,
-      { md5: pipeline.mergedOptions.md5 ?? "" },
+      {
+        md5: pipeline.mergedOptions.md5 ?? "",
+        stringDefaultLength: pipeline.stringDefaultLength,
+      },
     );
     debugTableCpp = dbg.debugTableCpp;
     debugMap = dbg.debugMap;

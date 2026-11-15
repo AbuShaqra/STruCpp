@@ -30,11 +30,11 @@ using ULINT_t = uint64_t;
 using REAL_t  = float;
 using LREAL_t = double;
 
-// Time/date (nanosecond precision, stored as int64_t)
-using TIME_t  = int64_t;
-using DATE_t  = int64_t;
-using TOD_t   = int64_t;  // TIME_OF_DAY
-using DT_t    = int64_t;  // DATE_AND_TIME
+// Time/date: 32-bit unsigned, one distinct type each, wrapping modulo 2^32
+using TIME_t  = IecTemporal32<IEC_KIND_TIME>;  // ms
+using DATE_t  = IecTemporal32<IEC_KIND_DATE>;  // s since 1970, whole days
+using TOD_t   = IecTemporal32<IEC_KIND_TOD>;   // TIME_OF_DAY, ms since midnight
+using DT_t    = IecTemporal32<IEC_KIND_DT>;    // DATE_AND_TIME, s since 1970
 using LTIME_t = int64_t;  // 64-bit time (nanosecond precision)
 using LDATE_t = int64_t;
 using LTOD_t  = int64_t;
@@ -206,24 +206,34 @@ template<typename T> struct is_any_string;  // IECString, IECWString
 
 Used by standard function templates for type-safe dispatch.
 
-## LTIME
+## TIME, DATE, TOD and DT
 
-LTIME is stored as TIME is, signed 64-bit nanoseconds (`IEC_LTIME` and
-`IEC_TIME` are both `IECVar<int64_t>`). For debugger hosts an LTIME leaf is a
-`TAG_TIME` leaf of 8 bytes, and `libs/iec-types.json` lists LTIME with the
-`duration-ns-i64` wire format TIME uses; a host tells the two apart by the
-declared type, not by the wire. `TO_LTIME` and `ADD_LTIME` / `SUB_LTIME` /
-`MUL_LTIME` / `DIV_LTIME` are the TIME helpers under their LTIME names.
+TIME, DATE, TOD and DT are 4 bytes, as on the PLC: `IecTemporal32<Kind>`, a
+distinct value type per kind holding a `uint32_t` (TIME and TOD in ms, DATE and
+DT in seconds since 1970-01-01, a DATE a whole number of days). Arithmetic
+wraps modulo 2^32; a raw count converts in only explicitly (`TIME_t(1000u)`,
+the form a `T#1s` literal takes). `iec_temporal_add` / `iec_temporal_sub` give
+TOD, DT or DATE plus or minus a TIME and the TIME between two of them; the
+`*_TO_*` helpers keep the vendor units (ms, s) for integers. For debugger hosts
+a TIME, DATE, TOD or DT leaf is a `TAG_TIME`, `TAG_DATE`, `TAG_TOD` or `TAG_DT`
+leaf (tags 22 to 25) of 4 bytes, and `libs/iec-types.json` lists them with the
+`duration-ms-u32`, `date-s-u32`, `tod-ms-u32` and `datetime-s-u32` wire formats.
+The retain image format is 2: one written by format 1, where these were 8
+bytes, is not loaded.
 
-LDATE, LTOD and LDT are stored as DATE (days since 1970-01-01), TOD and DT
-(nanoseconds) are; an LDATE, LTOD or LDT leaf is a `TAG_DATE`, `TAG_TOD` or
-`TAG_DT` leaf of 8 bytes, and `libs/iec-types.json` lists them with the DATE,
-TOD and DT wire formats. An LDATE leaf's value on the debug wire is therefore a
-day count since 1970-01-01, as a DATE leaf's is, not the nanoseconds IEC
-61131-3 Ed. 3 (Table 10) specifies for LDATE. The debug map (`debugMap.leaves`)
-lists an LTIME, LDATE, LTOD or LDT leaf under its short type name (TIME, DATE,
-TOD, DT), as the wire is the same; a host that shows the long name takes it from
-the declaration. `TO_LDATE`, `TO_LTOD` and `TO_LDT` are the casts.
+## LTIME, LDATE, LTOD and LDT
+
+LTIME is signed 64-bit nanoseconds (`IEC_LTIME` is `IECVar<int64_t>`), a
+`TAG_LTIME` leaf (tag 15) of 8 bytes with the `duration-ns-i64` wire format.
+`LTIME()` is the scan clock as an LTIME. A TIME widens to an LTIME implicitly
+(`IECVar<int64_t>` takes an `IecTemporal32` by its kind: TIME, TOD and DT as
+ns, DATE as days).
+
+LDATE (days since 1970-01-01), LTOD and LDT (nanoseconds) are `TAG_LDATE`,
+`TAG_LTOD` and `TAG_LDT` leaves (tags 16 to 18) of 8 bytes. An LDATE leaf's
+value on the debug wire is a day count since 1970-01-01, not the nanoseconds
+IEC 61131-3 Ed. 3 (Table 10) specifies for LDATE. `TO_LDATE`, `TO_LTOD` and
+`TO_LDT` are the casts; of a 32-bit value they widen it by its meaning.
 
 ## CHAR and WCHAR
 
@@ -314,17 +324,33 @@ IEC arrays use 1-based (or arbitrary-based) indexing. The template parameters en
 
 A fault the compiler can place names where it happened, in one format: `<what> in <POU>, line <n>, task <task>`,
 for example `Division by zero in MAIN, line 12, task FAST`. Integer division by zero (`a / b` and `DIV(a, b)`
-on every integer and bit string type, through `iec_div`) is such a fault. `MOD` by zero is not: it gives 0
+on every integer and bit string type, through `iec_div`) is such a fault, and so is a TIME, DATE, TOD or DT
+divided by a number that is 0 (`t / n`, `DIV_TIME(t, n)`, through `iec_temporal_div`),
+and `DIVTIME(a, b)` of two durations with b = 0 (through `iec_divtime`). `MOD` by zero is not: it gives 0
 (Table 29, note e).
 
 Every fault goes through `strucpp::iec_raise_fault`, which builds the message in a fixed buffer, with no
-allocation. On a hosted target it throws `strucpp::IecSiteFault` (a `std::runtime_error`, whose `reason()`
+allocation. A message too long for it keeps the description and `line <n>` whole: it shortens the POU's name
+first, then the task's, each marked with `…`, never inside a UTF-8 character. On a hosted target it throws `strucpp::IecSiteFault` (a `std::runtime_error`, whose `reason()`
 is the `IecFault`); on a target without exceptions it calls `iec_runtime_fault(reason, message)` with the
 same message. The POU and line come from the call site (`strucpp::iec_site{"MAIN", 12}`): the POU is the
 PROGRAM, FUNCTION_BLOCK or FUNCTION, `FB.M` for a METHOD, PROPERTY or ACTION, and the POU whose variable
 it is for an initial value (`VAR_GLOBAL`, or the CONFIGURATION's name, for a global). The task is the one the
 runtime named on this thread with `strucpp_set_current_task(name)` before running it (thread-local under
 `STRUCPP_THREADED`); it is left out when none is set.
+
+An array access goes through `strucpp::iec_at(container, site, index...)`: an index outside the bounds is the
+fault `Array index out of bounds: <indices> in <POU>, line <n>, task <task>`, each index as written (a ULINT
+above 2^63 too, which no array has); a STRING index keeps its own text, `String index out of bounds`. A
+dereference of a NULL POINTER TO or REF_TO (`p^`) goes through `strucpp::iec_deref(p, site)`: `Null pointer
+dereference` or `Null reference dereference in <POU>, line <n>, task <task>`. A REFERENCE TO read, written or
+reached through (a member or element of it reached through a variable, a global, another REFERENCE TO or a
+pointer included) goes through `strucpp::iec_ref(r, name, site)`: `Unbound REFERENCE TO <name> in <POU>, line <n>,
+task <task>`; binding another REFERENCE TO input to it passes the reference on, unchecked. On a target without
+exceptions the same text reaches `iec_runtime_fault`; an index fault names the site there, not the index.
+Defining `STRUCPP_NO_BOUNDS_CHECK` when building the C++ leaves all of these checks out (every array, ARRAY[*]
+and UNION array member, every pointer and reference), for targets that cannot
+afford them; an out-of-range index, a NULL dereference or an unbound reference is then undefined behaviour.
 
 Where the fork dispatches the programs itself, it names the task:
 
@@ -335,13 +361,25 @@ Where the fork dispatches the programs itself, it names the task:
 
 The REPL and the cyclic runner catch a fault: they print it (`Fault: Division by zero in FB, line 4, task SLOW`),
 stop every program of the faulting task (`Stopped task SLOW`) and keep the other tasks running. The cyclic
-runner ends when no task is left; both exit with status 1 after a fault.
+runner ends when no task is left; both exit with status 1 after a fault. A fault in an initial value is
+raised while the program object is constructed, before any runner starts: it is not caught there, and it ends
+the process (`std::terminate` on a hosted target).
 
 A runtime that runs the generated programs itself (an embedding scheduler, the threaded runtime of a host
 such as OpenPLC) has no dispatcher in the fork. It must call `strucpp::strucpp_set_current_task(name)` on
 the thread that runs a task, before that task's programs run in each cycle, and
 `strucpp::strucpp_set_current_task(nullptr)` after them. The name is not copied: pass a string that
 outlives the call, such as a literal.
+
+A store into a subrange variable goes through `iec_subrange_store`, which raises the same fault
+(`IecFault::Subrange`) with `Value <v> outside <lo>..<hi> stored in <variable>` when the value is outside the range,
+each number as written (a ULINT above 2^63 too). Every store is checked: an assignment (to a local, a member, a
+FUNCTION or METHOD result, a global, a CONFIGURATION global through VAR_EXTERNAL, an ARRAY element, a STRUCT
+field), an output or in-out copied back (`f(o => x)`). An input of a FUNCTION_BLOCK, FUNCTION or METHOD is
+checked on entry, so its fault names the callee and the line of its VAR_INPUT. An integer literal
+inside the range is stored with no check. The check costs time: a tight loop of subrange stores ran about 2.4
+times slower at -O2 than with no check. Defining `STRUCPP_NO_BOUNDS_CHECK` leaves the check out, as it does the
+index check.
 
 ## Pointer and Reference Types
 
@@ -360,6 +398,29 @@ public:
 ```
 
 Supports CODESYS-style `POINTER TO` declarations with dereference via `^` operator.
+
+Pointer arithmetic counts bytes, as on a PLC: `p + n` and `p - n` move the address by `n` bytes
+whatever the pointer's target type is (`p + 2` on a `POINTER TO INT` is the next INT, not the third).
+So does every `+` / `-` of a chain that holds `ADR(x)`, parenthesised or not, stored into a POINTER TO,
+an LWORD or any other target: it is computed on the address as an integer (`strucpp::iec_byte_addr`,
+`strucpp::iec_byte_offset`) and converted back to the address's type, so `ADR(a) + 2 + 2` is 4 bytes
+after `a`. `ADR(a) - ADR(b)` is the signed count of bytes between them.
+
+A dereference needs the address aligned for its target type: the access through a pointer is a plain
+C++ access, which is undefined behaviour when misaligned (x86 tolerates it; a strict-alignment target
+faults). Storing an address moved by a constant into a POINTER TO a multi-byte elementary type is
+therefore an error, on every store path (an assignment, also to a field, an FB member or an array
+element, a FUNCTION or METHOD result, a PROPERTY, a FUNCTION, METHOD or FB argument, and a test file),
+when the address it starts from is known to be aligned for that type (a POINTER TO,
+or `ADR(x)` of, a type at least as wide) and the chain's net offset is not a multiple of its size
+(`Moving a POINTER TO DINT by 1 byte(s) would make its dereference misaligned; move it by a multiple of
+4 bytes`). The offset is the whole chain folded (literals of any base, constants, `+`, `-`, `*`,
+parentheses), so `p + 1 + 3` is aligned. A byte address is never refused: `ADR(dw) + 1` into a POINTER
+TO BYTE, or as a MEMCPY argument, reads the bytes of `dw`. An offset known only at run time is not
+checked. An address is offset by `+` or `-` an integer, or subtracted from another address (ADR, or a
+POINTER TO local, global or ARRAY OF POINTER TO element), which gives the signed count of bytes between
+them; taking an address from a value
+(`w - ADR(x)`) or adding two addresses is an error.
 
 ### REF_TO and REFERENCE_TO (`iec_ptr.hpp`)
 
@@ -399,7 +460,7 @@ Uses `malloc`/`free` with placement new. Sets pointer to `nullptr` after deletio
 
 ## Time Types (`iec_time.hpp`, `iec_date.hpp`, `iec_dt.hpp`, `iec_tod.hpp`)
 
-All time/date types use nanosecond-precision `int64_t` storage. Arithmetic operations (`+`, `-`, comparison) are defined. Time literal parsing handles the IEC format: `T#1h2m3s4ms5us6ns`. LTIME types share the same int64_t representation with nanosecond precision.
+TIME, DATE, TOD and DT are 32-bit (see [TIME, DATE, TOD and DT](#time-date-tod-and-dt)); LTIME, LDATE, LTOD and LDT are 64-bit. Arithmetic operations (`+`, `-`, comparison) are defined. Time literal parsing handles the IEC format: `T#1h2m3s4ms` (LTIME also `us` and `ns`).
 
 ## Standard Functions (`iec_std_lib.hpp`)
 

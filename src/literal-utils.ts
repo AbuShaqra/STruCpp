@@ -13,6 +13,8 @@
  * layers need it and neither should depend on the other for it.
  */
 
+import type { Expression } from "./frontend/ast.js";
+
 import { cp1252Byte } from "./byte-utils.js";
 
 /** Widest value any IEC 61131-3 integer type (ULINT) can hold. */
@@ -136,4 +138,32 @@ export function charLiteralUnits(raw: string): {
     }
   }
   return { wide, units };
+}
+
+/** An integer constant written as a literal (typed, signed or in parentheses): its exact value. */
+export function exactIntegerValue(expr: Expression): bigint | undefined {
+  if (expr.kind === "ParenthesizedExpression") {
+    return exactIntegerValue(expr.expression);
+  }
+  if (expr.kind === "UnaryExpression" && expr.operator === "-") {
+    const inner = exactIntegerValue(expr.operand);
+    return inner === undefined ? undefined : -inner;
+  }
+  if (expr.kind !== "LiteralExpression" || expr.literalType !== "INT") {
+    return undefined;
+  }
+  const typed =
+    expr.rawValue.includes("#") && !/^(16|8|2)#/.test(expr.rawValue);
+  const raw = typed
+    ? expr.rawValue.slice(expr.rawValue.indexOf("#") + 1)
+    : expr.rawValue;
+  const value = exactIntegerLiteralValue(raw);
+  if (!typed || value === undefined || !/^(16|8|2)#/.test(raw)) return value;
+  // A based literal of a signed type is its bit pattern: SINT#16#FF is -1
+  const type = expr.rawValue.slice(0, expr.rawValue.indexOf("#")).toUpperCase();
+  const range = integerTypeRange(type);
+  const bits = INTEGER_TYPE_BITS[type];
+  if (range === undefined || bits === undefined || range.min >= 0n)
+    return value;
+  return value > range.max ? value - (1n << BigInt(bits)) : value;
 }
