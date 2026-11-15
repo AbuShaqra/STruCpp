@@ -15,7 +15,8 @@ TYPE S1 : STRUCT e : E2; n : INT; END_STRUCT END_TYPE
 function errorsFor(decl: string, dialect?: "iec-3"): string[] {
   return compile(
     `${TYPES}PROGRAM Main\nVAR ${decl} END_VAR\nEND_PROGRAM\n`,
-    dialect ? { dialect } : {},
+    // E2.B is the feature enum_dot_qualify, off in iec-3: kept here.
+    dialect ? { dialect, features: ["+enum_dot_qualify"] } : {},
   ).errors.map((e) => e.message);
 }
 

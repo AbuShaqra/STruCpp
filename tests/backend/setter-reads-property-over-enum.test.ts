@@ -28,7 +28,11 @@ describe("SET body reads its property name", () => {
   for (const [label, options] of [
     ["no dialect", { features: ["+property"] }],
     ["strict", { strict: true, features: ["+property"] }],
-    ["iec-3 with property", { dialect: "iec-3", features: ["+property"] }],
+    // The FB property needs fb_property, off in iec-3: kept here.
+    [
+      "iec-3 with property",
+      { dialect: "iec-3", features: ["+property", "+fb_property"] },
+    ],
   ] as const) {
     it(label, () => {
       const r = compile(SRC, { ...options, features: [...options.features] });

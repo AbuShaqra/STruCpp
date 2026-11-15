@@ -29,6 +29,8 @@ writeFileSync(
       "self_caret",
       "property",
       "platform_types",
+      "fb_property",
+      "bare_self_caret",
     ],
   }),
 );

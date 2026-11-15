@@ -869,6 +869,8 @@ export interface FunctionCallExpression extends TypedNode {
   instance?: Expression;
   /** Written as `THIS^.M()`; needs the feature self_caret. */
   selfCaret?: true;
+  /** Written as `SUPER^()` or `SUPER^.M()`; needs the feature bare_self_caret. */
+  bareCaret?: true;
   /** Set when written with a global variable list prefix (`LIST.fb()`), which was removed. */
   globalList?: string;
   /** Set by the type checker: the library whose FUNCTION of a standard function's name is called. */
@@ -941,6 +943,8 @@ export interface VariableExpression extends TypedNode {
   typedLiteral?: true;
   /** Written as `THIS^.member`; needs the feature self_caret. */
   selfCaret?: true;
+  /** Written as bare `THIS^` or `SUPER^.member`; needs the feature bare_self_caret. */
+  bareCaret?: true;
   /** Set when written with a global variable list prefix (`LIST.var`), which was removed. */
   globalList?: string;
   /** Set by the type checker when the storage reached lies in a UNION's storage (feature union). */

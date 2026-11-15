@@ -211,13 +211,33 @@ END_FUNCTION_BLOCK
  * Pinned: what passes today keeps passing until the IEC audit decides
  * otherwise. Narrowing any of these must show up as a change here.
  */
-describe("today's caret forms stay accepted in every dialect (pinned)", () => {
-  const forms: { name: string; body: string }[] = [
-    { name: "bare THIS^ as a value", body: "  b := THIS^;" },
-    { name: "bare THIS^ as an argument", body: "  y := Take(o := THIS^);" },
-    { name: "SUPER^.M() in an expression", body: "  y := SUPER^.M();" },
-    { name: "SUPER^.M() as a statement", body: "  SUPER^.M();" },
-    { name: "SUPER^.member", body: "  y := SUPER^.x;" },
+describe("the caret forms need the feature bare_self_caret", () => {
+  const forms: { name: string; body: string; refusal: string }[] = [
+    {
+      name: "bare THIS^ as a value",
+      body: "  b := THIS^;",
+      refusal: "19:8 THIS^ needs the feature bare_self_caret",
+    },
+    {
+      name: "bare THIS^ as an argument",
+      body: "  y := Take(o := THIS^);",
+      refusal: "19:18 THIS^ needs the feature bare_self_caret",
+    },
+    {
+      name: "SUPER^.M() in an expression",
+      body: "  y := SUPER^.M();",
+      refusal: "19:8 SUPER^ needs the feature bare_self_caret",
+    },
+    {
+      name: "SUPER^.M() as a statement",
+      body: "  SUPER^.M();",
+      refusal: "19:3 SUPER^ needs the feature bare_self_caret",
+    },
+    {
+      name: "SUPER^.member",
+      body: "  y := SUPER^.x;",
+      refusal: "19:8 SUPER^ needs the feature bare_self_caret",
+    },
   ];
   function source(body: string): string {
     return `FUNCTION Take : INT
@@ -226,15 +246,26 @@ VAR_INPUT o : FB_Base; END_VAR
 END_FUNCTION
 ${hierarchy(body).replace("VAR t : INT; END_VAR", "VAR t : INT; b : FB_Base; END_VAR")}`;
   }
-  for (const mode of MODES) {
-    for (const form of forms) {
-      it(`${form.name} (${mode.name})`, () => {
-        expect(messages(source(form.body), mode.options)).toEqual([]);
-      });
-    }
+  for (const form of forms) {
+    it(`${form.name} is accepted with no dialect flag`, () => {
+      expect(messages(source(form.body))).toEqual([]);
+    });
+    it(`${form.name} is refused under iec-3`, () => {
+      expect(messages(source(form.body), { dialect: "iec-3" })).toEqual([
+        form.refusal,
+      ]);
+    });
+    it(`${form.name} is accepted under iec-3 with +bare_self_caret`, () => {
+      expect(
+        messages(source(form.body), {
+          dialect: "iec-3",
+          features: ["+bare_self_caret"],
+        }),
+      ).toEqual([]);
+    });
   }
 
-  it("SUPER^() in a function block body (no dialect)", () => {
+  it("SUPER^() in a function block body", () => {
     const src = `FUNCTION_BLOCK FB_Base
 VAR n : INT; END_VAR
   n := n + 1;
@@ -244,6 +275,11 @@ FUNCTION_BLOCK FB_D EXTENDS FB_Base
 END_FUNCTION_BLOCK
 `;
     expect(messages(src)).toEqual([]);
-    expect(messages(src, { dialect: "iec-3" })).toEqual([]);
+    expect(messages(src, { dialect: "iec-3" })).toEqual([
+      "6:3 SUPER^ needs the feature bare_self_caret",
+    ]);
+    expect(
+      messages(src, { dialect: "iec-3", features: ["+bare_self_caret"] }),
+    ).toEqual([]);
   });
 });

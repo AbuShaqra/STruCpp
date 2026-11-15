@@ -71,9 +71,13 @@ END_PROGRAM
 
 const MODES: Array<[string, Parameters<typeof compile>[1]]> = [
   ["no flags", {}],
-  ["iec-3", { dialect: "iec-3" }],
+  // An ACTION needs st_actions, off in iec-3: kept here.
+  ["iec-3", { dialect: "iec-3", features: ["+st_actions"] }],
   ["strict", { strict: true }],
-  ["strict iec-3", { strict: true, dialect: "iec-3" }],
+  [
+    "strict iec-3",
+    { strict: true, dialect: "iec-3", features: ["+st_actions"] },
+  ],
 ];
 
 describe("ACTION before the body", () => {

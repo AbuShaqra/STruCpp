@@ -52,7 +52,8 @@ describe.skipIf(!hasGpp)("typed enumeration values end to end", () => {
     (dialect) => {
       const r = compile(SOURCE, {
         headerFileName: "generated.hpp",
-        ...(dialect ? { dialect } : {}),
+        // E.M needs enum_dot_qualify, off in iec-3: kept here.
+        ...(dialect ? { dialect, features: ["+enum_dot_qualify"] } : {}),
       });
       expect(r.errors).toEqual([]);
       const out = compileAndRunStandalone({

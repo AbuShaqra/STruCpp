@@ -38,7 +38,8 @@ function errorsIn(body: string, dialect?: "iec-3"): string[] {
     VAR a : FB_A; b : FB_B; arr : ARRAY[0..1] OF FB_A; r : INT; t : TIME; END_VAR
       ${body}
     END_PROGRAM`,
-    dialect ? { dialect } : {},
+    // The ACTION and SUPER^() need st_actions and bare_self_caret, off in iec-3: kept here.
+    dialect ? { dialect, features: ["+st_actions", "+bare_self_caret"] } : {},
   ).errors.map((e) => e.message);
 }
 

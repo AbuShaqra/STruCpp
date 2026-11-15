@@ -165,7 +165,7 @@ END_PROGRAM
     expect(result.success).toBe(true);
   });
 
-  it("THIS^ and SUPER^ compile", () => {
+  it("THIS^ and SUPER^ need the feature bare_self_caret", () => {
     const src = `FUNCTION_BLOCK Base
 VAR_INPUT n : INT; END_VAR
 METHOD Go
@@ -183,10 +183,22 @@ END_FUNCTION_BLOCK
     const result = compile(src, { dialect: "iec-3" });
     expect(
       result.errors.filter((e) => e.message.includes("needs the feature")),
-    ).toEqual([]);
+    ).toEqual([
+      expect.objectContaining({
+        message: "SUPER^ needs the feature bare_self_caret",
+        line: 10,
+      }),
+      expect.objectContaining({
+        message: "THIS^ needs the feature bare_self_caret",
+        line: 11,
+      }),
+    ]);
     expect(result.errors.filter((e) => e.message.includes("Expected"))).toEqual(
       [],
     );
+    expect(
+      compile(src, { dialect: "iec-3", features: ["+bare_self_caret"] }).errors,
+    ).toEqual([]);
   });
 });
 

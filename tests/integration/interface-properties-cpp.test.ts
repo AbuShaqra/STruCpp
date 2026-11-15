@@ -103,7 +103,8 @@ const PROFILE: DialectProfile = {
   id: "props",
   name: "props",
   extends: "iec-3",
-  features: ["property"],
+  // fb_property keeps the FB properties implementing the interfaces.
+  features: ["property", "fb_property"],
   semantics: {},
 };
 

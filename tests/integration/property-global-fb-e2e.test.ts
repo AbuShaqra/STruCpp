@@ -50,10 +50,11 @@ describe.skipIf(!hasGpp)(
     });
     afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
-    for (const [label, options] of [
-      ["no dialect", {}],
-      ["iec-3", { dialect: "iec-3" }],
-      ["strict", { strict: true }],
+    // FB properties and ACTIONs need fb_property and st_actions, off in iec-3: kept here.
+    for (const [label, options, keep] of [
+      ["no dialect", {}, []],
+      ["iec-3", { dialect: "iec-3" }, ["+fb_property", "+st_actions"]],
+      ["strict", { strict: true }, []],
     ] as const) {
       it(`calls the getter and setter (${label})`, () => {
         const result = compile(MAIN, {
@@ -67,7 +68,7 @@ describe.skipIf(!hasGpp)(
               globalListName: "GVL_Plant",
             },
           ],
-          features: ["+named_global_lists", "+property"],
+          features: [...keep, "+named_global_lists", "+property"],
         });
         expect(result.errors).toEqual([]);
         const stdout = compileAndRunStandalone({
@@ -143,10 +144,11 @@ fbUnit.Mode := fbUnit.Mode + 1; a := fbUnit.Mode;
 fe(); b := fe.o;
 END_PROGRAM
 `;
-    for (const [label, options] of [
-      ["no dialect", {}],
-      ["iec-3", { dialect: "iec-3" }],
-      ["strict", { strict: true }],
+    // FB properties and ACTIONs need fb_property and st_actions, off in iec-3: kept here.
+    for (const [label, options, keep] of [
+      ["no dialect", {}, []],
+      ["iec-3", { dialect: "iec-3" }, ["+fb_property", "+st_actions"]],
+      ["strict", { strict: true }, []],
     ] as const) {
       it(`resolves a name a local, member, inherited member, method local, action, VAR_EXTERNAL or PROGRAM member shadows before the global (${label})`, () => {
         for (const [source, expected, vars] of [
@@ -156,7 +158,7 @@ END_PROGRAM
           const result = compile(source, {
             ...options,
             headerFileName: "generated.hpp",
-            features: ["+property"],
+            features: [...keep, "+property"],
           });
           expect(result.errors).toEqual([]);
           const stdout = compileAndRunStandalone({

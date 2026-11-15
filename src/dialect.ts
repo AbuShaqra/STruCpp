@@ -33,15 +33,33 @@ export const KNOWN_FEATURES = [
   "platform_types",
   "bit_type",
   "string_default_80",
+  "fb_property",
+  "st_actions",
+  "bare_self_caret",
+  "enum_dot_qualify",
+  "struct_compare",
+  "dynamic_memory",
+  "var_inst",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];
 
-/** Features in effect when no dialect is selected (the compiler's behaviour before profiles). */
+/**
+ * Features in effect when no dialect is selected (the compiler's behaviour
+ * before profiles). A vendor form accepted before profiles stays on here and
+ * is off in `iec-3`, so a profile extending `iec-3` lists it to keep it.
+ */
 export const DEFAULT_FEATURES: ReadonlySet<FeatureId> = new Set<FeatureId>([
   "pointer_to",
   "reference_to",
   "ref_assign",
+  "fb_property",
+  "st_actions",
+  "bare_self_caret",
+  "enum_dot_qualify",
+  "struct_compare",
+  "dynamic_memory",
+  "var_inst",
 ]);
 
 export interface DialectProfile {

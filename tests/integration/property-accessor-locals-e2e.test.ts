@@ -86,7 +86,7 @@ const PROPERTY = {
   id: "vendor-x",
   name: "Vendor X",
   extends: "iec-3",
-  features: ["property" as const],
+  features: ["property" as const, "fb_property" as const],
   semantics: {},
 };
 
@@ -108,14 +108,23 @@ describe("declaration part of a property accessor", () => {
     expect(compile(SOURCE, options).errors.map((e) => e.message)).toEqual([]);
   });
 
-  it("needs no feature in a FUNCTION_BLOCK, as a property itself", () => {
+  it("needs the feature fb_property in a FUNCTION_BLOCK, as a property itself", () => {
     const fb = SOURCE.replace(/INTERFACE[\s\S]*?END_INTERFACE/, "")
       .replace(" IMPLEMENTS I_P", "")
       .replace("itf : I_P; ", "")
       .replace(/ {2}itf := p;[\s\S]*?n6 := itf.Value;\n/, "");
     expect(compile(fb, {}).errors.map((e) => e.message)).toEqual([]);
+    const properties = fb.match(/^\s*PROPERTY /gm)?.length ?? 0;
+    expect(properties).toBeGreaterThan(0);
     expect(
       compile(fb, { dialect: "iec-3" }).errors.map((e) => e.message),
+    ).toEqual(
+      Array<string>(properties).fill(
+        "PROPERTY in a FUNCTION_BLOCK needs the feature fb_property",
+      ),
+    );
+    expect(
+      compile(fb, { dialect: "iec-3", features: ["+fb_property"] }).errors,
     ).toEqual([]);
   });
 

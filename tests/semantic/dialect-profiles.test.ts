@@ -66,13 +66,24 @@ const VENDOR_A = profile({
   features: ["program_methods", "pointer_to", "reference_to", "ref_assign"],
 });
 
+const DEFAULT_SORTED = [
+  "bare_self_caret",
+  "dynamic_memory",
+  "enum_dot_qualify",
+  "fb_property",
+  "pointer_to",
+  "ref_assign",
+  "reference_to",
+  "st_actions",
+  "struct_compare",
+  "var_inst",
+];
+
 describe("resolveDialect", () => {
   it("no flag gives the default set", () => {
     const d = resolveDialect({});
     expect(d.id).toBeNull();
-    expect([...d.features].sort()).toEqual(
-      ["pointer_to", "ref_assign", "reference_to"].sort(),
-    );
+    expect([...d.features].sort()).toEqual(DEFAULT_SORTED);
     expect(d.features).toEqual(new Set(DEFAULT_FEATURES));
     expect(d.loaded).toEqual([]);
   });
@@ -160,14 +171,10 @@ describe("resolveDialect", () => {
     });
   });
 
-  it("the default is no profile, not iec-3, and keeps its three features", () => {
+  it("the default is no profile, not iec-3, and keeps its features", () => {
     const d = resolveDialect({});
     expect(d.id).toBeNull();
-    expect([...d.features].sort()).toEqual([
-      "pointer_to",
-      "ref_assign",
-      "reference_to",
-    ]);
+    expect([...d.features].sort()).toEqual(DEFAULT_SORTED);
     expect(resolveDialect({ dialect: "iec-3" }).features.size).toBe(0);
   });
 
@@ -297,7 +304,9 @@ describe("resolveDialect", () => {
   it("--feature -pointer_to removes from the default set", () => {
     const d = resolveDialect({ features: ["-pointer_to"] });
     expect(d.id).toBeNull();
-    expect([...d.features].sort()).toEqual(["ref_assign", "reference_to"]);
+    expect([...d.features].sort()).toEqual(
+      DEFAULT_SORTED.filter((f) => f !== "pointer_to"),
+    );
   });
 
   it("--feature +program_methods under iec-3 adds it", () => {
@@ -320,7 +329,7 @@ describe("resolveDialect", () => {
 
   it("an unknown --feature is an error", () => {
     expect(errorOf(() => resolveDialect({ features: ["+goto"] })).message).toBe(
-      "unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators, type_colon_optional, conditional_return, platform_types, bit_type, string_default_80)",
+      "unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators, type_colon_optional, conditional_return, platform_types, bit_type, string_default_80, fb_property, st_actions, bare_self_caret, enum_dot_qualify, struct_compare, dynamic_memory, var_inst)",
     );
   });
 
@@ -332,7 +341,7 @@ describe("resolveDialect", () => {
       ),
     );
     expect(e.message).toBe(
-      "unknown feature 'goto' in dialect file p/x.json (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators, type_colon_optional, conditional_return, platform_types, bit_type, string_default_80)",
+      "unknown feature 'goto' in dialect file p/x.json (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators, type_colon_optional, conditional_return, platform_types, bit_type, string_default_80, fb_property, st_actions, bare_self_caret, enum_dot_qualify, struct_compare, dynamic_memory, var_inst)",
     );
   });
 
@@ -667,11 +676,7 @@ describe("resolveDialect", () => {
       },
     );
     expect(d.id).toBeNull();
-    expect([...d.features].sort()).toEqual([
-      "pointer_to",
-      "ref_assign",
-      "reference_to",
-    ]);
+    expect([...d.features].sort()).toEqual(DEFAULT_SORTED);
     expect(d.warnings).toEqual([
       "2 dialect files and no --dialect: none is selected, so the default features apply; select one with --dialect (a from p/a.json, b from p/b.json)",
     ]);

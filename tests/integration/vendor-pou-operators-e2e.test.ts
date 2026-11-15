@@ -16,7 +16,8 @@ const PROFILE: DialectProfile = {
   id: "codesys3",
   name: "codesys3",
   extends: "iec-3",
-  features: ["vendor_operators"],
+  // SOURCE declares an FB PROPERTY and ACTIONs, off in iec-3.
+  features: ["vendor_operators", "fb_property", "st_actions"],
   semantics: {},
 };
 

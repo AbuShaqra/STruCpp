@@ -14,7 +14,8 @@ const PROPERTY_PROFILE: DialectProfile = {
   id: "props",
   name: "props",
   extends: "iec-3",
-  features: ["property"],
+  // fb_property keeps the FUNCTION_BLOCK properties these tests implement with.
+  features: ["property", "fb_property"],
   semantics: {},
 };
 
@@ -60,9 +61,13 @@ function messages(source: string, options: Options = {}): string[] {
 }
 
 describe("interface PROPERTY needs the feature property", () => {
+  // The FB properties of FB_OK need fb_property, off in iec-3: kept here.
   const modes: { name: string; options: Options }[] = [
     { name: "no dialect", options: {} },
-    { name: "iec-3", options: { dialect: "iec-3" } },
+    {
+      name: "iec-3",
+      options: { dialect: "iec-3", features: ["+fb_property"] },
+    },
   ];
   for (const mode of modes) {
     it(`is refused under ${mode.name}, at each PROPERTY`, () => {
@@ -392,7 +397,7 @@ END_PROGRAM
   });
 });
 
-describe("FB PROPERTY is unchanged in every profile", () => {
+describe("FB PROPERTY needs the feature fb_property", () => {
   const source = `FUNCTION_BLOCK FB_P
 VAR n : INT; END_VAR
 PROPERTY Value : INT
@@ -412,7 +417,10 @@ END_PROGRAM
 `;
   const modes: { name: string; options: Options }[] = [
     { name: "no dialect", options: {} },
-    { name: "iec-3", options: { dialect: "iec-3" } },
+    {
+      name: "iec-3 with +fb_property",
+      options: { dialect: "iec-3", features: ["+fb_property"] },
+    },
     { name: "+property", options: ON },
   ];
   for (const mode of modes) {
@@ -420,4 +428,10 @@ END_PROGRAM
       expect(messages(source, mode.options)).toEqual([]);
     });
   }
+
+  it("is refused under iec-3, at the PROPERTY", () => {
+    expect(messages(source, { dialect: "iec-3" })).toEqual([
+      "3:1 PROPERTY in a FUNCTION_BLOCK needs the feature fb_property",
+    ]);
+  });
 });

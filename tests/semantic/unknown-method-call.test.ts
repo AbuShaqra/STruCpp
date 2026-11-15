@@ -40,7 +40,11 @@ function errorsIn(body: string, dialect?: "iec-3"): string[] {
       arr : ARRAY[0..1] OF FB_A; itf : I_A; al : T_FB; tn : TON; sf : ST_F; END_VAR
       ${body}
     END_PROGRAM`,
-    { libraries: discoverStlibs("libs"), ...(dialect ? { dialect } : {}) },
+    {
+      libraries: discoverStlibs("libs"),
+      // The ACTION needs st_actions, off in iec-3: kept here.
+      ...(dialect ? { dialect, features: ["+st_actions"] } : {}),
+    },
   ).errors.map((e) => e.message);
 }
 

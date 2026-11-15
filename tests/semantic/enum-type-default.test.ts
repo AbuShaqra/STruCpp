@@ -12,7 +12,11 @@ type Options = Parameters<typeof compile>[1];
 
 const MODES: { name: string; options: Options }[] = [
   { name: "no dialect", options: {} },
-  { name: "iec-3", options: { dialect: "iec-3" } },
+  // E2.B is the feature enum_dot_qualify, off in iec-3: kept here.
+  {
+    name: "iec-3",
+    options: { dialect: "iec-3", features: ["+enum_dot_qualify"] },
+  },
 ];
 
 const MESSAGE =

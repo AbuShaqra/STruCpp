@@ -760,6 +760,38 @@ export class TypeChecker {
   }
 
   /**
+   * `=` and `<>` of two STRUCTs in TEST, SETUP and TEARDOWN bodies, which are
+   * not otherwise type-checked: refused where struct_compare is off.
+   */
+  checkTestStructComparisons(
+    roots: readonly ASTNode[],
+    scope: Scope,
+    ast: CompilationUnit | undefined,
+  ): CompileError[] {
+    if (this.features.has("struct_compare")) return [];
+    this.errors = [];
+    this.warnings = [];
+    this.ast = ast;
+    const refusals: CompileError[] = [];
+    for (const root of roots) {
+      walkAST(root, (node) => {
+        if (node.kind !== "BinaryExpression") return;
+        const expr = node as BinaryExpression;
+        if (expr.operator !== "=" && expr.operator !== "<>") return;
+        const left = this.resolveExprType(expr.left, scope);
+        const right = this.resolveExprType(expr.right, scope);
+        const before = this.errors.length;
+        this.requireStructCompare(expr, left, right, scope);
+        refusals.push(...this.errors.slice(before));
+      });
+    }
+    // Only the refusals: the test body's other rules are checked elsewhere.
+    this.errors = [];
+    this.warnings = [];
+    return refusals;
+  }
+
+  /**
    * Check types for a complete compilation unit.
    * Walks all POUs, resolves expression types, and validates type rules.
    */
@@ -2194,6 +2226,7 @@ export class TypeChecker {
     }
 
     if (this.refuseTemporalOperands(expr, scope)) return undefined;
+    this.requireStructCompare(expr, leftType, rightType, scope);
 
     if (leftType === undefined || rightType === undefined) {
       // `p^ MOD i`: a dereference has no expression type here; its declared one decides
@@ -6459,6 +6492,78 @@ export class TypeChecker {
       }
       current = def.name;
     }
+  }
+
+  /** `=` or `<>` of two STRUCT values (compared field by field) needs the feature struct_compare. */
+  private requireStructCompare(
+    expr: BinaryExpression,
+    left: IECType | undefined,
+    right: IECType | undefined,
+    scope: Scope,
+  ): void {
+    if (this.features.has("struct_compare")) return;
+    if (expr.operator !== "=" && expr.operator !== "<>") return;
+    // A POINTER TO or REF_TO itself compares the reference, not the STRUCT.
+    if (
+      this.isReferenceItself(expr.left, scope) ||
+      this.isReferenceItself(expr.right, scope)
+    ) {
+      return;
+    }
+    if (
+      !this.isStructOperand(expr.left, left, scope) ||
+      !this.isStructOperand(expr.right, right, scope)
+    ) {
+      return;
+    }
+    this.addError(
+      this.featureMessage(
+        "struct_compare",
+        `${expr.operator} of two STRUCT values`,
+      ),
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
+  }
+
+  /**
+   * An operand of STRUCT type: by its expression type, or, where that is
+   * unknown (`r^`), by the declared type of the access.
+   */
+  private isStructOperand(
+    expr: Expression,
+    type: IECType | undefined,
+    scope: Scope,
+  ): boolean {
+    if (type?.typeKind === "struct") return true;
+    let name: string | undefined;
+    if (type?.typeKind === "elementary") {
+      name = (type as ElementaryType).name;
+    } else if (type === undefined) {
+      const inner =
+        expr.kind === "ParenthesizedExpression" ? expr.expression : expr;
+      if (inner.kind !== "VariableExpression") return false;
+      const sym = scope.lookup(inner.name);
+      if (sym?.kind !== "variable") return false;
+      const declared = sym.declaration as VarDeclaration | undefined;
+      if (!declared) return false;
+      const access = resolveAccessType(declared.type, inner, this.accessLookup);
+      if (
+        access === undefined ||
+        access.arrayDimensions !== undefined ||
+        (access.referenceKind ?? "none") !== "none"
+      ) {
+        return false;
+      }
+      name = access.name;
+    }
+    if (name === undefined) return false;
+    const target = this.aliasTarget(name);
+    return (
+      this.isStructType(target) ||
+      this.symbolTables.lookupType(target)?.resolvedType?.typeKind === "struct"
+    );
   }
 
   /** A STRUCT (or UNION) TYPE of this unit. */

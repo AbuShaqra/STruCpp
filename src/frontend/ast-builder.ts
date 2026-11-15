@@ -3656,6 +3656,7 @@ export class ASTBuilder {
         subscripts: [],
         fieldAccess: [],
         isDereference: children.Caret !== undefined,
+        ...(children.Caret ? { bareCaret: true as const } : {}),
       };
     }
 
@@ -3691,6 +3692,7 @@ export class ASTBuilder {
   buildSuperAccessExpression(node: CstNode): Expression {
     const children = node.children as CstChildren;
     const tailNode = getFirstNode(children.superMemberTail);
+    const caret = children.Caret ? { bareCaret: true as const } : {};
 
     // SUPER^() — parent body call (no method name)
     if (!tailNode) {
@@ -3707,6 +3709,7 @@ export class ASTBuilder {
         sourceSpan: nodeToSourceSpan(node),
         functionName: "SUPER",
         arguments: args,
+        ...caret,
       };
     }
 
@@ -3719,16 +3722,20 @@ export class ASTBuilder {
         sourceSpan: nodeToSourceSpan(node),
         functionName: `SUPER.${tail.name}`,
         arguments: tail.args,
+        ...caret,
       };
     }
 
     // SUPER.member — parent member access
-    return this.selfAccessVariable(
-      "SUPER",
-      tail.name,
-      tail.steps,
-      nodeToSourceSpan(node),
-    );
+    return {
+      ...this.selfAccessVariable(
+        "SUPER",
+        tail.name,
+        tail.steps,
+        nodeToSourceSpan(node),
+      ),
+      ...caret,
+    };
   }
 
   /**
@@ -3829,6 +3836,7 @@ export class ASTBuilder {
     };
     if (!selfRoot && steps.length > 0) object.accessChain = steps;
     if (selfRoot === "THIS" && children.Caret) object.selfCaret = true;
+    if (selfRoot === "SUPER" && children.Caret) object.bareCaret = true;
 
     const args: Argument[] = [];
     const argListNode = getFirstNode(children.argumentList);
@@ -4136,16 +4144,20 @@ export class ASTBuilder {
   buildSuperCallStatement(node: CstNode): Statement {
     const children = node.children as CstChildren;
     const tailNode = getFirstNode(children.superMemberTail);
+    const caret = children.Caret ? { bareCaret: true as const } : {};
 
     // SUPER.member := expr; / SUPER.member REF= variable;
     if (tailNode && (children.Assign || children.RefAssign)) {
       const tail = this.buildMemberTail(tailNode);
-      const target = this.selfAccessVariable(
-        "SUPER",
-        tail.name,
-        tail.steps,
-        nodeToSourceSpan(tailNode),
-      );
+      const target: VariableExpression = {
+        ...this.selfAccessVariable(
+          "SUPER",
+          tail.name,
+          tail.steps,
+          nodeToSourceSpan(tailNode),
+        ),
+        ...caret,
+      };
       if (children.RefAssign) {
         const sourceNode = getFirstNode(children.variable);
         return {
@@ -4186,6 +4198,7 @@ export class ASTBuilder {
           sourceSpan: nodeToSourceSpan(node),
           functionName: "SUPER",
           arguments: args,
+          ...caret,
         },
       };
     }
@@ -4200,6 +4213,7 @@ export class ASTBuilder {
         sourceSpan: nodeToSourceSpan(node),
         functionName: `SUPER.${tail.name}`,
         arguments: tail.args,
+        ...caret,
       },
     };
   }

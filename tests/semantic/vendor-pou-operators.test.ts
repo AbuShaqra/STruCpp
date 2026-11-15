@@ -16,7 +16,8 @@ const PROFILE: DialectProfile = {
   id: "twincat3",
   name: "twincat3",
   extends: "iec-3",
-  features: ["vendor_operators"],
+  // NAMES declares an FB PROPERTY and ACTIONs, off in iec-3.
+  features: ["vendor_operators", "fb_property", "st_actions"],
   semantics: {},
 };
 const ON = { features: ["+vendor_operators"] };
@@ -127,7 +128,12 @@ END_PROGRAM
   });
 
   it("are refused when the feature is off", () => {
-    for (const opts of [{}, { strict: true }, { dialect: "iec-3" }]) {
+    for (const opts of [
+      {},
+      { strict: true },
+      // NAMES declares an FB PROPERTY and ACTIONs, off in iec-3: kept here.
+      { dialect: "iec-3", features: ["+fb_property", "+st_actions"] },
+    ]) {
       expect(diag(NAMES, opts).errors).toEqual(
         [
           "11:9: __POUNAME needs the feature vendor_operators",
