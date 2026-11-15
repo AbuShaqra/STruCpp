@@ -2196,10 +2196,290 @@ export class SemanticAnalyzer {
   }
 
   private validateLiteralRanges(ast: CompilationUnit): void {
+    this.validateStringLiteralLengths(ast);
     this.validateIntegerLiteralRange(ast);
     this.validateStringLiteralCharset(ast);
     this.validateLtimeLiteralRange(ast);
     this.validateRealLiteralRange(ast);
+  }
+
+  /**
+   * A STRING or WSTRING literal longer than the variable, input or field it is
+   * stored in is cut to that length at run time: warn, in every mode.
+   */
+  private validateStringLiteralLengths(ast: CompilationUnit): void {
+    const typeDef = (name: string): TypeDeclaration["definition"] | undefined =>
+      ast.types.find((t) => t.name.toUpperCase() === name.toUpperCase())
+        ?.definition;
+    // STRING / WSTRING and its length, through aliases of STRING(n)
+    const capacity = (
+      type: TypeReference | undefined,
+    ): { kind: string; max: number } | undefined => {
+      for (let i = 0; i < 32 && type !== undefined; i++) {
+        if (type.arrayDimensions !== undefined) return undefined;
+        if ((type.referenceKind ?? "none") !== "none") return undefined;
+        const name = type.name.toUpperCase();
+        if (name === "STRING" || name === "WSTRING") {
+          if (type.maxLength === undefined) return { kind: name, max: 254 };
+          return typeof type.maxLength === "number"
+            ? { kind: name, max: type.maxLength }
+            : undefined;
+        }
+        const def = typeDef(name);
+        type = def?.kind === "TypeReference" ? def : undefined;
+      }
+      return undefined;
+    };
+    // The element type of an ARRAY type reference, inline or a TYPE
+    const elementOf = (type: TypeReference): TypeReference | undefined => {
+      if (type.arrayDimensions !== undefined) {
+        return type.elementTypeName !== undefined &&
+          type.elementReferenceChain === undefined
+          ? {
+              kind: "TypeReference",
+              sourceSpan: type.sourceSpan,
+              name: type.elementTypeName,
+              isReference: false,
+              referenceKind: "none",
+              ...(type.elementMaxLength !== undefined
+                ? { maxLength: type.elementMaxLength }
+                : {}),
+            }
+          : undefined;
+      }
+      const def = typeDef(type.name);
+      if (def?.kind === "ArrayDefinition") return def.elementType;
+      return def?.kind === "TypeReference" ? elementOf(def) : undefined;
+    };
+    const fieldsOf = (type: TypeReference): VarDeclaration[] | undefined => {
+      const def = typeDef(type.name);
+      if (def?.kind === "StructDefinition") return def.fields;
+      return def?.kind === "TypeReference" && def.arrayDimensions === undefined
+        ? fieldsOf(def)
+        : undefined;
+    };
+    const warned = new Set<string>();
+    const check = (
+      value: Expression | undefined,
+      type: TypeReference | undefined,
+    ): void => {
+      if (value === undefined || type === undefined) return;
+      if (value.kind === "ArrayLiteralExpression") {
+        const element = elementOf(type);
+        for (const e of value.elements) check(e, element);
+        return;
+      }
+      if (value.kind === "StructInitializerExpression") {
+        const fields = fieldsOf(type);
+        for (const el of value.elements) {
+          const upper = el.name.toUpperCase();
+          check(
+            el.value,
+            fields?.find((f) => f.names.some((n) => n.toUpperCase() === upper))
+              ?.type,
+          );
+        }
+        return;
+      }
+      const target = capacity(type);
+      if (target === undefined || value.kind !== "LiteralExpression") return;
+      const wide = value.literalType === "WSTRING";
+      if (!wide && value.literalType !== "STRING") return;
+      if ((target.kind === "WSTRING") !== wide) return;
+      const { max, kind } = target;
+      // From the opening quote, so a `#` inside the text is not a type prefix
+      const raw = value.rawValue;
+      const quoted = raw.slice(Math.max(0, raw.search(/['"]/)));
+      const length = charLiteralUnits(
+        `${wide ? "WSTRING" : "STRING"}#${quoted}`,
+      ).units.length;
+      if (length <= max) return;
+      // A repeated array element, `[3('abc')]`, is one literal: warn once
+      const at = `${value.sourceSpan.file}:${value.sourceSpan.startLine}:${value.sourceSpan.startCol}`;
+      if (warned.has(at)) return;
+      warned.add(at);
+      // A WSTRING holds UTF-16 code units, which a character may take two of
+      const unit = wide
+        ? length === 1
+          ? "UTF-16 code unit"
+          : "UTF-16 code units"
+        : length === 1
+          ? "character"
+          : "characters";
+      this.addWarning(
+        `A ${kind} literal of ${length} ${unit} is longer than ${kind}(${max}): it is cut to ${max}`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+    };
+    const inputsOf = (
+      blocks: readonly VarBlock[],
+    ): TypeReference[] & { names?: string[]; positional?: boolean } => {
+      const out: TypeReference[] & { names?: string[]; positional?: boolean } =
+        [];
+      out.names = [];
+      for (const b of blocks) {
+        if (b.blockType !== "VAR_INPUT" && b.blockType !== "VAR_IN_OUT")
+          continue;
+        for (const d of b.declarations) {
+          for (const n of d.names) {
+            out.push(
+              b.blockType === "VAR_INPUT" ? d.type : { ...d.type, name: "" },
+            );
+            out.names.push(n.toUpperCase());
+          }
+        }
+      }
+      return out;
+    };
+    const globals = new Map<string, TypeReference>();
+    const addDecls = (
+      blocks: readonly VarBlock[],
+      into: Map<string, TypeReference>,
+    ): void => {
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names)
+            into.set(name.toUpperCase(), decl.type);
+          check(decl.initialValue, decl.type);
+        }
+      }
+    };
+    addDecls(ast.globalVarBlocks, globals);
+    for (const config of ast.configurations)
+      addDecls(config.varBlocks, globals);
+    for (const typeDecl of ast.types) {
+      if (typeDecl.definition.kind !== "StructDefinition") continue;
+      for (const field of ownFields(typeDecl.definition)) {
+        check(field.initialValue, field.type);
+      }
+    }
+    const findFb = (name: string): FunctionBlockDeclaration | undefined =>
+      ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name.toUpperCase(),
+      );
+    /**
+     * The variable blocks `fb` inherits through EXTENDS, root ancestor first;
+     * undefined when an ancestor is not in this unit or the chain loops.
+     */
+    const inheritedBlocks = (
+      fb: FunctionBlockDeclaration,
+    ): VarBlock[] | undefined => {
+      const chain: FunctionBlockDeclaration[] = [];
+      let parentName = fb.extends;
+      while (parentName !== undefined) {
+        const parent = findFb(parentName);
+        if (parent === undefined || parent === fb || chain.includes(parent))
+          return undefined;
+        chain.unshift(parent);
+        parentName = parent.extends;
+      }
+      return chain.flatMap((p) => p.varBlocks);
+    };
+    const callInputs = (
+      call: FunctionCallExpression,
+      scope: Map<string, TypeReference>,
+    ): ReturnType<typeof inputsOf> | undefined => {
+      const upper = call.functionName.toUpperCase();
+      const local = scope.get(upper);
+      if (local !== undefined) {
+        const fb = findFb(local.name);
+        const inherited = fb === undefined ? undefined : inheritedBlocks(fb);
+        if (fb === undefined || inherited === undefined) return undefined;
+        const inputs = inputsOf([...inherited, ...fb.varBlocks]);
+        // Positional order across an EXTENDS chain is not checked
+        if (inherited.length > 0) inputs.positional = false;
+        return inputs;
+      }
+      const fn = ast.functions.find((f) => f.name.toUpperCase() === upper);
+      return fn === undefined ? undefined : inputsOf(fn.varBlocks);
+    };
+    /**
+     * Check `own`'s initial values and `body`, with `outer` (inherited and
+     * owning-POU variables, outermost first) and `result` (a FUNCTION or
+     * METHOD's own name) in scope but not checked again. Without `withGlobals`
+     * (an EXTENDS chain not fully known) no global is in scope.
+     */
+    const checkPou = (
+      own: readonly VarBlock[],
+      body: Statement[],
+      outer: readonly VarBlock[] = [],
+      result?: { name: string; type: TypeReference | undefined },
+      withGlobals = true,
+    ): void => {
+      const scope = new Map(withGlobals ? globals : []);
+      for (const block of outer) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names)
+            scope.set(name.toUpperCase(), decl.type);
+        }
+      }
+      if (result?.type !== undefined) {
+        scope.set(result.name.toUpperCase(), result.type);
+      }
+      addDecls(own, scope);
+      for (const stmt of body) {
+        walkAST(stmt as ASTNode, (node) => {
+          if (node.kind === "AssignmentStatement") {
+            const a = node as AssignmentStatement;
+            if (
+              a.target.kind === "VariableExpression" &&
+              a.target.fieldAccess.length === 0 &&
+              a.target.subscripts.length === 0 &&
+              !a.target.isDereference
+            ) {
+              check(a.value, scope.get(a.target.name.toUpperCase()));
+            }
+            return;
+          }
+          if (node.kind !== "FunctionCallExpression") return;
+          const call = node as FunctionCallExpression;
+          if (call.instance !== undefined) return;
+          const inputs = callInputs(call, scope);
+          if (inputs === undefined) return;
+          stripEnEno(call.arguments).forEach((arg, i) => {
+            if (arg.isOutput) return;
+            const type =
+              arg.name === undefined
+                ? inputs.positional === false
+                  ? undefined
+                  : inputs[i]
+                : inputs[inputs.names!.indexOf(arg.name.toUpperCase())];
+            check(arg.value, type);
+          });
+        });
+      }
+    };
+    for (const prog of ast.programs) {
+      checkPou(prog.varBlocks, prog.body);
+      for (const m of prog.methods) {
+        checkPou(m.varBlocks, m.body, prog.varBlocks, {
+          name: m.name,
+          type: m.returnType,
+        });
+      }
+    }
+    for (const func of ast.functions) {
+      checkPou(func.varBlocks, func.body, [], {
+        name: func.name,
+        type: func.returnType,
+      });
+    }
+    for (const fb of ast.functionBlocks) {
+      const inherited = inheritedBlocks(fb);
+      const known = inherited !== undefined;
+      checkPou(fb.varBlocks, fb.body, inherited, undefined, known);
+      for (const m of fb.methods) {
+        checkPou(
+          m.varBlocks,
+          m.body,
+          [...(inherited ?? []), ...fb.varBlocks],
+          { name: m.name, type: m.returnType },
+          known,
+        );
+      }
+    }
   }
 
   /**
