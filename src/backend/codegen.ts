@@ -139,6 +139,7 @@ import {
   type StructInitEmitter,
 } from "./struct-init-codegen.js";
 import { vendorOperatorCpp } from "../semantic/vendor-operators.js";
+import { pointerReadTarget } from "../semantic/address-store.js";
 import { untypedNotCpp, untypedNotTarget } from "../semantic/untyped-not.js";
 import { bitPlaceOf, bitRunMemberName } from "./bit-runs.js";
 import type { StructDefinition } from "../frontend/ast.js";
@@ -1203,6 +1204,101 @@ export class CodeGenerator {
           : undefined;
     // The size of the type itself: no value is built (an ABSTRACT FB has none)
     return sizeOfTypeCpp(this.mapTypeRefToCpp({ name: value.name }), classKey);
+  }
+
+  /** `ADR(x)` of the standard function, not a user FUNCTION of that name. */
+  private isAdrCall(e: Expression): e is FunctionCallExpression {
+    return (
+      e.kind === "FunctionCallExpression" &&
+      e.functionName.toUpperCase() === "ADR" &&
+      e.libraryFunction === undefined &&
+      this.ast?.functions.some((f) => f.name.toUpperCase() === "ADR") !== true
+    );
+  }
+
+  /**
+   * A + / - chain holding ADR(x) terms, computed in bytes: the address as an
+   * integer (`iec_byte_addr`), every other operand a byte offset. With one
+   * address left over, the total is that address's pointer type again; with none
+   * (`ADR(a) - ADR(b)`), it is the signed count of bytes. Undefined when the
+   * chain holds no ADR, or adds addresses together.
+   */
+  private adrArithmetic(expr: BinaryExpression): string | undefined {
+    // With an ADR, or with two addresses (a difference of POINTER TOs)
+    if (!this.holdsAdrTerm(expr) && this.addressTermCount(expr) < 2) {
+      return undefined;
+    }
+    let net = 0;
+    let proto: string | undefined;
+    const render = (e: Expression, sign: number): string => {
+      if (this.isAdrCall(e) || this.isPointerVariable(e)) {
+        const generated = this.generateExpression(e);
+        const address = this.isAdrCall(e) ? generated : `${generated}.get()`;
+        net += sign;
+        if (sign > 0 && proto === undefined) proto = address;
+        return `strucpp::iec_byte_addr(${address})`;
+      }
+      if (
+        e.kind === "ParenthesizedExpression" &&
+        this.addressTermCount(e) > 0
+      ) {
+        return `(${render(e.expression, sign)})`;
+      }
+      if (
+        e.kind === "BinaryExpression" &&
+        (e.operator === "+" || e.operator === "-") &&
+        this.addressTermCount(e) > 0
+      ) {
+        const left = render(e.left, sign);
+        const right = render(e.right, e.operator === "-" ? -sign : sign);
+        return `${left} ${e.operator} ${right}`;
+      }
+      return `strucpp::iec_byte_offset(${this.generateExpression(e)})`;
+    };
+    const total = render(expr, 1);
+    if (net === 1 && proto !== undefined) {
+      // decltype: the address is not evaluated a second time
+      return `reinterpret_cast<decltype(${proto})>(${total})`;
+    }
+    if (net === 0) return `static_cast<std::intptr_t>(${total})`;
+    return undefined;
+  }
+
+  /** A POINTER TO variable or ARRAY OF POINTER TO element, read whole: an address term (pointerReadTarget, as the type checker). */
+  private isPointerVariable(e: Expression): boolean {
+    if (e.kind !== "VariableExpression") return false;
+    const upper = e.name.toUpperCase();
+    const type =
+      this.currentScopeVarTypeRefs.get(upper) ?? this.globalVarTypeRef(upper);
+    return type !== undefined && pointerReadTarget(type, e) !== undefined;
+  }
+
+  /** The address terms (ADR(x), POINTER TO variables) of a + / - chain. */
+  private addressTermCount(e: Expression): number {
+    if (this.isAdrCall(e) || this.isPointerVariable(e)) return 1;
+    if (e.kind === "ParenthesizedExpression") {
+      return this.addressTermCount(e.expression);
+    }
+    if (
+      e.kind === "BinaryExpression" &&
+      (e.operator === "+" || e.operator === "-")
+    ) {
+      return this.addressTermCount(e.left) + this.addressTermCount(e.right);
+    }
+    return 0;
+  }
+
+  /** An ADR(x) term of a + / - chain, through parentheses. */
+  private holdsAdrTerm(e: Expression): boolean {
+    if (this.isAdrCall(e)) return true;
+    if (e.kind === "ParenthesizedExpression") {
+      return this.holdsAdrTerm(e.expression);
+    }
+    return (
+      e.kind === "BinaryExpression" &&
+      (e.operator === "+" || e.operator === "-") &&
+      (this.holdsAdrTerm(e.left) || this.holdsAdrTerm(e.right))
+    );
   }
 
   protected mapTypeRefToCpp(typeRef: TypeShape): string {
@@ -7304,6 +7400,12 @@ export class CodeGenerator {
       const l = isComparisonExpr(expr.left) ? `(${left})` : left;
       const r = isComparisonExpr(expr.right) ? `(${right})` : right;
       return `${l} ${cppOp} ${r}`;
+    }
+
+    // ADR arithmetic counts bytes, as on a PLC, through the whole + / - chain
+    if (expr.operator === "+" || expr.operator === "-") {
+      const bytes = this.adrArithmetic(expr);
+      if (bytes !== undefined) return bytes;
     }
 
     const lk = this.temporalBase(expr.left);

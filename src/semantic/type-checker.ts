@@ -85,6 +85,7 @@ import {
   addressSource,
   isNarrowInteger,
   narrowAddressMessage,
+  pointerReadTarget,
 } from "./address-store.js";
 import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
 import { structExtends } from "./struct-extends.js";
@@ -691,6 +692,7 @@ export class TypeChecker {
     this.errors = [];
     this.warnings = [];
     this.ast = ast;
+    this.misalignedReported.clear();
     // The initial values' types, as a POU's are checked
     this.checkVarBlocks(varBlocks as VarBlock[], scope);
     for (const block of varBlocks) {
@@ -705,6 +707,11 @@ export class TypeChecker {
         if (node.kind === "AssignmentStatement") {
           const stmt = node as AssignmentStatement;
           const target = this.resolveExprType(stmt.target, scope);
+          this.refuseMisalignedPointerStore(
+            this.storeTargetDeclaredType(stmt.target, scope),
+            stmt.value,
+            scope,
+          );
           if (
             this.reachesThroughDereference(stmt.target) ||
             (this.declaredReferenceShape(stmt.target, scope)?.chain.length ??
@@ -738,6 +745,7 @@ export class TypeChecker {
     this.warnings = [];
     this.strictReported.clear();
     this.addressStoresReported.clear();
+    this.misalignedReported.clear();
     this.ast = ast;
     this.writeTargets = new Set();
     walkAST(ast, (node) => {
@@ -2117,6 +2125,18 @@ export class TypeChecker {
     expr: BinaryExpression,
     scope: Scope,
   ): IECType | undefined {
+    if (expr.operator === "+" || expr.operator === "-") {
+      // The operands of a + / - chain are checked with it, as one chain
+      for (let side of [expr.left, expr.right]) {
+        while (side.kind === "ParenthesizedExpression") side = side.expression;
+        if (
+          side.kind === "BinaryExpression" &&
+          (side.operator === "+" || side.operator === "-")
+        ) {
+          this.innerChainNodes.add(side);
+        }
+      }
+    }
     let leftType = this.resolveExprType(expr.left, scope);
     let rightType = this.resolveExprType(expr.right, scope);
     // `w = NOT 16#00F0`: the NOT takes the other operand's type
@@ -2163,6 +2183,12 @@ export class TypeChecker {
       return this.inferCharBinaryType(expr, leftType, rightType);
     }
 
+    if (
+      (expr.operator === "+" || expr.operator === "-") &&
+      !this.innerChainNodes.has(expr)
+    ) {
+      this.refuseAddressArithmetic(expr, scope);
+    }
     if (this.strict && STRICT_ARITHMETIC_OPS.has(expr.operator)) {
       this.checkStrictArithmetic(expr, leftType, rightType);
     }
@@ -2501,6 +2527,237 @@ export class TypeChecker {
         operand.sourceSpan.file,
       );
       return;
+    }
+  }
+
+  /** + / - nodes inside a chain, checked with the chain's top node. */
+  private innerChainNodes = new WeakSet<Expression>();
+
+  /** The signed terms of a + / - chain, through parentheses. */
+  private chainTerms(e: Expression): Array<{ expr: Expression; sign: number }> {
+    const terms: Array<{ expr: Expression; sign: number }> = [];
+    const flatten = (x: Expression, sign: number): void => {
+      if (x.kind === "ParenthesizedExpression") {
+        flatten(x.expression, sign);
+      } else if (
+        x.kind === "BinaryExpression" &&
+        (x.operator === "+" || x.operator === "-")
+      ) {
+        flatten(x.left, sign);
+        flatten(x.right, x.operator === "-" ? -sign : sign);
+      } else {
+        terms.push({ expr: x, sign });
+      }
+    };
+    flatten(e, 1);
+    return terms;
+  }
+
+  /** ADR(x) of the standard function, or a POINTER TO variable or element: an address. */
+  private isAddressTerm(e: Expression, scope: Scope): boolean {
+    if (
+      e.kind === "FunctionCallExpression" &&
+      e.functionName.toUpperCase() === "ADR" &&
+      e.libraryFunction === undefined
+    ) {
+      return (
+        this.ast?.functions.some((f) => f.name.toUpperCase() === "ADR") !== true
+      );
+    }
+    if (e.kind !== "VariableExpression") return false;
+    const declared = this.declaredVariableType(e, scope);
+    if (
+      declared === undefined ||
+      pointerReadTarget(declared, e) === undefined
+    ) {
+      return false;
+    }
+    this.pointerAddressReads.add(e);
+    return true;
+  }
+
+  /** POINTER TO reads met as + / - chain terms (isAddressTerm). */
+  private pointerAddressReads = new WeakSet<Expression>();
+
+  /** A POINTER TO read of a + / - chain, through parentheses: an address. */
+  private readonly isPointerRead = (e: Expression): boolean => {
+    let v = e;
+    while (v.kind === "ParenthesizedExpression") v = v.expression;
+    return this.pointerAddressReads.has(v);
+  };
+
+  /** + / - chains refused by refuseAddressArithmetic, with the error; a store's own refusal replaces it. */
+  private addressArithmeticRefused = new WeakMap<Expression, CompileError>();
+
+  /** The declared type of the variable an access starts from. */
+  private declaredVariableType(
+    e: VariableExpression,
+    scope: Scope,
+  ): TypeReference | undefined {
+    const symbol = scope.lookup(e.name);
+    return symbol?.kind === "variable" ? symbol.declaration?.type : undefined;
+  }
+
+  /**
+   * A + / - chain of addresses: an address is offset by + or - an integer, or
+   * subtracted from another address. One taken from a value, or two added,
+   * is refused.
+   */
+  private refuseAddressArithmetic(expr: BinaryExpression, scope: Scope): void {
+    const terms = this.chainTerms(expr);
+    const addresses = terms.filter((t) => this.isAddressTerm(t.expr, scope));
+    const net = addresses.reduce((n, t) => n + t.sign, 0);
+    if (addresses.length === 0 || net === 0 || net === 1) return;
+    const at = addresses[0]!.expr;
+    this.addError(
+      "An address is offset by + or - an integer, or subtracted from another address: it cannot be subtracted from a value or added to an address",
+      at.sourceSpan.startLine,
+      at.sourceSpan.startCol,
+      at.sourceSpan.file,
+    );
+    this.addressArithmeticRefused.set(
+      expr,
+      this.errors[this.errors.length - 1]!,
+    );
+  }
+
+  /**
+   * An address stored into a POINTER TO a multi-byte elementary type (any
+   * store path, `declared` being the store target's type): when the address
+   * is known to be aligned for that type (it points to a type at least as
+   * wide) and the chain's net constant offset is not a multiple of its size,
+   * a dereference would be misaligned: refused. A byte address (POINTER TO
+   * BYTE, PVOID, an integer, MEMCPY) is never refused.
+   */
+  private refuseMisalignedPointerStore(
+    declared: AccessType | undefined,
+    value: Expression,
+    scope: Scope,
+  ): void {
+    if (
+      declared === undefined ||
+      declared.arrayDimensions !== undefined ||
+      declared.referenceKind !== "pointer_to" ||
+      (declared.referenceChain?.length ?? 1) !== 1
+    ) {
+      return;
+    }
+    const dest = elementarySize(declared.name);
+    if (dest === undefined || dest.bytes <= 1n) return;
+    const terms = this.chainTerms(value);
+    if (terms.length < 2) return;
+    const addresses = terms.filter((t) => this.isAddressTerm(t.expr, scope));
+    if (addresses.length !== 1 || addresses[0]!.sign !== 1) return;
+    const base = this.pointerTargetSize(addresses[0]!.expr, scope);
+    if (base === undefined || base.bytes < dest.bytes) return;
+    let offset = 0n;
+    for (const t of terms) {
+      if (t === addresses[0]) continue;
+      const v = this.foldIntegerConstant(t.expr, scope, 0);
+      if (v === undefined) return;
+      offset += t.sign > 0 ? v : -v;
+    }
+    if (offset % dest.bytes === 0n) return;
+    const span = value.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+    if (this.misalignedReported.has(key)) return;
+    this.misalignedReported.add(key);
+    this.addError(
+      `Moving a POINTER TO ${dest.name} by ${offset} byte(s) would make its dereference misaligned; move it by a multiple of ${dest.bytes} bytes`,
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
+  }
+
+  /** Positions already refused by refuseMisalignedPointerStore. */
+  private misalignedReported = new Set<string>();
+
+  /** The elementary type an address term points to, and its size: a POINTER TO variable or element, or ADR(x). */
+  private pointerTargetSize(
+    e: Expression,
+    scope: Scope,
+  ): { name: string; bytes: bigint } | undefined {
+    if (
+      e.kind === "FunctionCallExpression" &&
+      e.functionName.toUpperCase() === "ADR" &&
+      e.arguments.length === 1
+    ) {
+      const operand = e.arguments[0]!.value;
+      const target = operand.resolvedType;
+      if (target !== undefined) {
+        return target.typeKind === "elementary"
+          ? elementarySize((target as ElementaryType).name)
+          : undefined;
+      }
+      // Unresolved (a test file's statement): the declared type it reaches
+      const declared = this.accessedType(operand, scope);
+      return declared !== undefined &&
+        declared.referenceKind === "none" &&
+        declared.arrayDimensions === undefined
+        ? elementarySize(declared.name)
+        : undefined;
+    }
+    if (e.kind !== "VariableExpression") return undefined;
+    const declared = this.declaredVariableType(e, scope);
+    const name =
+      declared !== undefined ? pointerReadTarget(declared, e) : undefined;
+    return name !== undefined ? elementarySize(name) : undefined;
+  }
+
+  /** An integer constant expression's value: literals, constants, + - * and parentheses. */
+  private foldIntegerConstant(
+    e: Expression,
+    scope: Scope,
+    depth: number,
+  ): bigint | undefined {
+    if (depth > 16) return undefined;
+    switch (e.kind) {
+      case "LiteralExpression": {
+        if (e.literalType !== "INT") return undefined;
+        const v = e.value;
+        return typeof v === "number" && Number.isSafeInteger(v)
+          ? BigInt(v)
+          : typeof v === "bigint"
+            ? v
+            : undefined;
+      }
+      case "ParenthesizedExpression":
+        return this.foldIntegerConstant(e.expression, scope, depth + 1);
+      case "UnaryExpression": {
+        const v = this.foldIntegerConstant(e.operand, scope, depth + 1);
+        if (v === undefined) return undefined;
+        return e.operator === "-" ? -v : e.operator === "+" ? v : undefined;
+      }
+      case "BinaryExpression": {
+        const l = this.foldIntegerConstant(e.left, scope, depth + 1);
+        const r = this.foldIntegerConstant(e.right, scope, depth + 1);
+        if (l === undefined || r === undefined) return undefined;
+        if (e.operator === "+") return l + r;
+        if (e.operator === "-") return l - r;
+        if (e.operator === "*") return l * r;
+        return undefined;
+      }
+      case "VariableExpression": {
+        if (
+          e.isDereference ||
+          e.fieldAccess.length > 0 ||
+          e.subscripts.length > 0
+        ) {
+          return undefined;
+        }
+        const symbol = scope.lookup(e.name);
+        const value =
+          symbol?.kind === "constant" || symbol?.kind === "variable"
+            ? symbol.declaration?.initialValue
+            : undefined;
+        if (symbol?.kind !== "constant" || value === undefined) {
+          return undefined;
+        }
+        return this.foldIntegerConstant(value, scope, depth + 1);
+      }
+      default:
+        return undefined;
     }
   }
 
@@ -4749,12 +5006,19 @@ export class TypeChecker {
     if (typeName === undefined) return false;
     const user = (name: string): boolean =>
       this.findUserFunction(name) !== undefined;
+    let top = value;
+    while (top.kind === "ParenthesizedExpression") top = top.expression;
+    const chainError = this.addressArithmeticRefused.get(top);
     // `ADR(x) * 2` into an integer: no address, no offset of one.
     if (
-      addressMisuse(value, user) &&
+      addressMisuse(value, user, this.isPointerRead) &&
       addressFit(typeName, this.ast?.types ?? []) !== undefined &&
       !this.userAddressFunction()
     ) {
+      if (chainError !== undefined) {
+        this.errors = this.errors.filter((e) => e !== chainError);
+        this.addressArithmeticRefused.delete(top);
+      }
       this.addError(
         "An address can only be offset by + or - an integer",
         value.sourceSpan.startLine,
@@ -4763,7 +5027,8 @@ export class TypeChecker {
       );
       return true;
     }
-    const source = addressSource(value, user);
+    if (chainError !== undefined) return true;
+    const source = addressSource(value, user, this.isPointerRead);
     if (source === undefined) return this.checkXwordStore(typeName, value);
     // A user FUNCTION named ADR is called, not the operator.
     if (source.op === "ADR" && this.userAddressFunction()) return false;
@@ -4841,7 +5106,8 @@ export class TypeChecker {
     const user = (name: string): boolean =>
       this.findUserFunction(name) !== undefined;
     const isAddress = (e: Expression): boolean =>
-      addressSource(e, user) !== undefined ||
+      addressSource(e, user, this.isPointerRead) !== undefined ||
+      this.isPointerRead(e) ||
       (e.resolvedType !== undefined &&
         typeNameUtil(e.resolvedType).toUpperCase() === "__XWORD");
     return isAddress(v.left) && isAddress(v.right);
@@ -4855,8 +5121,13 @@ export class TypeChecker {
   private refuseAddressSelector(selector: Expression): boolean {
     const user = (name: string): boolean =>
       this.findUserFunction(name) !== undefined;
-    const source = addressSource(selector, user);
-    if (source === undefined && !addressMisuse(selector, user)) return false;
+    const source = addressSource(selector, user, this.isPointerRead);
+    if (
+      source === undefined &&
+      !addressMisuse(selector, user, this.isPointerRead)
+    ) {
+      return false;
+    }
     if (this.userAddressFunction()) return false;
     if (source?.op === "ADR" && !this.features.has("pointer_to")) return true;
     if (source !== undefined && source.operand?.kind !== "VariableExpression") {
@@ -4901,7 +5172,7 @@ export class TypeChecker {
   private storeTargetDeclaredType(
     target: Expression,
     scope: Scope,
-  ): Pick<TypeReference, "name" | "referenceKind"> | undefined {
+  ): AccessType | undefined {
     return (
       this.resultTargetType(target) ??
       this.accessedType(target, scope) ??
@@ -4957,7 +5228,7 @@ export class TypeChecker {
   private accessedType(
     target: Expression,
     scope: Scope,
-  ): Pick<TypeReference, "name" | "referenceKind"> | undefined {
+  ): AccessType | undefined {
     if (target.kind !== "VariableExpression") return undefined;
     const sym = scope.lookup(target.name);
     const declared =
@@ -5098,6 +5369,7 @@ export class TypeChecker {
             : inputs.find((p) => p.name.toUpperCase() === argName);
         // A VAR_IN_OUT binds, it stores nothing (the binding check refuses an ADR).
         if (input === undefined || input.inOut) continue;
+        this.refuseMisalignedPointerStore(input.type, arg.value, scope);
         if ((input.type.referenceKind ?? "none") !== "none") continue;
         this.checkAddressStore(input.type.name, arg.value);
       }
@@ -5223,6 +5495,11 @@ export class TypeChecker {
       case "AssignmentStatement": {
         let targetType = this.resolveExprType(stmt.target, scope);
         const valueType = this.resolveExprType(stmt.value, scope);
+        this.refuseMisalignedPointerStore(
+          this.storeTargetDeclaredType(stmt.target, scope),
+          stmt.value,
+          scope,
+        );
         if (
           this.strict &&
           targetType === undefined &&
@@ -9448,4 +9725,16 @@ function bitAccessPath(e: VariableExpression): string {
     else path += `[${step.indices.map(index).join(", ")}]`;
   }
   return path.toUpperCase();
+}
+
+/** An elementary type's upper-case name and size in bytes (at least 1). */
+function elementarySize(
+  name: string,
+): { name: string; bytes: bigint } | undefined {
+  const bits = ELEMENTARY_TYPES[name.toUpperCase()]?.sizeBits;
+  if (bits === undefined) return undefined;
+  return {
+    name: name.toUpperCase(),
+    bytes: BigInt(Math.max(1, Math.floor(bits / 8))),
+  };
 }
