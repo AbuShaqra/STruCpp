@@ -989,6 +989,8 @@ export type LiteralType =
 export interface ParenthesizedExpression extends TypedNode {
   kind: "ParenthesizedExpression";
   expression: Expression;
+  /** A typed global constant folded into a STRUCT default: it keeps its declared type. */
+  foldedConstant?: boolean;
 }
 
 /**

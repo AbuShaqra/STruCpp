@@ -31,6 +31,7 @@ import {
   isComparison,
   isComparisonExpr,
   literalStringComparison,
+  parenthesizedCpp,
   isNonZeroIntegerLiteral,
   literalTemporalType,
   translateIECString,
@@ -217,6 +218,9 @@ function typedDecimalPayload(expr: LiteralExpression): string | undefined {
 }
 
 /** BYTE, WORD, DWORD or LWORD: a bit string other than BOOL. */
+/** Bit string types, narrowest first. */
+const BIT_STRING_WIDTHS: readonly string[] = ["BYTE", "WORD", "DWORD", "LWORD"];
+
 function isBitStringName(name: string): boolean {
   const upper = name.toUpperCase();
   return getTypeCategory(upper) === "BIT" && upper !== "BOOL";
@@ -909,7 +913,7 @@ export class TypeCodeGenerator {
       case "UnaryExpression":
         return this.unaryExprToCpp(expr);
       case "ParenthesizedExpression":
-        return `(${this.expressionToCpp(expr.expression)})`;
+        return parenthesizedCpp(expr, this.expressionToCpp(expr.expression));
       case "FunctionCallExpression":
         // `NOT (x)` is parsed as a call: it is the operator NOT on x
         {
@@ -1128,12 +1132,39 @@ export class TypeCodeGenerator {
 
   /** The bit string type an operand is known to have: its type, or a typed literal's prefix. */
   private operandBitString(expr: Expression): string | undefined {
-    if (expr.kind === "ParenthesizedExpression") {
-      return this.operandBitString(expr.expression);
-    }
     const t = expr.resolvedType;
     if (t?.typeKind === "elementary") {
       return this.bitStringBase((t as ElementaryType).name);
+    }
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.operandBitString(expr.expression);
+    }
+    // NOT, AND, OR, XOR of a bit string keep its type
+    if (expr.kind === "UnaryExpression" && expr.operator === "NOT") {
+      return this.operandBitString(expr.operand);
+    }
+    if (
+      expr.kind === "BinaryExpression" &&
+      ["AND", "OR", "XOR"].includes(expr.operator)
+    ) {
+      // The wider of the two, whatever their order
+      const l = this.operandBitString(expr.left);
+      const r = this.operandBitString(expr.right);
+      if (l === undefined || r === undefined) return l ?? r;
+      return BIT_STRING_WIDTHS.indexOf(r) > BIT_STRING_WIDTHS.indexOf(l)
+        ? r
+        : l;
+    }
+    if (expr.kind === "FunctionCallExpression") {
+      const name = expr.functionName.toUpperCase();
+      const first = expr.arguments[0]?.value;
+      // SHL, SHR, ROL, ROR and NOT (x) give IN's type
+      if (
+        ["SHL", "SHR", "ROL", "ROR", "NOT"].includes(name) &&
+        first !== undefined
+      ) {
+        return this.operandBitString(first);
+      }
     }
     if (expr.kind === "LiteralExpression" && (expr.typePrefix ?? "") !== "") {
       return this.bitStringBase(expr.typePrefix!);

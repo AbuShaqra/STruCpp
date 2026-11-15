@@ -103,6 +103,7 @@ import {
   isComparison,
   isComparisonExpr,
   literalStringComparison,
+  parenthesizedCpp,
   isNonZeroIntegerLiteral,
   literalTemporalType,
   translateIECString,
@@ -6210,7 +6211,7 @@ export class CodeGenerator {
       case "UnaryExpression":
         return this.generateUnaryExpression(expr);
       case "ParenthesizedExpression":
-        return `(${this.generateExpression(expr.expression)})`;
+        return parenthesizedCpp(expr, this.generateExpression(expr.expression));
       case "FunctionCallExpression":
         return this.wrapGlobalInOutCall(expr, () =>
           this.generateFunctionCallExpression(expr),
