@@ -628,16 +628,18 @@ export class SemanticAnalyzer {
 
     if (this.options.strict === true) this.validateReservedNames(ast);
 
-    // Pass 2: Type checking
+    // Pass 2: Type checking. Its struct_compare refusals are located and gate nothing.
+    let typeRefusals = 0;
     if (this.errors.length - typeReferenceErrors === 0) {
       const typeResult = this.typeChecker.check(ast);
       this.errors.push(...typeResult.errors);
       this.warnings.push(...typeResult.warnings);
+      typeRefusals = typeResult.refusals;
     }
 
     // Pass 3: Semantic validation. After an error it does not run, except
     // its literal checks, which need no resolved type.
-    if (this.errors.length - typeReferenceErrors === 0) {
+    if (this.errors.length - typeReferenceErrors - typeRefusals === 0) {
       this.validateSemantics(ast);
     } else {
       this.prepareLiteralFallback(ast);
@@ -917,6 +919,19 @@ export class SemanticAnalyzer {
         `; write ${value.name}#${member}`,
       );
     }
+    // A CONFIGURATION global's initial value, which the name checks do not reach either.
+    for (const config of ast.configurations) {
+      for (const block of config.varBlocks) {
+        for (const decl of block.declarations) {
+          if (decl.initialValue === undefined) continue;
+          walkAST(decl.initialValue, (node) => {
+            if (node.kind === "VariableExpression") {
+              this.requireEnumDotFeature(node as VariableExpression);
+            }
+          });
+        }
+      }
+    }
     const visit = (node: ASTNode): void => this.requireNodeFeatures(node);
     walkAST(ast, visit);
     // Action bodies, also one not lowered (an owner or name error); a repeat is dropped.
@@ -944,6 +959,29 @@ export class SemanticAnalyzer {
     this.warnings.push(...iec3Warnings([ast, ...actions], declaresTrunc(ast)));
   }
 
+  /** `E.M` of a global enumeration type E needs the feature enum_dot_qualify. */
+  private requireEnumDotFeature(expr: VariableExpression): void {
+    if (expr.typedLiteral === true || expr.enumType !== undefined) return;
+    const member =
+      expr.fieldAccess[0] ??
+      expr.accessChain?.find((step) => step.kind === "field")?.name;
+    if (member === undefined) return;
+    const sym = this.symbolTables.globalScope.lookup(expr.name);
+    if (
+      sym?.kind !== "type" ||
+      sym.resolvedType?.typeKind !== "enum" ||
+      (sym.declaration as TypeDeclaration | undefined)?.inline
+    ) {
+      return;
+    }
+    this.requireFeature(
+      "enum_dot_qualify",
+      `${expr.name}.${member}`,
+      expr.sourceSpan,
+      `; write ${expr.name}#${member}`,
+    );
+  }
+
   /** The feature refusals of one node: VAR_INST, `__NEW`, `__DELETE`, the caret forms. */
   private requireNodeFeatures(node: ASTNode): void {
     switch (node.kind) {
@@ -969,7 +1007,9 @@ export class SemanticAnalyzer {
         this.requireFeature(
           "bare_self_caret",
           `${self.toUpperCase()}^`,
-          expr.sourceSpan,
+          (expr.kind === "VariableExpression"
+            ? expr.bareCaretSpan
+            : undefined) ?? expr.sourceSpan,
         );
         break;
       }

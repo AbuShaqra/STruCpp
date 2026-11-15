@@ -77,7 +77,7 @@ END_PROGRAM
       "11:8: THIS^ needs the feature bare_self_caret",
       "12:8: SUPER^ needs the feature bare_self_caret",
       "13:8: SUPER^ needs the feature bare_self_caret",
-      "14:9: SUPER^ needs the feature bare_self_caret",
+      "14:3: SUPER^ needs the feature bare_self_caret",
       "15:3: SUPER^ needs the feature bare_self_caret",
       "17:1: SUPER^ needs the feature bare_self_caret",
     ],
@@ -254,6 +254,29 @@ END_PROGRAM
     expect(compile(src, { dialect: "iec-3" }).errors).toEqual([]);
   });
 
+  it("is refused in a CONFIGURATION global's initial value", () => {
+    const src = `TYPE E : (A, B, C); END_TYPE
+PROGRAM Main VAR_EXTERNAL g : E; END_VAR VAR v : E; END_VAR v := g; END_PROGRAM
+CONFIGURATION Cfg
+VAR_GLOBAL g : E := E.C; h : ARRAY[0..1] OF E := [E.A, E.B]; END_VAR
+RESOURCE R ON PLC
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM P WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+`;
+    expect(compile(src).errors).toEqual([]);
+    expect(located({ dialect: "iec-3" }, src)).toEqual([
+      "4:21: E.C needs the feature enum_dot_qualify; write E#C",
+      "4:51: E.A needs the feature enum_dot_qualify; write E#A",
+      "4:56: E.B needs the feature enum_dot_qualify; write E#B",
+    ]);
+    expect(
+      compile(src, { dialect: "iec-3", features: ["+enum_dot_qualify"] })
+        .errors,
+    ).toEqual([]);
+  });
+
   it("reads a member of a variable that is no enumeration as before", () => {
     const src = `TYPE E_S : (Idle, Running); END_TYPE
 TYPE ST_A : STRUCT Idle : INT; END_STRUCT END_TYPE
@@ -279,6 +302,51 @@ END_PROGRAM
     expect(
       located({ dialect: "iec-3", features: ["+pointer_to"] }, src),
     ).toEqual(["6:6: = of two STRUCT values needs the feature struct_compare"]);
+  });
+});
+
+describe("STRUCT comparison through parentheses and on a UNION", () => {
+  it("leaves a parenthesized REF_TO comparison accepted", () => {
+    const src = `TYPE ST_A : STRUCT x : INT; END_STRUCT END_TYPE
+PROGRAM Main
+VAR r, q : REF_TO ST_A; b : BOOL; END_VAR
+b := (r) = (q);
+b := ((r)) <> q;
+b := r = ((q));
+END_PROGRAM
+`;
+    expect(located({ dialect: "iec-3" }, src)).toEqual([]);
+  });
+
+  it("names a UNION comparison as such", () => {
+    const src = `TYPE U : UNION a : INT; b : WORD; END_UNION END_TYPE
+PROGRAM Main
+VAR u1, u2 : U; b : BOOL; END_VAR
+b := u1 = u2;
+END_PROGRAM
+`;
+    expect(located({ dialect: "iec-3", features: ["+union"] }, src)).toEqual([
+      "4:6: = of two UNION values needs the feature struct_compare",
+    ]);
+  });
+});
+
+describe("every refusal in one run", () => {
+  it("reports a STRUCT comparison with the refusals of the later passes", () => {
+    const src = `TYPE S : STRUCT a : INT; END_STRUCT END_TYPE
+TYPE E : (A, B); END_TYPE
+PROGRAM Main
+VAR s1, s2 : S; b : BOOL; ev : E; x : INT; a : ARRAY[0..3] OF INT; END_VAR
+b := s1 = s2;
+ev := E.B;
+a[ADR(x)] := 1;
+END_PROGRAM
+`;
+    expect(located({ dialect: "iec-3" }, src)).toEqual([
+      "5:6: = of two STRUCT values needs the feature struct_compare",
+      "6:7: E.B needs the feature enum_dot_qualify; write E#B",
+      "7:3: ADR needs the feature pointer_to",
+    ]);
   });
 });
 
@@ -373,6 +441,17 @@ END_TEST
         "3:6: = of two STRUCT values needs the feature struct_compare",
         "4:14: <> of two STRUCT values needs the feature struct_compare",
       ],
+    },
+    {
+      feature: "struct_compare",
+      test: `TEST 'refs'
+VAR p : ST_P; r, q : REF_TO ST_P; e : BOOL; END_VAR
+r := REF(p); q := REF(p);
+e := (r) = (q);
+ASSERT_TRUE(((r)) = q);
+END_TEST
+`,
+      refusals: [],
     },
     {
       feature: "dynamic_memory",

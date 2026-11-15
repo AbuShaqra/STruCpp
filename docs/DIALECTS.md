@@ -276,7 +276,8 @@ were accepted before profiles) and off in `iec-3`. IEC writes them `THIS`, `SUPE
 
 `=` and `<>` on two STRUCT values (compared field by field) are not IEC 61131-3 Ed. 3 either, whose
 comparison functions take elementary values. They need `struct_compare`, which is in the default set and off
-in `iec-3`; this covers a STRUCT reached through `^` (`r1^ = r2^`) and an alias of a STRUCT too.
+in `iec-3`; this covers a STRUCT reached through `^` (`r1^ = r2^`), an alias of a STRUCT and a UNION
+(`= of two UNION values ...`) too. A comparison of two references (`r = q`, also `(r) = (q)`) stays accepted.
 
 `property` is in neither the default set nor `iec-3`: IEC 61131-3 Ed. 3 has no PROPERTY, and its interfaces
 hold method prototypes only. A `PROPERTY` in a `FUNCTION_BLOCK` (with GET/SET bodies) needs `fb_property`,
