@@ -133,6 +133,21 @@ int main() {
       expect(stdout).toBe("0 0 0 0 7 0 0 0 0 001 4");
     });
 
+    it(`refuses MOD on a REAL reached through a pointer (${label})`, () => {
+      const r = compile(
+        "TYPE S : STRUCT f : REAL; END_STRUCT END_TYPE\nPROGRAM MAIN\nVAR a : REAL; i : INT; r : REAL; p : POINTER TO REAL; ps : POINTER TO S; pa : POINTER TO ARRAY[0..1] OF REAL; pl : POINTER TO LREAL; pi : POINTER TO INT; k : INT; END_VAR\nr := p^ MOD i;\nr := ps^.f MOD 2;\nr := pa^[0] MOD 2;\nr := pl^ MOD 3;\nk := pi^ MOD 2;\nEND_PROGRAM\n",
+        { ...options, features: ["+pointer_to"] },
+      );
+      const mod = (t: string): string =>
+        `MOD takes integers (ANY_INT, IEC 61131-3 Table 29), not ${t}`;
+      expect(r.errors.map((e) => e.message)).toEqual([
+        mod("REAL"),
+        mod("REAL"),
+        mod("REAL"),
+        mod("LREAL"),
+      ]);
+    });
+
     it(`refuses MOD on REAL operands (${label})`, () => {
       const r = compile(
         "PROGRAM MAIN\nVAR a, b, r : REAL; END_VAR\nr := a MOD b;\nEND_PROGRAM\n",

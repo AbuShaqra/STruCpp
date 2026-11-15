@@ -2139,6 +2139,15 @@ export class TypeChecker {
     if (this.refuseTemporalOperands(expr, scope)) return undefined;
 
     if (leftType === undefined || rightType === undefined) {
+      // `p^ MOD i`: a dereference has no expression type here; its declared one decides
+      if (expr.operator === "MOD") {
+        const left = leftType ?? this.accessedElementaryType(expr.left, scope);
+        const right =
+          rightType ?? this.accessedElementaryType(expr.right, scope);
+        if (left !== undefined && right !== undefined) {
+          this.refuseRealMod(expr, left, right);
+        }
+      }
       return undefined;
     }
 
@@ -2442,6 +2451,31 @@ export class TypeChecker {
       default:
         return false;
     }
+  }
+
+  /** The elementary type a variable path names through `^`, fields and subscripts, if any. */
+  private accessedElementaryType(
+    expr: Expression,
+    scope: Scope,
+  ): IECType | undefined {
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.accessedElementaryType(expr.expression, scope);
+    }
+    if (expr.kind !== "VariableExpression") return undefined;
+    const sym = scope.lookup(expr.name);
+    if (sym?.kind !== "variable") return undefined;
+    const declared = sym.declaration as VarDeclaration | undefined;
+    if (!declared) return undefined;
+    const type = resolveAccessType(declared.type, expr, this.accessLookup);
+    if (
+      type === undefined ||
+      type.arrayDimensions !== undefined ||
+      (type.referenceKind ?? "none") !== "none"
+    ) {
+      return undefined;
+    }
+    const t = ELEMENTARY_TYPES[this.aliasBase(type.name)];
+    return t;
   }
 
   /**
