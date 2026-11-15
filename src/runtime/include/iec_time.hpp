@@ -109,7 +109,8 @@ inline IEC_LTIME DIV_LTIME(const IECVar<L_>& t, S scalar) noexcept {
 }
 
 // DIVTIME(a, b) returns the integer count of `b`-durations that fit in `a`
-// (i.e. `floor(a / b)`); 0 when b is zero.
+// (i.e. `floor(a / b)`); 0 when b is zero (generated code calls iec_divtime,
+// which faults on b = 0).
 inline int64_t DIVTIME(IEC_TIME a, IEC_TIME b) noexcept {
     return b.get().raw == 0u ? 0 : static_cast<int64_t>(a.get().raw / b.get().raw);
 }

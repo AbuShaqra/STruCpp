@@ -1794,6 +1794,21 @@ inline auto iec_temporal_div(const A& a, const N& n, iec_site site) -> decltype(
     return a / n;
 }
 
+namespace detail {
+template<int K>
+constexpr bool temporal_zero(IecTemporal32<K> v) noexcept { return v.raw == 0u; }
+constexpr bool temporal_zero(int64_t v) noexcept { return v == 0; }
+}  // namespace detail
+
+/** DIVTIME(a, b), a duration by a duration: b = 0 is a run-time fault, as for integers. */
+template<typename A, typename B>
+inline auto iec_divtime(const A& a, const B& b, iec_site site) -> decltype(DIVTIME(a, b)) {
+    if (detail::temporal_zero(iec_unwrap(b))) {
+        iec_site_fault(IecFault::DivideByZero, "Division by zero", site);
+    }
+    return DIVTIME(a, b);
+}
+
 /**
  * Binary MOD operator: OUT is 0 when IN2 is 0 (IEC 61131-3 Table 29, note e).
  * The result type is the one the C++ % operator gives for the operands.

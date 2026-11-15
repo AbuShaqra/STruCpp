@@ -8278,6 +8278,14 @@ export class CodeGenerator {
       ) {
         return `iec_temporal_div(${this.generateExpression(expr.arguments[0]!.value)}, ${this.generateExpression(expr.arguments[1]!.value)}, ${this.faultSite(expr)})`;
       }
+      // DIVTIME(a, b) faults when b is a zero duration
+      if (
+        nameUpper === "DIVTIME" &&
+        expr.arguments.length === 2 &&
+        expr.arguments.every((a) => a.name === undefined && !a.isOutput)
+      ) {
+        return `iec_divtime(${this.generateExpression(expr.arguments[0]!.value)}, ${this.generateExpression(expr.arguments[1]!.value)}, ${this.faultSite(expr)})`;
+      }
       // DIV(a, b) of integers faults on a zero divisor, as `a / b` does
       if (nameUpper === "DIV" && expr.arguments.length === 2) {
         const named = (n: string): Expression | undefined =>

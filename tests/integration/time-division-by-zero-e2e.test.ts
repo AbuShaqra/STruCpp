@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 /**
- * E2E: a TIME, DATE, TOD or DT divided by a number that is 0 (`/` or
- * DIV_TIME; an integer or a REAL divisor) is a run-time fault naming the POU,
+ * E2E: a TIME, DATE, TOD or DT divided by a number that is 0 (`/`,
+ * DIV_TIME, DIVTIME; an integer or a REAL divisor) is a run-time fault naming the POU,
  * line and task, as an integer division by zero is.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -15,7 +15,7 @@ import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 const SOURCE = `PROGRAM Main
 VAR t : TIME := T#10s; tod : TOD := TOD#10:00:00; dt : DT := DT#2000-01-01-00:00:00;
   d : DATE := D#2000-01-01; z : DINT; rz : REAL; k : INT; r : TIME; rt : TOD; rd : DT; rdd : DATE;
-  two : DINT := 4; END_VAR
+  two : DINT := 4; zt : TIME; lt : LTIME := LTIME#1s; lz : LTIME; n : LINT; END_VAR
 CASE k OF
 1: r := t / z;
 2: r := DIV_TIME(t, z);
@@ -24,6 +24,8 @@ CASE k OF
 5: rd := dt / z;
 6: rdd := d / z;
 7: r := t / two;
+8: n := DIVTIME(t, zt);
+9: n := DIVTIME(lt, lz);
 END_CASE;
 END_PROGRAM
 `;
@@ -58,7 +60,7 @@ describe.skipIf(!hasGpp)("TIME division by zero — g++ e2e", () => {
 int main() {
     strucpp::strucpp_set_current_task("T1");
     static strucpp::Program_MAIN p;
-    for (int k = 1; k <= 7; ++k) {
+    for (int k = 1; k <= 9; ++k) {
         try { p.K = k; p.run(); std::cout << k << " nofault " << p.R.get().raw << "|"; }
         catch (const std::exception& e) { std::cout << k << " " << e.what() << "|"; }
     }
@@ -75,6 +77,8 @@ int main() {
         "5 Division by zero in MAIN, line 10, task T1",
         "6 Division by zero in MAIN, line 11, task T1",
         "7 nofault 2500",
+        "8 Division by zero in MAIN, line 13, task T1",
+        "9 Division by zero in MAIN, line 14, task T1",
       ]);
     });
   }
