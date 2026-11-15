@@ -136,6 +136,7 @@ import {
   restoreDeclaredPlatformTypes,
 } from "./platform-types.js";
 import { implicitParameterHint } from "./implicit-parameters.js";
+import { iec3VarBlockIdentifierErrors, iec3Warnings } from "./iec3-rules.js";
 import {
   POU_OPERATORS,
   lowerTestPouOperators,
@@ -594,6 +595,7 @@ export class SemanticAnalyzer {
     this.validateProgramMethodFeature(ast);
     this.validateInterfaceProperties(ast);
     this.validateVendorFormFeatures(ast);
+    this.warnIec3Forms(ast);
     this.validatePostfixEnumBases(ast);
     this.validateConfigurationGlobalsHoldNoFB(ast);
     this.validateDeclaredEno(ast);
@@ -924,6 +926,22 @@ export class SemanticAnalyzer {
     ]) {
       for (const stmt of action.body) walkAST(stmt, visit);
     }
+  }
+
+  /** `--dialect iec-3` itself: the rules of the built-in profile, which no feature controls. */
+  private get iec3Rules(): boolean {
+    return this.options.dialect?.id === IEC_PROFILE.id;
+  }
+
+  /** Under iec-3 itself: the forms Ed. 3 deprecates or leaves implementer-defined (iec3-rules.ts). */
+  private warnIec3Forms(ast: CompilationUnit): void {
+    if (!this.iec3Rules) return;
+    // Action bodies not lowered (an owner or name error) are walked too.
+    const actions = [
+      ...ast.actions,
+      ...[...ast.programs, ...ast.functionBlocks].flatMap((o) => o.actions),
+    ].flatMap((a) => a.body);
+    this.warnings.push(...iec3Warnings([ast, ...actions], declaresTrunc(ast)));
   }
 
   /** The feature refusals of one node: VAR_INST, `__NEW`, `__DELETE`, the caret forms. */
@@ -7532,6 +7550,24 @@ export class SemanticAnalyzer {
     for (const root of testRoots) {
       walkAST(root, (node) => this.requireNodeFeatures(node));
     }
+    // Under iec-3 itself: Ed. 3 identifier spelling and deprecation warnings
+    if (this.iec3Rules) {
+      this.errors.push(
+        ...iec3VarBlockIdentifierErrors(
+          [
+            ...(testFile.setup?.varBlocks ?? []),
+            ...testFile.testCases.flatMap((tc) => tc.varBlocks),
+          ],
+          testFile.inlineTypes,
+        ),
+      );
+      this.warnings.push(
+        ...iec3Warnings(
+          testRoots,
+          sourceAst !== undefined && declaresTrunc(sourceAst),
+        ),
+      );
+    }
     // TIME, DATE, TOD and DT literals fit their 32-bit types
     for (const root of testRoots) {
       walkAST(root, (node) => {
@@ -8137,6 +8173,11 @@ export function analyzeTestFile(
     dialect !== undefined ? { dialect } : {},
   );
   return analyzer.analyzeTestFile(testFile, sourceSymbolTables, sourceAst);
+}
+
+/** The unit declares its own FUNCTION TRUNC, which a `TRUNC(x)` call then names. */
+function declaresTrunc(ast: CompilationUnit): boolean {
+  return ast.functions.some((f) => f.name.toUpperCase() === "TRUNC");
 }
 
 /** The index expressions of a variable access, each once (`a[i].b[j]`: i, j). */

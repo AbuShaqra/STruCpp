@@ -157,6 +157,8 @@ export interface ILTranspileResult {
   hasIL: boolean;
   /** The output source (ST, with IL bodies replaced) */
   stSource: string;
+  /** Where each IL body starts in the original source, with its POU's name. */
+  ilBodies?: Array<{ pou: string; line: number; column: number }>;
   /** Transpilation errors */
   errors: Array<{
     message: string;
