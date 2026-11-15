@@ -435,6 +435,72 @@ inline T ROUND(T value) noexcept {
 }
 
 // =============================================================================
+// String comparison
+// =============================================================================
+
+namespace detail {
+/** The characters of a STRING value, or of a WSTRING value's UTF-16 code units. */
+template<typename C>
+struct iec_str_text {
+    const C* data;
+    size_t length;
+};
+
+inline iec_str_text<char> iec_str_text_of(const char* s) noexcept {
+    return {s ? s : "", s ? std::strlen(s) : 0};
+}
+inline iec_str_text<char16_t> iec_str_text_of(const char16_t* s) noexcept {
+    size_t n = 0;
+    if (s) while (s[n] != 0) ++n;
+    return {s ? s : u"", n};
+}
+template<size_t N>
+iec_str_text<char> iec_str_text_of(const IECString<N>& s) noexcept {
+    return {s.c_str(), s.length()};
+}
+template<size_t N>
+iec_str_text<char> iec_str_text_of(const IECStringVar<N>& s) noexcept {
+    return {s.c_str(), s.length()};
+}
+template<size_t N>
+iec_str_text<char16_t> iec_str_text_of(const IECWString<N>& s) noexcept {
+    return {s.c_str(), s.length()};
+}
+template<size_t N>
+iec_str_text<char16_t> iec_str_text_of(const IECWStringVar<N>& s) noexcept {
+    return {s.c_str(), s.length()};
+}
+/** A wrapper of a string value (IECVar, a global's read value): its value's text. */
+template<typename T>
+auto iec_str_text_of(const T& v) noexcept -> decltype(iec_str_text_of(v.get())) {
+    return iec_str_text_of(v.get());
+}
+
+/** strcmp order, by unsigned character or code unit, then by length. */
+template<typename C>
+int iec_str_text_cmp(iec_str_text<C> a, iec_str_text<C> b) noexcept {
+    using U = std::make_unsigned_t<C>;
+    const size_t n = a.length < b.length ? a.length : b.length;
+    for (size_t i = 0; i < n; ++i) {
+        const U x = static_cast<U>(a.data[i]);
+        const U y = static_cast<U>(b.data[i]);
+        if (x != y) return x < y ? -1 : 1;
+    }
+    return a.length == b.length ? 0 : (a.length < b.length ? -1 : 1);
+}
+}  // namespace detail
+
+/**
+ * Compare two STRING or two WSTRING values by their text: negative, zero or
+ * positive as `a` is before, equal to or after `b`. Takes literals, string
+ * values, string variables and their wrappers alike.
+ */
+template<typename A, typename B>
+inline int iec_str_cmp(const A& a, const B& b) noexcept {
+    return detail::iec_str_text_cmp(detail::iec_str_text_of(a), detail::iec_str_text_of(b));
+}
+
+// =============================================================================
 // Selection Functions (ANY_ELEMENTARY for comparisons)
 // =============================================================================
 
@@ -474,6 +540,22 @@ template<typename T, enable_if_any_elementary<T> = 0>
 inline T LIMIT(T mn, T in, T mx) noexcept {
     if (iec_unwrap(in) < iec_unwrap(mn)) return mn;
     if (iec_unwrap(in) > iec_unwrap(mx)) return mx;
+    return in;
+}
+
+// MAX, MIN and LIMIT of STRING or WSTRING literals compare their text
+inline const char* MAX(const char* a, const char* b) noexcept { return iec_str_cmp(a, b) > 0 ? a : b; }
+inline const char* MIN(const char* a, const char* b) noexcept { return iec_str_cmp(a, b) < 0 ? a : b; }
+inline const char* LIMIT(const char* mn, const char* in, const char* mx) noexcept {
+    if (iec_str_cmp(in, mn) < 0) return mn;
+    if (iec_str_cmp(in, mx) > 0) return mx;
+    return in;
+}
+inline const char16_t* MAX(const char16_t* a, const char16_t* b) noexcept { return iec_str_cmp(a, b) > 0 ? a : b; }
+inline const char16_t* MIN(const char16_t* a, const char16_t* b) noexcept { return iec_str_cmp(a, b) < 0 ? a : b; }
+inline const char16_t* LIMIT(const char16_t* mn, const char16_t* in, const char16_t* mx) noexcept {
+    if (iec_str_cmp(in, mn) < 0) return mn;
+    if (iec_str_cmp(in, mx) > 0) return mx;
     return in;
 }
 

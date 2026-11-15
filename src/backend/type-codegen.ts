@@ -31,7 +31,7 @@ import {
   formatIntegerLiteral,
   isComparison,
   isComparisonExpr,
-  literalStringComparison,
+  stringComparisonCpp,
   parenthesizedCpp,
   isNonZeroIntegerLiteral,
   literalTemporalType,
@@ -375,6 +375,17 @@ export class TypeCodeGenerator {
       name = def.name;
     }
     return undefined;
+  }
+
+  /** A type name through the unit's aliases, upper case. */
+  private stringAliasBase(name: string): string {
+    let upper = name.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const next = this.aliasTargets.get(upper);
+      if (next === undefined) return upper;
+      upper = next.toUpperCase();
+    }
+    return upper;
   }
 
   /** BYTE, WORD, DWORD or LWORD a type name is, through aliases. */
@@ -1100,8 +1111,19 @@ export class TypeCodeGenerator {
     }
     // Parenthesise a comparison nested in a comparison (a chain).
     if (isComparison(expr.operator)) {
-      const texts = literalStringComparison(expr.left, expr.right, left, right);
-      if (texts !== undefined) return `${texts[0]} ${cppOp} ${texts[1]}`;
+      // A POINTER TO or REF_TO STRING compared itself is no text comparison
+      const texts =
+        expr.comparesReferences === true
+          ? undefined
+          : stringComparisonCpp(
+              expr.left,
+              expr.right,
+              left,
+              right,
+              cppOp,
+              (name) => this.stringAliasBase(name),
+            );
+      if (texts !== undefined) return texts;
       const l = isComparisonExpr(expr.left) ? `(${left})` : left;
       const r = isComparisonExpr(expr.right) ? `(${right})` : right;
       return `${l} ${cppOp} ${r}`;
