@@ -16,13 +16,16 @@
 
 import type {
   ASTNode,
+  ActionDeclaration,
   AssignmentStatement,
   CompilationUnit,
   EnumDefinition,
   ForStatement,
+  FunctionBlockDeclaration,
   FunctionCallExpression,
   LiteralExpression,
   MethodDeclaration,
+  ProgramDeclaration,
   ProgramInstance,
   PropertyDeclaration,
   TypeDeclaration,
@@ -282,10 +285,10 @@ function literalWarning(lit: LiteralExpression): string | undefined {
   }
   if (
     lit.literalType === "REAL" &&
-    /^[0-9_]+[eE]/.test(body) &&
+    /^[+-]?[0-9_]+[eE]/.test(body) &&
     !body.includes(".")
   ) {
-    const fixed = body.replace(/^([0-9_]+)([eE])/, "$1.0$2");
+    const fixed = body.replace(/^([+-]?[0-9_]+)([eE])/, "$1.0$2");
     return `Real literal '${lit.rawValue}' has no decimal point, which IEC 61131-3 Ed. 3 requires before the exponent; write ${prefix}${fixed}`;
   }
   return undefined;
@@ -304,14 +307,74 @@ function storesTo(stmt: AssignmentStatement, upperName: string): boolean {
   );
 }
 
+/** The key of a call's position, which a copy of the call shares. */
+function callKey(call: FunctionCallExpression): string {
+  const s = call.sourceSpan;
+  return `${s.file ?? ""}:${s.startLine}:${s.startCol}`;
+}
+
+/**
+ * The untyped `TRUNC(...)` calls of `ast` that name a user TRUNC: a FUNCTION
+ * TRUNC anywhere, or a METHOD or ACTION TRUNC of the enclosing PROGRAM or
+ * FUNCTION_BLOCK or of a FUNCTION_BLOCK it extends.
+ */
+export function userTruncCalls(
+  ast: CompilationUnit,
+): (call: FunctionCallExpression) => boolean {
+  if (ast.functions.some((f) => f.name.toUpperCase() === "TRUNC")) {
+    return () => true;
+  }
+  const isTrunc = (d: { name: string }): boolean =>
+    d.name.toUpperCase() === "TRUNC";
+  const fbs = new Map(
+    ast.functionBlocks.map((fb) => [fb.name.toUpperCase(), fb]),
+  );
+  // Out-of-POU `ACTION Owner.TRUNC`, while not yet lowered into its owner.
+  const outerActions = (owner: string): ActionDeclaration[] =>
+    ast.actions.filter((a) => a.owner?.toUpperCase() === owner.toUpperCase());
+  const declares = (
+    pou: ProgramDeclaration | FunctionBlockDeclaration,
+  ): boolean =>
+    pou.methods.some(isTrunc) ||
+    pou.actions.some(isTrunc) ||
+    outerActions(pou.name).some(isTrunc);
+  const inScope = (
+    pou: ProgramDeclaration | FunctionBlockDeclaration,
+  ): boolean => {
+    const seen = new Set<string>();
+    let cur: ProgramDeclaration | FunctionBlockDeclaration | undefined = pou;
+    while (cur !== undefined && !seen.has(cur.name.toUpperCase())) {
+      if (declares(cur)) return true;
+      seen.add(cur.name.toUpperCase());
+      const base: string | undefined =
+        cur.kind === "FunctionBlockDeclaration" ? cur.extends : undefined;
+      cur = base !== undefined ? fbs.get(base.toUpperCase()) : undefined;
+    }
+    return false;
+  };
+  const keys = new Set<string>();
+  const collect = (node: ASTNode): void =>
+    walkAST(node, (inner) => {
+      if (inner.kind !== "FunctionCallExpression") return;
+      const call = inner as FunctionCallExpression;
+      if (call.functionName.toUpperCase() === "TRUNC") keys.add(callKey(call));
+    });
+  for (const pou of [...ast.programs, ...ast.functionBlocks]) {
+    if (!inScope(pou)) continue;
+    collect(pou);
+    for (const a of outerActions(pou.name)) collect(a);
+  }
+  return (call) => keys.has(callKey(call));
+}
+
 /**
  * Ed. 3 warnings for the nodes under `roots`, one per occurrence: a node
- * reached twice (a copy at the same place) warns once. `ownTrunc` is true
- * when the program declares its own TRUNC, which is then not the standard one.
+ * reached twice (a copy at the same place) warns once. `userTrunc` tells an
+ * untyped TRUNC call that names a user declaration, not the standard one.
  */
 export function iec3Warnings(
   roots: readonly ASTNode[],
-  ownTrunc = false,
+  userTrunc: (call: FunctionCallExpression) => boolean = () => false,
 ): CompileError[] {
   const warnings: CompileError[] = [];
   const seen = new Set<string>();
@@ -343,9 +406,9 @@ export function iec3Warnings(
       case "FunctionCallExpression": {
         const call = node as FunctionCallExpression;
         if (
-          !ownTrunc &&
           call.instance === undefined &&
-          call.functionName.toUpperCase() === "TRUNC"
+          call.functionName.toUpperCase() === "TRUNC" &&
+          !userTrunc(call)
         ) {
           warn(
             "TRUNC with no result type is deprecated in IEC 61131-3 Ed. 3; write the typed form TRUNC_<type>, such as TRUNC_DINT",

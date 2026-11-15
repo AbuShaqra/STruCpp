@@ -121,8 +121,9 @@ function ilBodyStart(
   source: string,
   region: POURegion,
 ): { pou: string; line: number; column: number } {
+  // Modifiers such as FINAL or ABSTRACT come before the name.
   const pou =
-    /^\s*(?:PROGRAM|FUNCTION_BLOCK|FUNCTION)\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(
+    /^\s*(?:PROGRAM|FUNCTION_BLOCK|FUNCTION)\s+(?:(?:ABSTRACT|FINAL|PUBLIC|PRIVATE|PROTECTED|INTERNAL)\s+)*([A-Za-z_][A-Za-z0-9_]*)/i.exec(
       region.headerText,
     )?.[1] ?? "";
   const bodyOffset = region.startOffset + region.headerText.length;

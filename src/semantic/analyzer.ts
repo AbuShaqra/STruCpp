@@ -136,7 +136,11 @@ import {
   restoreDeclaredPlatformTypes,
 } from "./platform-types.js";
 import { implicitParameterHint } from "./implicit-parameters.js";
-import { iec3VarBlockIdentifierErrors, iec3Warnings } from "./iec3-rules.js";
+import {
+  iec3VarBlockIdentifierErrors,
+  iec3Warnings,
+  userTruncCalls,
+} from "./iec3-rules.js";
 import {
   POU_OPERATORS,
   lowerTestPouOperators,
@@ -956,7 +960,7 @@ export class SemanticAnalyzer {
       ...ast.actions,
       ...[...ast.programs, ...ast.functionBlocks].flatMap((o) => o.actions),
     ].flatMap((a) => a.body);
-    this.warnings.push(...iec3Warnings([ast, ...actions], declaresTrunc(ast)));
+    this.warnings.push(...iec3Warnings([ast, ...actions], userTruncCalls(ast)));
   }
 
   /** `E.M` of a global enumeration type E needs the feature enum_dot_qualify. */
@@ -7604,7 +7608,7 @@ export class SemanticAnalyzer {
       this.warnings.push(
         ...iec3Warnings(
           testRoots,
-          sourceAst !== undefined && declaresTrunc(sourceAst),
+          () => sourceAst !== undefined && declaresTrunc(sourceAst),
         ),
       );
     }

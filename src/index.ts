@@ -610,6 +610,8 @@ function runPipeline(
   const mergedOptions = { ...defaultOptions, ...options };
   validateCompileOptions(mergedOptions);
   const errors: CompileError[] = [];
+  // Ed. 3 spelling errors: they stop code generation but not the later phases.
+  let spellingErrorCount = 0;
   const warnings: CompileError[] = [];
   let ast: CompilationUnit | undefined;
   let projectModel: import("./project-model.js").ProjectModel | undefined;
@@ -876,9 +878,12 @@ function runPipeline(
     markImplicitParameters(ast, implicitPragmas);
     // Before lowering, which adds names of its own: only names as written.
     if (iec3Rules) {
-      errors.push(
-        ...iec3IdentifierErrors(ast, sourceNameLocator(sourcesByFile)),
+      const spelling = iec3IdentifierErrors(
+        ast,
+        sourceNameLocator(sourcesByFile),
       );
+      errors.push(...spelling);
+      spellingErrorCount = spelling.length;
     }
     // Actions first, so lowerInlineTypes qualifies inline enum members in
     // action bodies as it does in the owner's methods.
@@ -1050,7 +1055,7 @@ function runPipeline(
     // In analyze mode, project model failure is non-fatal
   }
 
-  if (!continueOnError && errors.length > 0) {
+  if (!continueOnError && errors.length > spellingErrorCount) {
     return {
       ast,
       projectModel,
@@ -1069,7 +1074,7 @@ function runPipeline(
   // The Table 36 FUNCTIONs of the bundled library give way to another library's name.
   allArchives.push(...withYieldedFunctions(mergedOptions.libraries ?? []));
 
-  if (!continueOnError && errors.length > 0) {
+  if (!continueOnError && errors.length > spellingErrorCount) {
     return {
       ast,
       projectModel,

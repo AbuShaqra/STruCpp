@@ -6,7 +6,7 @@
  * profile that extends `iec-3`.
  */
 import { describe, it, expect } from "vitest";
-import { compile, type CompileOptions } from "../../src/index.js";
+import { analyze, compile, type CompileOptions } from "../../src/index.js";
 import { parseTestFile } from "../../src/testing/test-parser.js";
 import { analyzeTestFile } from "../../src/semantic/analyzer.js";
 import { resolveDialect, type DialectProfile } from "../../src/dialect.js";
@@ -244,6 +244,39 @@ END_PROGRAM
   });
 });
 
+describe("iec-3: identifier errors do not hide later errors", () => {
+  const src = `PROGRAM Main
+VAR x_ : INT; p : POINTER TO INT; y : INT; END_VAR
+p := ADR(y);
+y := undeclared;
+END_PROGRAM
+`;
+
+  it("compiling reports the same errors as checking, and no C++", () => {
+    const compiled = compile(src, IEC3);
+    const checked = analyze(src, IEC3).errors.map(at);
+    expect(compiled.errors.map(at)).toEqual(checked);
+    expect(compiled.errors.map(at)).toEqual([
+      `2:5: ${trailing("x_")}`,
+      "2:19: POINTER TO needs the feature pointer_to",
+      "4:6: Undeclared variable 'UNDECLARED'",
+      "3:6: ADR needs the feature pointer_to",
+    ]);
+    expect(compiled.success).toBe(false);
+    expect(compiled.cppCode).toBe("");
+  });
+
+  it("an identifier error alone still produces no C++", () => {
+    const compiled = compile(
+      "PROGRAM Main\nVAR x_ : INT; END_VAR\nx_ := 1;\nEND_PROGRAM\n",
+      IEC3,
+    );
+    expect(compiled.errors.map(at)).toEqual([`2:5: ${trailing("x_")}`]);
+    expect(compiled.success).toBe(false);
+    expect(compiled.cppCode).toBe("");
+  });
+});
+
 describe("iec-3: Ed. 3 warnings (C8b)", () => {
   const CASES: Array<{ what: string; source: string; warnings: string[] }> = [
     {
@@ -266,12 +299,15 @@ END_PROGRAM
 VAR r : REAL := 1E-4; l : LREAL; END_VAR
 r := REAL#2e3 + 1.0E2 + 1.5;
 l := -1E5;
+r := REAL#-1E-4 + REAL#+2E1 + REAL#-1.0E2;
 END_PROGRAM
 `,
       warnings: [
         "2:17: Real literal '1E-4' has no decimal point, which IEC 61131-3 Ed. 3 requires before the exponent; write 1.0E-4",
         "3:6: Real literal 'REAL#2E3' has no decimal point, which IEC 61131-3 Ed. 3 requires before the exponent; write REAL#2.0E3",
         "4:7: Real literal '1E5' has no decimal point, which IEC 61131-3 Ed. 3 requires before the exponent; write 1.0E5",
+        "5:6: Real literal 'REAL#-1E-4' has no decimal point, which IEC 61131-3 Ed. 3 requires before the exponent; write REAL#-1.0E-4",
+        "5:19: Real literal 'REAL#+2E1' has no decimal point, which IEC 61131-3 Ed. 3 requires before the exponent; write REAL#+2.0E1",
       ],
     },
     {
@@ -322,6 +358,28 @@ END_FUNCTION_BLOCK
       ],
     },
     {
+      what: "an Instruction List body of a FINAL or ABSTRACT FUNCTION_BLOCK",
+      source: `FUNCTION_BLOCK FINAL FB_F
+VAR_INPUT x : INT; END_VAR
+VAR acc : INT; END_VAR
+
+  LD x
+  ST acc
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK ABSTRACT FB_A
+VAR_INPUT x : INT; END_VAR
+VAR acc : INT; END_VAR
+
+  LD x
+  ST acc
+END_FUNCTION_BLOCK
+`,
+      warnings: [
+        "5:3: Instruction List (IL) is deprecated in IEC 61131-3 Ed. 3; write the body of 'FB_F' in ST",
+        "12:3: Instruction List (IL) is deprecated in IEC 61131-3 Ed. 3; write the body of 'FB_A' in ST",
+      ],
+    },
+    {
       what: "untyped TRUNC",
       source: `PROGRAM Main
 VAR r : REAL := 2.5; d : DINT; END_VAR
@@ -360,6 +418,50 @@ d := TRUNC(1.5);
 END_PROGRAM
 `;
     expect(ed3WarningsOf(src, IEC3)).toEqual([]);
+  });
+
+  it("does not warn where TRUNC names a METHOD of the FB or of its base", () => {
+    const src = `FUNCTION_BLOCK FB_B
+METHOD TRUNC : DINT
+VAR_INPUT v : LREAL; END_VAR
+TRUNC := 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_T EXTENDS FB_B
+VAR d : DINT; END_VAR
+METHOD M : DINT
+M := TRUNC(2.5);
+END_METHOD
+d := TRUNC(1.5);
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_U
+VAR d : DINT; END_VAR
+d := TRUNC(1.5);
+END_FUNCTION_BLOCK
+`;
+    expect(ed3WarningsOf(src, IEC3)).toEqual([
+      "16:6: TRUNC with no result type is deprecated in IEC 61131-3 Ed. 3; write the typed form TRUNC_<type>, such as TRUNC_DINT",
+    ]);
+  });
+
+  it("does not warn where TRUNC names an ACTION of the PROGRAM", () => {
+    const src = `PROGRAM Main
+VAR d : DINT; END_VAR
+TRUNC();
+ACTION TRUNC:
+d := 1;
+END_ACTION
+END_PROGRAM
+PROGRAM Other
+VAR d : DINT; END_VAR
+d := TRUNC(2.5);
+END_PROGRAM
+`;
+    expect(
+      ed3WarningsOf(src, { dialect: "iec-3", features: ["+st_actions"] }),
+    ).toEqual([
+      "10:6: TRUNC with no result type is deprecated in IEC 61131-3 Ed. 3; write the typed form TRUNC_<type>, such as TRUNC_DINT",
+    ]);
   });
 
   it("warns once at a STRUCT field default inherited through EXTENDS", () => {
