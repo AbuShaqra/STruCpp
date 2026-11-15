@@ -6822,7 +6822,12 @@ export class SemanticAnalyzer {
     sourceSymbolTables: SymbolTables,
   ): void {
     if (this.testFileDialect?.features.has("pointer_to") ?? true) return;
-    if (sourceSymbolTables.lookupFunction("ADR") !== undefined) return;
+    if (
+      sourceSymbolTables.lookupFunction("ADR") !== undefined &&
+      !sourceSymbolTables.globalScope.definedByLibrary("ADR")
+    ) {
+      return;
+    }
     const calls: FunctionCallExpression[] = [];
     const seen = new Set<object>();
     const visit = (node: unknown): void => {

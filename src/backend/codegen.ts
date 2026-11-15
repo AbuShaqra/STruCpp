@@ -94,7 +94,6 @@ import {
   IEC_TO_CPP_VAR_TYPE,
   sizeOfTypeCpp,
 } from "./type-codegen.js";
-import { addressFit, addressSource } from "../semantic/address-store.js";
 import {
   dateArithmeticCpp,
   formatArrayType,
@@ -157,6 +156,8 @@ interface InOutCopyArg {
   cppType?: string;
   /** Reads and writes the variable through one reference (its index runs once). */
   once?: true;
+  /** A POINTER TO or REF_TO output captured into this 64-bit integer type: copied out as its address, not copied in. */
+  addressInto?: string;
 }
 
 /** The parts of a type reference that decide its C++ type. */
@@ -2098,10 +2099,18 @@ export class CodeGenerator {
    * complete, so it is emitted after the FB classes and late types.
    */
   private emitGvlGlobals(ast: CompilationUnit, late: boolean): void {
-    this.withFaultPou("VAR_GLOBAL", undefined, () =>
-      this.emitGvlGlobalsBody(ast, late),
-    );
+    this.atNamespaceScope = true;
+    try {
+      this.withFaultPou("VAR_GLOBAL", undefined, () =>
+        this.emitGvlGlobalsBody(ast, late),
+      );
+    } finally {
+      this.atNamespaceScope = false;
+    }
   }
+
+  /** Initial values emitted at namespace scope, where a lambda captures nothing. */
+  private atNamespaceScope = false;
 
   private emitGvlGlobalsBody(ast: CompilationUnit, late: boolean): void {
     const holdsFB = (typeRef: TypeReference): boolean =>
@@ -4342,9 +4351,14 @@ export class CodeGenerator {
   }
 
   private emitFileScopeGlobals(): void {
-    this.withFaultPou("VAR_GLOBAL", undefined, () =>
-      this.emitFileScopeGlobalsBody(),
-    );
+    this.atNamespaceScope = true;
+    try {
+      this.withFaultPou("VAR_GLOBAL", undefined, () =>
+        this.emitFileScopeGlobalsBody(),
+      );
+    } finally {
+      this.atNamespaceScope = false;
+    }
   }
 
   private emitFileScopeGlobalsBody(): void {
@@ -4914,11 +4928,7 @@ export class CodeGenerator {
     }
 
     const target = this.generateLvalue(stmt.target);
-    const value = this.addressIntoAlias(
-      stmt.target,
-      stmt.value,
-      this.generateExpression(stmt.value),
-    );
+    const value = this.generateExpression(stmt.value);
 
     // For interface-returning methods, convert assignment to result var into return statement
     if (
@@ -5071,42 +5081,6 @@ export class CodeGenerator {
   }
 
   /**
-   * An address stored in a variable whose type is a TYPE alias of a 64-bit
-   * integer (`TYPE T_L : LWORD`), held as the plain integer: the address
-   * converted to it. Otherwise `value` unchanged.
-   */
-  private addressIntoAlias(
-    target: Expression,
-    valueExpr: Expression,
-    value: string,
-  ): string {
-    if (
-      target.kind !== "VariableExpression" ||
-      target.fieldAccess.length > 0 ||
-      target.subscripts.length > 0 ||
-      target.isDereference ||
-      (target.accessChain?.length ?? 0) > 0 ||
-      addressSource(valueExpr) === undefined ||
-      !this.ast ||
-      this.ast.functions.some((f) => f.name.toUpperCase() === "ADR")
-    ) {
-      return value;
-    }
-    const typeName = this.rootVariableType(target.name.toUpperCase());
-    const alias = this.ast.types.find(
-      (t) => t.name.toUpperCase() === typeName?.toUpperCase(),
-    );
-    if (
-      alias === undefined ||
-      alias.definition.kind !== "TypeReference" ||
-      addressFit(alias.name, this.ast.types) !== "wide"
-    ) {
-      return value;
-    }
-    return `static_cast<${alias.name}>(reinterpret_cast<std::uintptr_t>(${value}))`;
-  }
-
-  /**
    * Emit a write to a composite / array shared global (VAR_EXTERNAL to a
    * composite VAR_GLOBAL) under the global's own mutex via with_lock. The RHS is
    * hoisted to a temp BEFORE the lock is taken so its own composite-global reads
@@ -5221,12 +5195,26 @@ export class CodeGenerator {
    * member's field type, so it binds the callee's `T&`).
    */
   private inOutCopy(
-    { value: arg, cppType, once }: InOutCopyArg,
+    { value: arg, cppType, once, addressInto }: InOutCopyArg,
     tmp: string,
   ): { declaration: string; copyOut: string } {
     const read = this.generateVariableExpression(arg);
     const copyIn = arg.unionMember === true ? `union_value(${read})` : read;
     const upper = arg.name.toUpperCase();
+    // A pointer output into an integer: no copy in, its address copied out.
+    if (addressInto !== undefined && cppType !== undefined) {
+      const out = this.addressAsInteger(addressInto, tmp);
+      const store =
+        this.bitStore(arg, out) ??
+        (this.compositeExternals.has(upper)
+          ? this.compositeGlobalStore(arg, out)
+          : this.programExternals.has(upper) &&
+              arg.fieldAccess.length === 0 &&
+              !arg.isDereference
+            ? `${arg.name}->write(${out});`
+            : `${read} = ${out};`);
+      return { declaration: `${cppType} ${tmp};`, copyOut: store };
+    }
     const bitStore = this.bitStore(arg, tmp);
     // A dereference, a REFERENCE TO or a bit is no lvalue a reference can hold.
     const plainLvalue =
@@ -5506,6 +5494,9 @@ export class CodeGenerator {
           value,
           cppType: this.inOutParamType(param.type),
           once: true as const,
+          ...(arg.addressInto !== undefined
+            ? { addressInto: arg.addressInto }
+            : {}),
         });
       } else if (
         (arg.isOutput || param.blockType === "VAR_OUTPUT") &&
@@ -6183,6 +6174,18 @@ export class CodeGenerator {
    * Returns the C++ expression as a string.
    */
   protected generateExpression(expr: Expression): string {
+    const code = this.generateExpressionUnconverted(expr);
+    return expr.addressInto === undefined
+      ? code
+      : this.addressAsInteger(expr.addressInto, code);
+  }
+
+  /** An address (a pointer, a REF, a POINTER TO value) as the 64-bit integer type `typeName`. */
+  private addressAsInteger(typeName: string, code: string): string {
+    return `static_cast<${this.typeCodeGen.mapTypeToCpp(typeName)}>(strucpp::address_bits(${code}))`;
+  }
+
+  private generateExpressionUnconverted(expr: Expression): string {
     switch (expr.kind) {
       case "LiteralExpression":
         return this.generateLiteralExpression(expr);
@@ -10017,9 +10020,12 @@ export class CodeGenerator {
     for (const arg of filteredArgs) {
       if (arg.name && arg.isOutput) {
         const member = `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`;
+        const source = kindOf(arg.name) === "ref" ? `(*${member})` : member;
         this.emitCaptureToLvalue(
           arg.value,
-          kindOf(arg.name) === "ref" ? `(*${member})` : member,
+          arg.addressInto === undefined
+            ? source
+            : this.addressAsInteger(arg.addressInto, source),
           indent,
         );
       }
@@ -10651,9 +10657,11 @@ export class CodeGenerator {
     }
     if (
       this.externalPointerSuffix !== "" ||
-      this.externalPointerOf !== undefined
+      this.externalPointerOf !== undefined ||
+      (!this.atNamespaceScope && this.namesLocalVariable(value))
     ) {
-      // In a PROGRAM constructor the VAR_EXTERNAL parameters are captured.
+      // In a PROGRAM constructor the VAR_EXTERNAL parameters are captured;
+      // in a constructor or body, the members or locals the value names.
       return generateInitializerValue(
         value,
         cppType,
@@ -10667,6 +10675,25 @@ export class CodeGenerator {
       stTypeName,
       this.getStructInitEmitter(),
     );
+  }
+
+  /** `value` names a variable that is neither a file-level global nor an enumeration member. */
+  private namesLocalVariable(value: Expression): boolean {
+    const globals = this.fileScopeGlobalNames();
+    const enumMembers = new Set(
+      (this.ast?.types ?? []).flatMap((t) =>
+        t.definition.kind === "EnumDefinition"
+          ? t.definition.members.map((m) => m.name.toUpperCase())
+          : [],
+      ),
+    );
+    let found = false;
+    walkAST(value, (node) => {
+      if (node.kind !== "VariableExpression") return;
+      const name = (node as VariableExpression).name.toUpperCase();
+      if (!globals.has(name) && !enumMembers.has(name)) found = true;
+    });
+    return found;
   }
 
   /** The reference levels a TYPE alias (through aliases) adds: `T_R : REFERENCE TO INT`. */
