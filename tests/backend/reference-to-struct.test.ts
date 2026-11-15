@@ -5,6 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 const DECLS = `
   TYPE ST : STRUCT a : INT; b : INT; END_STRUCT END_TYPE
@@ -28,7 +29,7 @@ function run(body: string): string {
     { headerFileName: "generated.hpp" },
   );
   expect(r.errors).toEqual([]);
-  return r.cppCode;
+  return withoutSites(r.cppCode);
 }
 
 describe("references to a STRUCT or function block", () => {

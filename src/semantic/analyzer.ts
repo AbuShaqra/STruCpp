@@ -112,6 +112,7 @@ import {
 import {
   charLiteralUnits,
   exactIntegerLiteralValue,
+  exactIntegerValue,
   IEC_INTEGER_MAX,
   IEC_INTEGER_MIN,
   integerTypeRange,
@@ -3133,12 +3134,20 @@ export class SemanticAnalyzer {
     span: { startLine: number; startCol: number; file?: string | undefined },
   ): void {
     if (this.features.has(feature)) return;
-    this.addError(
-      this.featureMessage(feature, construct),
-      span.startLine,
-      span.startCol,
-      span.file,
-    );
+    // One refusal per position (a repeated array-literal element is one).
+    const message = this.featureMessage(feature, construct);
+    if (
+      this.errors.some(
+        (e) =>
+          e.message === message &&
+          e.line === span.startLine &&
+          e.column === span.startCol &&
+          e.file === span.file,
+      )
+    ) {
+      return;
+    }
+    this.addError(message, span.startLine, span.startCol, span.file);
   }
 
   /** `<construct> needs the feature <id>`, plus the loaded profiles that have it. */
@@ -5323,6 +5332,121 @@ export class SemanticAnalyzer {
     );
     if (this.features.has("fb_init")) this.validateFbInitArgumentNames(ast);
     this.validateInitialValueNames(ast);
+    this.validateSubrangeInitialValues(ast);
+  }
+
+  /**
+   * A constant initial value outside its subrange is refused: a variable's,
+   * a STRUCT field's, an ARRAY element's and a TYPE's own default.
+   */
+  private validateSubrangeInitialValues(ast: CompilationUnit): void {
+    const types = new Map(ast.types.map((t) => [t.name.toUpperCase(), t]));
+    const rangeOf = (
+      name: string | undefined,
+    ): { lo: bigint; hi: bigint } | undefined => {
+      let upper = name?.toUpperCase();
+      for (let i = 0; i < 32 && upper !== undefined; i++) {
+        const decl = types.get(upper);
+        if (decl === undefined) return undefined;
+        const def = decl.definition;
+        if (def.kind === "SubrangeDefinition") {
+          const lo = exactIntegerValue(def.lowerBound);
+          const hi = exactIntegerValue(def.upperBound);
+          return lo === undefined || hi === undefined ? undefined : { lo, hi };
+        }
+        if (def.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+          return undefined;
+        }
+        upper = def.name.toUpperCase();
+      }
+      return undefined;
+    };
+    const elementOf = (type: TypeReference): string | undefined => {
+      if (type.arrayDimensions !== undefined) return type.elementTypeName;
+      const def = types.get(type.name.toUpperCase())?.definition;
+      return def?.kind === "ArrayDefinition" ? def.elementType.name : undefined;
+    };
+    const reported = new Set<Expression>();
+    const check = (
+      value: Expression,
+      typeName: string | undefined,
+      owner: string,
+    ): void => {
+      if (reported.has(value)) return;
+      const range = rangeOf(typeName);
+      const v = exactIntegerValue(value);
+      if (range === undefined || v === undefined) return;
+      if (v >= range.lo && v <= range.hi) return;
+      reported.add(value);
+      this.addError(
+        `The initial value ${v} of '${owner}' is outside its subrange ${range.lo}..${range.hi}`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+    };
+    // Into STRUCT initialisers and ARRAY literals, nested ones included
+    const checkValue = (
+      value: Expression,
+      type: TypeReference | undefined,
+      typeName: string | undefined,
+      owner: string,
+    ): void => {
+      if (value.kind === "ArrayLiteralExpression") {
+        const element =
+          type !== undefined
+            ? elementOf(type)
+            : typeName === undefined
+              ? undefined
+              : elementOfName(typeName);
+        for (const e of value.elements) {
+          // A nested literal of a multi-dimensional ARRAY has the same elements
+          if (e.kind === "ArrayLiteralExpression") {
+            checkValue(e, type, typeName, owner);
+          } else {
+            checkValue(e, undefined, element, owner);
+          }
+        }
+      } else if (value.kind === "StructInitializerExpression") {
+        for (const el of value.elements) {
+          const field =
+            typeName === undefined
+              ? undefined
+              : resolveFieldDeclaration(typeName, el.name, ast);
+          if (field !== undefined) {
+            checkValue(
+              el.value,
+              field.type,
+              field.type.name,
+              `${owner}.${el.name}`,
+            );
+          }
+        }
+      } else if (type === undefined || type.arrayDimensions === undefined) {
+        check(value, typeName, owner);
+      }
+    };
+    const elementOfName = (name: string): string | undefined => {
+      const def = types.get(name.toUpperCase())?.definition;
+      return def?.kind === "ArrayDefinition" ? def.elementType.name : undefined;
+    };
+    const checkDecl = (decl: VarDeclaration): void => {
+      if (decl.initialValue === undefined) return;
+      checkValue(
+        decl.initialValue,
+        decl.type,
+        decl.type.arrayDimensions === undefined ? decl.type.name : undefined,
+        decl.names.join(", "),
+      );
+    };
+    for (const type of ast.types) {
+      if (type.defaultValue !== undefined) {
+        checkValue(type.defaultValue, undefined, type.name, type.name);
+      }
+    }
+    walkAST(ast, (node) => {
+      if (node.kind === "VarDeclaration") checkDecl(node as VarDeclaration);
+    });
   }
 
   /**
@@ -6553,7 +6677,8 @@ export class SemanticAnalyzer {
       return;
     }
 
-    // 7. Not found
+    // 7. Not found (a name the parser could not read is refused already)
+    if (name === "") return;
     this.addError(
       `Undeclared variable '${name}'`,
       sourceSpan.startLine,
@@ -6618,6 +6743,7 @@ export class SemanticAnalyzer {
         ),
       );
     }
+    this.refuseTestAddressOperator(testFile, sourceSymbolTables);
     const typeScope = this.buildTestTypeScope(testFile);
 
     // Validate type references in SETUP and TEST var blocks
@@ -6667,9 +6793,16 @@ export class SemanticAnalyzer {
         testFile.setup?.body ?? [],
       );
       this.checkTestOutputBindings(tc.body, testScope, sourceAst);
+      this.checkTestAddressStores(tc.varBlocks, tc.body, testScope, sourceAst);
     }
     if (testFile.setup) {
       this.checkTestOutputBindings(
+        [...testFile.setup.body, ...(testFile.teardown?.body ?? [])],
+        setupScope,
+        sourceAst,
+      );
+      this.checkTestAddressStores(
+        testFile.setup.varBlocks,
         [...testFile.setup.body, ...(testFile.teardown?.body ?? [])],
         setupScope,
         sourceAst,
@@ -6678,6 +6811,74 @@ export class SemanticAnalyzer {
 
     this.testTypeNames.clear();
     return { errors: [...this.errors], warnings: [...this.warnings] };
+  }
+
+  /**
+   * `ADR` in a test file needs the feature pointer_to, unless the sources
+   * declare a FUNCTION named ADR; one refusal per position.
+   */
+  private refuseTestAddressOperator(
+    testFile: TestFile,
+    sourceSymbolTables: SymbolTables,
+  ): void {
+    if (this.testFileDialect?.features.has("pointer_to") ?? true) return;
+    if (
+      sourceSymbolTables.lookupFunction("ADR") !== undefined &&
+      !sourceSymbolTables.globalScope.definedByLibrary("ADR")
+    ) {
+      return;
+    }
+    const calls: FunctionCallExpression[] = [];
+    const seen = new Set<object>();
+    const visit = (node: unknown): void => {
+      if (typeof node !== "object" || node === null || seen.has(node)) return;
+      seen.add(node);
+      if (node === testFile.dialect) return;
+      const n = node as { kind?: unknown };
+      if (n.kind === "FunctionCallExpression") {
+        calls.push(node as FunctionCallExpression);
+      }
+      for (const value of Object.values(node)) visit(value);
+    };
+    visit(testFile);
+    for (const call of calls) {
+      if (call.functionName.toUpperCase() !== "ADR" || call.instance) continue;
+      const span = call.sourceSpan;
+      const message = this.featureMessage("pointer_to", "ADR");
+      const known = this.errors.some(
+        (e) =>
+          e.message === message &&
+          e.line === span.startLine &&
+          e.column === span.startCol &&
+          e.file === span.file,
+      );
+      if (!known) {
+        this.addError(message, span.startLine, span.startCol, span.file);
+      }
+    }
+  }
+
+  /** Addresses stored in narrow integers in a test's VARs and statements. */
+  private checkTestAddressStores(
+    varBlocks: readonly VarBlock[],
+    stmts: readonly TestStatement[],
+    scope: Scope,
+    sourceAst: CompilationUnit | undefined,
+  ): void {
+    const checker = new TypeChecker(
+      this.symbolTables,
+      this.stdRegistry,
+      false,
+      this.testFileDialect?.features ?? DEFAULT_FEATURES,
+    );
+    const found = checker.checkTestAddressStores(
+      varBlocks,
+      stmts as readonly ASTNode[],
+      scope,
+      sourceAst,
+    );
+    this.errors.push(...found.errors);
+    this.warnings.push(...found.warnings);
   }
 
   /** Output bindings in test bodies: checked as assignments, copied out where needed. */

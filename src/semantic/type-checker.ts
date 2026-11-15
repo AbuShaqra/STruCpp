@@ -75,6 +75,13 @@ import {
   orderGlobals,
 } from "./global-order.js";
 import { stripEnEno, walkAST } from "../ast-utils.js";
+import {
+  addressFit,
+  addressMisuse,
+  addressSource,
+  isNarrowInteger,
+  narrowAddressMessage,
+} from "./address-store.js";
 import { DEFAULT_FEATURES, type FeatureId } from "../dialect.js";
 import { structExtends } from "./struct-extends.js";
 import { bindStdFunctionArguments } from "./std-function-args.js";
@@ -303,11 +310,6 @@ function isAddressOf(expr: Expression): expr is FunctionCallExpression {
     expr.functionName.toUpperCase() === "ADR" &&
     expr.instance === undefined
   );
-}
-
-/** An elementary integer or bit-string type name (not BOOL). */
-function isIntegerOrBitStringName(name: string): boolean {
-  return /^(U?S?INT|U?DINT|U?LINT|BYTE|WORD|DWORD|LWORD)$/i.test(name);
 }
 
 /** An untyped integer literal 0 (`0`, `16#0`), not `INT#0`. */
@@ -539,6 +541,52 @@ export class TypeChecker {
   }
 
   /**
+   * The address stores of a test file's VAR blocks and statements (see
+   * checkAddressStore): initial values, assignments and call arguments.
+   */
+  checkTestAddressStores(
+    varBlocks: readonly VarBlock[],
+    roots: readonly ASTNode[],
+    scope: Scope,
+    ast: CompilationUnit | undefined,
+  ): { errors: CompileError[]; warnings: CompileError[] } {
+    this.errors = [];
+    this.warnings = [];
+    this.ast = ast;
+    for (const block of varBlocks) {
+      for (const decl of block.declarations) {
+        if (decl.initialValue === undefined) continue;
+        if ((decl.type.referenceKind ?? "none") !== "none") continue;
+        this.refuseNarrowAddressNested(decl.type, decl.initialValue);
+      }
+    }
+    for (const root of roots) {
+      walkAST(root, (node) => {
+        if (node.kind === "AssignmentStatement") {
+          const stmt = node as AssignmentStatement;
+          const target = this.resolveExprType(stmt.target, scope);
+          if (
+            this.reachesThroughDereference(stmt.target) ||
+            (this.declaredReferenceShape(stmt.target, scope)?.chain.length ??
+              0) === 0
+          ) {
+            this.checkAddressStore(
+              this.storeTargetTypeName(stmt.target, target, scope),
+              stmt.value,
+            );
+          }
+        } else if (node.kind === "FunctionCallExpression") {
+          this.refuseNarrowAddressArguments(
+            node as FunctionCallExpression,
+            scope,
+          );
+        }
+      });
+    }
+    return { errors: [...this.errors], warnings: [...this.warnings] };
+  }
+
+  /**
    * Check types for a complete compilation unit.
    * Walks all POUs, resolves expression types, and validates type rules.
    */
@@ -549,6 +597,7 @@ export class TypeChecker {
     this.errors = [];
     this.warnings = [];
     this.strictReported.clear();
+    this.addressStoresReported.clear();
     this.ast = ast;
     this.writeTargets = new Set();
     walkAST(ast, (node) => {
@@ -563,6 +612,7 @@ export class TypeChecker {
     this.checkAllInitializerElements(ast);
 
     this.checkGlobalInitialCycles(ast);
+    this.refuseNarrowAddressInGlobals(ast);
     this.refuseGlobalReferenceToValues(ast);
     this.checkStructReferenceDefaults(ast);
     this.markGlobalVendorOperators(ast);
@@ -662,10 +712,109 @@ export class TypeChecker {
       this.currentFBName = undefined;
     }
 
+    this.refuseMixedStringComparisonsInInitialValues(ast);
+
     return {
       errors: this.errors,
       warnings: this.warnings,
     };
+  }
+
+  /**
+   * A STRING/WSTRING comparison in an initial value the checks above do not
+   * type (a STRUCT field default, an array or structure initializer, a global's
+   * initial value) is refused as in a body. Operand types come from literals,
+   * declared variables and types already resolved; nothing is inferred anew.
+   */
+  private refuseMixedStringComparisonsInInitialValues(
+    ast: CompilationUnit,
+  ): void {
+    const global = this.symbolTables.globalScope;
+    const visit = (value: Expression | undefined, scope: Scope): void => {
+      if (value === undefined) return;
+      walkAST(value, (node) => {
+        if (node.kind !== "BinaryExpression") return;
+        const expr = node as BinaryExpression;
+        if (
+          !["=", "<>", "<", ">", "<=", ">="].includes(expr.operator) ||
+          this.refusedMixedComparisons.has(expr)
+        ) {
+          return;
+        }
+        const left = this.knownOperandType(expr.left, scope);
+        const right = this.knownOperandType(expr.right, scope);
+        if (left !== undefined && right !== undefined) {
+          this.refuseMixedStringComparison(expr, left, right);
+        }
+      });
+    };
+    const blocks = (
+      list: readonly VarBlock[],
+      scope: Scope | undefined,
+    ): void => {
+      for (const block of list) {
+        for (const decl of block.declarations) {
+          visit(decl.initialValue, scope ?? global);
+        }
+      }
+    };
+    blocks(ast.globalVarBlocks, global);
+    for (const c of ast.configurations) blocks(c.varBlocks, global);
+    for (const prog of ast.programs) {
+      const scope = this.symbolTables.getProgramScope(prog.name);
+      blocks(prog.varBlocks, scope);
+      for (const m of prog.methods) {
+        blocks(
+          m.varBlocks,
+          this.symbolTables.getMethodScope(prog.name, m.name) ?? scope,
+        );
+      }
+    }
+    for (const func of ast.functions) {
+      blocks(func.varBlocks, this.symbolTables.getFunctionScope(func.name));
+    }
+    for (const fb of ast.functionBlocks) {
+      const scope = this.symbolTables.getFBScope(fb.name);
+      blocks(fb.varBlocks, scope);
+      for (const m of fb.methods) {
+        blocks(
+          m.varBlocks,
+          this.symbolTables.getMethodScope(fb.name, m.name) ?? scope,
+        );
+      }
+    }
+    for (const type of ast.types) {
+      if (type.definition.kind !== "StructDefinition") continue;
+      for (const field of type.definition.fields) {
+        visit(field.initialValue, global);
+      }
+    }
+  }
+
+  /** An operand's type when known without inference: a literal, a declared name or a resolved type. */
+  private knownOperandType(
+    expr: Expression,
+    scope: Scope,
+  ): IECType | undefined {
+    while (expr.kind === "ParenthesizedExpression") expr = expr.expression;
+    if (expr.resolvedType !== undefined) return expr.resolvedType;
+    if (expr.kind === "LiteralExpression") {
+      return expr.literalType === "STRING" || expr.literalType === "WSTRING"
+        ? ELEMENTARY_TYPES[expr.literalType]
+        : undefined;
+    }
+    if (
+      expr.kind === "VariableExpression" &&
+      expr.fieldAccess.length === 0 &&
+      expr.subscripts.length === 0 &&
+      !expr.isDereference
+    ) {
+      const symbol = scope.lookup(expr.name);
+      if (symbol?.kind === "variable" || symbol?.kind === "constant") {
+        return symbol.type;
+      }
+    }
+    return undefined;
   }
 
   // ===========================================================================
@@ -1822,6 +1971,7 @@ export class TypeChecker {
 
     // Comparison operators always return BOOL
     if (["=", "<>", "<", ">", "<=", ">="].includes(expr.operator)) {
+      this.refuseMixedStringComparison(expr, leftType, rightType);
       type = ELEMENTARY_TYPES["BOOL"];
     }
     // Logical operators return BOOL
@@ -2169,6 +2319,40 @@ export class TypeChecker {
       default:
         return undefined;
     }
+  }
+
+  /**
+   * A STRING compared with a WSTRING (variables or literals): no comparison
+   * of the two exists, so it is refused in every mode instead of failing the
+   * C++ build.
+   */
+  /** Comparisons refused as STRING against WSTRING, so none is refused twice. */
+  private refusedMixedComparisons = new WeakSet<BinaryExpression>();
+
+  private refuseMixedStringComparison(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): void {
+    const kind = (t: IECType): string | undefined => {
+      if (t.typeKind !== "elementary") return undefined;
+      const name = this.aliasBase((t as ElementaryType).name).toUpperCase();
+      return /^WSTRING\b/.test(name)
+        ? "WSTRING"
+        : /^STRING\b/.test(name)
+          ? "STRING"
+          : undefined;
+    };
+    const l = kind(leftType);
+    const r = kind(rightType);
+    if (l === undefined || r === undefined || l === r) return;
+    this.refusedMixedComparisons.add(expr);
+    this.addError(
+      `Cannot compare ${l} with ${r}; convert one with STRING_TO_WSTRING or WSTRING_TO_STRING`,
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
   }
 
   /**
@@ -3650,13 +3834,19 @@ export class TypeChecker {
           );
           continue;
         }
-        // An address does not fit an integer narrower than the address width.
-        if (
-          (outerKind ?? "none") === "none" &&
-          isAddressOf(decl.initialValue) &&
-          this.refuseNarrowAddress(decl.type.name, decl.initialValue)
-        ) {
-          continue;
+        // An address stored in an integer, also in an array literal or
+        // structure initializer at any depth.
+        if ((outerKind ?? "none") === "none") {
+          if (
+            decl.initialValue.kind === "ArrayLiteralExpression" ||
+            decl.initialValue.kind === "StructInitializerExpression"
+          ) {
+            this.refuseNarrowAddressNested(decl.type, decl.initialValue);
+          } else if (
+            this.checkAddressStore(decl.type.name, decl.initialValue)
+          ) {
+            continue;
+          }
         }
         // `p : POINTER TO T := ADR(x);` takes an address of any target type.
         if (outerKind === "pointer_to" && isAddressOf(decl.initialValue)) {
@@ -3922,54 +4112,442 @@ export class TypeChecker {
     }
   }
 
+  /** A user FUNCTION named ADR, which a call of ADR reaches; a library's ADR is the operator. */
+  private userAddressFunction(): boolean {
+    return (
+      this.findUserFunction("ADR") !== undefined ||
+      (this.symbolTables.lookupFunction("ADR") !== undefined &&
+        !this.symbolTables.globalScope.definedByLibrary("ADR"))
+    );
+  }
+
+  /** Positions already refused by checkAddressStore (a repeated literal element is one). */
+  private addressStoresReported = new Set<string>();
+
   /**
-   * `ADR(x)` stored in an integer narrower than the 64-bit address width (an
-   * initial value, a FUNCTION or METHOD argument) would lose the address's
-   * high bits. True when it was refused.
+   * The one check of an address (`ADR(x)`, `ADR(x) ± n`, `REF(x)`) stored into
+   * a value of type `typeName`: refused when the type, through aliases and
+   * subranges, is an integer narrower than 64 bits. With pointer_to off, or an
+   * operand that is not a variable, the refusal of the ADR itself is the only
+   * one. True when the store was decided here (refused, or an address into a
+   * 64-bit integer), so the caller adds no other type error.
    */
-  private refuseNarrowAddress(
-    typeName: string,
-    value: FunctionCallExpression,
+  private checkAddressStore(
+    typeName: string | undefined,
+    value: Expression,
   ): boolean {
-    const type = ELEMENTARY_TYPES[typeName.toUpperCase()];
+    if (typeName === undefined) return false;
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    // `ADR(x) * 2` into an integer: no address, no offset of one.
     if (
-      type === undefined ||
-      !("sizeBits" in type) ||
-      typeof type.sizeBits !== "number" ||
-      type.sizeBits >= 64 ||
-      !isIntegerOrBitStringName(typeName)
+      addressMisuse(value, user) &&
+      addressFit(typeName, this.ast?.types ?? []) !== undefined &&
+      !this.userAddressFunction()
     ) {
-      return false;
+      this.addError(
+        "An address can only be offset by + or - an integer",
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+      return true;
     }
+    const source = addressSource(value, user);
+    if (source === undefined) return this.checkXwordStore(typeName, value);
+    // A user FUNCTION named ADR is called, not the operator.
+    if (source.op === "ADR" && this.userAddressFunction()) return false;
+    const fit = addressFit(typeName, this.ast?.types ?? []);
+    if (source.op === "ADR" && !this.features.has("pointer_to")) {
+      return fit !== undefined;
+    }
+    const span = source.node.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+    if (source.operand?.kind !== "VariableExpression") {
+      if (fit !== undefined && !this.addressStoresReported.has(key)) {
+        this.addressStoresReported.add(key);
+        this.addError(
+          `${source.op}() requires a variable reference, not an expression`,
+          span.startLine,
+          span.startCol,
+          span.file,
+        );
+      }
+      return fit !== undefined;
+    }
+    if (fit === undefined) return false;
+    if (fit === "wide") {
+      // An alias or subrange is a plain integer in C++, and a REF no pointer.
+      if (source.op === "REF" || addressFit(typeName, []) !== "wide") {
+        value.addressInto = typeName;
+      }
+      return true;
+    }
+    if (this.addressStoresReported.has(key)) return true;
+    this.addressStoresReported.add(key);
     this.addError(
-      `ADR gives a 64-bit address, which ${typeName.toUpperCase()} cannot hold; use __XWORD, LWORD or ULINT`,
-      value.sourceSpan.startLine,
-      value.sourceSpan.startCol,
-      value.sourceSpan.file,
+      narrowAddressMessage(source.op, fit.narrow),
+      span.startLine,
+      span.startCol,
+      span.file,
     );
     return true;
   }
 
-  /** `F(ADR(x))` and `fb.M(ADR(x))` into an input narrower than an address. */
+  /**
+   * An `__XWORD` value (a PVOID, an XWORD), which holds an address, stored
+   * into an integer narrower than 64 bits: refused as an ADR is.
+   */
+  private checkXwordStore(typeName: string, value: Expression): boolean {
+    const valueType = value.resolvedType;
+    if (
+      valueType === undefined ||
+      typeNameUtil(valueType).toUpperCase() !== "__XWORD" ||
+      this.isAddressDifference(value)
+    ) {
+      return false;
+    }
+    const fit = addressFit(typeName, this.ast?.types ?? []);
+    if (typeof fit !== "object" || !isNarrowInteger(fit.narrow)) return false;
+    const span = value.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+    if (!this.addressStoresReported.has(key)) {
+      this.addressStoresReported.add(key);
+      this.addError(
+        narrowAddressMessage("__XWORD", fit.narrow),
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    }
+    return true;
+  }
+
+  /** `a - b` of two addresses (ADR, REF or __XWORD values): an offset, no address. */
+  private isAddressDifference(value: Expression): boolean {
+    let v = value;
+    while (v.kind === "ParenthesizedExpression") v = v.expression;
+    if (v.kind !== "BinaryExpression" || v.operator !== "-") return false;
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    const isAddress = (e: Expression): boolean =>
+      addressSource(e, user) !== undefined ||
+      (e.resolvedType !== undefined &&
+        typeNameUtil(e.resolvedType).toUpperCase() === "__XWORD");
+    return isAddress(v.left) && isAddress(v.right);
+  }
+
+  /**
+   * An address as a CASE selector (`CASE ADR(x) OF`), refused once per
+   * position; the feature gate and the operand check come first, as for a
+   * store (checkAddressStore). True when refused.
+   */
+  private refuseAddressSelector(selector: Expression): boolean {
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    const source = addressSource(selector, user);
+    if (source === undefined && !addressMisuse(selector, user)) return false;
+    if (this.userAddressFunction()) return false;
+    if (source?.op === "ADR" && !this.features.has("pointer_to")) return true;
+    if (source !== undefined && source.operand?.kind !== "VariableExpression") {
+      return true;
+    }
+    const span = selector.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+    if (!this.addressStoresReported.has(key)) {
+      this.addressStoresReported.add(key);
+      this.addError(
+        "A CASE selector cannot be an address",
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    }
+    return true;
+  }
+
+  /** The type name an assignment stores into: resolved, the result, a variable access or a property. */
+  private storeTargetTypeName(
+    target: Expression,
+    resolved: IECType | undefined,
+    scope: Scope,
+  ): string | undefined {
+    const declared = this.storeTargetDeclaredType(target, scope);
+    // A POINTER TO, REF_TO or REFERENCE TO takes an address whole.
+    if (
+      (declared?.referenceKind ?? "none") !== "none" ||
+      resolved?.typeKind === "reference"
+    ) {
+      return undefined;
+    }
+    return resolved !== undefined ? typeNameUtil(resolved) : declared?.name;
+  }
+
+  /**
+   * The declared type, references included, that a store reaches: the
+   * FUNCTION or METHOD result, a variable access (`p`, `s.f`, `pu^`) or a
+   * PROPERTY.
+   */
+  private storeTargetDeclaredType(
+    target: Expression,
+    scope: Scope,
+  ): Pick<TypeReference, "name" | "referenceKind"> | undefined {
+    return (
+      this.resultTargetType(target) ??
+      this.accessedType(target, scope) ??
+      this.propertyTargetType(target, scope)
+    );
+  }
+
+  /** The type of a PROPERTY set by `fb.Pr :=`, `itf.Pr :=` or `THIS^.Pr :=`. */
+  private propertyTargetType(
+    target: Expression,
+    scope: Scope,
+  ): TypeReference | undefined {
+    if (
+      target.kind !== "VariableExpression" ||
+      target.fieldAccess.length !== 1 ||
+      target.subscripts.length > 0 ||
+      (target.accessChain ?? []).some((st) => st.kind !== "field") ||
+      !this.ast
+    ) {
+      return undefined;
+    }
+    const sym = scope.lookup(target.name);
+    const owner =
+      target.name.toUpperCase() === "THIS"
+        ? this.currentFBName
+        : sym?.kind === "variable"
+          ? (sym.declaration as VarDeclaration | undefined)?.type.name
+          : undefined;
+    const prop = target.fieldAccess[0]!.toUpperCase();
+    const pending = owner !== undefined ? [owner.toUpperCase()] : [];
+    const seen = new Set<string>();
+    while (pending.length > 0) {
+      const name = pending.shift()!;
+      if (seen.has(name) || seen.size > 64) continue;
+      seen.add(name);
+      const fb = this.ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name,
+      );
+      const itf = this.ast.interfaces.find(
+        (i) => i.name.toUpperCase() === name,
+      );
+      const found = (fb?.properties ?? itf?.properties ?? []).find(
+        (p) => p.name.toUpperCase() === prop,
+      );
+      if (found) return found.type;
+      if (fb?.extends !== undefined) pending.push(fb.extends.toUpperCase());
+      for (const base of itf?.extends ?? []) pending.push(base.toUpperCase());
+    }
+    return undefined;
+  }
+
+  /** The declared type a variable access reaches (`p`, `pu^`, `s.pu^`). */
+  private accessedType(
+    target: Expression,
+    scope: Scope,
+  ): Pick<TypeReference, "name" | "referenceKind"> | undefined {
+    if (target.kind !== "VariableExpression") return undefined;
+    const sym = scope.lookup(target.name);
+    const declared =
+      sym?.kind === "variable"
+        ? (sym.declaration as VarDeclaration | undefined)?.type
+        : undefined;
+    if (declared === undefined) return undefined;
+    return resolveAccessType(declared, target, this.accessLookup);
+  }
+
+  /** `p^`, `s.p^`, `p^.x`: a store that reaches through a dereference. */
+  private reachesThroughDereference(target: Expression): boolean {
+    return (
+      target.kind === "VariableExpression" &&
+      (target.isDereference ||
+        target.accessChain?.some((st) => st.kind === "dereference") === true)
+    );
+  }
+
+  /** The declared result type when `target` is the bare FUNCTION or METHOD result. */
+  private resultTargetType(target: Expression): TypeReference | undefined {
+    return this.currentReturn !== undefined &&
+      target.kind === "VariableExpression" &&
+      target.fieldAccess.length === 0 &&
+      target.subscripts.length === 0 &&
+      !target.isDereference &&
+      target.name.toUpperCase() === this.currentReturn.name.toUpperCase()
+      ? this.currentReturn.type
+      : undefined;
+  }
+
+  /**
+   * `ADR(x)` for an integer narrower than an address anywhere in an initial
+   * value: the value itself, an array literal element, a structure
+   * initializer element, nested.
+   */
+  private refuseNarrowAddressNested(
+    type: Pick<TypeReference, "name"> &
+      Partial<
+        Pick<
+          TypeReference,
+          | "arrayDimensions"
+          | "elementTypeName"
+          | "referenceKind"
+          | "elementReferenceChain"
+        >
+      >,
+    value: Expression,
+  ): void {
+    // A POINTER TO (or an ARRAY OF POINTER TO) holds the address whole.
+    if (
+      (type.referenceKind ?? "none") !== "none" ||
+      (type.arrayDimensions !== undefined &&
+        (type.elementReferenceChain?.length ?? 0) > 0)
+    ) {
+      return;
+    }
+    if (value.kind === "ArrayLiteralExpression") {
+      const element =
+        type.arrayDimensions !== undefined && type.elementTypeName !== undefined
+          ? { name: type.elementTypeName }
+          : this.namedArrayElementType(type.name);
+      if (element === undefined) return;
+      for (const e of value.elements)
+        this.refuseNarrowAddressNested(element, e);
+    } else if (value.kind === "StructInitializerExpression") {
+      for (const el of value.elements) {
+        const field = this.lookupMember(type.name, el.name);
+        if (field) this.refuseNarrowAddressNested(field.type, el.value);
+      }
+    } else {
+      this.checkAddressStore(type.name, value);
+    }
+  }
+
+  /** The element type of a named ARRAY type, through aliases. */
+  private namedArrayElementType(
+    name: string,
+  ):
+    | Pick<TypeReference, "name" | "arrayDimensions" | "elementTypeName">
+    | undefined {
+    let current = name.toUpperCase();
+    for (let depth = 0; depth < 16 && this.ast; depth++) {
+      const decl = this.ast.types.find((t) => t.name.toUpperCase() === current);
+      const def = decl?.definition;
+      if (def?.kind === "ArrayDefinition") return def.elementType;
+      if (def?.kind !== "TypeReference") return undefined;
+      if (def.arrayDimensions !== undefined) {
+        return def.elementTypeName === undefined
+          ? undefined
+          : { name: def.elementTypeName };
+      }
+      current = def.name.toUpperCase();
+    }
+    return undefined;
+  }
+
+  /** ADR into a narrower integer in a top-level or CONFIGURATION global's initial value. */
+  private refuseNarrowAddressInGlobals(ast: CompilationUnit): void {
+    const blocks = [
+      ...ast.globalVarBlocks,
+      ...ast.configurations.flatMap((c) => c.varBlocks),
+    ];
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (!decl.initialValue) continue;
+        if ((decl.type.referenceKind ?? "none") !== "none") continue;
+        this.refuseNarrowAddressNested(decl.type, decl.initialValue);
+      }
+    }
+  }
+
+  /**
+   * An address passed to an input (`F(ADR(x))`, `fb.M(ADR(x))`,
+   * `fb(d := ADR(x))`) and a POINTER TO or REF_TO output captured
+   * (`fb(o => u)`), each stored through checkAddressStore's rule.
+   */
   private refuseNarrowAddressArguments(
     expr: FunctionCallExpression,
     scope: Scope,
   ): void {
-    if (this.isFBInstanceCall(expr, scope)) return;
+    const args = stripEnEno(expr.arguments);
+    const method = this.dottedMethod(expr.functionName, scope);
+    const methodParams = method ? this.methodParameters(method) : undefined;
     const inputs =
       this.callInputs(expr, scope) ??
-      this.dottedMethodInputs(expr.functionName, scope);
-    if (!inputs) return;
-    stripEnEno(expr.arguments).forEach((arg, i) => {
-      if (arg.isOutput || !isAddressOf(arg.value)) return;
-      const argName = arg.name?.toUpperCase();
-      const input =
-        argName === undefined
-          ? inputs[i]
-          : inputs.find((p) => p.name.toUpperCase() === argName);
-      if (input === undefined || input.type.referenceKind !== "none") return;
-      this.refuseNarrowAddress(input.type.name, arg.value);
-    });
+      this.dottedMethodInputs(expr.functionName, scope) ??
+      methodParams?.filter((p) => !p.output);
+    if (inputs) {
+      let positional = 0;
+      for (const arg of args) {
+        if (arg.isOutput) continue;
+        const argName = arg.name?.toUpperCase();
+        const input =
+          argName === undefined
+            ? inputs[positional++]
+            : inputs.find((p) => p.name.toUpperCase() === argName);
+        // A VAR_IN_OUT binds, it stores nothing (the binding check refuses an ADR).
+        if (input === undefined || input.inOut) continue;
+        if ((input.type.referenceKind ?? "none") !== "none") continue;
+        this.checkAddressStore(input.type.name, arg.value);
+      }
+    }
+    if (!args.some((a) => a.isOutput) || !this.ast) return;
+    const fbType = this.calledFbType(expr, scope);
+    const outputs =
+      fbType !== undefined
+        ? this.fbOutputsOf(fbType).map((o) => ({
+            name: o.name,
+            kind: o.referenceKind ?? "none",
+          }))
+        : (
+            this.calledFunctionParameters(expr.functionName) ??
+            methodParams ??
+            []
+          )
+            .filter((p) => p.output)
+            .map((p) => ({
+              name: p.name,
+              kind: p.type.referenceKind ?? "none",
+            }));
+    for (const arg of args) {
+      if (!arg.isOutput || arg.name === undefined) continue;
+      const out = outputs.find(
+        (o) => o.name.toUpperCase() === arg.name!.toUpperCase(),
+      );
+      if (
+        out === undefined ||
+        (out.kind !== "pointer_to" && out.kind !== "ref_to")
+      ) {
+        continue;
+      }
+      const target = this.storeTargetTypeName(
+        arg.value,
+        this.resolveExprType(arg.value, scope),
+        scope,
+      );
+      if (target === undefined) continue;
+      const fit = addressFit(target, this.ast.types);
+      if (fit === undefined) continue;
+      if (fit === "wide") {
+        // A FUNCTION's output binds by reference: an integer takes a copy.
+        if (fbType === undefined) {
+          arg.inOutCopy = true;
+          arg.addressInto = target;
+        } else if (out.kind === "ref_to" || addressFit(target, []) !== "wide") {
+          arg.addressInto = target;
+        }
+        continue;
+      }
+      this.addError(
+        narrowAddressMessage(
+          `The output '${out.name.toUpperCase()}'`,
+          fit.narrow,
+        ),
+        arg.value.sourceSpan.startLine,
+        arg.value.sourceSpan.startCol,
+        arg.value.sourceSpan.file,
+      );
+    }
   }
 
   /**
@@ -4065,6 +4643,19 @@ export class TypeChecker {
           );
         }
         this.validateInOutMemberWrite(stmt.target, scope);
+        // An address stored in an integer, also through a dereference (a
+        // POINTER TO or reference target takes it whole).
+        if (
+          (this.reachesThroughDereference(stmt.target) ||
+            (this.declaredReferenceShape(stmt.target, scope)?.chain.length ??
+              0) === 0) &&
+          this.checkAddressStore(
+            this.storeTargetTypeName(stmt.target, targetType, scope),
+            stmt.value,
+          )
+        ) {
+          break;
+        }
         if (this.isAddressIntoPointer(stmt.target, valueType, scope)) break;
         if (this.isZeroIntoPointer(stmt.target, stmt.value, scope)) break;
         if (this.checkArrayScalarAssignment(stmt.target, stmt.value, scope)) {
@@ -4185,7 +4776,8 @@ export class TypeChecker {
       case "CaseStatement": {
         this.checkStrictTerminator(stmt);
         const selectorType = this.resolveExprType(stmt.selector, scope);
-        if (selectorType) {
+        // An address selector is refused once, not also as a non-integer.
+        if (!this.refuseAddressSelector(stmt.selector) && selectorType) {
           this.validateCaseSelector(selectorType, stmt.selector);
         }
         for (const c of stmt.cases) {
@@ -4258,6 +4850,26 @@ export class TypeChecker {
 
         // Validate control variable type
         const controlSym = scope.lookup(stmt.controlVariable);
+        // Start, end and step are stored in the control variable.
+        const addressBound = new Set<Expression>();
+        const controlDeclared =
+          controlSym?.kind === "variable"
+            ? (controlSym.declaration as VarDeclaration | undefined)?.type
+            : undefined;
+        if (
+          controlSym?.kind === "variable" &&
+          controlSym.type &&
+          (controlDeclared?.referenceKind ?? "none") === "none"
+        ) {
+          for (const bound of [stmt.start, stmt.end, stmt.step]) {
+            if (
+              bound !== undefined &&
+              this.checkAddressStore(typeNameUtil(controlSym.type), bound)
+            ) {
+              addressBound.add(bound);
+            }
+          }
+        }
         if (
           controlSym?.kind === "variable" ||
           controlSym?.kind === "constant"
@@ -4276,6 +4888,7 @@ export class TypeChecker {
           if (
             ctrlType &&
             startType &&
+            !addressBound.has(stmt.start) &&
             !this.isUntypedNumericLiteral(stmt.start)
           ) {
             if (
@@ -4291,7 +4904,12 @@ export class TypeChecker {
               );
             }
           }
-          if (ctrlType && endType && !this.isUntypedNumericLiteral(stmt.end)) {
+          if (
+            ctrlType &&
+            endType &&
+            !addressBound.has(stmt.end) &&
+            !this.isUntypedNumericLiteral(stmt.end)
+          ) {
             if (
               ctrlType.typeKind === "elementary" &&
               endType.typeKind === "elementary" &&
@@ -7623,6 +8241,13 @@ export class TypeChecker {
   ): CallInput[] | undefined {
     const parts = functionName.split(".");
     if (parts.length !== 2) return undefined;
+    // `THIS^.M(...)`: a method of this FB or its bases.
+    if (
+      parts[0]!.toUpperCase() === "THIS" &&
+      this.currentFBName !== undefined
+    ) {
+      return this.methodInputsOf(this.currentFBName, parts[1]!);
+    }
     const sym = scope.lookup(parts[0]!);
     if (sym?.kind === "program" && this.features.has("program_methods")) {
       return this.methodInputsOf(sym.name, parts[1]!);
@@ -7674,6 +8299,85 @@ export class TypeChecker {
       current = fb.extends?.toUpperCase();
     }
     return undefined;
+  }
+
+  /**
+   * The METHOD a dotted call reaches: `fb.M`, `itf.M`, `THIS^.M`, `SUPER^.M`
+   * or `PRG.M`, through base FBs and extended interfaces.
+   */
+  private dottedMethod(
+    functionName: string,
+    scope: Scope,
+  ): MethodDeclaration | undefined {
+    const parts = functionName.split(".");
+    if (parts.length !== 2 || !this.ast) return undefined;
+    const head = parts[0]!.toUpperCase();
+    const current = this.currentFBName?.toUpperCase();
+    let owner: string | undefined;
+    if (head === "THIS" && current !== undefined) {
+      owner = current;
+    } else if (head === "SUPER" && current !== undefined) {
+      owner = this.ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === current,
+      )?.extends;
+    } else {
+      const sym = scope.lookup(parts[0]!);
+      owner =
+        sym?.kind === "program"
+          ? sym.name
+          : sym?.kind === "variable"
+            ? (sym.declaration as VarDeclaration | undefined)?.type.name
+            : undefined;
+    }
+    const method = parts[1]!.toUpperCase();
+    const pending = owner !== undefined ? [owner.toUpperCase()] : [];
+    const seen = new Set<string>();
+    while (pending.length > 0) {
+      const name = pending.shift()!;
+      if (seen.has(name) || seen.size > 64) continue;
+      seen.add(name);
+      const pou =
+        this.ast.functionBlocks.find((f) => f.name.toUpperCase() === name) ??
+        this.ast.interfaces.find((i) => i.name.toUpperCase() === name) ??
+        this.ast.programs.find((p) => p.name.toUpperCase() === name);
+      const found = pou?.methods.find((m) => m.name.toUpperCase() === method);
+      if (found) return found;
+      if (
+        pou?.kind === "FunctionBlockDeclaration" &&
+        pou.extends !== undefined
+      ) {
+        pending.push(pou.extends.toUpperCase());
+      } else if (pou?.kind === "InterfaceDeclaration") {
+        for (const base of pou.extends ?? []) pending.push(base.toUpperCase());
+      }
+    }
+    return undefined;
+  }
+
+  /** VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT of a METHOD, in order (see calledFunctionParameters). */
+  private methodParameters(method: MethodDeclaration): Array<{
+    name: string;
+    type: AccessType;
+    output: boolean;
+    inOut: boolean;
+  }> {
+    return method.varBlocks
+      .filter(
+        (b) =>
+          b.blockType === "VAR_INPUT" ||
+          b.blockType === "VAR_IN_OUT" ||
+          b.blockType === "VAR_OUTPUT",
+      )
+      .flatMap((b) =>
+        b.declarations.flatMap((d) =>
+          d.names.map((n) => ({
+            name: n,
+            type: d.type as AccessType,
+            output: b.blockType === "VAR_OUTPUT",
+            inOut: b.blockType === "VAR_IN_OUT",
+          })),
+        ),
+      );
   }
 
   // ===========================================================================
