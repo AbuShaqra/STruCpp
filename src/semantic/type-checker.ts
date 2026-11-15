@@ -738,6 +738,28 @@ export class TypeChecker {
   }
 
   /**
+   * LOWER_BOUND / UPPER_BOUND calls in a test file's statements, which no
+   * typing reaches: checked as an untyped call (see checkBoundCall). Initial
+   * values are typed, and their calls checked, by checkTestAddressStores.
+   */
+  checkTestBoundCalls(
+    roots: readonly ASTNode[],
+    scope: Scope,
+    ast: CompilationUnit | undefined,
+  ): { errors: CompileError[]; warnings: CompileError[] } {
+    this.errors = [];
+    this.warnings = [];
+    this.ast = ast;
+    for (const root of roots) {
+      walkAST(root, (node) => {
+        if (node.kind !== "FunctionCallExpression") return;
+        this.checkBoundCall(node as FunctionCallExpression, scope, true);
+      });
+    }
+    return { errors: [...this.errors], warnings: [...this.warnings] };
+  }
+
+  /**
    * Check types for a complete compilation unit.
    * Walks all POUs, resolves expression types, and validates type rules.
    */
@@ -8669,9 +8691,10 @@ export class TypeChecker {
    * array (a dereferenced pointer or reference is), and a constant DIM below 1
    * is refused, as is a literal DIM above the rank of a two- or
    * three-dimensional array declared as one or of its ARRAY type. A
-   * one-dimensional array answers any positive DIM. With `checkDimType`,
-   * DIM must be an integer when its type is known (the call is not typed
-   * otherwise). The argument count is the analyzer's.
+   * one-dimensional array answers any positive DIM. A DIM of a known
+   * enumeration is refused; with `checkDimType` (the call is not typed
+   * otherwise) so is any other known type that is no integer. The argument
+   * count is the analyzer's.
    */
   private checkBoundCall(
     expr: FunctionCallExpression,
@@ -8702,20 +8725,19 @@ export class TypeChecker {
         arr.sourceSpan.file,
       );
     }
-    if (checkDimType) {
-      const dimType =
-        dim.kind === "LiteralExpression" && dim.literalType !== "INT"
-          ? dim.literalType
-          : this.knownDimTypeName(dim, scope);
-      if (dimType !== undefined) {
-        this.addError(
-          `Argument 'DIM' of '${upper}' expects ANY_INT, got ${dimType}`,
-          dim.sourceSpan.startLine,
-          dim.sourceSpan.startCol,
-          dim.sourceSpan.file,
-        );
-        return;
-      }
+    const dimType =
+      dim.kind === "LiteralExpression" && dim.literalType !== "INT"
+        ? { name: dim.literalType, isEnum: false }
+        : this.knownDimType(dim, scope);
+    // A typed call's elementary arguments are checked by validateFunctionCallArgs
+    if (dimType !== undefined && (checkDimType || dimType.isEnum)) {
+      this.addError(
+        `Argument 'DIM' of '${upper}' expects ANY_INT, got ${dimType.name}`,
+        dim.sourceSpan.startLine,
+        dim.sourceSpan.startCol,
+        dim.sourceSpan.file,
+      );
+      return;
     }
     if (operand !== undefined && "refused" in operand) return;
     const rank = operand?.rank;
@@ -8744,13 +8766,54 @@ export class TypeChecker {
     );
   }
 
-  /** A known type of DIM that is no integer, by name; undefined otherwise. */
-  private knownDimTypeName(dim: Expression, scope: Scope): string | undefined {
-    const type = this.knownOperandType(dim, scope);
+  /**
+   * A known type of DIM that is no integer; undefined otherwise. An
+   * enumeration is also known untyped: a typed value (`E#A`) or a variable
+   * declared of the type.
+   */
+  private knownDimType(
+    dim: Expression,
+    scope: Scope,
+  ): { name: string; isEnum: boolean } | undefined {
+    let e = dim;
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    const enumNamed = (name: string): IECType | undefined => {
+      const sym = scope.lookup(name);
+      return sym?.kind === "type" && sym.resolvedType.typeKind === "enum"
+        ? sym.resolvedType
+        : undefined;
+    };
+    let type = this.knownOperandType(dim, scope);
+    if (type === undefined && e.kind === "VariableExpression") {
+      if (e.typedLiteral === true) {
+        type = enumNamed(e.name);
+      } else if (
+        e.fieldAccess.length === 0 &&
+        e.subscripts.length === 0 &&
+        !e.isDereference
+      ) {
+        const sym = scope.lookup(e.name);
+        const declared =
+          sym?.kind === "variable" || sym?.kind === "constant"
+            ? (sym.declaration as VarDeclaration | undefined)?.type
+            : undefined;
+        if (
+          declared !== undefined &&
+          declared.arrayDimensions === undefined &&
+          (declared.referenceKind ?? "none") === "none"
+        ) {
+          type = enumNamed(declared.name);
+        }
+      }
+    }
     if (type === undefined) return undefined;
-    if (type.typeKind === "enum") return typeNameUtil(type);
+    if (type.typeKind === "enum") {
+      return { name: typeNameUtil(type), isEnum: true };
+    }
     if (type.typeKind !== "elementary") return undefined;
-    return _isTypeInCategory(type, "ANY_INT") ? undefined : typeNameUtil(type);
+    return _isTypeInCategory(type, "ANY_INT")
+      ? undefined
+      : { name: typeNameUtil(type), isEnum: false };
   }
 
   /**

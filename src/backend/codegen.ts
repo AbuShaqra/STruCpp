@@ -770,7 +770,7 @@ export class CodeGenerator {
   }> = [];
 
   /** Errors collected during code generation (see CodeGenResult.errors) */
-  private codegenErrors: Array<{
+  protected codegenErrors: Array<{
     message: string;
     line?: number;
     column?: number;

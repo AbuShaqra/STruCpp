@@ -35,6 +35,7 @@ import {
   generateTestMain,
   parseTestFile,
   splitCxxFlags,
+  TestMainCodegenError,
 } from "strucpp";
 import { getCxxEnv, loadStlibFromFile } from "strucpp/node";
 import {
@@ -864,7 +865,21 @@ connection.onRequest(RunTestsRequest, async (params: RunTestsParams): Promise<Ru
     ...(compileResult.ast ? { ast: compileResult.ast } : {}),
     ...(compileResult.resolvedLibraries ? { libraryArchives: compileResult.resolvedLibraries } : {}),
   };
-  const testMainCpp = generateTestMain([parseResult.testFile], testMainOpts);
+  let testMainCpp: string;
+  try {
+    testMainCpp = generateTestMain([parseResult.testFile], testMainOpts);
+  } catch (err: unknown) {
+    if (!(err instanceof TestMainCodegenError)) throw err;
+    return {
+      success: false,
+      errors: err.errors.map((e) => ({
+        message: e.message,
+        line: e.line,
+        column: e.column,
+        severity: e.severity,
+      })),
+    };
+  }
 
   // 7. Write to temp directory
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-test-"));

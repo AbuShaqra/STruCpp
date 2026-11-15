@@ -50,6 +50,19 @@ export class TestCodeGenerator extends CodeGenerator {
   }
 
   /**
+   * The errors code generation has collected so far (see
+   * CodeGenResult.errors); generate() is not run for a test main.
+   */
+  collectedErrors(): ReadonlyArray<{
+    message: string;
+    line?: number;
+    column?: number;
+    file?: string;
+  }> {
+    return [...this.codegenErrors];
+  }
+
+  /**
    * Populate known type sets from the AST.
    * Mirrors what CodeGenerator.generate() does at startup so that
    * isUserDefinedType(), mapVarTypeToCpp() etc. work correctly for

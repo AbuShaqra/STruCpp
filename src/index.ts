@@ -1779,6 +1779,7 @@ export { analyzeTestFile } from "./semantic/analyzer.js";
 export {
   generateTestMain,
   buildPOUInfoFromAST,
+  TestMainCodegenError,
 } from "./backend/test-main-gen.js";
 export type { TestMainGenOptions, POUInfo } from "./backend/test-main-gen.js";
 export type {

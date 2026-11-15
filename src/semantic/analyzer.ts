@@ -7320,6 +7320,26 @@ export class SemanticAnalyzer {
       });
     }
 
+    // Argument counts of standard function calls, as in a POU's body
+    this.callOwner = {};
+    const setupBlocks = testFile.setup?.varBlocks ?? [];
+    const setupVarTypes = this.buildVarTypeMap(setupBlocks);
+    this.checkTestCallCounts(
+      [
+        ...setupBlocks,
+        ...(testFile.setup?.body ?? []),
+        ...(testFile.teardown?.body ?? []),
+      ],
+      setupVarTypes,
+    );
+    for (const tc of testFile.testCases) {
+      const varTypes = new Map(setupVarTypes);
+      for (const [k, v] of this.buildVarTypeMap(tc.varBlocks)) {
+        varTypes.set(k, v);
+      }
+      this.checkTestCallCounts([...tc.varBlocks, ...tc.body], varTypes);
+    }
+
     // Walk each TEST body with scope = SETUP vars + TEST-local vars
     for (const tc of testFile.testCases) {
       const testScope = this.buildTestScope(tc.varBlocks, setupScope);
@@ -7396,7 +7416,28 @@ export class SemanticAnalyzer {
     }
   }
 
-  /** Addresses stored in narrow integers in a test's VARs and statements. */
+  /**
+   * The argument count of each standard function call under `roots` (a test
+   * file's VARs and statements), as checkStdFunctionArgs counts a POU's.
+   */
+  private checkTestCallCounts(
+    roots: ReadonlyArray<VarBlock | TestStatement>,
+    varTypeMap: ReadonlyMap<string, string>,
+  ): void {
+    for (const root of roots) {
+      walkAST(root as ASTNode, (node) => {
+        if (node.kind !== "FunctionCallExpression") return;
+        const call = node as FunctionCallExpression;
+        if (call.functionName.includes(".")) return;
+        this.checkStdFunctionArgs(call, varTypeMap, true);
+      });
+    }
+  }
+
+  /**
+   * LOWER_BOUND / UPPER_BOUND calls, and addresses stored in narrow integers,
+   * in a test's VARs and statements.
+   */
   private checkTestAddressStores(
     varBlocks: readonly VarBlock[],
     stmts: readonly TestStatement[],
@@ -7409,6 +7450,13 @@ export class SemanticAnalyzer {
       false,
       this.testFileDialect?.features ?? DEFAULT_FEATURES,
     );
+    const bounds = checker.checkTestBoundCalls(
+      stmts as readonly ASTNode[],
+      scope,
+      sourceAst,
+    );
+    this.errors.push(...bounds.errors);
+    this.warnings.push(...bounds.warnings);
     const found = checker.checkTestAddressStores(
       varBlocks,
       stmts as readonly ASTNode[],
