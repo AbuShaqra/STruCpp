@@ -120,6 +120,32 @@ function isInsideVarBlock(lines: string[], cursorLine: number): boolean {
  * looking for PROGRAM/FUNCTION_BLOCK/FUNCTION/METHOD keywords that
  * haven't been closed by their END_* counterpart.
  */
+/** The FUNCTION_BLOCK, PROGRAM or INTERFACE still open at `fromLine`, scanning back. */
+function methodOwnerFromText(
+  lines: string[],
+  fromLine: number,
+): string | undefined {
+  const owners = [
+    { end: /\bEND_FUNCTION_BLOCK\b/g, open: /\bFUNCTION_BLOCK\b/g },
+    { end: /\bEND_PROGRAM\b/g, open: /\bPROGRAM\b/g },
+    { end: /\bEND_INTERFACE\b/g, open: /\bINTERFACE\b/g },
+  ];
+  for (const { end, open } of owners) {
+    let depth = 0;
+    for (let i = fromLine; i >= 0; i--) {
+      const upper = lines[i].toUpperCase();
+      depth -= countOccurrences(upper, end);
+      depth += countOccurrences(upper, open);
+      if (depth > 0) {
+        return upper.match(
+          /\b(?:FUNCTION_BLOCK|PROGRAM|INTERFACE)\s+(\w+)/,
+        )?.[1];
+      }
+    }
+  }
+  return undefined;
+}
+
 function detectPOUFromText(lines: string[], cursorLine: number): EnclosingScope {
   // Track nesting: when scanning backwards, END_* increases depth, openers decrease
   const pouPatterns: Array<{
@@ -152,7 +178,12 @@ function detectPOUFromText(lines: string[], cursorLine: number): EnclosingScope 
           : upper.match(
               new RegExp(`\\b(?:PROGRAM|FUNCTION_BLOCK|FUNCTION|METHOD)\\s+(\\w+)`),
             );
-        return { kind, name: nameMatch?.[1] ?? "unknown" };
+        const name = nameMatch?.[1] ?? "unknown";
+        if (kind !== "method") return { kind, name };
+        const parentName = methodOwnerFromText(lines, i - 1);
+        return parentName === undefined
+          ? { kind, name }
+          : { kind, name, parentName };
       }
     }
   }

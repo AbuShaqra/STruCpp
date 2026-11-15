@@ -64,12 +64,17 @@ export const TAG = {
   WORD: 12,
   DWORD: 13,
   LWORD: 14,
-  TIME: 15,
-  DATE: 16,
-  TOD: 17,
-  DT: 18,
+  LTIME: 15,
+  LDATE: 16,
+  LTOD: 17,
+  LDT: 18,
   STRING: 19,
   WSTRING: 20,
+  // 21 is the BIT tag (TAG_BIT)
+  TIME: 22,
+  DATE: 23,
+  TOD: 24,
+  DT: 25,
 } as const;
 
 export type TagName = keyof typeof TAG;
@@ -210,17 +215,17 @@ const IEC_NAME_TO_TAG: Record<string, TagName> = {
   // (where pointers are 64-bit), so it reads as an LWORD-tagged 8-byte value.
   __XWORD: "LWORD",
   TIME: "TIME",
-  LTIME: "TIME",
+  LTIME: "LTIME",
   DATE: "DATE",
-  LDATE: "DATE",
+  LDATE: "LDATE",
   TOD: "TOD",
   TIME_OF_DAY: "TOD",
-  LTOD: "TOD",
-  LTIME_OF_DAY: "TOD",
+  LTOD: "LTOD",
+  LTIME_OF_DAY: "LTOD",
   DT: "DT",
   DATE_AND_TIME: "DT",
-  LDT: "DT",
-  LDATE_AND_TIME: "DT",
+  LDT: "LDT",
+  LDATE_AND_TIME: "LDT",
   // A CHAR is one Windows-1252 byte, a WCHAR one UTF-16 code unit.
   CHAR: "BYTE",
   WCHAR: "WORD",
@@ -256,16 +261,16 @@ const IEC_NAME_TO_SIZE: Record<string, number> = {
   DWORD: 4,
   LWORD: 8,
   __XWORD: 8,
-  TIME: 8,
+  TIME: 4,
   LTIME: 8,
-  DATE: 8,
+  DATE: 4,
   LDATE: 8,
-  TOD: 8,
-  TIME_OF_DAY: 8,
+  TOD: 4,
+  TIME_OF_DAY: 4,
   LTOD: 8,
   LTIME_OF_DAY: 8,
-  DT: 8,
-  DATE_AND_TIME: 8,
+  DT: 4,
+  DATE_AND_TIME: 4,
   LDT: 8,
   LDATE_AND_TIME: 8,
   CHAR: 1,
@@ -385,9 +390,14 @@ export interface DebugTableGenOptions {
   /** MD5 to embed in the debug map. Caller computes over (program.st,
    *  strucpp version, projectModel) so the editor can detect staleness. */
   md5?: string;
+  /** The length of a STRING or WSTRING declared without one (254, or 80 under
+   *  string_default_80); it picks the advice for a skipped string leaf. */
+  stringDefaultLength?: number;
 }
 
-const DEFAULTS: Required<Omit<DebugTableGenOptions, "md5">> = {
+const DEFAULTS: Required<
+  Omit<DebugTableGenOptions, "md5" | "stringDefaultLength">
+> = {
   maxEntriesPerArray: 8000,
   configGlobalName: "g_config",
 };
@@ -415,6 +425,7 @@ export function generateDebugTable(
   const maxEntries = opts.maxEntriesPerArray ?? DEFAULTS.maxEntriesPerArray;
   const configGlobal = opts.configGlobalName ?? DEFAULTS.configGlobalName;
   const md5 = opts.md5 ?? "";
+  const stringDefault = opts.stringDefaultLength ?? DISPATCH_STRING_CAPACITY;
 
   // Programs only live in the user AST (libraries don't ship PROGRAM blocks),
   // so we index them locally. Types and function blocks come from the symbol
@@ -594,6 +605,55 @@ export function generateDebugTable(
     return undefined;
   };
 
+  /** What to declare a skipped string as so the debugger can show it. */
+  const stringAdvice = (name: string): string =>
+    stringDefault === DISPATCH_STRING_CAPACITY
+      ? `a plain ${name}`
+      : `${name}(${DISPATCH_STRING_CAPACITY})`;
+
+  /**
+   * Why an array whose elements are STRING / WSTRING of another length than
+   * the dispatch's is left out whole (one warning, not one per element);
+   * undefined for any other element, aliases followed.
+   */
+  const stringArrayReason = (
+    elementTypeName: string,
+    elementLength: { maxLength?: number | string; defaultLength?: true },
+  ): string | undefined => {
+    let name = elementTypeName.toUpperCase();
+    let length = elementLength;
+    const seen = new Set<string>();
+    while (name !== "STRING" && name !== "WSTRING") {
+      if (seen.has(name) || IEC_NAME_TO_TAG[name] !== undefined) {
+        return undefined;
+      }
+      seen.add(name);
+      const def = symbolTables.lookupType(name)?.declaration?.definition;
+      if (def?.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+        return undefined;
+      }
+      if (def.referenceKind !== undefined && def.referenceKind !== "none") {
+        return undefined;
+      }
+      name = def.name.toUpperCase();
+      length = {
+        ...(def.maxLength !== undefined ? { maxLength: def.maxLength } : {}),
+        ...(def.defaultLength === true ? { defaultLength: true as const } : {}),
+      };
+    }
+    const max = length.maxLength;
+    if (max === undefined || max === DISPATCH_STRING_CAPACITY) return undefined;
+    const declared =
+      length.defaultLength === true
+        ? `its elements are ${name} without a length, which holds ${max} characters here`
+        : `its elements are declared ${name}(${max})`;
+    return (
+      `${declared}, but the debug dispatch addresses strings as ` +
+      `${name}(${DISPATCH_STRING_CAPACITY}). Declare them as ` +
+      `${stringAdvice(name)} to expose them.`
+    );
+  };
+
   // visitTypeRef walks a TypeReference: elementary type → leaf, inline array
   // → per-element recursion, named user type (struct / FB / elementary alias)
   // → recurse into definition.
@@ -627,6 +687,22 @@ export function generateDebugTable(
         skipped.push({ path, reason: arrayOfReferencesReason(elementKind) });
         return;
       }
+      const elementLength = {
+        ...(typeRef.elementMaxLength !== undefined
+          ? { maxLength: typeRef.elementMaxLength }
+          : {}),
+        ...(typeRef.elementDefaultLength === true
+          ? { defaultLength: true as const }
+          : {}),
+      };
+      const stringReason = stringArrayReason(
+        typeRef.elementTypeName,
+        elementLength,
+      );
+      if (stringReason !== undefined) {
+        skipped.push({ path, reason: stringReason });
+        return;
+      }
       walkArrayDims(
         path,
         cppExpr,
@@ -634,6 +710,8 @@ export function generateDebugTable(
         0,
         typeRef.elementTypeName,
         flags,
+        [],
+        elementLength,
       );
       return;
     }
@@ -669,12 +747,16 @@ export function generateDebugTable(
         typeRef.maxLength !== undefined &&
         typeRef.maxLength !== DISPATCH_STRING_CAPACITY
       ) {
+        const declared =
+          typeRef.defaultLength === true
+            ? `${name} without a length holds ${typeRef.maxLength} characters here`
+            : `declared ${name}(${typeRef.maxLength})`;
         skipped.push({
           path,
           reason:
-            `declared ${name}(${typeRef.maxLength}), but the debug dispatch ` +
+            `${declared}, but the debug dispatch ` +
             `addresses strings as ${name}(${DISPATCH_STRING_CAPACITY}). ` +
-            `Declare it as a plain ${name} to expose it.`,
+            `Declare it as ${stringAdvice(name)} to expose it.`,
         });
         return;
       }
@@ -723,6 +805,22 @@ export function generateDebugTable(
           skipped.push({ path, reason: `array bounds not constant` });
           return;
         }
+        const elementLength = {
+          ...(def.elementType.maxLength !== undefined
+            ? { maxLength: def.elementType.maxLength }
+            : {}),
+          ...(def.elementType.defaultLength === true
+            ? { defaultLength: true as const }
+            : {}),
+        };
+        const stringReason = stringArrayReason(
+          def.elementType.name,
+          elementLength,
+        );
+        if (stringReason !== undefined) {
+          skipped.push({ path, reason: stringReason });
+          return;
+        }
         walkArrayDims(
           path,
           cppExpr,
@@ -730,6 +828,8 @@ export function generateDebugTable(
           0,
           def.elementType.name,
           flags,
+          [],
+          elementLength,
         );
         return;
       }
@@ -949,10 +1049,11 @@ export function generateDebugTable(
     elementTypeName: string,
     flags: number,
     indices: number[] = [],
+    elementLength?: { maxLength?: number | string; defaultLength?: true },
   ): void => {
     if (dimIdx >= dims.length) {
       // Innermost element — visit as a TypeReference with the element type
-      // name. Manufacture a minimal TypeReference for recursion.
+      // name (and a STRING element's length). Manufactured for recursion.
       visitTypeRef(
         path,
         formatArrayElementAccess(cppExpr, indices),
@@ -961,6 +1062,12 @@ export function generateDebugTable(
           name: elementTypeName,
           isReference: false,
           referenceKind: "none",
+          ...(elementLength?.maxLength !== undefined
+            ? { maxLength: elementLength.maxLength }
+            : {}),
+          ...(elementLength?.defaultLength === true
+            ? { defaultLength: true as const }
+            : {}),
         } as TypeReference,
         flags,
       );
@@ -976,6 +1083,7 @@ export function generateDebugTable(
         elementTypeName,
         flags,
         [...indices, i],
+        elementLength,
       );
     }
   };

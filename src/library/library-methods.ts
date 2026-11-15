@@ -17,6 +17,7 @@ import type {
 } from "../frontend/ast.js";
 import { parse } from "../frontend/parser.js";
 import { buildAST } from "../frontend/ast-builder.js";
+import { lowerDefaultStringLength } from "../semantic/string-default-length.js";
 
 const REFERENCE_SPELLING = {
   pointer_to: "POINTER TO ",
@@ -43,10 +44,12 @@ function typeText(v: LibraryVarType & { maxLength?: number | string }): string {
 
 /**
  * The methods `fb` lists, as declarations without bodies; undefined when the
- * archive predates method lists or the signatures do not parse.
+ * archive predates method lists or the signatures do not parse. A STRING
+ * written without a length gets `stringDefaultLength`, the library's own.
  */
 export function libraryMethodDeclarations(
   fb: LibraryFBEntry,
+  stringDefaultLength?: number,
 ): MethodDeclaration[] | undefined {
   if (fb.methods === undefined) return undefined;
   if (fb.methods.length === 0) return [];
@@ -72,7 +75,11 @@ export function libraryMethodDeclarations(
   try {
     const parsed = parse(source);
     if (parsed.errors.length > 0 || parsed.cst === null) return undefined;
-    return buildAST(parsed.cst).functionBlocks[0]?.methods;
+    const declared = buildAST(parsed.cst).functionBlocks[0]?.methods;
+    if (declared !== undefined && stringDefaultLength !== undefined) {
+      lowerDefaultStringLength(declared, stringDefaultLength);
+    }
+    return declared;
   } catch {
     return undefined;
   }
@@ -81,9 +88,11 @@ export function libraryMethodDeclarations(
 /**
  * `fn` as a declaration without a body, its parameters in manifest order (the
  * order of its C++ parameter list); undefined when the signature does not parse.
+ * A STRING written without a length gets `stringDefaultLength`, the library's own.
  */
 export function libraryFunctionDeclaration(
   fn: LibraryFunctionEntry,
+  stringDefaultLength?: number,
 ): FunctionDeclaration | undefined {
   const blockOf = {
     input: "VAR_INPUT",
@@ -103,7 +112,11 @@ export function libraryFunctionDeclaration(
   try {
     const parsed = parse(source);
     if (parsed.errors.length > 0 || parsed.cst === null) return undefined;
-    return buildAST(parsed.cst).functions[0];
+    const declared = buildAST(parsed.cst).functions[0];
+    if (declared !== undefined && stringDefaultLength !== undefined) {
+      lowerDefaultStringLength(declared, stringDefaultLength);
+    }
+    return declared;
   } catch {
     return undefined;
   }

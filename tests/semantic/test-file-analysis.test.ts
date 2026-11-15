@@ -475,6 +475,90 @@ describe("Test File Analysis - Assert arg count validation", () => {
   });
 });
 
+describe("Test File Analysis - nested asserts", () => {
+  const SOURCE = `
+    PROGRAM Main
+      VAR x : INT; END_VAR
+      x := 1;
+    END_PROGRAM
+  `;
+
+  it("checks the argument count of an assert in IF, CASE and a loop", () => {
+    const result = analyzeTest(
+      SOURCE,
+      `
+        TEST 'nested counts'
+          VAR i : INT; END_VAR
+          IF TRUE THEN ASSERT_EQ(1); END_IF;
+          CASE i OF 0: ASSERT_TRUE(TRUE, FALSE); END_CASE;
+          FOR i := 1 TO 2 DO ASSERT_EQ(1, 1, 2, 3); END_FOR;
+          WHILE FALSE DO ASSERT_NEAR(1.0, 2.0); END_WHILE;
+        END_TEST
+      `,
+    );
+    expect(result.errors.map((e) => `${e.line} ${e.message}`)).toEqual([
+      "4 ASSERT_EQ expects 2 arguments, got 1",
+      "5 ASSERT_TRUE expects 1 argument, got 2",
+      "6 ASSERT_EQ expects 2 arguments, got 4",
+      "7 ASSERT_NEAR expects 3 arguments, got 2",
+    ]);
+  });
+
+  it("checks a nested assert for undeclared names in TEST, SETUP and TEARDOWN", () => {
+    const result = analyzeTest(
+      SOURCE,
+      `
+        SETUP
+          IF TRUE THEN ASSERT_TRUE(s1); END_IF;
+        END_SETUP
+        TEARDOWN
+          REPEAT ASSERT_FALSE(t1); UNTIL TRUE END_REPEAT;
+        END_TEARDOWN
+        TEST 'nested names'
+          IF TRUE THEN ASSERT_EQ(z1, 1); END_IF;
+        END_TEST
+      `,
+    );
+    expect(result.errors.map((e) => e.message).sort()).toEqual([
+      "Undeclared variable 'S1'",
+      "Undeclared variable 'T1'",
+      "Undeclared variable 'Z1'",
+    ]);
+  });
+
+  it("refuses a double-quoted message, nested or not, and says how to write one", () => {
+    const result = analyzeTest(
+      SOURCE,
+      `
+        TEST 'quoted message'
+          ASSERT_EQ(1, 2, "msg");
+          IF TRUE THEN ASSERT_EQ(1, 2, "msg"); END_IF;
+          IF TRUE THEN ASSERT_EQ(1, 2, 'msg'); END_IF;
+        END_TEST
+      `,
+    );
+    const text =
+      "ASSERT_EQ expects 2 arguments, got 3: the message is a STRING literal in single quotes";
+    expect(result.errors.map((e) => `${e.line} ${e.message}`)).toEqual([
+      `3 ${text}`,
+      `4 ${text}`,
+    ]);
+  });
+
+  it("names the test file in an argument-count error", () => {
+    const result = analyzeTest(
+      SOURCE,
+      `
+        TEST 'file name'
+          ASSERT_EQ(1);
+        END_TEST
+      `,
+    );
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatchObject({ file: "test.st" });
+  });
+});
+
 // =============================================================================
 // Mock validation
 // =============================================================================

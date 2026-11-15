@@ -1,5 +1,7 @@
 (* IEC 61131-3 Standard Function Blocks: Timers *)
-(* Uses TIME() built-in function for current time (CODESYS-compatible) *)
+(* Uses TIME() (LTIME() for the LTIME timers) for the current time. The
+   elapsed time CURRENT_TIME - START_TIME stays right when TIME() wraps
+   after T#49d17h2m47s295ms. *)
 
 FUNCTION_BLOCK TON
   VAR_INPUT
@@ -28,7 +30,7 @@ FUNCTION_BLOCK TON
       Q := FALSE;
       STATE := 0;
     ELSIF (STATE = 1) THEN
-      IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+      IF ((CURRENT_TIME - START_TIME) >= PT) THEN
         STATE := 2;
         Q := TRUE;
         ET := PT;
@@ -67,7 +69,7 @@ FUNCTION_BLOCK TOF
       Q := TRUE;
       STATE := 0;
     ELSIF (STATE = 1) THEN
-      IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+      IF ((CURRENT_TIME - START_TIME) >= PT) THEN
         STATE := 2;
         Q := FALSE;
         ET := PT;
@@ -103,7 +105,7 @@ FUNCTION_BLOCK TP
     Q := TRUE;
     START_TIME := CURRENT_TIME;
   ELSIF (STATE = 1) THEN
-    IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+    IF ((CURRENT_TIME - START_TIME) >= PT) THEN
       STATE := 2;
       Q := FALSE;
       ET := PT;
@@ -137,7 +139,7 @@ FUNCTION_BLOCK LTON
     CURRENT_TIME, START_TIME : LTIME;
   END_VAR
 
-  CURRENT_TIME := TIME();
+  CURRENT_TIME := LTIME();
 
   IF ((STATE = 0) AND NOT(PREV_IN) AND IN) THEN
     STATE := 1;
@@ -149,7 +151,7 @@ FUNCTION_BLOCK LTON
       Q := FALSE;
       STATE := 0;
     ELSIF (STATE = 1) THEN
-      IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+      IF ((CURRENT_TIME - START_TIME) >= PT) THEN
         STATE := 2;
         Q := TRUE;
         ET := PT;
@@ -177,7 +179,7 @@ FUNCTION_BLOCK LTOF
     CURRENT_TIME, START_TIME : LTIME;
   END_VAR
 
-  CURRENT_TIME := TIME();
+  CURRENT_TIME := LTIME();
 
   IF ((STATE = 0) AND PREV_IN AND NOT(IN)) THEN
     STATE := 1;
@@ -188,7 +190,7 @@ FUNCTION_BLOCK LTOF
       Q := TRUE;
       STATE := 0;
     ELSIF (STATE = 1) THEN
-      IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+      IF ((CURRENT_TIME - START_TIME) >= PT) THEN
         STATE := 2;
         Q := FALSE;
         ET := PT;
@@ -217,14 +219,14 @@ FUNCTION_BLOCK LTP
     CURRENT_TIME, START_TIME : LTIME;
   END_VAR
 
-  CURRENT_TIME := TIME();
+  CURRENT_TIME := LTIME();
 
   IF ((STATE = 0) AND NOT(PREV_IN) AND IN) THEN
     STATE := 1;
     Q := TRUE;
     START_TIME := CURRENT_TIME;
   ELSIF (STATE = 1) THEN
-    IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+    IF ((CURRENT_TIME - START_TIME) >= PT) THEN
       STATE := 2;
       Q := FALSE;
       ET := PT;
@@ -266,7 +268,7 @@ FUNCTION_BLOCK TP_TIME
     Q := TRUE;
     START_TIME := CURRENT_TIME;
   ELSIF (STATE = 1) THEN
-    IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+    IF ((CURRENT_TIME - START_TIME) >= PT) THEN
       STATE := 2;
       Q := FALSE;
       ET := PT;
@@ -298,14 +300,14 @@ FUNCTION_BLOCK TP_LTIME
     CURRENT_TIME, START_TIME : LTIME;
   END_VAR
 
-  CURRENT_TIME := TIME();
+  CURRENT_TIME := LTIME();
 
   IF ((STATE = 0) AND NOT(PREV_IN) AND IN) THEN
     STATE := 1;
     Q := TRUE;
     START_TIME := CURRENT_TIME;
   ELSIF (STATE = 1) THEN
-    IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+    IF ((CURRENT_TIME - START_TIME) >= PT) THEN
       STATE := 2;
       Q := FALSE;
       ET := PT;
@@ -349,7 +351,7 @@ FUNCTION_BLOCK TON_TIME
       Q := FALSE;
       STATE := 0;
     ELSIF (STATE = 1) THEN
-      IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+      IF ((CURRENT_TIME - START_TIME) >= PT) THEN
         STATE := 2;
         Q := TRUE;
         ET := PT;
@@ -377,7 +379,7 @@ FUNCTION_BLOCK TON_LTIME
     CURRENT_TIME, START_TIME : LTIME;
   END_VAR
 
-  CURRENT_TIME := TIME();
+  CURRENT_TIME := LTIME();
 
   IF ((STATE = 0) AND NOT(PREV_IN) AND IN) THEN
     STATE := 1;
@@ -389,7 +391,7 @@ FUNCTION_BLOCK TON_LTIME
       Q := FALSE;
       STATE := 0;
     ELSIF (STATE = 1) THEN
-      IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+      IF ((CURRENT_TIME - START_TIME) >= PT) THEN
         STATE := 2;
         Q := TRUE;
         ET := PT;
@@ -428,7 +430,7 @@ FUNCTION_BLOCK TOF_TIME
       Q := TRUE;
       STATE := 0;
     ELSIF (STATE = 1) THEN
-      IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+      IF ((CURRENT_TIME - START_TIME) >= PT) THEN
         STATE := 2;
         Q := FALSE;
         ET := PT;
@@ -457,7 +459,7 @@ FUNCTION_BLOCK TOF_LTIME
     CURRENT_TIME, START_TIME : LTIME;
   END_VAR
 
-  CURRENT_TIME := TIME();
+  CURRENT_TIME := LTIME();
 
   IF ((STATE = 0) AND PREV_IN AND NOT(IN)) THEN
     STATE := 1;
@@ -468,7 +470,7 @@ FUNCTION_BLOCK TOF_LTIME
       Q := TRUE;
       STATE := 0;
     ELSIF (STATE = 1) THEN
-      IF ((START_TIME + PT) <= CURRENT_TIME) THEN
+      IF ((CURRENT_TIME - START_TIME) >= PT) THEN
         STATE := 2;
         Q := FALSE;
         ET := PT;

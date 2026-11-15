@@ -203,8 +203,9 @@ TEST(IECVarTest, BoolType) {
 }
 
 TEST(IECVarTest, TimeTypes) {
-    IEC_TIME timeVar(1000000000LL);
-    EXPECT_EQ(timeVar.get(), 1000000000LL);
+    IEC_TIME timeVar(TIME_t(1000u));
+    EXPECT_EQ(timeVar.get().raw, 1000u);
+    EXPECT_EQ(sizeof(timeVar), 4u);
     
     IEC_LTIME ltimeVar(1000000000000LL);
     EXPECT_EQ(ltimeVar.get(), 1000000000000LL);

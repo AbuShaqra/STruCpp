@@ -313,7 +313,7 @@ describeIfGpp("structure initializers — generated C++", () => {
       expect(result.errors.map((e) => e.message)).toEqual([]);
       expect(result.success).toBe(true);
       expect(result.cppCode).toContain(
-        "T(strucpp::iec_struct_init<TON>([](auto& v0) { v0.PT = 1000000000LL; }))",
+        "T(strucpp::iec_struct_init<TON>([](auto& v0) { v0.PT = TIME_t(1000u); }))",
       );
       const output = compileAndRunStandalone({
         tempDir,
@@ -323,7 +323,7 @@ describeIfGpp("structure initializers — generated C++", () => {
         testName: "structinit_ton",
         mainCode: `#include <iostream>\n\nint main() {\n    using namespace strucpp;\n    Program_MAIN p;\n    std::cout << p.T.PT.get() << std::endl;\n    return 0;\n}\n`,
       });
-      expect(output).toBe("1000000000");
+      expect(output).toBe("1000");
     },
   );
 

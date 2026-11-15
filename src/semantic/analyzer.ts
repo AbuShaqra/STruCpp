@@ -112,12 +112,18 @@ import {
 import {
   charLiteralUnits,
   exactIntegerLiteralValue,
+  exactIntegerValue,
   IEC_INTEGER_MAX,
   IEC_INTEGER_MIN,
   integerTypeRange,
 } from "../literal-utils.js";
 import { cp1252Byte } from "../byte-utils.js";
-import { exactTimeLiteralNanoseconds } from "../project-model.js";
+import {
+  exactTimeLiteralNanoseconds,
+  parseDateLiteralToDays,
+  parseDtLiteralToNs,
+  parseTodLiteralToNs,
+} from "../project-model.js";
 import { libraryOverloadFor } from "./library-overload.js";
 import {
   vendorOperatorFeature,
@@ -428,6 +434,52 @@ const BIT_STRING_BITS: Readonly<Record<string, number>> = {
   LWORD: 64,
 };
 
+const U32_MAX = 4294967295n;
+
+/**
+ * Why a TIME, DATE, TOD or DT literal does not fit its 32-bit type (TIME:
+ * 0 to T#49d17h2m47s295ms in whole ms; DATE and DT: 1970-01-01 to
+ * 2106-02-07-06:28:15; TOD: below 24 h); undefined when it fits or is no
+ * such literal.
+ */
+function temporal32LiteralRefusal(
+  literal: LiteralExpression,
+): string | undefined {
+  const raw = literal.rawValue;
+  switch (literal.literalType) {
+    case "TIME": {
+      const ns = exactTimeLiteralNanoseconds(raw);
+      if (ns < 0n) {
+        return `TIME literal '${raw}' is negative; a TIME holds T#0ms to T#49d17h2m47s295ms (an LTIME can be negative)`;
+      }
+      if (ns % 1000000n !== 0n) {
+        return `TIME literal '${raw}' has a part below a millisecond, which a TIME cannot hold; use an LTIME literal (LTIME#...)`;
+      }
+      return ns / 1000000n > U32_MAX
+        ? `TIME literal '${raw}' is outside the TIME range (T#0ms to T#49d17h2m47s295ms)`
+        : undefined;
+    }
+    case "DATE": {
+      const s = parseDateLiteralToDays(String(literal.value)) * 86400n;
+      return s < 0n || s > U32_MAX
+        ? `DATE literal '${raw}' is outside the DATE range (D#1970-01-01 to D#2106-02-07)`
+        : undefined;
+    }
+    case "DATE_AND_TIME": {
+      const ns = parseDtLiteralToNs(String(literal.value));
+      return ns < 0n || ns / 1000000000n > U32_MAX
+        ? `DT literal '${raw}' is outside the DT range (DT#1970-01-01-00:00:00 to DT#2106-02-07-06:28:15)`
+        : undefined;
+    }
+    case "TIME_OF_DAY":
+      return parseTodLiteralToNs(String(literal.value)) >= 86400000000000n
+        ? `TOD literal '${raw}' is outside the TOD range (TOD#00:00:00 to TOD#23:59:59.999)`
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
 export class SemanticAnalyzer {
   private symbolTables: SymbolTables;
   private typeChecker: TypeChecker;
@@ -542,6 +594,19 @@ export class SemanticAnalyzer {
     this.validatePostfixEnumBases(ast);
     this.validateConfigurationGlobalsHoldNoFB(ast);
     this.validateDeclaredEno(ast);
+    // FB_exit is a vendor finalizer; no instance is ever torn down here, in any mode
+    for (const fb of ast.functionBlocks) {
+      for (const m of fb.methods) {
+        if (m.name.toUpperCase() !== "FB_EXIT") continue;
+        const at = m.nameSpan ?? m.sourceSpan;
+        this.addWarning(
+          `FB_exit of '${fb.name}' is never called: an instance is not torn down`,
+          at.startLine,
+          at.startCol,
+          at.file,
+        );
+      }
+    }
     if (this.features.has("fb_init")) {
       validateFbInitArguments(
         ast,
@@ -1001,6 +1066,8 @@ export class SemanticAnalyzer {
     for (const ifaceName of fb.implements) {
       const required = this.collectInterfaceProperties(ifaceName, ifaceDecls);
       for (const [key, req] of required) {
+        // An unnamed property prototype is refused by the parser already.
+        if (req.name === "") continue;
         const own = provided.get(key);
         if (!own) {
           this.addError(
@@ -1977,33 +2044,110 @@ export class SemanticAnalyzer {
         this.literalsReported.add(literal);
       }
     });
-    const charKind = (typeName: string): "CHAR" | "WCHAR" | undefined => {
+    const baseOf = (typeName: string): string => {
       let upper = typeName.toUpperCase();
       for (let i = 0; i < 32; i++) {
-        if (upper === "CHAR" || upper === "WCHAR") return upper;
         const current = upper;
         const def = ast.types.find(
           (t) => t.name.toUpperCase() === current,
         )?.definition;
-        if (def?.kind !== "TypeReference") return undefined;
+        if (
+          def?.kind !== "TypeReference" ||
+          def.arrayDimensions !== undefined
+        ) {
+          return upper;
+        }
         upper = def.name.toUpperCase();
       }
-      return undefined;
+      return upper;
     };
-    const adapt = (value: Expression, typeName: string | undefined): void => {
-      const kind = typeName === undefined ? undefined : charKind(typeName);
-      if (kind === undefined || value.kind !== "LiteralExpression") return;
-      const want = kind === "CHAR" ? "STRING" : "WSTRING";
-      if (value.literalType !== want || (value.typePrefix ?? "") !== "") return;
-      const raw = `${kind}#${value.rawValue}`;
-      if (charLiteralUnits(raw).units.length !== 1) return;
-      value.literalType = kind;
-      value.rawValue = raw;
-      value.value = raw;
+    // A STRING literal into a CHAR, WCHAR or WSTRING, settled as the type
+    // checks would: the character it holds, or the error they give.
+    const adapt = (
+      value: Expression,
+      typeName: string | undefined,
+      param?: string,
+    ): void => {
+      if (typeName === undefined || value.kind !== "LiteralExpression") return;
+      if (value.literalType !== "STRING" || (value.typePrefix ?? "") !== "") {
+        return;
+      }
+      const base = baseOf(typeName);
+      if (base !== "CHAR" && base !== "WCHAR" && base !== "WSTRING") return;
+      // The call check takes a STRING literal into a WSTRING input.
+      if (param !== undefined && base === "WSTRING") return;
+      if (base === "CHAR") {
+        const raw = `CHAR#${value.rawValue}`;
+        if (charLiteralUnits(raw).units.length === 1) {
+          value.literalType = "CHAR";
+          value.rawValue = raw;
+          value.value = raw;
+          return;
+        }
+      }
+      const target = typeName.toUpperCase();
+      const span = value.sourceSpan;
+      this.literalsReported.add(value);
+      // The type checks ran and reported it already.
+      if (at.has(`${span.file ?? ""}:${span.startLine}:${span.startCol}`))
+        return;
+      this.addError(
+        param === undefined
+          ? `Cannot assign STRING to ${target}`
+          : `Cannot assign STRING to parameter '${param}' of type ${target}`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    };
+    // A callable's VAR_INPUT and VAR_IN_OUT in declaration order: the call
+    // check binds the i-th argument to the i-th of them.
+    type Param = { name: string; type: string; input: boolean };
+    const paramsOf = (blocks: readonly VarBlock[]): Param[] =>
+      blocks
+        .filter(
+          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
+        )
+        .flatMap((b) =>
+          b.declarations.flatMap((d) =>
+            d.names.map((n) => ({
+              name: n,
+              type: d.type.name,
+              input:
+                b.blockType === "VAR_INPUT" &&
+                d.type.arrayDimensions === undefined &&
+                (d.type.referenceKind ?? "none") === "none",
+            })),
+          ),
+        );
+    const functionParams = new Map<string, Param[]>();
+    for (const f of ast.functions) {
+      functionParams.set(f.name.toUpperCase(), paramsOf(f.varBlocks));
+    }
+    /** The methods a bare call in an FB (its bases' too) or PROGRAM reaches. */
+    const methodsOf = (owner: {
+      methods: readonly { name: string; varBlocks: VarBlock[] }[];
+      extends?: string;
+    }): Map<string, Param[]> => {
+      const out = new Map<string, Param[]>();
+      const seen = new Set<string>();
+      let current: typeof owner | undefined = owner;
+      while (current) {
+        for (const m of current.methods) {
+          const upper = m.name.toUpperCase();
+          if (!out.has(upper)) out.set(upper, paramsOf(m.varBlocks));
+        }
+        const base: string | undefined = current.extends?.toUpperCase();
+        if (base === undefined || seen.has(base)) break;
+        seen.add(base);
+        current = ast.functionBlocks.find((f) => f.name.toUpperCase() === base);
+      }
+      return out;
     };
     const visitPou = (
       blocks: readonly VarBlock[],
       bodies: readonly Statement[][],
+      methods: ReadonlyMap<string, Param[]> = new Map(),
     ): void => {
       const types = new Map<string, string>();
       for (const b of [...ast.globalVarBlocks, ...blocks]) {
@@ -2017,6 +2161,26 @@ export class SemanticAnalyzer {
       for (const body of bodies) {
         for (const stmt of body) {
           walkAST(stmt as ASTNode, (n) => {
+            if (n.kind === "FunctionCallExpression") {
+              const call = n as FunctionCallExpression;
+              const upper = call.functionName.toUpperCase();
+              // A variable of the name (an FB instance) is what the call invokes.
+              if (call.instance !== undefined || types.has(upper)) return;
+              const params = methods.get(upper) ?? functionParams.get(upper);
+              if (params === undefined) return;
+              stripEnEno(call.arguments).forEach((arg, i) => {
+                const param =
+                  arg.name === undefined
+                    ? params[i]
+                    : params.find(
+                        (p) => p.name.toUpperCase() === arg.name!.toUpperCase(),
+                      );
+                if (param?.input === true && !arg.isOutput) {
+                  adapt(arg.value, param.type, param.name);
+                }
+              });
+              return;
+            }
             if (n.kind !== "AssignmentStatement") return;
             const a = n as AssignmentStatement;
             if (
@@ -2031,21 +2195,304 @@ export class SemanticAnalyzer {
         }
       }
     };
-    for (const p of ast.programs) visitPou(p.varBlocks, [p.body]);
+    for (const p of ast.programs) {
+      visitPou(p.varBlocks, [p.body], methodsOf(p));
+    }
     for (const f of ast.functions) visitPou(f.varBlocks, [f.body]);
     for (const fb of ast.functionBlocks) {
-      visitPou(fb.varBlocks, [fb.body]);
+      const own = methodsOf(fb);
+      visitPou(fb.varBlocks, [fb.body], own);
       for (const m of fb.methods) {
-        visitPou([...fb.varBlocks, ...m.varBlocks], [m.body]);
+        visitPou([...fb.varBlocks, ...m.varBlocks], [m.body], own);
       }
     }
   }
 
   private validateLiteralRanges(ast: CompilationUnit): void {
+    this.validateStringLiteralLengths(ast);
     this.validateIntegerLiteralRange(ast);
     this.validateStringLiteralCharset(ast);
     this.validateLtimeLiteralRange(ast);
     this.validateRealLiteralRange(ast);
+  }
+
+  /**
+   * A STRING or WSTRING literal longer than the variable, input or field it is
+   * stored in is cut to that length at run time: warn, in every mode.
+   */
+  private validateStringLiteralLengths(ast: CompilationUnit): void {
+    const typeDef = (name: string): TypeDeclaration["definition"] | undefined =>
+      ast.types.find((t) => t.name.toUpperCase() === name.toUpperCase())
+        ?.definition;
+    // STRING / WSTRING and its length, through aliases of STRING(n)
+    const capacity = (
+      type: TypeReference | undefined,
+    ): { kind: string; max: number } | undefined => {
+      for (let i = 0; i < 32 && type !== undefined; i++) {
+        if (type.arrayDimensions !== undefined) return undefined;
+        if ((type.referenceKind ?? "none") !== "none") return undefined;
+        const name = type.name.toUpperCase();
+        if (name === "STRING" || name === "WSTRING") {
+          if (type.maxLength === undefined) return { kind: name, max: 254 };
+          return typeof type.maxLength === "number"
+            ? { kind: name, max: type.maxLength }
+            : undefined;
+        }
+        const def = typeDef(name);
+        type = def?.kind === "TypeReference" ? def : undefined;
+      }
+      return undefined;
+    };
+    // The element type of an ARRAY type reference, inline or a TYPE
+    const elementOf = (type: TypeReference): TypeReference | undefined => {
+      if (type.arrayDimensions !== undefined) {
+        return type.elementTypeName !== undefined &&
+          type.elementReferenceChain === undefined
+          ? {
+              kind: "TypeReference",
+              sourceSpan: type.sourceSpan,
+              name: type.elementTypeName,
+              isReference: false,
+              referenceKind: "none",
+              ...(type.elementMaxLength !== undefined
+                ? { maxLength: type.elementMaxLength }
+                : {}),
+            }
+          : undefined;
+      }
+      const def = typeDef(type.name);
+      if (def?.kind === "ArrayDefinition") return def.elementType;
+      return def?.kind === "TypeReference" ? elementOf(def) : undefined;
+    };
+    const fieldsOf = (type: TypeReference): VarDeclaration[] | undefined => {
+      const def = typeDef(type.name);
+      if (def?.kind === "StructDefinition") return def.fields;
+      return def?.kind === "TypeReference" && def.arrayDimensions === undefined
+        ? fieldsOf(def)
+        : undefined;
+    };
+    const warned = new Set<string>();
+    const check = (
+      value: Expression | undefined,
+      type: TypeReference | undefined,
+    ): void => {
+      if (value === undefined || type === undefined) return;
+      if (value.kind === "ArrayLiteralExpression") {
+        const element = elementOf(type);
+        for (const e of value.elements) check(e, element);
+        return;
+      }
+      if (value.kind === "StructInitializerExpression") {
+        const fields = fieldsOf(type);
+        for (const el of value.elements) {
+          const upper = el.name.toUpperCase();
+          check(
+            el.value,
+            fields?.find((f) => f.names.some((n) => n.toUpperCase() === upper))
+              ?.type,
+          );
+        }
+        return;
+      }
+      const target = capacity(type);
+      if (target === undefined || value.kind !== "LiteralExpression") return;
+      const wide = value.literalType === "WSTRING";
+      if (!wide && value.literalType !== "STRING") return;
+      if ((target.kind === "WSTRING") !== wide) return;
+      const { max, kind } = target;
+      // From the opening quote, so a `#` inside the text is not a type prefix
+      const raw = value.rawValue;
+      const quoted = raw.slice(Math.max(0, raw.search(/['"]/)));
+      const length = charLiteralUnits(
+        `${wide ? "WSTRING" : "STRING"}#${quoted}`,
+      ).units.length;
+      if (length <= max) return;
+      // A repeated array element, `[3('abc')]`, is one literal: warn once
+      const at = `${value.sourceSpan.file}:${value.sourceSpan.startLine}:${value.sourceSpan.startCol}`;
+      if (warned.has(at)) return;
+      warned.add(at);
+      // A WSTRING holds UTF-16 code units, which a character may take two of
+      const unit = wide
+        ? length === 1
+          ? "UTF-16 code unit"
+          : "UTF-16 code units"
+        : length === 1
+          ? "character"
+          : "characters";
+      this.addWarning(
+        `A ${kind} literal of ${length} ${unit} is longer than ${kind}(${max}): it is cut to ${max}`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+    };
+    const inputsOf = (
+      blocks: readonly VarBlock[],
+    ): TypeReference[] & { names?: string[]; positional?: boolean } => {
+      const out: TypeReference[] & { names?: string[]; positional?: boolean } =
+        [];
+      out.names = [];
+      for (const b of blocks) {
+        if (b.blockType !== "VAR_INPUT" && b.blockType !== "VAR_IN_OUT")
+          continue;
+        for (const d of b.declarations) {
+          for (const n of d.names) {
+            out.push(
+              b.blockType === "VAR_INPUT" ? d.type : { ...d.type, name: "" },
+            );
+            out.names.push(n.toUpperCase());
+          }
+        }
+      }
+      return out;
+    };
+    const globals = new Map<string, TypeReference>();
+    const addDecls = (
+      blocks: readonly VarBlock[],
+      into: Map<string, TypeReference>,
+    ): void => {
+      for (const block of blocks) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names)
+            into.set(name.toUpperCase(), decl.type);
+          check(decl.initialValue, decl.type);
+        }
+      }
+    };
+    addDecls(ast.globalVarBlocks, globals);
+    for (const config of ast.configurations)
+      addDecls(config.varBlocks, globals);
+    for (const typeDecl of ast.types) {
+      if (typeDecl.definition.kind !== "StructDefinition") continue;
+      for (const field of ownFields(typeDecl.definition)) {
+        check(field.initialValue, field.type);
+      }
+    }
+    const findFb = (name: string): FunctionBlockDeclaration | undefined =>
+      ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name.toUpperCase(),
+      );
+    /**
+     * The variable blocks `fb` inherits through EXTENDS, root ancestor first;
+     * undefined when an ancestor is not in this unit or the chain loops.
+     */
+    const inheritedBlocks = (
+      fb: FunctionBlockDeclaration,
+    ): VarBlock[] | undefined => {
+      const chain: FunctionBlockDeclaration[] = [];
+      let parentName = fb.extends;
+      while (parentName !== undefined) {
+        const parent = findFb(parentName);
+        if (parent === undefined || parent === fb || chain.includes(parent))
+          return undefined;
+        chain.unshift(parent);
+        parentName = parent.extends;
+      }
+      return chain.flatMap((p) => p.varBlocks);
+    };
+    const callInputs = (
+      call: FunctionCallExpression,
+      scope: Map<string, TypeReference>,
+    ): ReturnType<typeof inputsOf> | undefined => {
+      const upper = call.functionName.toUpperCase();
+      const local = scope.get(upper);
+      if (local !== undefined) {
+        const fb = findFb(local.name);
+        const inherited = fb === undefined ? undefined : inheritedBlocks(fb);
+        if (fb === undefined || inherited === undefined) return undefined;
+        const inputs = inputsOf([...inherited, ...fb.varBlocks]);
+        // Positional order across an EXTENDS chain is not checked
+        if (inherited.length > 0) inputs.positional = false;
+        return inputs;
+      }
+      const fn = ast.functions.find((f) => f.name.toUpperCase() === upper);
+      return fn === undefined ? undefined : inputsOf(fn.varBlocks);
+    };
+    /**
+     * Check `own`'s initial values and `body`, with `outer` (inherited and
+     * owning-POU variables, outermost first) and `result` (a FUNCTION or
+     * METHOD's own name) in scope but not checked again. Without `withGlobals`
+     * (an EXTENDS chain not fully known) no global is in scope.
+     */
+    const checkPou = (
+      own: readonly VarBlock[],
+      body: Statement[],
+      outer: readonly VarBlock[] = [],
+      result?: { name: string; type: TypeReference | undefined },
+      withGlobals = true,
+    ): void => {
+      const scope = new Map(withGlobals ? globals : []);
+      for (const block of outer) {
+        for (const decl of block.declarations) {
+          for (const name of decl.names)
+            scope.set(name.toUpperCase(), decl.type);
+        }
+      }
+      if (result?.type !== undefined) {
+        scope.set(result.name.toUpperCase(), result.type);
+      }
+      addDecls(own, scope);
+      for (const stmt of body) {
+        walkAST(stmt as ASTNode, (node) => {
+          if (node.kind === "AssignmentStatement") {
+            const a = node as AssignmentStatement;
+            if (
+              a.target.kind === "VariableExpression" &&
+              a.target.fieldAccess.length === 0 &&
+              a.target.subscripts.length === 0 &&
+              !a.target.isDereference
+            ) {
+              check(a.value, scope.get(a.target.name.toUpperCase()));
+            }
+            return;
+          }
+          if (node.kind !== "FunctionCallExpression") return;
+          const call = node as FunctionCallExpression;
+          if (call.instance !== undefined) return;
+          const inputs = callInputs(call, scope);
+          if (inputs === undefined) return;
+          stripEnEno(call.arguments).forEach((arg, i) => {
+            if (arg.isOutput) return;
+            const type =
+              arg.name === undefined
+                ? inputs.positional === false
+                  ? undefined
+                  : inputs[i]
+                : inputs[inputs.names!.indexOf(arg.name.toUpperCase())];
+            check(arg.value, type);
+          });
+        });
+      }
+    };
+    for (const prog of ast.programs) {
+      checkPou(prog.varBlocks, prog.body);
+      for (const m of prog.methods) {
+        checkPou(m.varBlocks, m.body, prog.varBlocks, {
+          name: m.name,
+          type: m.returnType,
+        });
+      }
+    }
+    for (const func of ast.functions) {
+      checkPou(func.varBlocks, func.body, [], {
+        name: func.name,
+        type: func.returnType,
+      });
+    }
+    for (const fb of ast.functionBlocks) {
+      const inherited = inheritedBlocks(fb);
+      const known = inherited !== undefined;
+      checkPou(fb.varBlocks, fb.body, inherited, undefined, known);
+      for (const m of fb.methods) {
+        checkPou(
+          m.varBlocks,
+          m.body,
+          [...(inherited ?? []), ...fb.varBlocks],
+          { name: m.name, type: m.returnType },
+          known,
+        );
+      }
+    }
   }
 
   /**
@@ -2576,6 +3023,12 @@ export class SemanticAnalyzer {
       if (node.kind !== "LiteralExpression") return;
       const literal = node as LiteralExpression;
       if (this.literalsReported.has(literal)) return;
+      const refusal = temporal32LiteralRefusal(literal);
+      if (refusal !== undefined) {
+        const at = literal.sourceSpan;
+        this.addError(refusal, at.startLine, at.startCol, at.file);
+        return;
+      }
       if (literal.literalType !== "LTIME") return;
       const ns = exactTimeLiteralNanoseconds(literal.rawValue);
       if (ns >= -(2n ** 63n) && ns < 2n ** 63n) return;
@@ -3376,7 +3829,8 @@ export class SemanticAnalyzer {
             }),
           );
           for (const reqMethod of requiredMethods) {
-            if (!fbMethodNames.has(reqMethod)) {
+            // An unnamed method prototype is refused by the parser already.
+            if (reqMethod !== "" && !fbMethodNames.has(reqMethod)) {
               this.addError(
                 `FUNCTION_BLOCK '${fb.name}' implements '${ifaceName}' but does not provide method '${reqMethod}'.`,
                 fb.sourceSpan.startLine,
@@ -4987,9 +5441,11 @@ export class SemanticAnalyzer {
     if (this.testTypeNames.has(upper)) return true;
     const sym = this.symbolTables.globalScope.lookup(upper);
     // An elementary type that is no global scope builtin (LTIME): a global
-    // variable may still bear its name, as before it was a type.
+    // variable, or the clock function LTIME(), may still bear its name.
     if (
-      (sym === undefined || sym.kind === "variable") &&
+      (sym === undefined ||
+        sym.kind === "variable" ||
+        sym.kind === "function") &&
       ELEMENTARY_TYPES[upper] !== undefined
     ) {
       return true;
@@ -5094,6 +5550,8 @@ export class SemanticAnalyzer {
 
     // For inline arrays, validate the element type instead
     const nameToCheck = typeRef.elementTypeName ?? typeRef.name;
+    // A name the parser could not read (`ARRAY[0..2] OF ;`) is refused already.
+    if (nameToCheck === "") return;
 
     // A platform type is lowered where its feature is on.
     if (
@@ -5108,8 +5566,10 @@ export class SemanticAnalyzer {
       return;
     }
     if (!this.isKnownType(nameToCheck)) {
+      // A POU the parser left unnamed is not named in the message.
+      const where = context.includes("''") ? "" : context;
       this.addError(
-        `Undefined type '${nameToCheck}'${context ? " in " + context : ""}`,
+        `Undefined type '${nameToCheck}'${where ? " in " + where : ""}`,
         typeRef.sourceSpan.startLine,
         typeRef.sourceSpan.startCol,
         typeRef.sourceSpan.file,
@@ -5164,7 +5624,7 @@ export class SemanticAnalyzer {
       validateVarBlocks(fb.varBlocks, `FUNCTION_BLOCK '${fb.name}'`);
 
       // EXTENDS clause
-      if (fb.extends) {
+      if (fb.extends !== undefined && fb.extends !== "") {
         if (!this.isKnownType(fb.extends)) {
           this.addError(
             `Undefined type '${fb.extends}' in EXTENDS clause of FUNCTION_BLOCK '${fb.name}'`,
@@ -5178,7 +5638,7 @@ export class SemanticAnalyzer {
       // IMPLEMENTS clause
       if (fb.implements) {
         for (const ifaceName of fb.implements) {
-          if (!this.isKnownType(ifaceName)) {
+          if (ifaceName !== "" && !this.isKnownType(ifaceName)) {
             this.addError(
               `Undefined type '${ifaceName}' in IMPLEMENTS clause of FUNCTION_BLOCK '${fb.name}'`,
               fb.sourceSpan.startLine,
@@ -5216,7 +5676,7 @@ export class SemanticAnalyzer {
     for (const iface of ast.interfaces) {
       if (iface.extends) {
         for (const baseName of iface.extends) {
-          if (!this.isKnownType(baseName)) {
+          if (baseName !== "" && !this.isKnownType(baseName)) {
             this.addError(
               `Undefined type '${baseName}' in EXTENDS clause of INTERFACE '${iface.name}'`,
               iface.sourceSpan.startLine,
@@ -5331,6 +5791,121 @@ export class SemanticAnalyzer {
     );
     if (this.features.has("fb_init")) this.validateFbInitArgumentNames(ast);
     this.validateInitialValueNames(ast);
+    this.validateSubrangeInitialValues(ast);
+  }
+
+  /**
+   * A constant initial value outside its subrange is refused: a variable's,
+   * a STRUCT field's, an ARRAY element's and a TYPE's own default.
+   */
+  private validateSubrangeInitialValues(ast: CompilationUnit): void {
+    const types = new Map(ast.types.map((t) => [t.name.toUpperCase(), t]));
+    const rangeOf = (
+      name: string | undefined,
+    ): { lo: bigint; hi: bigint } | undefined => {
+      let upper = name?.toUpperCase();
+      for (let i = 0; i < 32 && upper !== undefined; i++) {
+        const decl = types.get(upper);
+        if (decl === undefined) return undefined;
+        const def = decl.definition;
+        if (def.kind === "SubrangeDefinition") {
+          const lo = exactIntegerValue(def.lowerBound);
+          const hi = exactIntegerValue(def.upperBound);
+          return lo === undefined || hi === undefined ? undefined : { lo, hi };
+        }
+        if (def.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+          return undefined;
+        }
+        upper = def.name.toUpperCase();
+      }
+      return undefined;
+    };
+    const elementOf = (type: TypeReference): string | undefined => {
+      if (type.arrayDimensions !== undefined) return type.elementTypeName;
+      const def = types.get(type.name.toUpperCase())?.definition;
+      return def?.kind === "ArrayDefinition" ? def.elementType.name : undefined;
+    };
+    const reported = new Set<Expression>();
+    const check = (
+      value: Expression,
+      typeName: string | undefined,
+      owner: string,
+    ): void => {
+      if (reported.has(value)) return;
+      const range = rangeOf(typeName);
+      const v = exactIntegerValue(value);
+      if (range === undefined || v === undefined) return;
+      if (v >= range.lo && v <= range.hi) return;
+      reported.add(value);
+      this.addError(
+        `The initial value ${v} of '${owner}' is outside its subrange ${range.lo}..${range.hi}`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+    };
+    // Into STRUCT initialisers and ARRAY literals, nested ones included
+    const checkValue = (
+      value: Expression,
+      type: TypeReference | undefined,
+      typeName: string | undefined,
+      owner: string,
+    ): void => {
+      if (value.kind === "ArrayLiteralExpression") {
+        const element =
+          type !== undefined
+            ? elementOf(type)
+            : typeName === undefined
+              ? undefined
+              : elementOfName(typeName);
+        for (const e of value.elements) {
+          // A nested literal of a multi-dimensional ARRAY has the same elements
+          if (e.kind === "ArrayLiteralExpression") {
+            checkValue(e, type, typeName, owner);
+          } else {
+            checkValue(e, undefined, element, owner);
+          }
+        }
+      } else if (value.kind === "StructInitializerExpression") {
+        for (const el of value.elements) {
+          const field =
+            typeName === undefined
+              ? undefined
+              : resolveFieldDeclaration(typeName, el.name, ast);
+          if (field !== undefined) {
+            checkValue(
+              el.value,
+              field.type,
+              field.type.name,
+              `${owner}.${el.name}`,
+            );
+          }
+        }
+      } else if (type === undefined || type.arrayDimensions === undefined) {
+        check(value, typeName, owner);
+      }
+    };
+    const elementOfName = (name: string): string | undefined => {
+      const def = types.get(name.toUpperCase())?.definition;
+      return def?.kind === "ArrayDefinition" ? def.elementType.name : undefined;
+    };
+    const checkDecl = (decl: VarDeclaration): void => {
+      if (decl.initialValue === undefined) return;
+      checkValue(
+        decl.initialValue,
+        decl.type,
+        decl.type.arrayDimensions === undefined ? decl.type.name : undefined,
+        decl.names.join(", "),
+      );
+    };
+    for (const type of ast.types) {
+      if (type.defaultValue !== undefined) {
+        checkValue(type.defaultValue, undefined, type.name, type.name);
+      }
+    }
+    walkAST(ast, (node) => {
+      if (node.kind === "VarDeclaration") checkDecl(node as VarDeclaration);
+    });
   }
 
   /**
@@ -6035,6 +6610,9 @@ export class SemanticAnalyzer {
         case "DeleteStatement":
           this.checkExpressionForUndeclaredVars(stmt.pointer, scope, ctx);
           break;
+        case "AssertCall":
+          this.checkAssertCall(stmt, scope, ctx);
+          break;
         case "ForStatement":
           this.checkNameDeclared(
             stmt.controlVariable,
@@ -6646,6 +7224,11 @@ export class SemanticAnalyzer {
 
     // Walk SETUP body
     if (testFile.setup) {
+      this.checkTestInitialValueNames(
+        testFile.setup.varBlocks,
+        setupScope,
+        sourceAst,
+      );
       this.walkTestStatementsForUndeclaredVars(testFile.setup.body, setupScope);
       this.checkTestMemberAccess(testFile.setup.body, setupScope);
     }
@@ -6659,17 +7242,29 @@ export class SemanticAnalyzer {
       this.checkTestMemberAccess(testFile.teardown.body, setupScope);
     }
 
-    // STRING literals (assertion messages included) hold Windows-1252 characters
-    this.validateStringLiteralCharset([
+    const testRoots = [
       ...(testFile.setup?.varBlocks ?? []),
       ...(testFile.setup?.body ?? []),
       ...(testFile.teardown?.body ?? []),
       ...testFile.testCases.flatMap((tc) => [...tc.varBlocks, ...tc.body]),
-    ] as ASTNode[]);
+    ] as ASTNode[];
+    // STRING literals (assertion messages included) hold Windows-1252 characters
+    this.validateStringLiteralCharset(testRoots);
+    // TIME, DATE, TOD and DT literals fit their 32-bit types
+    for (const root of testRoots) {
+      walkAST(root, (node) => {
+        if (node.kind !== "LiteralExpression") return;
+        const refusal = temporal32LiteralRefusal(node as LiteralExpression);
+        if (refusal === undefined) return;
+        const at = node.sourceSpan;
+        this.addError(refusal, at.startLine, at.startCol, at.file);
+      });
+    }
 
     // Walk each TEST body with scope = SETUP vars + TEST-local vars
     for (const tc of testFile.testCases) {
       const testScope = this.buildTestScope(tc.varBlocks, setupScope);
+      this.checkTestInitialValueNames(tc.varBlocks, testScope, sourceAst);
       this.walkTestStatementsForUndeclaredVars(tc.body, testScope);
       this.checkTestMemberAccess(
         tc.body,
@@ -6706,7 +7301,12 @@ export class SemanticAnalyzer {
     sourceSymbolTables: SymbolTables,
   ): void {
     if (this.testFileDialect?.features.has("pointer_to") ?? true) return;
-    if (sourceSymbolTables.lookupFunction("ADR") !== undefined) return;
+    if (
+      sourceSymbolTables.lookupFunction("ADR") !== undefined &&
+      !sourceSymbolTables.globalScope.definedByLibrary("ADR")
+    ) {
+      return;
+    }
     const calls: FunctionCallExpression[] = [];
     const seen = new Set<object>();
     const visit = (node: unknown): void => {
@@ -6760,13 +7360,45 @@ export class SemanticAnalyzer {
     this.warnings.push(...found.warnings);
   }
 
+  /** The names a SETUP or TEST VAR's initial values read: declared in its scope. */
+  private checkTestInitialValueNames(
+    blocks: readonly VarBlock[],
+    scope: Scope,
+    sourceAst: CompilationUnit | undefined,
+  ): void {
+    const ctx: UndeclaredVarContext = { checkContinue: true };
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (decl.initialValue === undefined) continue;
+        if (sourceAst !== undefined) {
+          this.checkInitialValueNames(
+            decl.initialValue,
+            scope,
+            ctx,
+            sourceAst,
+            this.declaredTypeName(decl.type),
+          );
+        } else {
+          this.checkExpressionForUndeclaredVars(decl.initialValue, scope, ctx);
+        }
+      }
+    }
+  }
+
   /** Output bindings in test bodies: checked as assignments, copied out where needed. */
   private checkTestOutputBindings(
     stmts: readonly TestStatement[],
     scope: Scope,
     sourceAst: CompilationUnit | undefined,
   ): void {
-    const checker = new TypeChecker(this.symbolTables, this.stdRegistry);
+    // The run's features apply in test files too (XSIZEOF, __ISVALIDREF)
+    const checker = new TypeChecker(
+      this.symbolTables,
+      this.stdRegistry,
+      false,
+      this.features,
+      (feature, construct) => this.featureMessage(feature, construct),
+    );
     const found = checker.checkTestOutputBindings(
       stmts as readonly ASTNode[],
       scope,
@@ -6965,10 +7597,7 @@ export class SemanticAnalyzer {
     for (const stmt of stmts) {
       switch (stmt.kind) {
         case "AssertCall":
-          this.validateAssertArgCount(stmt);
-          for (const arg of stmt.args) {
-            this.checkExpressionForUndeclaredVars(arg, scope, ctx);
-          }
+          this.checkAssertCall(stmt, scope, ctx);
           break;
         case "AdvanceTimeStatement":
           this.checkExpressionForUndeclaredVars(stmt.duration, scope, ctx);
@@ -7008,6 +7637,21 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * Check an assert wherever it stands, at the top of a test block or nested
+   * in a statement: its argument count, then its arguments for undeclared names.
+   */
+  private checkAssertCall(
+    assert: AssertCall,
+    scope: Scope,
+    ctx: UndeclaredVarContext,
+  ): void {
+    this.validateAssertArgCount(assert);
+    for (const arg of assert.args) {
+      this.checkExpressionForUndeclaredVars(arg, scope, ctx);
+    }
+  }
+
+  /**
    * Validate assert call argument count matches the expected count for each assert type.
    */
   private validateAssertArgCount(assert: AssertCall): void {
@@ -7024,10 +7668,19 @@ export class SemanticAnalyzer {
     };
     const expected = expectedArgCounts[assert.assertType];
     if (expected !== undefined && assert.args.length !== expected) {
+      const last = assert.args[assert.args.length - 1];
+      const quotedMessage =
+        assert.args.length === expected + 1 &&
+        last?.kind === "LiteralExpression" &&
+        last.literalType === "WSTRING";
       this.addError(
-        `${assert.assertType} expects ${expected} argument${expected !== 1 ? "s" : ""}, got ${assert.args.length}`,
+        `${assert.assertType} expects ${expected} argument${expected !== 1 ? "s" : ""}, got ${assert.args.length}` +
+          (quotedMessage
+            ? ": the message is a STRING literal in single quotes"
+            : ""),
         assert.sourceSpan.startLine,
         assert.sourceSpan.startCol,
+        assert.sourceSpan.file,
       );
     }
   }
@@ -7108,8 +7761,12 @@ export function analyzeTestFile(
   testFile: TestFile,
   sourceSymbolTables: SymbolTables,
   sourceAst?: CompilationUnit,
+  /** The run's dialect: its features apply in the test file too. */
+  dialect?: ResolvedDialect,
 ): { errors: CompileError[]; warnings: CompileError[] } {
-  const analyzer = new SemanticAnalyzer();
+  const analyzer = new SemanticAnalyzer(
+    dialect !== undefined ? { dialect } : {},
+  );
   return analyzer.analyzeTestFile(testFile, sourceSymbolTables, sourceAst);
 }
 
