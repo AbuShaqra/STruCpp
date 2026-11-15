@@ -124,4 +124,81 @@ END_PROGRAM
     // 100 characters copied in are cut at 80; 'x' does not fit; 'ab' + 'x' does.
     expect(stdout).toBe("255 0 80 3 0");
   });
+
+  it("an ARRAY[*] OF STRING parameter takes an array of 80-character strings", () => {
+    const result = compile(
+      `FUNCTION F_A : DINT
+VAR_INPUT a : ARRAY[*] OF STRING; w : ARRAY[*] OF WSTRING; END_VAR
+F_A := LEN(a[1]) * 100 + DINT_TO_DINT(UPPER_BOUND(a, 1)) * 10 + LEN(w[0]);
+END_FUNCTION
+PROGRAM Main
+VAR x : ARRAY[0..1] OF STRING; y : ARRAY[0..1] OF WSTRING;
+  n1, n2, l1, l2, l3 : DINT; END_VAR
+x[1] := 'abc'; y[0] := "wz";
+n1 := F_A(a := x, w := y); n2 := SIZEOF(x[0]); l1 := 0; l2 := 0; l3 := 0;
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp", features: ["+string_default_80"] },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "string80_vla",
+      mainCode: MAIN,
+    });
+    expect(stdout).toBe("312 81 0 0 0");
+  });
+
+  it("a plain STRING passed to a 254 library's METHOD in-out and output is copied", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `FUNCTION_BLOCK FB_L
+METHOD M
+VAR_IN_OUT q : STRING; END_VAR
+q := CONCAT(q, 'x');
+END_METHOD
+METHOD M2
+VAR_OUTPUT p : STRING; END_VAR
+VAR_IN_OUT q : STRING; END_VAR
+p := CONCAT(q, 'y');
+END_METHOD
+END_FUNCTION_BLOCK
+`,
+          fileName: "l.st",
+        },
+      ],
+      { name: "l254", version: "1.0.0", namespace: "l254" },
+    );
+    expect(lib.errors).toEqual([]);
+    const archive = loadStlibArchive(JSON.parse(JSON.stringify(lib.archive)));
+    const result = compile(
+      `PROGRAM Main
+VAR f : FB_L; t : STRING := 'ab'; u : STRING; n1, n2, l1, l2, l3 : DINT; END_VAR
+f.M(q := t);
+f.M2(p => u, q := t);
+n1 := LEN(t); n2 := LEN(u); l1 := SIZEOF(t); l2 := 0; l3 := 0;
+END_PROGRAM
+`,
+      {
+        headerFileName: "generated.hpp",
+        features: ["+string_default_80"],
+        libraries: [archive],
+      },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "string80_lib_method",
+      mainCode: MAIN,
+    });
+    // t: 'abx'; u: 'abxy'
+    expect(stdout).toBe("3 4 81 0 0");
+  });
 });

@@ -939,7 +939,8 @@ open documents. A rejected value keeps the previous selection and shows
 
 Under `string_default_80` a `STRING` or `WSTRING` written without a length is `STRING(80)` or
 `WSTRING(80)`, in every place a type is written (a variable, a STRUCT field, an ARRAY element, a FUNCTION
-or METHOD result, a parameter, a PROPERTY, a TYPE alias, a test file); without the feature it is 254.
+or METHOD result, a parameter, an `ARRAY[*] OF STRING` parameter's element, a PROPERTY, a TYPE alias, a
+test file); without the feature it is 254.
 
 - `SIZEOF` of a plain STRING is 81 and of a plain WSTRING 162; a longer value stored is cut at 80.
 - The standard string functions (`CONCAT`, `INSERT`, ...) give a result of 254 characters or the longest
@@ -949,3 +950,6 @@ or METHOD result, a parameter, a PROPERTY, a TYPE alias, a test file); without t
 - A plain STRING bound to a library's plain STRING `VAR_IN_OUT` of the other default length is passed by
   copy-in / copy-out with no warning; a length written on either side still warns. A plain STRING bound
   to a `REFERENCE TO STRING` of the other length is refused, as for any two lengths.
+  The same copy applies to a library FUNCTION_BLOCK METHOD's VAR_IN_OUT and VAR_OUTPUT.
+- The debugger shows strings of 254 characters only: a plain STRING or WSTRING (80) and an ARRAY element
+  of one are left out of the debug table with a build warning (`Declare it as STRING(254) to expose it`).

@@ -28,6 +28,9 @@ const isString = (name: string | undefined): boolean => {
   return upper === "STRING" || upper === "WSTRING";
 };
 
+/** The element type of a variable-length array parameter (`ARRAY[*] OF STRING`). */
+const VLA_ELEMENT = /^__VLA_\d+D_(W?STRING)$/i;
+
 /** Give every STRING and WSTRING under `root` written without a length `length`. */
 export function lowerDefaultStringLength(root: object, length: number): void {
   const seen = new Set<object>();
@@ -48,7 +51,8 @@ export function lowerDefaultStringLength(root: object, length: number): void {
         ref.maxLength = length;
         ref.defaultLength = true;
       }
-      if (isString(ref.elementTypeName) && ref.elementMaxLength === undefined) {
+      const element = ref.elementTypeName ?? VLA_ELEMENT.exec(ref.name)?.[1];
+      if (isString(element) && ref.elementMaxLength === undefined) {
         ref.elementMaxLength = length;
         ref.elementDefaultLength = true;
       }
