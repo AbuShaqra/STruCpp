@@ -49,7 +49,10 @@ describe.skipIf(!libsAvailable)("Table 36 date and time functions", () => {
     it(`compiles every function (${label})`, () => {
       const r = compile(SOURCE, { ...options, libraries: noOscat });
       expect(r.errors).toEqual([]);
-      expect(dayOfWeekBody(r.cppCode)).toContain("% 7) + 7 + 4) % 7");
+      // The standard body ((DAYS MOD 7) + 7 + 4) MOD 7; additions may go through iec_add.
+      expect(dayOfWeekBody(r.cppCode)).toMatch(
+        /\(DAYS % 7\)(?: \+ 7 \+ 4|, 7\), 4\))\) % 7/,
+      );
     });
   }
 
