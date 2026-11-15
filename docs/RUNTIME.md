@@ -318,13 +318,27 @@ on every integer and bit string type, through `iec_div`) is such a fault. `MOD` 
 (Table 29, note e).
 
 Every fault goes through `strucpp::iec_raise_fault`, which builds the message in a fixed buffer, with no
-allocation. On a hosted target it throws `strucpp::IecSiteFault` (a `std::runtime_error`, whose `reason()`
+allocation. A message too long for it keeps the description and `line <n>` whole: it shortens the POU's name
+first, then the task's, each marked with `…`, never inside a UTF-8 character. On a hosted target it throws `strucpp::IecSiteFault` (a `std::runtime_error`, whose `reason()`
 is the `IecFault`); on a target without exceptions it calls `iec_runtime_fault(reason, message)` with the
 same message. The POU and line come from the call site (`strucpp::iec_site{"MAIN", 12}`): the POU is the
 PROGRAM, FUNCTION_BLOCK or FUNCTION, `FB.M` for a METHOD, PROPERTY or ACTION, and the POU whose variable
 it is for an initial value (`VAR_GLOBAL`, or the CONFIGURATION's name, for a global). The task is the one the
 runtime named on this thread with `strucpp_set_current_task(name)` before running it (thread-local under
 `STRUCPP_THREADED`); it is left out when none is set.
+
+An array access goes through `strucpp::iec_at(container, site, index...)`: an index outside the bounds is the
+fault `Array index out of bounds: <indices> in <POU>, line <n>, task <task>`, each index as written (a ULINT
+above 2^63 too, which no array has); a STRING index keeps its own text, `String index out of bounds`. A
+dereference of a NULL POINTER TO or REF_TO (`p^`) goes through `strucpp::iec_deref(p, site)`: `Null pointer
+dereference` or `Null reference dereference in <POU>, line <n>, task <task>`. A REFERENCE TO read, written or
+reached through (a member or element of it reached through a variable, a global, another REFERENCE TO or a
+pointer included) goes through `strucpp::iec_ref(r, name, site)`: `Unbound REFERENCE TO <name> in <POU>, line <n>,
+task <task>`; binding another REFERENCE TO input to it passes the reference on, unchecked. On a target without
+exceptions the same text reaches `iec_runtime_fault`; an index fault names the site there, not the index.
+Defining `STRUCPP_NO_BOUNDS_CHECK` when building the C++ leaves all of these checks out (every array, ARRAY[*]
+and UNION array member, every pointer and reference), for targets that cannot
+afford them; an out-of-range index, a NULL dereference or an unbound reference is then undefined behaviour.
 
 Where the fork dispatches the programs itself, it names the task:
 
@@ -335,13 +349,25 @@ Where the fork dispatches the programs itself, it names the task:
 
 The REPL and the cyclic runner catch a fault: they print it (`Fault: Division by zero in FB, line 4, task SLOW`),
 stop every program of the faulting task (`Stopped task SLOW`) and keep the other tasks running. The cyclic
-runner ends when no task is left; both exit with status 1 after a fault.
+runner ends when no task is left; both exit with status 1 after a fault. A fault in an initial value is
+raised while the program object is constructed, before any runner starts: it is not caught there, and it ends
+the process (`std::terminate` on a hosted target).
 
 A runtime that runs the generated programs itself (an embedding scheduler, the threaded runtime of a host
 such as OpenPLC) has no dispatcher in the fork. It must call `strucpp::strucpp_set_current_task(name)` on
 the thread that runs a task, before that task's programs run in each cycle, and
 `strucpp::strucpp_set_current_task(nullptr)` after them. The name is not copied: pass a string that
 outlives the call, such as a literal.
+
+A store into a subrange variable goes through `iec_subrange_store`, which raises the same fault
+(`IecFault::Subrange`) with `Value <v> outside <lo>..<hi> stored in <variable>` when the value is outside the range,
+each number as written (a ULINT above 2^63 too). Every store is checked: an assignment (to a local, a member, a
+FUNCTION or METHOD result, a global, a CONFIGURATION global through VAR_EXTERNAL, an ARRAY element, a STRUCT
+field), an output or in-out copied back (`f(o => x)`). An input of a FUNCTION_BLOCK, FUNCTION or METHOD is
+checked on entry, so its fault names the callee and the line of its VAR_INPUT. An integer literal
+inside the range is stored with no check. The check costs time: a tight loop of subrange stores ran about 2.4
+times slower at -O2 than with no check. Defining `STRUCPP_NO_BOUNDS_CHECK` leaves the check out, as it does the
+index check.
 
 ## Pointer and Reference Types
 

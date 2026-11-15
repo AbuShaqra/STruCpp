@@ -18,6 +18,8 @@ import type {
   VariableExpression,
 } from "../frontend/ast.js";
 import type { CompileError } from "../types.js";
+import { ELEMENTARY_TYPES } from "./type-utils.js";
+import { typeUntypedNot } from "./untyped-not.js";
 
 /** The global variables a field default may name, by upper-case name. */
 interface Globals {
@@ -27,6 +29,8 @@ interface Globals {
   variables: Set<string>;
   /** Upper-case names of the global variable lists. */
   lists: Set<string>;
+  /** A constant's declared elementary type name, upper case, when it has one. */
+  types: Map<string, string>;
   /** Upper-case names of the unit's FUNCTIONs. */
   functions: Set<string>;
 }
@@ -42,6 +46,9 @@ function collect(blocks: readonly VarBlock[], into: Globals): void {
         const upper = name.toUpperCase();
         if (block.isConstant) {
           into.constants.set(upper, decl.initialValue ?? null);
+          if (decl.type.arrayDimensions === undefined) {
+            into.types.set(upper, decl.type.name.toUpperCase());
+          }
         } else {
           into.variables.add(upper);
         }
@@ -150,10 +157,17 @@ class Folder {
       this.evaluating.add(name);
       const folded = this.fold(entry, field);
       this.evaluating.delete(name);
+      // The constant keeps its declared type (NOT GB of a BYTE is bitwise)
+      const typeName = this.globals.types.get(name);
+      const type =
+        typeName !== undefined ? ELEMENTARY_TYPES[typeName] : undefined;
       return {
         kind: "ParenthesizedExpression",
         sourceSpan: at.sourceSpan,
         expression: { ...folded, sourceSpan: at.sourceSpan },
+        ...(type !== undefined
+          ? { resolvedType: type, foldedConstant: true }
+          : {}),
       };
     }
     const supplied = Object.entries(this.supplied).find(
@@ -184,6 +198,22 @@ class Folder {
   }
 }
 
+/** A type name through the unit's aliases, upper case. */
+function aliasBaseOf(unit: CompilationUnit, name: string): string {
+  let upper = name.toUpperCase();
+  for (let i = 0; i < 32; i++) {
+    const current = upper;
+    const def = unit.types.find(
+      (t) => t.name.toUpperCase() === current,
+    )?.definition;
+    if (def?.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+      return upper;
+    }
+    upper = def.name.toUpperCase();
+  }
+  return upper;
+}
+
 /**
  * Fold the global constants in the field defaults of every STRUCT of `unit`.
  * Mutates `unit`. Returns one error per global variable a default names.
@@ -196,6 +226,7 @@ export function foldStructFieldDefaults(
     constants: new Map(),
     variables: new Set(),
     lists: new Set(),
+    types: new Map(),
     functions: new Set(unit.functions.map((f) => f.name.toUpperCase())),
   };
   collect(unit.globalVarBlocks, globals);
@@ -222,6 +253,16 @@ export function foldStructFieldDefaults(
       }
       const name = `${type.name}.${field.names[0] ?? ""}`.toUpperCase();
       field.initialValue = folder.fold(field.initialValue, name);
+      // NOT of an untyped constant takes the element's bit string type
+      const element = aliasBaseOf(
+        unit,
+        field.type.elementTypeName ?? field.type.name,
+      );
+      if (field.initialValue.kind === "ArrayLiteralExpression") {
+        for (const e of field.initialValue.elements) typeUntypedNot(e, element);
+      } else if (field.type.arrayDimensions === undefined) {
+        typeUntypedNot(field.initialValue, element);
+      }
     }
   }
   return errors;

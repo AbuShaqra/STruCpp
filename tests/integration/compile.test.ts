@@ -6,6 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { compile, parse, getVersion, defaultOptions } from '../../src/index.js';
+import { withoutSites } from '../support/fault-sites.js';
 
 describe('STruC++ Compiler', () => {
   describe('getVersion', () => {
@@ -603,8 +604,8 @@ describe('Error Handling Tests', () => {
       `;
       const result = compile(source);
       expect(result.success).toBe(true);
-      expect(result.cppCode).toContain('BAG->with_lock([&](auto* __glk){ (*__glk).NUMS.at(I) = ');
-      expect(result.cppCode).toContain('BAG->with_lock([&](auto* __glk){ return (*__glk).ITEMS.at(I).V; })');
+      expect(withoutSites(result.cppCode)).toContain('BAG->with_lock([&](auto* __glk){ (*__glk).NUMS.at(I) = ');
+      expect(withoutSites(result.cppCode)).toContain('BAG->with_lock([&](auto* __glk){ return (*__glk).ITEMS.at(I).V; })');
     });
 
     it('binds an FB VAR_IN_OUT to a composite shared global by reference, with a warning', () => {

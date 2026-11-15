@@ -5,6 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { withoutSites } from "../support/fault-sites.js";
 
 const run = (body: string) =>
   compile(
@@ -21,19 +22,19 @@ describe("dereferenced STRUCT equality", () => {
   it("compares r1^ = r2^ and p1^ <> s2 member-wise", () => {
     const r = run("b := r1^ = r2^; b := p1^ <> s2;");
     expect(r.errors).toEqual([]);
-    expect(r.cppCode).toContain("__l.X == __r.X");
-    expect(r.cppCode).toMatch(/\(\(\*R1\), \(\*R2\)\)|\(\*R1\), \(\*R2\)\)/);
+    expect(withoutSites(r.cppCode)).toContain("__l.X == __r.X");
+    expect(withoutSites(r.cppCode)).toMatch(/\(\(\*R1\), \(\*R2\)\)|\(\*R1\), \(\*R2\)\)/);
   });
 
   it("compares a REFERENCE TO through its target", () => {
     const r = run("b := rr = s2;");
     expect(r.errors).toEqual([]);
-    expect(r.cppCode).toContain("(RR.target(), S2)");
+    expect(withoutSites(r.cppCode)).toContain("(RR.target(), S2)");
   });
 
   it("still compares two REF_TO as references", () => {
     const r = run("b := r1 = r2;");
     expect(r.errors).toEqual([]);
-    expect(r.cppCode).not.toContain("__l.X");
+    expect(withoutSites(r.cppCode)).not.toContain("__l.X");
   });
 });
