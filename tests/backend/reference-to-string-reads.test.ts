@@ -43,7 +43,9 @@ describe("REFERENCE TO STRING reads", () => {
         );
         expect(r.errors).toEqual([]);
         expect(r.cppCode).toContain("RR.bind(X);");
-        expect(r.cppCode).toContain("I = LEN(RR.target()) + LEN(RW.target());");
+        expect(r.cppCode).toContain(
+          "I = strucpp::iec_add<DINT_t>({LEN(RR.target()), LEN(RW.target())});",
+        );
         expect(r.cppCode).toContain("S = RR.target();");
       });
 

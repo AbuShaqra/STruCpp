@@ -305,13 +305,13 @@ END_PROGRAM
 `;
     const st = compile(src, vendor());
     expect(at(st.errors)).toEqual([]);
-    expect(st.cppCode).toMatch(/OUT = .*ST.*\+ 1/);
+    expect(st.cppCode).toMatch(/OUT = strucpp::iec_add<DINT_t>\(\{ST, 1\}\)/);
     const il = compile(src, {
       features: ["+conditional_pragmas"],
       pragmaDefines: { USE_IL: "" },
     });
     expect(at(il.errors)).toEqual([]);
-    expect(il.cppCode).not.toMatch(/ST \+ 1/);
+    expect(il.cppCode).not.toMatch(/\{ST, 1\}/);
   });
 
   it("#line directives keep the original line numbers", () => {

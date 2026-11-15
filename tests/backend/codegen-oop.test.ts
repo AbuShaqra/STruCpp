@@ -512,7 +512,7 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
         "__GETAVG__SUM = __GETAVG__SUM + NEWVALUE;",
       );
       expect(result.cppCode).toContain(
-        "__GETAVG__COUNT = __GETAVG__COUNT + 1;",
+        "__GETAVG__COUNT = strucpp::iec_add<DINT_t>({__GETAVG__COUNT, 1});",
       );
     });
 
@@ -765,7 +765,7 @@ describe("Codegen - OOP Features (Phase 5.2)", () => {
       expect(result.cppCode).toContain("IEC_INT TEMP;");
 
       // Method body
-      expect(result.cppCode).toContain("TEMP = A + B;");
+      expect(result.cppCode).toContain("TEMP = strucpp::iec_add<DINT_t>({A, B});");
 
       // Return value
       expect(result.cppCode).toContain("COMPUTE_result = TEMP;");

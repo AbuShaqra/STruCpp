@@ -481,25 +481,12 @@ int main() {
   });
 
   describe("infix arithmetic on scalar globals", () => {
-    /**
-     * Pinning a real behaviour change this fix carries, so it cannot drift
-     * again unnoticed.
-     *
-     * A scalar global now presents as `IECVar<T>`, so infix arithmetic on
-     * globals binds the `IECVar` operator overloads instead of promoting to
-     * `int`. Those truncate to the IEC width at each step. For SINT globals of
-     * 100 each, `(ga + gb) / 2` was 100 before and is -28 now.
-     *
-     * That is the correct answer, not a regression: two SINT LOCALS already
-     * gave -28, and IEC 61131-3 says an operation on SINT yields SINT. The
-     * point of this test is that globals and locals now agree, and that
-     * whichever way it goes is a deliberate choice rather than an accident.
-     */
-    it("wraps at the IEC width, and agrees with the same expression on locals", () => {
+    /** Globals and locals agree: SINT arithmetic is computed in DINT and cut only where it is stored. */
+    it("computes SINT arithmetic wide on globals and locals alike, and wraps it where it is stored", () => {
       const source = rawProgram(
         "    ga : SINT := 100;\n    gb : SINT := 100;",
-        "    la : SINT := 100;\n    lb : SINT := 100;\n    og : SINT;\n    ol : SINT;",
-        "  og := (ga + gb) / 2;\n  ol := (la + lb) / 2;",
+        "    la : SINT := 100;\n    lb : SINT := 100;\n    og : SINT;\n    ol : SINT;\n    sg : SINT;\n    sl : SINT;",
+        "  og := (ga + gb) / 2;\n  ol := (la + lb) / 2;\n  sg := ga + gb;\n  sl := la + lb;",
       );
       const result = compile(source, { headerFileName: "generated.hpp" });
       expect(result.errors.map((e) => e.message)).toEqual([]);
@@ -515,13 +502,13 @@ int main() {
     using namespace strucpp;
     Program_MAIN p(&GA, &GB);
     p.run();
-    std::cout << (int)p.OG.get() << " " << (int)p.OL.get() << std::endl;
+    std::cout << (int)p.OG.get() << " " << (int)p.OL.get() << " "
+              << (int)p.SG.get() << " " << (int)p.SL.get() << std::endl;
     return 0;
 }
 `,
       });
-      // Globals and locals must give the same answer as each other.
-      expect(out).toBe("-28 -28");
+      expect(out).toBe("100 100 -56 -56");
     });
   });
 });

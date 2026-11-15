@@ -86,7 +86,7 @@ void FB_X::operator()() {
 
 IEC_INT FB_X::BUMP() {
     IEC_INT BUMP_result;
-    COUNT = COUNT + STEP;
+    COUNT = strucpp::iec_add<DINT_t>({COUNT, STEP});
     BUMP_result = COUNT;
     return BUMP_result;
 }
@@ -101,7 +101,7 @@ namespace strucpp {
 
 IEC_INT ADDONE(IEC_INT A) {
     IEC_INT ADDONE_result;
-    ADDONE_result = A + 1;
+    ADDONE_result = strucpp::iec_add<DINT_t>({A, 1});
     return ADDONE_result;
 }
 

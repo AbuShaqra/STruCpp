@@ -99,6 +99,45 @@ constexpr detail::iec_arith_t<T> iec_mul(T a, T b) noexcept {
     using U = std::make_unsigned_t<R>;
     return static_cast<R>(static_cast<U>(static_cast<R>(a)) * static_cast<U>(static_cast<R>(b)));
 }
+namespace detail {
+/**
+ * The operands of a generated iec_add, iec_sub or iec_mul call, `{a, b}`:
+ * a braced list evaluates them left to right, as ST does, then converts to T.
+ */
+template<typename T>
+struct iec_operand {
+    T v;
+    /** Reads the operand's value when it is evaluated, before the next one; may throw (null REFERENCE TO). */
+    template<typename A>
+    constexpr iec_operand(const A& x) : v(static_cast<T>(x)) {}
+};
+template<typename T>
+struct iec_operands {
+    T a;
+    T b;
+    constexpr iec_operands(iec_operand<T> x, iec_operand<T> y) noexcept : a(x.v), b(y.v) {}
+};
+}  // namespace detail
+
+/** iec_add<T>({a, b}): a + b with a evaluated before b. */
+template<typename T>
+constexpr auto iec_add(detail::iec_operands<T> o) noexcept { return iec_add<T>(o.a, o.b); }
+/** iec_sub<T>({a, b}): a - b with a evaluated before b. */
+template<typename T>
+constexpr auto iec_sub(detail::iec_operands<T> o) noexcept { return iec_sub<T>(o.a, o.b); }
+/** iec_mul<T>({a, b}): a * b with a evaluated before b. */
+template<typename T>
+constexpr auto iec_mul(detail::iec_operands<T> o) noexcept { return iec_mul<T>(o.a, o.b); }
+
+/** -a; on an integer type the minimum value wraps to itself instead of overflowing. */
+template<typename T, std::enable_if_t<detail::iec_wrap_int<T>::value, int> = 0>
+constexpr detail::iec_arith_t<T> iec_neg(T a) noexcept {
+    using R = detail::iec_arith_t<T>;
+    using U = std::make_unsigned_t<R>;
+    return static_cast<R>(static_cast<U>(0) - static_cast<U>(static_cast<R>(a)));
+}
+template<typename T, std::enable_if_t<!detail::iec_wrap_int<T>::value, int> = 0>
+constexpr auto iec_neg(T a) noexcept { return -a; }
 template<typename T, std::enable_if_t<!detail::iec_wrap_int<T>::value, int> = 0>
 constexpr auto iec_add(T a, T b) noexcept { return a + b; }
 template<typename T, std::enable_if_t<!detail::iec_wrap_int<T>::value, int> = 0>

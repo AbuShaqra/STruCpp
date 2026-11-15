@@ -89,7 +89,7 @@ describe('Phase 3.1 - Expression and Assignment Code Generation', () => {
       `;
       const result = compile(source);
       expect(result.success).toBe(true);
-      expect(result.cppCode).toContain('Y = X + 5;');
+      expect(result.cppCode).toContain('Y = strucpp::iec_add<DINT_t>({X, 5});');
     });
 
     it('should generate subtraction', () => {
@@ -101,7 +101,7 @@ describe('Phase 3.1 - Expression and Assignment Code Generation', () => {
       `;
       const result = compile(source);
       expect(result.success).toBe(true);
-      expect(result.cppCode).toContain('Y = X - 3;');
+      expect(result.cppCode).toContain('Y = strucpp::iec_sub<DINT_t>({X, 3});');
     });
 
     it('should generate multiplication', () => {
@@ -113,7 +113,7 @@ describe('Phase 3.1 - Expression and Assignment Code Generation', () => {
       `;
       const result = compile(source);
       expect(result.success).toBe(true);
-      expect(result.cppCode).toContain('Y = X * 2;');
+      expect(result.cppCode).toContain('Y = strucpp::iec_mul<DINT_t>({X, 2});');
     });
 
     it('should generate division', () => {
@@ -151,7 +151,7 @@ describe('Phase 3.1 - Expression and Assignment Code Generation', () => {
       const result = compile(source);
       expect(result.success).toBe(true);
       expect(result.cppCode).toContain('Y = iec_mod(X, Z);');
-      expect(result.cppCode).toContain('W = iec_mod((X + 1), 0);');
+      expect(result.cppCode).toContain('W = iec_mod((strucpp::iec_add<DINT_t>({X, 1})), 0);');
     });
 
     it('should generate complex arithmetic expression', () => {
@@ -163,7 +163,7 @@ describe('Phase 3.1 - Expression and Assignment Code Generation', () => {
       `;
       const result = compile(source);
       expect(result.success).toBe(true);
-      expect(result.cppCode).toContain('RESULT = A + B * C;');
+      expect(result.cppCode).toContain('RESULT = strucpp::iec_add<DINT_t>({A, strucpp::iec_mul<DINT_t>({B, C})});');
     });
   });
 
@@ -301,7 +301,7 @@ describe('Phase 3.1 - Expression and Assignment Code Generation', () => {
       `;
       const result = compile(source);
       expect(result.success).toBe(true);
-      expect(result.cppCode).toContain('Y = -X;');
+      expect(result.cppCode).toContain('Y = strucpp::iec_neg<DINT_t>(X);');
     });
 
     it('should generate unary plus', () => {
@@ -327,7 +327,7 @@ describe('Phase 3.1 - Expression and Assignment Code Generation', () => {
       `;
       const result = compile(source);
       expect(result.success).toBe(true);
-      expect(result.cppCode).toContain('RESULT = (A + B) * 2;');
+      expect(result.cppCode).toContain('RESULT = strucpp::iec_mul<DINT_t>({(strucpp::iec_add<DINT_t>({A, B})), 2});');
     });
   });
 
@@ -391,7 +391,7 @@ describe('Phase 3.1 - Expression and Assignment Code Generation', () => {
       `;
       const result = compile(source);
       expect(result.success).toBe(true);
-      expect(result.cppCode).toContain('ADDINTS_result = A + B;');
+      expect(result.cppCode).toContain('ADDINTS_result = strucpp::iec_add<DINT_t>({A, B});');
       expect(result.cppCode).toContain('return ADDINTS_result;');
     });
 
@@ -447,7 +447,7 @@ describe('Phase 3.1 - Expression and Assignment Code Generation', () => {
       const result = compile(source);
       expect(result.success).toBe(true);
       expect(result.cppCode).toContain('X = 10;');
-      expect(result.cppCode).toContain('Y = X + 5;');
+      expect(result.cppCode).toContain('Y = strucpp::iec_add<DINT_t>({X, 5});');
     });
 
     it('Test 2: Boolean Expression', () => {
@@ -540,7 +540,7 @@ describe('Phase 3.1 - Expression and Assignment Code Generation', () => {
       `;
       const result = compile(source);
       expect(result.success).toBe(true);
-      expect(result.cppCode).toContain('RESULT = (X + Y) > 100;');
+      expect(result.cppCode).toContain('RESULT = (strucpp::iec_add<DINT_t>({X, Y})) > 100;');
     });
 
     it('should handle nested logical operations', () => {
@@ -569,7 +569,7 @@ describe('Phase 3.1 - Expression and Assignment Code Generation', () => {
       `;
       const result = compile(source);
       expect(result.success).toBe(true);
-      expect(result.cppCode).toContain('INTERNAL = INTERNAL + 1;');
+      expect(result.cppCode).toContain('INTERNAL = strucpp::iec_add<DINT_t>({INTERNAL, 1});');
       expect(result.cppCode).toContain('COUNT = INTERNAL;');
     });
   });

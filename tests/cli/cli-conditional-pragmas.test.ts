@@ -336,7 +336,7 @@ END_FUNCTION
     };
     const code = JSON.stringify(archive.chunks);
     expect(code).toContain("100");
-    expect(code).not.toContain("+ 7");
+    expect(code).not.toContain("{A, 7}");
     expect(archive.pragmaDefines).toEqual({ FAST: "" });
 
     const out = join(d, "extracted");

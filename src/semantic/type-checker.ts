@@ -1930,6 +1930,13 @@ export class TypeChecker {
     ) {
       expr.comparesReferences = true;
     }
+    delete expr.addressArithmetic;
+    if (
+      (expr.operator === "+" || expr.operator === "-") &&
+      [expr.left, expr.right].some((e) => this.isAddressOperand(e, scope))
+    ) {
+      expr.addressArithmetic = true;
+    }
 
     if (leftType === undefined || rightType === undefined) {
       return undefined;
@@ -2156,7 +2163,7 @@ export class TypeChecker {
     if (value.kind === "LiteralExpression" && (value.typePrefix ?? "") !== "") {
       return;
     }
-    // A typed subexpression wraps in its own type, whatever the target
+    // A typed DINT or LINT subexpression wraps in its own type, whatever the target
     const inner = this.typedConstantOverflow(value);
     if (inner !== undefined) {
       this.warnOverflowAt(inner.at, inner.value, inner.type);
@@ -2182,8 +2189,10 @@ export class TypeChecker {
   }
 
   /**
-   * The first subexpression of typed literals (`INT#32767 + INT#1`) whose
-   * value is outside its own type, with that value and type.
+   * The first subexpression of typed literals (`DINT#2147483647 + 1`) whose
+   * value is outside the type it is computed in, with that value and type.
+   * A binary expression is computed in the common type of its operands, at
+   * least DINT, so a narrow one (`INT#32767 + 1`) overflows only its target.
    */
   private typedConstantOverflow(
     expr: Expression,
@@ -2201,7 +2210,10 @@ export class TypeChecker {
           return typeOf(e.operand);
         case "BinaryExpression": {
           if (!["+", "-", "*", "/"].includes(e.operator)) return undefined;
-          const type = typeOf(e.left) ?? typeOf(e.right);
+          const type = this.computedIntegerType(
+            typeOf(e.left),
+            typeOf(e.right),
+          );
           if (found !== undefined) return undefined;
           const v = this.constantIntegerValue(e);
           const range = type === undefined ? undefined : integerTypeRange(type);
@@ -2221,6 +2233,27 @@ export class TypeChecker {
     };
     typeOf(expr);
     return found;
+  }
+
+  /**
+   * The integer type a binary expression of operand types `l` and `r` is
+   * computed in: their common type, a type narrower than DINT promoted to DINT.
+   */
+  private computedIntegerType(
+    l: string | undefined,
+    r: string | undefined,
+  ): string | undefined {
+    const lt = l === undefined ? undefined : ELEMENTARY_TYPES[l];
+    const rt = r === undefined ? undefined : ELEMENTARY_TYPES[r];
+    const common =
+      lt !== undefined && rt !== undefined ? getCommonType(lt, rt) : undefined;
+    const name =
+      common?.typeKind === "elementary"
+        ? (common as ElementaryType).name.toUpperCase()
+        : (l ?? r);
+    if (name === undefined) return undefined;
+    const bits = ELEMENTARY_TYPES[name]?.sizeBits;
+    return bits !== undefined && bits < 32 ? "DINT" : name;
   }
 
   /** The exact value of an integer constant expression of literals, if it is one. */
@@ -6441,6 +6474,16 @@ export class TypeChecker {
     return (
       this.declaredReferenceShape(target, scope)?.chain[0] === "pointer_to"
     );
+  }
+
+  /** An address operand of `+` / `-`: ADR(), a POINTER TO or REF_TO itself, or address arithmetic. */
+  private isAddressOperand(expr: Expression, scope: Scope): boolean {
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.isAddressOperand(expr.expression, scope);
+    }
+    if (expr.kind === "BinaryExpression")
+      return expr.addressArithmetic === true;
+    return isAddressOf(expr) || this.isReferenceItself(expr, scope);
   }
 
   /** Whether `expr` denotes a POINTER TO or REF_TO variable, not its target. */

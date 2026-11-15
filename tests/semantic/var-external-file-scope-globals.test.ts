@@ -75,7 +75,10 @@ describe("VAR_EXTERNAL against a file-level VAR_GLOBAL", () => {
     expect(errorMessages(result)).toEqual([]);
     expect(result.success).toBe(true);
     expect(result.headerCode).not.toContain("GlobalVar<IEC_INT>* COUNTER");
-    expect(result.cppCode).toContain("COUNTER = COUNTER + 1;");
+    // INT arithmetic is computed in DINT and cut where it is stored
+    expect(result.cppCode).toContain(
+      "COUNTER = strucpp::iec_add<DINT_t>({COUNTER, 1});",
+    );
   });
 
   it("resolves a struct-typed global and reads its fields", () => {

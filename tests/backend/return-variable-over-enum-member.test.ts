@@ -36,7 +36,9 @@ describe("return variable named like an enumeration member", () => {
   it("assigns and reads the return variable in its own body", () => {
     const result = compile(SOURCE);
     expect(result.errors).toEqual([]);
-    expect(result.cppCode).toContain("ALPHA_result = X + 1;");
+    expect(result.cppCode).toContain(
+      "ALPHA_result = strucpp::iec_add<DINT_t>({X, 1});",
+    );
     expect(result.cppCode).toContain("ALPHA_result = ALPHA_result * 2;");
     expect(result.cppCode).toContain("BETA_result = 7;");
     expect(result.cppCode).toContain("GAMMA_result = 5;");

@@ -77,7 +77,7 @@ describe("Phase 3.3: Array Element Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("ARR.at(I) = ARR.at(I) + 1;");
+    expect(result.cppCode).toContain("ARR.at(I) = strucpp::iec_add<DINT_t>({ARR.at(I), 1});");
   });
 
   it("should generate array access with expression index", () => {
@@ -94,7 +94,9 @@ describe("Phase 3.3: Array Element Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("ARR.at(I + 1) = ARR.at(I - 1) + ARR.at(I);");
+    expect(result.cppCode).toContain(
+      "ARR.at(strucpp::iec_add<DINT_t>({I, 1})) = strucpp::iec_add<DINT_t>({ARR.at(strucpp::iec_sub<DINT_t>({I, 1})), ARR.at(I)});",
+    );
   });
 
   it("should generate 2D array access with multiple subscripts", () => {
@@ -137,8 +139,8 @@ describe("Phase 3.3: Array Element Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("ARR.at(I) = I * 10;");
-    expect(result.cppCode).toContain("SUM = SUM + ARR.at(I);");
+    expect(result.cppCode).toContain("ARR.at(I) = strucpp::iec_mul<DINT_t>({I, 10});");
+    expect(result.cppCode).toContain("SUM = strucpp::iec_add<DINT_t>({SUM, ARR.at(I)});");
   });
 });
 
@@ -180,7 +182,7 @@ describe("Phase 3.3: Structure Member Access", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("DIST = P.X + P.Y;");
+    expect(result.cppCode).toContain("DIST = strucpp::iec_add<DINT_t>({P.X, P.Y});");
   });
 
   it("should generate nested struct access", () => {
@@ -274,7 +276,7 @@ describe("Phase 3.3: Combined Array/Struct Access", () => {
     `);
     expect(result.success).toBe(true);
     expect(result.cppCode).toContain("POINTS.at(I).X = I;");
-    expect(result.cppCode).toContain("POINTS.at(I).Y = I * 2;");
+    expect(result.cppCode).toContain("POINTS.at(I).Y = strucpp::iec_mul<DINT_t>({I, 2});");
   });
 });
 

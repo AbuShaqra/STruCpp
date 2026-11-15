@@ -45,18 +45,18 @@ describe("compileStlib with pragmaDefines", () => {
     const fast = chunkText({ FAST: "" });
     expect(fast).toContain("100");
     expect(fast).not.toContain("222");
-    expect(fast).not.toContain("+ 7");
+    expect(fast).not.toContain("{A, 7}");
     const two = chunkText({ LEVEL: "two" });
     expect(two).toContain("222");
     expect(two).not.toContain("100");
     const none = chunkText();
-    expect(none).toContain("+ 7");
+    expect(none).toContain("{A, 7}");
     expect(none).not.toContain("100");
   });
 
   it("matches define names case-sensitively and records them as given", () => {
     const lower = chunkText({ fast: "" });
-    expect(lower).toContain("+ 7");
+    expect(lower).toContain("{A, 7}");
     expect(lower).not.toContain("100");
     const r = compileStlib([{ source: LIB, fileName: "lib.st" }], {
       ...BASE,

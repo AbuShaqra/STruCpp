@@ -76,7 +76,9 @@ END_PROGRAM`;
     const r = compile(src);
     expect(messages(r)).toEqual([]);
     expect(r.cppCode).toMatch(/MAX_\(5\) \+ ADR_\(2\) \+ SIZEOF\(3\)/);
-    expect(r.cppCode).toMatch(/MAX__result = A \* 10/);
+    expect(r.cppCode).toMatch(
+      /MAX__result = strucpp::iec_mul<DINT_t>\(\{A, 10\}\)/,
+    );
   });
 
   it("keeps the standard function when only a type has its name", () => {
