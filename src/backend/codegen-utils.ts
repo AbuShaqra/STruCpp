@@ -7,7 +7,6 @@
 import type {
   ElementaryType,
   Expression,
-  LiteralExpression,
   ParenthesizedExpression,
 } from "../frontend/ast.js";
 import { exactIntegerLiteralValue } from "../literal-utils.js";
