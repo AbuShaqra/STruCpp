@@ -64,10 +64,6 @@ import type {
 import {
   collectFileScopeGlobals,
   getProjectNamespace,
-  parseDateLiteralToDays,
-  parseDtLiteralToNs,
-  parseTimeLiteral,
-  parseTodLiteralToNs,
 } from "../project-model.js";
 import { isElementaryType, TypeRegistry } from "../semantic/type-registry.js";
 import { programsReachedByName } from "../semantic/program-access.js";
@@ -96,13 +92,16 @@ import {
   sizeOfTypeCpp,
 } from "./type-codegen.js";
 import {
-  dateArithmeticCpp,
+  temporalArithmeticCpp,
+  temporalLiteralCpp,
+  NS_PER_DAY,
   formatArrayType,
   formatIntegerLiteral,
   iecBaseToCppLiteral,
   isComparison,
   isComparisonExpr,
   literalStringComparison,
+  parenthesizedCpp,
   isNonZeroIntegerLiteral,
   literalTemporalType,
   translateIECString,
@@ -140,6 +139,7 @@ import {
   type StructInitEmitter,
 } from "./struct-init-codegen.js";
 import { vendorOperatorCpp } from "../semantic/vendor-operators.js";
+import { untypedNotCpp, untypedNotTarget } from "../semantic/untyped-not.js";
 import { bitPlaceOf, bitRunMemberName } from "./bit-runs.js";
 import type { StructDefinition } from "../frontend/ast.js";
 
@@ -386,10 +386,10 @@ export interface CodeGenOptions {
  * yield; `fromUnit` converts back. `undefined` means the internal
  * representation already IS that unit, so no call is emitted.
  *
- * Internally every temporal type is nanoseconds since its own zero, except
- * DATE, which is whole days. CODESYS uses 32-bit seconds for DATE and DT,
- * 32-bit milliseconds for TOD and TIME, and 64-bit nanoseconds for all four
- * `L` variants — so the `L` rows are pass-through and the rest scale.
+ * TIME and TOD are held in 32-bit ms, DATE and DT in 32-bit seconds (as the
+ * vendor holds them), LTIME, LTOD and LDT in 64-bit ns and LDATE in days. The
+ * helpers convert between the held value and the integer's unit (the 32-bit
+ * ones are a plain count, wrapping modulo 2^32; LDATE scales days to ns).
  *
  * One table rather than a chain of `if`s because the two directions have to
  * agree: OSCAT converts out and back inside a single expression, and a unit
@@ -422,9 +422,8 @@ const TEMPORAL_CONVERSION_UNITS = new Map<string, TemporalUnitInfo>([
   ["DATE_AND_TIME", { toUnit: "DT_TO_SECONDS", fromUnit: "DT_FROM_SECONDS" }],
   ["DATE", { toUnit: "DATE_TO_SECONDS", fromUnit: "DATE_FROM_SECONDS" }],
   ["D", { toUnit: "DATE_TO_SECONDS", fromUnit: "DATE_FROM_SECONDS" }],
-  // nanoseconds — the 64-bit variants. TIME, TOD and DT are already stored in
-  // nanoseconds, so those need no call at all; DATE is stored in days and
-  // still has to be scaled.
+  // nanoseconds — the 64-bit variants, held in ns already; LDATE is held in
+  // days and is scaled.
   ["LTIME", { toUnit: undefined, fromUnit: undefined }],
   ["LTOD", { toUnit: undefined, fromUnit: undefined }],
   ["LTIME_OF_DAY", { toUnit: undefined, fromUnit: undefined }],
@@ -469,11 +468,27 @@ const LONG_TEMPORAL_NAMES = new Set([
   "LTIME",
 ]);
 
+/** The 32-bit C++ value type and the long IECVar of each temporal kind. */
+const TEMPORAL_CPP: Record<
+  "date" | "tod" | "dt" | "duration",
+  { short: string; long: string; narrow: string }
+> = {
+  duration: {
+    short: "TIME_t",
+    long: "IEC_LTIME",
+    narrow: "LTIME_TO_TIME_VALUE",
+  },
+  date: { short: "DATE_t", long: "IEC_LDATE", narrow: "LDATE_TO_DATE_VALUE" },
+  tod: { short: "TOD_t", long: "IEC_LTOD", narrow: "LTOD_TO_TOD_VALUE" },
+  dt: { short: "DT_t", long: "IEC_LDT", narrow: "LDT_TO_DT_VALUE" },
+};
+
 /**
  * A conversion between two temporal types: the date or time of day of a
- * date-and-time is split off (in every form, Table 26); with a long (Ed. 3)
- * form on either side, a date becomes the date-and-time of its midnight and the
- * same kind converts unchanged. Undefined for any other pair.
+ * date-and-time is split off (in every form, Table 26), and with a long
+ * (Ed. 3) form on either side the value goes through the long form's unit (ns,
+ * days for LDATE): a 32-bit source widens exactly, a 32-bit target is
+ * truncated to its unit and taken modulo 2^32. Undefined for any other pair.
  */
 function longTemporalConversion(
   argExpr: string,
@@ -483,21 +498,32 @@ function longTemporalConversion(
   const f = TEMPORAL_KIND[from];
   const t = TEMPORAL_KIND[to];
   if (f === undefined || t === undefined) return undefined;
-  // Table 26: the date or the time of day of a date-and-time, in every form.
-  // Through the stored nanoseconds, so a REFERENCE TO DT converts too.
-  if (f === "dt" && t === "date") {
-    return `DATE_OF_DT(IEC_DT(static_cast<int64_t>(${argExpr})))`;
-  }
-  if (f === "dt" && t === "tod") {
-    return `TOD_OF_DT(IEC_DT(static_cast<int64_t>(${argExpr})))`;
-  }
-  if (!LONG_TEMPORAL_NAMES.has(from) && !LONG_TEMPORAL_NAMES.has(to)) {
+  const fromLong = LONG_TEMPORAL_NAMES.has(from);
+  const toLong = LONG_TEMPORAL_NAMES.has(to);
+  if (!fromLong && !toLong) {
+    // Table 26: the date or the time of day of a date-and-time.
+    if (f === "dt" && t === "date") {
+      return `DATE_OF_DT(IEC_DT(static_cast<DT_t>(${argExpr})))`;
+    }
+    if (f === "dt" && t === "tod") {
+      return `TOD_OF_DT(IEC_DT(static_cast<DT_t>(${argExpr})))`;
+    }
     return undefined;
   }
-  if (f === t) return argExpr;
-  if (f === "date" && t === "dt") return `DATE_TO_NS(${argExpr})`;
-  if (f === "tod" && t === "dt") return argExpr;
-  return undefined;
+  const value = fromLong
+    ? `static_cast<int64_t>(${argExpr})`
+    : `iec_long_value(static_cast<${TEMPORAL_CPP[f].short}>(${argExpr}))`;
+  let long: string;
+  if (f === t) long = value;
+  else if (f === "dt" && t === "date") {
+    long = `iec_floor_div(${value}, ${NS_PER_DAY})`;
+  } else if (f === "dt" && t === "tod") long = `TOD_NORMALIZE(${value})`;
+  else if (f === "date" && t === "dt") long = `(${value}) * ${NS_PER_DAY}`;
+  else if (f === "tod" && t === "dt") long = value;
+  else return undefined;
+  return toLong
+    ? `${TEMPORAL_CPP[t].long}(${long})`
+    : `${TEMPORAL_CPP[t].narrow}(${long})`;
 }
 
 /**
@@ -1127,7 +1153,14 @@ export class CodeGenerator {
     };
     const form = forms[from];
     if (form === undefined) return undefined;
-    const text = `strucpp::${form[0]}(static_cast<int64_t>(iec_unwrap(${this.generateExpression(value)})), "${form[1]}")`;
+    // A 32-bit value goes to the text in its long form's unit (ns, days).
+    const kind = TEMPORAL_KIND[from];
+    const code = this.generateExpression(value);
+    const held =
+      kind !== undefined && !LONG_TEMPORAL_NAMES.has(from)
+        ? `iec_long_value(static_cast<${TEMPORAL_CPP[kind].short}>(${code}))`
+        : `static_cast<int64_t>(iec_unwrap(${code}))`;
+    const text = `strucpp::${form[0]}(${held}, "${form[1]}")`;
     return to === "WSTRING" ? `STRING_TO_WSTRING(${text})` : text;
   }
 
@@ -4932,7 +4965,11 @@ export class CodeGenerator {
     }
 
     const target = this.generateLvalue(stmt.target);
-    const value = this.generateExpression(stmt.value);
+    const value = this.ltimeIntoTime(
+      this.temporalBase(stmt.target),
+      stmt.value,
+      this.generateExpression(stmt.value),
+    );
 
     // For interface-returning methods, convert assignment to result var into return statement
     if (
@@ -6214,7 +6251,7 @@ export class CodeGenerator {
       case "UnaryExpression":
         return this.generateUnaryExpression(expr);
       case "ParenthesizedExpression":
-        return `(${this.generateExpression(expr.expression)})`;
+        return parenthesizedCpp(expr, this.generateExpression(expr.expression));
       case "FunctionCallExpression":
         return this.wrapGlobalInOutCall(expr, () =>
           this.generateFunctionCallExpression(expr),
@@ -6304,31 +6341,20 @@ export class CodeGenerator {
         const wEscaped = translateIECString(wInner, true);
         return `u"${wEscaped}"`;
       }
-      case "TIME":
-      case "LTIME": {
-        const timeVal = parseTimeLiteral(String(expr.value));
-        return `${timeVal.exact}LL`;
-      }
       case "CHAR":
       case "WCHAR": {
         const { wide, units } = charLiteralUnits(expr.rawValue);
         return `static_cast<${wide ? "WCHAR_t" : "CHAR_t"}>(${Math.max(units[0] ?? 0, 0)})`;
       }
+      case "TIME":
+      case "LTIME":
       case "DATE":
       case "LDATE":
-        // DATE: int64 days since Unix epoch (UTC).  `iec_date.hpp`
-        // stores DATE as days (see `DT_FROM_DATE_AND_TOD`'s
-        // `iec_unwrap(date) * DT_NS_PER_DAY` math).  Lowering to ns
-        // here would break every conversion / arithmetic helper.
-        return `${parseDateLiteralToDays(String(expr.value))}LL`;
       case "TIME_OF_DAY":
       case "LTIME_OF_DAY":
-        // TOD: int64 nanoseconds since midnight.
-        return `${parseTodLiteralToNs(String(expr.value))}LL`;
       case "DATE_AND_TIME":
       case "LDATE_AND_TIME":
-        // DT: int64 nanoseconds since Unix epoch (UTC).
-        return `${parseDtLiteralToNs(String(expr.value))}LL`;
+        return temporalLiteralCpp(expr.literalType, String(expr.value))!;
       case "NULL":
         return "IEC_NULL";
       default:
@@ -7109,6 +7135,10 @@ export class CodeGenerator {
       expr.operator === "OR" ||
       expr.operator === "XOR"
     ) {
+      if (expr.computeAs !== undefined) {
+        const t = `${expr.computeAs}_t`;
+        return `static_cast<${t}>(${left}) ${cppOp} static_cast<${t}>(${right})`;
+      }
       return `(${left}) ${cppOp} (${right})`;
     }
 
@@ -7126,6 +7156,44 @@ export class CodeGenerator {
       const l = isComparisonExpr(expr.left) ? `(${left})` : left;
       const r = isComparisonExpr(expr.right) ? `(${right})` : right;
       return `${l} ${cppOp} ${r}`;
+    }
+
+    const lk = this.temporalBase(expr.left);
+    const rk = this.temporalBase(expr.right);
+    // TOD or DT MOD a TIME: the time within that period
+    if (
+      expr.operator === "MOD" &&
+      (lk === "TOD" || lk === "DT") &&
+      rk === "TIME"
+    ) {
+      return `iec_temporal_mod_period(${left}, ${right})`;
+    }
+    // TIME with LTIME in MOD or `/`: the TIME widens to an LTIME
+    if (
+      (expr.operator === "MOD" || expr.operator === "/") &&
+      lk !== rk &&
+      (lk === "TIME" || lk === "LTIME") &&
+      (rk === "TIME" || rk === "LTIME")
+    ) {
+      const wl = lk === "TIME" ? `TO_LTIME(${left})` : left;
+      const wr = rk === "TIME" ? `TO_LTIME(${right})` : right;
+      return expr.operator === "MOD"
+        ? `iec_mod(${wl}, ${wr})`
+        : `iec_div(${wl}, ${wr}, ${this.faultSite(expr)})`;
+    }
+
+    // TIME, DATE, TOD or DT MOD an integer or a duration: unsigned, MOD 0 is 0
+    if (expr.operator === "MOD" && this.isTemporal32(expr.left)) {
+      return `iec_temporal_mod(${left}, ${right})`;
+    }
+
+    // TIME, DATE, TOD or DT `/` a number that may be 0: a fault, as for integers
+    if (
+      expr.operator === "/" &&
+      !isNonZeroIntegerLiteral(expr.right) &&
+      this.isTemporal32(expr.left)
+    ) {
+      return `iec_temporal_div(${left}, ${right}, ${this.faultSite(expr)})`;
     }
 
     // Integer `/` by a divisor that may be 0: a fault naming the POU and line
@@ -7155,13 +7223,52 @@ export class CodeGenerator {
     left: string,
     right: string,
   ): string | undefined {
-    return dateArithmeticCpp(
+    return temporalArithmeticCpp(
       expr.operator,
       this.temporalBase(expr.left),
       this.temporalBase(expr.right),
       left,
       right,
     );
+  }
+
+  /** A TIME, DATE, TOD or DT operand (the 32-bit temporal types). */
+  private isTemporal32(e: Expression): boolean {
+    const base = this.temporalBase(e);
+    return (
+      base === "TIME" || base === "DATE" || base === "TOD" || base === "DT"
+    );
+  }
+
+  /**
+   * An LTIME stored in a TIME (a timer's PT takes an LTIME preset): the
+   * value truncated to ms and wrapped to 32 bits. Otherwise `code` unchanged.
+   */
+  private ltimeIntoTime(
+    targetType: string | undefined,
+    value: Expression,
+    code: string,
+  ): string {
+    return targetType === "TIME" && this.temporalBase(value) === "LTIME"
+      ? `LTIME_TO_TIME_VALUE(static_cast<int64_t>(${code}))`
+      : code;
+  }
+
+  /** The declared result type of the FUNCTION or METHOD being generated. */
+  private currentResultTypeName(): string | undefined {
+    const upper = this.currentFunctionName?.toUpperCase();
+    if (upper === undefined || !this.ast) return undefined;
+    const fn = this.ast.functions.find((f) => f.name.toUpperCase() === upper);
+    if (fn) return fn.returnType.name.toUpperCase();
+    const owner = (
+      this.currentFBName ?? this.currentProgramName
+    )?.toUpperCase();
+    const pou =
+      this.ast.functionBlocks.find((f) => f.name.toUpperCase() === owner) ??
+      this.ast.programs.find((p) => p.name.toUpperCase() === owner);
+    return pou?.methods
+      .find((m) => m.name.toUpperCase() === upper)
+      ?.returnType?.name.toUpperCase();
   }
 
   /**
@@ -7196,7 +7303,23 @@ export class CodeGenerator {
     ) {
       name = "DT";
     }
-    for (let i = 0; i < 32 && name !== undefined; i++) {
+    // The result variable of the FUNCTION or METHOD being generated
+    if (
+      name === undefined &&
+      e.kind === "VariableExpression" &&
+      e.fieldAccess.length === 0 &&
+      e.subscripts.length === 0 &&
+      this.currentFunctionName?.toUpperCase() === e.name.toUpperCase()
+    ) {
+      name = this.currentResultTypeName();
+    }
+    return name === undefined ? undefined : this.elementaryThroughAliases(name);
+  }
+
+  /** The canonical elementary name a type name stands for, through user aliases (`TYPE MyT : TIME`). */
+  private elementaryThroughAliases(typeName: string): string {
+    let name = typeName.toUpperCase();
+    for (let i = 0; i < 32; i++) {
       const upper = name;
       const def = this.ast?.types.find(
         (d) => d.name.toUpperCase() === upper,
@@ -7206,7 +7329,7 @@ export class CodeGenerator {
       }
       name = def.name.toUpperCase();
     }
-    return name === undefined ? undefined : canonicalElementaryName(name);
+    return canonicalElementaryName(name);
   }
 
   /** The selected or compared operands of a standard SEL, MUX, LIMIT, MAX or MIN call. */
@@ -7480,6 +7603,11 @@ export class CodeGenerator {
 
     switch (expr.operator) {
       case "NOT": {
+        // NOT of an untyped constant typed from its use (`w := NOT 16#00F0`)
+        const contextType = untypedNotTarget(expr);
+        if (contextType !== undefined) {
+          return untypedNotCpp(contextType, operand);
+        }
         // NOT on non-BOOL ANY_BIT types must use bitwise complement (~)
         const opType = this.inferExprType(expr.operand);
         if (opType) {
@@ -7760,16 +7888,11 @@ export class CodeGenerator {
    * Scale the argument of a `TO_*` conversion when a temporal type is on
    * either side of it.
    *
-   * Why this lives in codegen and not in the runtime:
-   *  - `IEC_TIME`, `IEC_LTIME`, `IEC_TOD`, `IEC_LTOD`, `IEC_DT`,
-   *    `IEC_LDT`, `IEC_DATE`, `IEC_LDATE` are all
-   *    `using ... = IECVar<int64_t>` aliases — they collapse to the same
-   *    C++ type after preprocessing.
-   *  - A runtime overload `TO_UINT(IEC_TIME)` therefore CANNOT be
-   *    distinguished from `TO_UINT(IEC_DATE)`, and `TO_DT(seconds)`
-   *    cannot be distinguished from `TO_DT(IEC_DT)`.
-   *  - The IEC type label only survives at the language layer, so the
-   *    scaling has to happen here, before the type identity is erased.
+   * Why this lives in codegen and not in the runtime: the long forms
+   * (`IEC_LTIME`, `IEC_LTOD`, `IEC_LDT`, `IEC_LDATE`) are all
+   * `IECVar<int64_t>`, the type of LINT, so `TO_LDT(nanoseconds)` cannot be
+   * told from `TO_LDT(anLdt)` at run time; the IEC type label survives only
+   * here.
    *
    * The units are CODESYS's, which is what the IEC libraries we ship are
    * written against. From its documentation: DATE, DT and TOD are held in a
@@ -8209,6 +8332,24 @@ export class CodeGenerator {
         }
         return vendorOperatorCpp(expr.vendorOperator, arg);
       }
+      // DIV_TIME(t, n) of a TIME faults on a zero divisor, as `t / n` does
+      if (
+        nameUpper === "DIV_TIME" &&
+        expr.arguments.length === 2 &&
+        expr.arguments.every((a) => a.name === undefined && !a.isOutput) &&
+        !isNonZeroIntegerLiteral(expr.arguments[1]!.value) &&
+        this.isTemporal32(expr.arguments[0]!.value)
+      ) {
+        return `iec_temporal_div(${this.generateExpression(expr.arguments[0]!.value)}, ${this.generateExpression(expr.arguments[1]!.value)}, ${this.faultSite(expr)})`;
+      }
+      // DIVTIME(a, b) faults when b is a zero duration
+      if (
+        nameUpper === "DIVTIME" &&
+        expr.arguments.length === 2 &&
+        expr.arguments.every((a) => a.name === undefined && !a.isOutput)
+      ) {
+        return `iec_divtime(${this.generateExpression(expr.arguments[0]!.value)}, ${this.generateExpression(expr.arguments[1]!.value)}, ${this.faultSite(expr)})`;
+      }
       // DIV(a, b) of integers faults on a zero divisor, as `a / b` does
       if (nameUpper === "DIV" && expr.arguments.length === 2) {
         const named = (n: string): Expression | undefined =>
@@ -8223,6 +8364,15 @@ export class CodeGenerator {
         ) {
           return `iec_div(${this.generateExpression(dividend)}, ${this.generateExpression(divisor)}, ${this.faultSite(expr)})`;
         }
+      }
+
+      // `NOT (16#F0)` typed from its use, as `NOT 16#F0` is
+      const notType = untypedNotTarget(expr);
+      if (notType !== undefined) {
+        return untypedNotCpp(
+          notType,
+          this.generateExpression(expr.arguments[0]!.value),
+        );
       }
 
       // 0. ADR(x) → &(x) (CODESYS address-of operator)
@@ -8447,6 +8597,7 @@ export class CodeGenerator {
 
     // Positional arguments bound to REFERENCE TO inputs.
     if (calleeBlocks) {
+      this.ltimeIntoTimeInputs(args, expr.arguments, calleeBlocks);
       const supplied = args.slice(0, suppliedArgs);
       this.bindPositionalReferenceInputs(supplied, calleeBlocks);
       args.splice(0, suppliedArgs, ...supplied);
@@ -8666,10 +8817,68 @@ export class CodeGenerator {
     }
     const args = callArgs.map((a) => this.generateExpression(a.value));
     if (method) {
+      this.ltimeIntoTimeInputs(args, callArgs, method.varBlocks);
       this.bindPositionalReferenceInputs(args, method.varBlocks);
       this.padOmittedArguments(args, method.varBlocks);
     }
     return args;
+  }
+
+  /**
+   * Positional arguments: an LTIME bound to a TIME VAR_INPUT is converted as
+   * an LTIME stored in a TIME is. Only when every argument is positional.
+   */
+  private ltimeIntoTimeInputs(
+    args: string[],
+    callArgs: Argument[],
+    varBlocks: VarBlock[],
+  ): void {
+    if (callArgs.some((a) => a.name !== undefined || a.isOutput)) return;
+    let index = 0;
+    for (const block of varBlocks) {
+      if (
+        block.blockType !== "VAR_INPUT" &&
+        block.blockType !== "VAR_IN_OUT" &&
+        block.blockType !== "VAR_OUTPUT"
+      ) {
+        continue;
+      }
+      for (const decl of block.declarations) {
+        for (let n = 0; n < decl.names.length; n++, index++) {
+          if (index >= callArgs.length || block.blockType !== "VAR_INPUT") {
+            continue;
+          }
+          args[index] = this.ltimeIntoTimeInput(
+            decl.type,
+            callArgs[index]!.value,
+            args[index]!,
+          );
+        }
+      }
+    }
+  }
+
+  /** `code` for a value input of type `type`, an LTIME into a TIME converted. */
+  private ltimeIntoTimeInput(
+    type: {
+      readonly name: string;
+      readonly referenceKind?: string | undefined;
+      readonly arrayDimensions?: unknown;
+    },
+    value: Expression,
+    code: string,
+  ): string {
+    if (
+      (type.referenceKind ?? "none") !== "none" ||
+      type.arrayDimensions !== undefined
+    ) {
+      return code;
+    }
+    return this.ltimeIntoTime(
+      this.elementaryThroughAliases(type.name),
+      value,
+      code,
+    );
   }
 
   /**
@@ -8764,8 +8973,13 @@ export class CodeGenerator {
       if (arg.name !== undefined) {
         const upperName = arg.name.toUpperCase();
         if (upperName === "EN" || upperName === "ENO") continue;
+        const param = params.find((p) => p.name === upperName);
+        const generated = this.generateExpression(arg.value);
         namedArgs.set(upperName, {
-          expr: this.generateExpression(arg.value),
+          expr:
+            param?.blockType === "VAR_INPUT" && !arg.isOutput
+              ? this.ltimeIntoTimeInput(param.type, arg.value, generated)
+              : generated,
           isOutput: arg.isOutput,
         });
         claimedSlots.add(upperName);
@@ -10272,11 +10486,14 @@ export class CodeGenerator {
     paramName: string,
     value: Expression,
   ): string {
-    const generated = this.generateExpression(value);
+    let generated = this.generateExpression(value);
     if (fbTypeName === undefined) return generated;
     const inout = this.fbInoutParams.get(fbTypeName.toUpperCase());
     if (inout?.has(paramName.toUpperCase()) === true) return generated;
     const field = this.accessLookup.field(fbTypeName, paramName);
+    if (field !== undefined) {
+      generated = this.ltimeIntoTimeInput(field.type, value, generated);
+    }
     return field?.type.referenceKind === "reference_to"
       ? `ref_bind(${this.refWrapper(generated)})`
       : generated;
@@ -10800,7 +11017,14 @@ export class CodeGenerator {
    */
   private getStructInitEmitter(): StructInitEmitter {
     this.structInitEmitter ??= {
-      emitValue: (value: Expression): string => this.generateExpression(value),
+      emitValue: (value: Expression, stTypeName?: string): string =>
+        this.ltimeIntoTime(
+          stTypeName === undefined
+            ? undefined
+            : this.elementaryThroughAliases(stTypeName),
+          value,
+          this.generateExpression(value),
+        ),
       memberName: (
         fieldName: string,
         ownerTypeName: string | undefined,
@@ -10841,6 +11065,15 @@ export class CodeGenerator {
     if (upperType === "REAL" || upperType === "LREAL") return "0.0";
     if (upperType === "STRING") return '""';
     if (upperType === "WSTRING") return 'u""';
+    // The 32-bit date and time types: their zero value
+    const temporal = TEMPORAL_KIND[upperType];
+    if (
+      temporal !== undefined &&
+      isElementaryType(upperType) &&
+      !LONG_TEMPORAL_NAMES.has(upperType)
+    ) {
+      return `${TEMPORAL_CPP[temporal].short}()`;
+    }
 
     // Check if it's an elementary type that uses numeric default
     const numericTypes = [
@@ -10856,10 +11089,6 @@ export class CodeGenerator {
       "WORD",
       "DWORD",
       "LWORD",
-      "TIME",
-      "DATE",
-      "TOD",
-      "DT",
       "LTIME",
       "LDATE",
       "LTOD",

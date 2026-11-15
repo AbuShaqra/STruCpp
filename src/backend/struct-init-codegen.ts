@@ -34,8 +34,8 @@ import type {
  * `type-codegen.ts`, which has no AST, supplies only what it knows.
  */
 export interface StructInitEmitter {
-  /** Emit C++ for a value that is neither a structure initializer nor an array literal. */
-  emitValue(value: Expression): string;
+  /** Emit C++ for a value that is neither a structure initializer nor an array literal; `stTypeName` is its target's ST type, when known. */
+  emitValue(value: Expression, stTypeName?: string): string;
   /**
    * C++ member name for `fieldName` on structure/FB type `ownerTypeName`,
    * including the `_` collision mangle generated members may carry.
@@ -103,7 +103,7 @@ export function generateInitializerValue(
     return `{${elements.join(", ")}}`;
   }
 
-  return emitter.emitValue(value);
+  return emitter.emitValue(value, stTypeName);
 }
 
 /** True when every element of an array literal is itself an array literal. */

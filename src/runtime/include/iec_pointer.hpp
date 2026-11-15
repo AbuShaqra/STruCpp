@@ -129,6 +129,8 @@ template<typename U> struct stored_directly<IEC_REF_TO<U>> : std::false_type {};
 template<typename U> struct stored_directly<IEC_REFERENCE_TO<U>> : std::false_type {};
 template<typename U> struct stored_directly<IEC_Ptr<U>> : std::false_type {};
 template<typename E> struct stored_directly<IEC_ENUM_Var<E>> : std::false_type {};
+/** A 32-bit TIME, DATE, TOD or DT lives in an IECVar, as a number does. */
+template<int K> struct stored_directly<IecTemporal32<K>> : std::false_type {};
 
 /**
  * The variable holding a T: T itself when stored directly, IECStringVar /
