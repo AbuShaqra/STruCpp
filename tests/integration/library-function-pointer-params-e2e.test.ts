@@ -4,7 +4,8 @@
  * E2E: a library FUNCTION with POINTER TO, pointer-to-pointer, ARRAY OF
  * POINTER and LWORD inputs, its manifest serialized and loaded back, takes
  * addresses from a program and reads through them; its POINTER TO and REF_TO
- * outputs captured into LWORD give the address. g++ and run.
+ * outputs captured into LWORD give the address; a REF_TO STRING(n) input
+ * takes REF of a STRING(n). g++ and run.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -148,5 +149,60 @@ int main() {
 `,
     });
     expect(stdout).toBe("111");
+  });
+
+  it("passes REF of a STRING(20) to a REF_TO STRING(20) input", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `FUNCTION F_RStr : INT
+VAR_INPUT
+  r : REF_TO STRING(20);
+END_VAR
+F_RStr := LEN(r^);
+END_FUNCTION
+`,
+          fileName: "rstr.st",
+        },
+      ],
+      {
+        name: "rstrlib",
+        version: "1.0.0",
+        namespace: "rstrlib",
+        features: ["+reference_to"],
+      },
+    );
+    expect(lib.errors).toEqual([]);
+    const archive = loadStlibArchive(JSON.parse(JSON.stringify(lib.archive)));
+    const result = compile(
+      `PROGRAM Main
+VAR s20 : STRING(20) := 'abc'; n : INT; END_VAR
+n := F_RStr(r := REF(s20));
+END_PROGRAM
+`,
+      {
+        headerFileName: "generated.hpp",
+        features: ["+reference_to"],
+        libraries: [archive],
+      },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "libfn_ref_string_input",
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.N.get() << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("3");
   });
 });

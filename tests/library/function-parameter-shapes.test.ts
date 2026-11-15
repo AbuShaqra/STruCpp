@@ -168,6 +168,55 @@ END_PROGRAM
     }
   });
 
+  it("accepts REF of a STRING(n) into a library REF_TO STRING(n) input, whose length the manifest omits", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `FUNCTION F_RStr : INT
+VAR_INPUT
+  r : REF_TO STRING(20);
+END_VAR
+F_RStr := LEN(r^);
+END_FUNCTION
+
+FUNCTION F_RWStr : INT
+VAR_INPUT
+  r : REF_TO WSTRING(10);
+END_VAR
+F_RWStr := 1;
+END_FUNCTION
+`,
+          fileName: "rs.st",
+        },
+      ],
+      { name: "rs", version: "1.0.0", namespace: "rs", features: FEATURES },
+    );
+    expect(lib.errors).toEqual([]);
+    const opts = {
+      features: FEATURES,
+      libraries: [loadStlibArchive(JSON.parse(JSON.stringify(lib.archive)))],
+    };
+    const call = (expr: string): string[] =>
+      analyze(
+        `PROGRAM Main
+VAR s20 : STRING(20) := 'abc'; w10 : WSTRING(10); i : INT; n : INT; END_VAR
+n := ${expr};
+END_PROGRAM
+`,
+        opts,
+      ).errors.map((e) => e.message);
+    expect(call("F_RStr(r := REF(s20))")).toEqual([]);
+    expect(call("F_RWStr(r := REF(w10))")).toEqual([]);
+    expect(call("F_RStr(r := REF(i))")).toEqual([
+      expect.stringMatching(/^Cannot assign REF_TO INT to REF_TO STRING/),
+    ]);
+    expect(call("F_RStr(r := REF(w10))")).toEqual([
+      expect.stringMatching(
+        /^Cannot assign REF_TO WSTRING\(10\) to REF_TO STRING/,
+      ),
+    ]);
+  });
+
   it("refuses a POINTER TO output of a library FUNCTION captured into a DWORD", () => {
     const lib = compileStlib(
       [

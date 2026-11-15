@@ -293,6 +293,8 @@ interface CallInput {
   name: string;
   type: AccessType;
   inOut: boolean;
+  /** From a library manifest, which omits a REF_TO STRING / WSTRING target's length. */
+  lengthUnrecorded?: boolean;
 }
 
 /** `NULL` or `0`: the only initializers a pointer or reference keeps (it starts null anyway). */
@@ -6900,7 +6902,9 @@ export class TypeChecker {
     }
     return params.flatMap((p) => {
       const type = (p.declaration as VarDeclaration | undefined)?.type;
-      return type ? [{ name: p.name, type, inOut: p.isInOut }] : [];
+      return type
+        ? [{ name: p.name, type, inOut: p.isInOut, lengthUnrecorded: true }]
+        : [];
     });
   }
 
@@ -6925,7 +6929,9 @@ export class TypeChecker {
       .filter((p) => p.isInput || p.isInOut)
       .flatMap((p) => {
         const type = (p.declaration as VarDeclaration | undefined)?.type;
-        return type ? [{ name: p.name, type, inOut: p.isInOut }] : [];
+        return type
+          ? [{ name: p.name, type, inOut: p.isInOut, lengthUnrecorded: true }]
+          : [];
       });
   }
 
@@ -6947,7 +6953,17 @@ export class TypeChecker {
           : inputs.find((p) => p.name.toUpperCase() === argName);
       if (!input) return;
       const shape = referenceShapeOf(input.type);
-      if (shape) this.validateReferenceValue(shape, arg.value, scope);
+      if (!shape) return;
+      // A manifest's REF_TO STRING carries no length: compare the base only.
+      const unrecorded =
+        input.lengthUnrecorded === true &&
+        shape.length === undefined &&
+        isStringBase(shape.base);
+      this.validateReferenceValue(
+        unrecorded ? { ...shape, lengthUnknown: true } : shape,
+        arg.value,
+        scope,
+      );
     });
   }
 
