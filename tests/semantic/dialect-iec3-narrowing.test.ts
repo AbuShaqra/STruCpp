@@ -348,6 +348,37 @@ END_PROGRAM
       "7:3: ADR needs the feature pointer_to",
     ]);
   });
+
+  it("counts only the refusals a silent typing pass keeps", () => {
+    const src = `TYPE S : STRUCT a : INT; END_STRUCT; END_TYPE
+PROGRAM Main
+VAR s1, s2 : S; t : ARRAY[0..1] OF TON; i : INT; arr : ARRAY[0..3] OF INT; str : STRING; END_VAR
+t[BOOL_TO_INT(s1 = s2)].PT := LT#1s;
+i := ADR(arr) + str;
+END_PROGRAM
+`;
+    const found = located({ dialect: "iec-3" }, src);
+    expect(found).toContain("5:6: ADR needs the feature pointer_to");
+    expect(
+      found.filter((m) => m.includes("needs the feature struct_compare")),
+    ).toHaveLength(1);
+  });
+
+  it("keeps the later passes gated by a real type error", () => {
+    const src = `TYPE S : STRUCT a : INT; END_STRUCT; END_TYPE
+PROGRAM Main
+VAR s1, s2 : S; t : ARRAY[0..1] OF TON; i : INT; x : INT; END_VAR
+t[BOOL_TO_INT(s1 = s2)].PT := LT#1s;
+i := 'abc';
+x := undefinedVar + 1;
+END_PROGRAM
+`;
+    const found = located({ dialect: "iec-3" }, src);
+    expect(found.some((m) => m.includes("Cannot assign STRING to INT"))).toBe(
+      true,
+    );
+    expect(found.some((m) => m.includes("UNDEFINEDVAR"))).toBe(false);
+  });
 });
 
 describe("ADR inside an array index", () => {
