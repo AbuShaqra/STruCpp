@@ -102,6 +102,7 @@ the root. A profile without `extends` has only its own features.
 | `conditional_return` | `RETURN (cond);`, a RETURN taken when `cond` is TRUE      |
 | `platform_types`     | the types `__XINT`/`XINT`, `__UXINT`/`UXINT`, `XWORD` and `PVOID` ([below](#platform-types)) |
 | `bit_type`           | `BIT` as the type of a STRUCT member, packed into shared bytes ([below](#bit-members)) |
+| `string_default_80`  | a STRING or WSTRING written without a length holds 80 characters, not 254 ([below](#default-string-length)) |
 
 ## Bitwise operators on integers
 
@@ -973,3 +974,27 @@ open documents. A rejected value keeps the previous selection and shows
   "features": ["+program_methods"]
 }
 ```
+
+## Default string length
+
+Under `string_default_80` a `STRING` or `WSTRING` written without a length is `STRING(80)` or
+`WSTRING(80)`, in every place a type is written (a variable, a STRUCT field, an ARRAY element, a FUNCTION
+or METHOD result, a parameter, an `ARRAY[*] OF STRING` parameter's element, a PROPERTY, a TYPE alias, a
+test file); without the feature it is 254.
+
+- `SIZEOF` of a plain STRING is 81 and of a plain WSTRING 162; a longer value stored is cut at 80.
+- The standard string functions (`CONCAT`, `INSERT`, ...) give a result of 254 characters or the longest
+  argument's length, as without the feature; only the store cuts it.
+- A library compiled with the feature records `stringDefaultLength: 80` in its manifest; one without it
+  is read as 254. A library's plain STRING keeps the library's length.
+- A plain STRING bound to a library's plain STRING `VAR_IN_OUT` of the other default length is passed by
+  copy-in / copy-out with no warning; a length written on either side still warns. A plain STRING bound
+  to a `REFERENCE TO STRING` of the other length is refused, as for any two lengths.
+  The same copy applies to a library FUNCTION's or FUNCTION_BLOCK METHOD's VAR_IN_OUT and VAR_OUTPUT,
+  element by element to an `ARRAY OF STRING` one, and to an `ARRAY[*] OF STRING` VAR_IN_OUT of a library
+  FUNCTION; a copy back is cut at the variable's length.
+- A library's array elements, `ARRAY[*]` parameters and STRUCT fields written as a plain STRING keep the
+  library's length too.
+- The debugger shows strings of 254 characters only: a plain STRING or WSTRING (80) is left out of the
+  debug table with a build warning (`Declare it as STRING(254) to expose it`); an ARRAY of them is left
+  out whole, with one warning (`Declare them as STRING(254) to expose them`).

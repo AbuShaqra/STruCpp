@@ -16,6 +16,7 @@ import type {
 } from "./library-manifest.js";
 import { compile } from "../index.js";
 import { resolveDialect } from "../dialect.js";
+import { defaultStringLength } from "../semantic/string-default-length.js";
 import { buildChunks } from "./library-chunks.js";
 import type { MemberManglingContext } from "../backend/member-mangling.js";
 import {
@@ -1054,6 +1055,11 @@ export function compileStlib(
   );
   if (dialect.features.has("conditional_pragmas")) {
     archive.pragmaDefines = { ...(options.pragmaDefines ?? {}) };
+  }
+  if (dialect.features.has("string_default_80")) {
+    archive.manifest.stringDefaultLength = defaultStringLength(
+      dialect.features,
+    );
   }
 
   return {

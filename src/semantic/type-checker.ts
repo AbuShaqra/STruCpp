@@ -314,6 +314,25 @@ function isNullInitializer(expr: Expression): boolean {
   );
 }
 
+/**
+ * Two plain STRINGs (or WSTRINGs) whose lengths are each a default, none
+ * written: 254, or the dialect's default (feature string_default_80).
+ */
+function defaultStringsOnly(a: AccessType, b: AccessType): boolean {
+  const plain = (t: AccessType): string | undefined => {
+    const upper = t.name.toUpperCase();
+    if (upper !== "STRING" && upper !== "WSTRING") return undefined;
+    if ((t.referenceKind ?? "none") !== "none") return undefined;
+    if (t.arrayDimensions !== undefined) return undefined;
+    const ref = t as { maxLength?: number | string; defaultLength?: true };
+    return ref.maxLength === undefined || ref.defaultLength === true
+      ? upper
+      : undefined;
+  };
+  const left = plain(a);
+  return left !== undefined && left === plain(b);
+}
+
 /** TIME, DATE, TOD and DT: the 32-bit date and time types. */
 const TEMPORAL32_NAMES: ReadonlySet<string> = new Set([
   "TIME",
@@ -6294,6 +6313,11 @@ export class TypeChecker {
     }
     const mismatch = this.inOutTypeMismatch(input.type, argType);
     if (mismatch === undefined) return;
+    // STRING and STRING of two default lengths (80 and 254): copied, unremarked
+    if (defaultStringsOnly(input.type, argType)) {
+      arg.inOutCopy = true;
+      return;
+    }
     this.inOutDiagnostic(
       `VAR_IN_OUT '${input.name}' of type ${mismatch.param} is bound to a variable of type ${mismatch.arg}`,
       "it is passed by copy-in / copy-out, not by reference",

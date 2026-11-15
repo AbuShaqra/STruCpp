@@ -32,6 +32,7 @@ import type {
 import { createDefaultSourceSpan } from "../frontend/ast.js";
 import { isPragmaDefineName } from "../frontend/conditional-pragmas.js";
 import { ELEMENTARY_TYPES } from "../semantic/type-utils.js";
+import { lowerDefaultStringLength } from "../semantic/string-default-length.js";
 
 /**
  * Error thrown when a library manifest fails validation.
@@ -46,7 +47,10 @@ export class LibraryManifestError extends Error {
 /** Build a TypeReference AST node from a manifest variable entry. The
  *  reference preserves the metadata downstream consumers (codegen,
  *  debug-table-gen) need to recurse into nested types. */
-function makeTypeRef(v: LibraryVarType): TypeReference {
+function makeTypeRef(
+  v: LibraryVarType,
+  stringDefaultLength?: number,
+): TypeReference {
   // Archive JSON is external input: keep only kinds the compiler writes.
   const referenceKind: ReferenceKind = isReferenceKind(v.referenceKind)
     ? v.referenceKind
@@ -66,7 +70,21 @@ function makeTypeRef(v: LibraryVarType): TypeReference {
   if (v.referenceChain) {
     ref.referenceChain = v.referenceChain.filter(isReferenceKind);
   }
+  applyStringDefaultLength(ref, stringDefaultLength);
   return ref;
+}
+
+/**
+ * A STRING or WSTRING without a length of a library compiled with another
+ * default length (manifest `stringDefaultLength`), an ARRAY element or an
+ * ARRAY[*] parameter's included, has that length, marked as a default.
+ */
+function applyStringDefaultLength(
+  ref: TypeReference,
+  stringDefaultLength: number | undefined,
+): void {
+  if (stringDefaultLength === undefined) return;
+  lowerDefaultStringLength(ref, stringDefaultLength);
 }
 
 /** The reference chain and inline-array shape a manifest function parameter records. */
@@ -110,6 +128,7 @@ function isReferenceKind(
  */
 function buildLibraryTypeDefinition(
   t: LibraryTypeEntry,
+  stringDefaultLength?: number,
 ): StructDefinition | TypeReference {
   if (
     (t.kind === "struct" || t.kind === "union") &&
@@ -120,18 +139,22 @@ function buildLibraryTypeDefinition(
       kind: "StructDefinition",
       ...(t.kind === "union" ? { isUnion: true as const } : {}),
       sourceSpan: createDefaultSourceSpan(),
-      fields: t.fields.map((f) => ({
-        kind: "VarDeclaration" as const,
-        sourceSpan: createDefaultSourceSpan(),
-        names: [f.name],
-        type: {
+      fields: t.fields.map((f) => {
+        const type: TypeReference = {
           kind: "TypeReference" as const,
           sourceSpan: createDefaultSourceSpan(),
           name: f.type,
           isReference: false,
           referenceKind: "none" as const,
-        },
-      })),
+        };
+        applyStringDefaultLength(type, stringDefaultLength);
+        return {
+          kind: "VarDeclaration" as const,
+          sourceSpan: createDefaultSourceSpan(),
+          names: [f.name],
+          type,
+        };
+      }),
     };
   }
   return {
@@ -146,6 +169,7 @@ function buildLibraryTypeDefinition(
 function makeVarSymbol(
   v: LibraryVarType,
   direction: "input" | "output" | "inout" | "local",
+  stringDefaultLength?: number,
 ): VariableSymbol {
   const varType: ElementaryType = ELEMENTARY_TYPES[v.type.toUpperCase()] ?? {
     typeKind: "elementary",
@@ -156,7 +180,7 @@ function makeVarSymbol(
     kind: "VarDeclaration",
     sourceSpan: createDefaultSourceSpan(),
     names: [v.name],
-    type: makeTypeRef(v),
+    type: makeTypeRef(v, stringDefaultLength),
   };
   return {
     name: v.name,
@@ -337,6 +361,15 @@ export function loadLibraryManifest(json: unknown): LibraryManifest {
   if (Array.isArray(obj.sourceFiles)) {
     result.sourceFiles = obj.sourceFiles as string[];
   }
+  if (obj.stringDefaultLength !== undefined) {
+    const n = obj.stringDefaultLength;
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 1) {
+      throw new LibraryManifestError(
+        "Invalid library manifest: stringDefaultLength must be a positive integer",
+      );
+    }
+    result.stringDefaultLength = n;
+  }
   if (obj.parameterShapes === true) result.parameterShapes = true;
 
   return result;
@@ -374,6 +407,13 @@ export function registerLibrarySymbols(
           name: fn.returnType,
           isReference: false,
           referenceKind: "none",
+          ...(manifest.stringDefaultLength !== undefined &&
+          ["STRING", "WSTRING"].includes(fn.returnType.toUpperCase())
+            ? {
+                maxLength: manifest.stringDefaultLength,
+                defaultLength: true as const,
+              }
+            : {}),
         },
         varBlocks: [],
         body: [],
@@ -388,6 +428,7 @@ export function registerLibrarySymbols(
             ...(manifest.parameterShapes ? parameterShapeOf(p) : {}),
           },
           p.direction,
+          manifest.stringDefaultLength,
         );
         // Carry the optional-input marker: a parameter with an initial value
         // is optional at the call site (see Option A in the analyzer).
@@ -452,7 +493,10 @@ export function registerLibrarySymbols(
           // only ever type-checked, and wrong the moment a RETAINed library
           // block held one — the struct's fields simply never reached the
           // retain blob, so the instance restored around a hole.
-          definition: buildLibraryTypeDefinition(t),
+          definition: buildLibraryTypeDefinition(
+            t,
+            manifest.stringDefaultLength,
+          ),
         },
         resolvedType,
       });
@@ -497,15 +541,27 @@ export function registerLibrarySymbols(
           actions: [],
           body: [],
         },
-        inputs: fb.inputs.map((i) => makeVarSymbol(i, "input")),
-        outputs: fb.outputs.map((o) => makeVarSymbol(o, "output")),
-        inouts: fb.inouts.map((io) => makeVarSymbol(io, "inout")),
+        inputs: fb.inputs.map((i) =>
+          makeVarSymbol(i, "input", manifest.stringDefaultLength),
+        ),
+        outputs: fb.outputs.map((o) =>
+          makeVarSymbol(o, "output", manifest.stringDefaultLength),
+        ),
+        inouts: fb.inouts.map((io) =>
+          makeVarSymbol(io, "inout", manifest.stringDefaultLength),
+        ),
         // Present from archives that export them; an older archive leaves
         // this empty and a RETAINed instance of its blocks covers the visible
         // surface only, with a warning naming the block.
-        locals: (fb.locals ?? []).map((l) => makeVarSymbol(l, "local")),
+        locals: (fb.locals ?? []).map((l) =>
+          makeVarSymbol(l, "local", manifest.stringDefaultLength),
+        ),
         ...(fb.temps !== undefined
-          ? { temps: fb.temps.map((t) => makeVarSymbol(t, "local")) }
+          ? {
+              temps: fb.temps.map((t) =>
+                makeVarSymbol(t, "local", manifest.stringDefaultLength),
+              ),
+            }
           : {}),
         ...(fb.properties !== undefined && fb.methods !== undefined
           ? { libraryMethodNames: fb.methods.map((m) => m.name) }

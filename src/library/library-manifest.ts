@@ -311,6 +311,9 @@ export interface LibraryManifest {
   displayName?: string;
   /** Library version */
   version: string;
+  /** The length of a STRING or WSTRING declared without one in this library
+   *  (80 when compiled with the feature string_default_80). Absent means 254. */
+  stringDefaultLength?: number;
   /** Function parameters record their POINTER TO, REF_TO and ARRAY shapes,
    *  not only REFERENCE TO. Absent in archives written before. */
   parameterShapes?: true;
