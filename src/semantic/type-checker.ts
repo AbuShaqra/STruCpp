@@ -533,7 +533,14 @@ export class TypeChecker {
     for (const root of roots) {
       walkAST(root, (node) => {
         if (node.kind === "FunctionCallExpression") {
-          this.checkOutputBindings(node as FunctionCallExpression, scope);
+          const call = node as FunctionCallExpression;
+          // A built-in operator (XSIZEOF) is marked for codegen, as in a POU.
+          this.vendorOperatorCallType(
+            call,
+            call.functionName.toUpperCase(),
+            scope,
+          );
+          this.checkOutputBindings(call, scope);
         }
       });
     }
@@ -553,6 +560,8 @@ export class TypeChecker {
     this.errors = [];
     this.warnings = [];
     this.ast = ast;
+    // The initial values' types, as a POU's are checked
+    this.checkVarBlocks(varBlocks as VarBlock[], scope);
     for (const block of varBlocks) {
       for (const decl of block.declarations) {
         if (decl.initialValue === undefined) continue;

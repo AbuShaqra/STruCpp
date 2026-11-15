@@ -6151,6 +6151,9 @@ export class SemanticAnalyzer {
         case "DeleteStatement":
           this.checkExpressionForUndeclaredVars(stmt.pointer, scope, ctx);
           break;
+        case "AssertCall":
+          this.checkAssertCall(stmt, scope, ctx);
+          break;
         case "ForStatement":
           this.checkNameDeclared(
             stmt.controlVariable,
@@ -6762,6 +6765,11 @@ export class SemanticAnalyzer {
 
     // Walk SETUP body
     if (testFile.setup) {
+      this.checkTestInitialValueNames(
+        testFile.setup.varBlocks,
+        setupScope,
+        sourceAst,
+      );
       this.walkTestStatementsForUndeclaredVars(testFile.setup.body, setupScope);
       this.checkTestMemberAccess(testFile.setup.body, setupScope);
     }
@@ -6786,6 +6794,7 @@ export class SemanticAnalyzer {
     // Walk each TEST body with scope = SETUP vars + TEST-local vars
     for (const tc of testFile.testCases) {
       const testScope = this.buildTestScope(tc.varBlocks, setupScope);
+      this.checkTestInitialValueNames(tc.varBlocks, testScope, sourceAst);
       this.walkTestStatementsForUndeclaredVars(tc.body, testScope);
       this.checkTestMemberAccess(
         tc.body,
@@ -6881,13 +6890,45 @@ export class SemanticAnalyzer {
     this.warnings.push(...found.warnings);
   }
 
+  /** The names a SETUP or TEST VAR's initial values read: declared in its scope. */
+  private checkTestInitialValueNames(
+    blocks: readonly VarBlock[],
+    scope: Scope,
+    sourceAst: CompilationUnit | undefined,
+  ): void {
+    const ctx: UndeclaredVarContext = { checkContinue: true };
+    for (const block of blocks) {
+      for (const decl of block.declarations) {
+        if (decl.initialValue === undefined) continue;
+        if (sourceAst !== undefined) {
+          this.checkInitialValueNames(
+            decl.initialValue,
+            scope,
+            ctx,
+            sourceAst,
+            this.declaredTypeName(decl.type),
+          );
+        } else {
+          this.checkExpressionForUndeclaredVars(decl.initialValue, scope, ctx);
+        }
+      }
+    }
+  }
+
   /** Output bindings in test bodies: checked as assignments, copied out where needed. */
   private checkTestOutputBindings(
     stmts: readonly TestStatement[],
     scope: Scope,
     sourceAst: CompilationUnit | undefined,
   ): void {
-    const checker = new TypeChecker(this.symbolTables, this.stdRegistry);
+    // The run's features apply in test files too (XSIZEOF, __ISVALIDREF)
+    const checker = new TypeChecker(
+      this.symbolTables,
+      this.stdRegistry,
+      false,
+      this.features,
+      (feature, construct) => this.featureMessage(feature, construct),
+    );
     const found = checker.checkTestOutputBindings(
       stmts as readonly ASTNode[],
       scope,
@@ -7086,10 +7127,7 @@ export class SemanticAnalyzer {
     for (const stmt of stmts) {
       switch (stmt.kind) {
         case "AssertCall":
-          this.validateAssertArgCount(stmt);
-          for (const arg of stmt.args) {
-            this.checkExpressionForUndeclaredVars(arg, scope, ctx);
-          }
+          this.checkAssertCall(stmt, scope, ctx);
           break;
         case "AdvanceTimeStatement":
           this.checkExpressionForUndeclaredVars(stmt.duration, scope, ctx);
@@ -7129,6 +7167,21 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * Check an assert wherever it stands, at the top of a test block or nested
+   * in a statement: its argument count, then its arguments for undeclared names.
+   */
+  private checkAssertCall(
+    assert: AssertCall,
+    scope: Scope,
+    ctx: UndeclaredVarContext,
+  ): void {
+    this.validateAssertArgCount(assert);
+    for (const arg of assert.args) {
+      this.checkExpressionForUndeclaredVars(arg, scope, ctx);
+    }
+  }
+
+  /**
    * Validate assert call argument count matches the expected count for each assert type.
    */
   private validateAssertArgCount(assert: AssertCall): void {
@@ -7145,10 +7198,19 @@ export class SemanticAnalyzer {
     };
     const expected = expectedArgCounts[assert.assertType];
     if (expected !== undefined && assert.args.length !== expected) {
+      const last = assert.args[assert.args.length - 1];
+      const quotedMessage =
+        assert.args.length === expected + 1 &&
+        last?.kind === "LiteralExpression" &&
+        last.literalType === "WSTRING";
       this.addError(
-        `${assert.assertType} expects ${expected} argument${expected !== 1 ? "s" : ""}, got ${assert.args.length}`,
+        `${assert.assertType} expects ${expected} argument${expected !== 1 ? "s" : ""}, got ${assert.args.length}` +
+          (quotedMessage
+            ? ": the message is a STRING literal in single quotes"
+            : ""),
         assert.sourceSpan.startLine,
         assert.sourceSpan.startCol,
+        assert.sourceSpan.file,
       );
     }
   }
@@ -7229,8 +7291,12 @@ export function analyzeTestFile(
   testFile: TestFile,
   sourceSymbolTables: SymbolTables,
   sourceAst?: CompilationUnit,
+  /** The run's dialect: its features apply in the test file too. */
+  dialect?: ResolvedDialect,
 ): { errors: CompileError[]; warnings: CompileError[] } {
-  const analyzer = new SemanticAnalyzer();
+  const analyzer = new SemanticAnalyzer(
+    dialect !== undefined ? { dialect } : {},
+  );
   return analyzer.analyzeTestFile(testFile, sourceSymbolTables, sourceAst);
 }
 

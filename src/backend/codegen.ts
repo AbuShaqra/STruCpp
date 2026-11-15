@@ -40,6 +40,7 @@ import type {
   PropertyDeclaration,
   Visibility,
   ASTNode,
+  AssertCall,
 } from "../frontend/ast.js";
 import { charLiteralUnits, exactIntegerValue } from "../literal-utils.js";
 import { isEnEnoArgument, walkAST } from "../ast-utils.js";
@@ -4807,7 +4808,10 @@ export class CodeGenerator {
         );
         break;
       case "AssertCall":
-        // Assert calls only appear in test files, not in normal source compilation
+        // Only in test files: emitted by the test generator, nested ones too
+        for (const line of this.assertEmitter?.(stmt, indent) ?? []) {
+          this.emit(line);
+        }
         break;
       default: {
         const _exhaustive: never = stmt;
@@ -6095,6 +6099,10 @@ export class CodeGenerator {
    */
   /** When set, a RETURN returns this C++ value: `true` in a TEST body, which passes. */
   protected returnValueOverride: string | undefined;
+  /** Test files: the C++ lines of an ASSERT_* met inside IF, a loop or CASE. */
+  protected assertEmitter:
+    | ((stmt: AssertCall, indent: string) => string[])
+    | undefined;
 
   private generateReturnStatement(indent: string): void {
     if (this.returnValueOverride !== undefined) {
@@ -7371,6 +7379,11 @@ export class CodeGenerator {
    * or for a variable reached through `^` or a REFERENCE TO, by its
    * declaration. Undefined for anything else.
    */
+  /** The STRUCT type an operand of `=` / `<>` is compared as, if any. */
+  protected structOperandName(expr: Expression): string | undefined {
+    return this.comparedStructName(expr);
+  }
+
   private comparedStructName(expr: Expression): string | undefined {
     const rt = expr.resolvedType;
     if (rt !== undefined && "name" in rt && typeof rt.name === "string") {
