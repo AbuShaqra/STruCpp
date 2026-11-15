@@ -21,7 +21,8 @@ behaves exactly as before. `iec-3` is the strict profile: it enables no feature.
 accepted before profiles is a feature in the default set and off in `iec-3`, so `iec-3` refuses it while a
 build with no flag is unchanged. A profile that `extends: "iec-3"` accepts such a form only when it lists the
 feature (`fb_property`, `st_actions`, `bare_self_caret`, `enum_dot_qualify`, `struct_compare`,
-`dynamic_memory`, `var_inst`). The default is not
+`dynamic_memory`, `var_inst`). A few Ed. 3 rules have no feature and belong to the built-in `iec-3` itself,
+not to the profiles that extend it (see [Rules of the iec-3 profile itself](#rules-of-the-iec-3-profile-itself)). The default is not
 `iec-3`: it selects no profile, so `--print-dialect` and `--check --json` report its id as `null`.
 
 The id `iec` is reserved and is not an alias: `--dialect iec`, a profile with `"extends": "iec"` and a
@@ -150,6 +151,44 @@ expects BOOL, got INT`). Such code compiled before. Write the test as a comparis
 THEN`. Assigned to a BOOL variable it gets the narrowing warning, as any INT does. Passed to a BOOL
 VAR_INPUT of a user FUNCTION or function block (`F(i AND 1)`, `fb(b := i AND 1)`) it is accepted with no
 diagnostic outside `--strict`, as an INT variable passed there is.
+
+## Rules of the iec-3 profile itself
+
+A few Ed. 3 rules have no feature. They apply when `--dialect iec-3` itself is selected, and not with no
+dialect flag nor under a profile that `extends: "iec-3"`, which keeps the behaviour of the toolchain it
+describes. The typed-integer refusals of AND, OR, XOR and NOT above, and the errors for in-out bindings that
+other dialects only warn about, are keyed the same way: they belong to the built-in profile, not to the
+profiles that extend it.
+
+**Identifiers** (Ed. 3, 6.1.2). A name that contains two consecutive underscores (`my__var`, `__lead`) or
+ends with an underscore (`count_`) is an error at its declaration, with the name as written:
+`Identifier 'count_' is not allowed in IEC 61131-3 Ed. 3: an identifier may not end with an underscore;
+rename it` (or `... may not contain two consecutive underscores; rename it`). Every declared name is
+checked: POUs, methods, properties, actions, interfaces, types, STRUCT fields, enumeration members (inline
+ones too), variables and parameters, global variables, and the CONFIGURATION, RESOURCE, TASK and program
+instance names; a use of the name gets no second error. Exempt are the names the compiler reserves or
+generates (`__NEW`, `__DELETE`, `__ISVALIDREF`, `__POUNAME`, `__POSITION`, `__XWORD`, `__XINT`, `__UXINT`,
+and names beginning `__INLINE_`, `__VLA_` or `__IL_`) and the names a library declares, which are not
+checked when a program uses them.
+
+**Warnings.** Forms Ed. 3 deprecates or leaves to the implementer are accepted with a warning, one per
+occurrence:
+
+| Form                                                   | Warning                                                                                                                                        |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{external ...}` inline C++                            | `{external} inline C++ is not IEC 61131-3 Ed. 3: a pragma's contents are implementer-defined, so the code is not portable; write it in ST`    |
+| `1E-4`, `REAL#2E3` (exponent, no decimal point)        | `Real literal '1E-4' has no decimal point, which IEC 61131-3 Ed. 3 requires before the exponent; write 1.0E-4`                                 |
+| `i := ...` inside `FOR i := ...` (any depth)           | `IEC 61131-3 Ed. 3 does not allow the FOR control variable 'I' to be changed in the loop body; use a WHILE or REPEAT loop to step it yourself` |
+| `8#17`, `BYTE#8#7`                                      | `Octal literal '8#17' is deprecated in IEC 61131-3 Ed. 3; write it in decimal or 16#F`                                                         |
+| an Instruction List (IL) body, at its first instruction | `Instruction List (IL) is deprecated in IEC 61131-3 Ed. 3; write the body of 'FB_I' in ST`                                                    |
+| `TRUNC(x)` (untyped; not a user FUNCTION TRUNC)         | `TRUNC with no result type is deprecated in IEC 61131-3 Ed. 3; write the typed form TRUNC_<type>, such as TRUNC_DINT`                          |
+
+The FOR warning is for a plain assignment to the control variable; a write through a pointer, a reference
+or a VAR_IN_OUT is not detected.
+
+In a `--test` file under `--dialect iec-3` the names its SETUP and TEST VAR blocks declare are checked the
+same way, and its bodies get the same warnings through the library API (`analyzeTestFile`); the CLI's
+`--test` run prints no warning of the sources or the test files, in any dialect.
 
 ## Refusals
 

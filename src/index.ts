@@ -68,7 +68,13 @@ import { renameRuntimeCollidingPous } from "./backend/pou-naming.js";
 import type { LibraryChunk, StlibArchive } from "./library/library-manifest.js";
 import { annotateErrorsWithPouContext } from "./diagnostic-pou-context.js";
 import {
+  iec3IdentifierErrors,
+  iec3IlWarningMessage,
+  sourceNameLocator,
+} from "./semantic/iec3-rules.js";
+import {
   DialectError,
+  IEC_PROFILE,
   profilesWithFeature,
   resolveDialect,
   type DialectRequest,
@@ -514,13 +520,17 @@ function prepareFile(
   prep: SourcePrep,
   lex: (s: string) => ILexingResult,
   fileDefines?: Record<string, string>,
+  /** Warn at each IL body (Ed. 3 deprecates IL): `--dialect iec-3` only. */
+  warnIl = false,
 ): {
   text: string;
   errors: CompileError[];
+  warnings: CompileError[];
   stopsOnError: boolean;
   blankedLines: number[];
 } {
   const errors: CompileError[] = [];
+  const warnings: CompileError[] = [];
   let out = text;
   let stopsOnError = false;
   let blankedLines: number[] = [];
@@ -553,8 +563,17 @@ function prepareFile(
       else if (fileName !== undefined) entry.file = fileName;
       errors.push(entry);
     }
+    for (const body of warnIl ? (ilResult.ilBodies ?? []) : []) {
+      warnings.push({
+        message: iec3IlWarningMessage(body.pou),
+        line: body.line,
+        column: body.column,
+        severity: "warning",
+        ...(fileName !== undefined ? { file: fileName } : {}),
+      });
+    }
   }
-  return { text: out, errors, stopsOnError, blankedLines };
+  return { text: out, errors, warnings, stopsOnError, blankedLines };
 }
 
 // ---------------------------------------------------------------------------
@@ -591,6 +610,8 @@ function runPipeline(
   const mergedOptions = { ...defaultOptions, ...options };
   validateCompileOptions(mergedOptions);
   const errors: CompileError[] = [];
+  // Ed. 3 spelling errors: they stop code generation but not the later phases.
+  let spellingErrorCount = 0;
   const warnings: CompileError[] = [];
   let ast: CompilationUnit | undefined;
   let projectModel: import("./project-model.js").ProjectModel | undefined;
@@ -635,6 +656,8 @@ function runPipeline(
   fbInit = dialect.features.has("fb_init");
   stringDefaultLength = defaultStringLength(dialect.features);
 
+  /** The rules of the built-in iec-3 profile itself (not of one extending it). */
+  const iec3Rules = dialect.id === IEC_PROFILE.id;
   const prep = sourcePrepFor(dialect, mergedOptions.pragmaDefines);
   const pragmaHint = prep.enabled ? "" : conditionalPragmaHint(dialect);
 
@@ -649,8 +672,10 @@ function runPipeline(
       prep,
       tokenize,
       mergedOptions.filePragmaDefines,
+      iec3Rules,
     );
     effectiveSource = prepared.text;
+    warnings.push(...prepared.warnings);
     if (prepared.blankedLines.length > 0) {
       blankedByFile.set(
         mergedOptions.fileName ?? "main.st",
@@ -765,8 +790,10 @@ function runPipeline(
           prep,
           tokenize,
           addlSource.pragmaDefines,
+          iec3Rules,
         );
         const effectiveAddlSource = prepared.text;
+        warnings.push(...prepared.warnings);
         if (prepared.blankedLines.length > 0) {
           blankedByFile.set(
             addlSource.fileName,
@@ -849,6 +876,15 @@ function runPipeline(
 
     ast = mergeCompilationUnits(units);
     markImplicitParameters(ast, implicitPragmas);
+    // Before lowering, which adds names of its own: only names as written.
+    if (iec3Rules) {
+      const spelling = iec3IdentifierErrors(
+        ast,
+        sourceNameLocator(sourcesByFile),
+      );
+      errors.push(...spelling);
+      spellingErrorCount = spelling.length;
+    }
     // Actions first, so lowerInlineTypes qualifies inline enum members in
     // action bodies as it does in the owner's methods.
     const loweringErrors = [
@@ -1019,7 +1055,7 @@ function runPipeline(
     // In analyze mode, project model failure is non-fatal
   }
 
-  if (!continueOnError && errors.length > 0) {
+  if (!continueOnError && errors.length > spellingErrorCount) {
     return {
       ast,
       projectModel,
@@ -1038,7 +1074,7 @@ function runPipeline(
   // The Table 36 FUNCTIONs of the bundled library give way to another library's name.
   allArchives.push(...withYieldedFunctions(mergedOptions.libraries ?? []));
 
-  if (!continueOnError && errors.length > 0) {
+  if (!continueOnError && errors.length > spellingErrorCount) {
     return {
       ast,
       projectModel,

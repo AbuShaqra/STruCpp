@@ -63,7 +63,7 @@ describe("GET / SET as identifiers", () => {
         Get := x;
       END_FUNCTION_BLOCK
       PROGRAM Main
-      VAR r : INT; s : Set; set_ : BOOL; END_VAR
+      VAR r : INT; s : Set; set_b : BOOL; END_VAR
         r := Get(3);
         s(x := r);
         Get();

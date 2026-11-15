@@ -7,7 +7,7 @@
  * and reassembles the source with IL bodies replaced by ST equivalents.
  */
 
-import type { ILTranspileResult } from "./il-types.js";
+import type { ILTranspileResult, POURegion } from "./il-types.js";
 import { extractPOURegions } from "./il-detector.js";
 import { parseILBody } from "./il-parser.js";
 import { convertILToST } from "./il-to-st.js";
@@ -112,5 +112,23 @@ export function transpileILSource(
     hasIL: true,
     stSource: result,
     errors,
+    ilBodies: ilRegions.map((r) => ilBodyStart(source, r)),
   };
+}
+
+/** The first non-blank character of an IL body, and the POU's name from its header. */
+function ilBodyStart(
+  source: string,
+  region: POURegion,
+): { pou: string; line: number; column: number } {
+  // Modifiers such as FINAL or ABSTRACT come before the name.
+  const pou =
+    /^\s*(?:PROGRAM|FUNCTION_BLOCK|FUNCTION)\s+(?:(?:ABSTRACT|FINAL|PUBLIC|PRIVATE|PROTECTED|INTERNAL)\s+)*([A-Za-z_][A-Za-z0-9_]*)/i.exec(
+      region.headerText,
+    )?.[1] ?? "";
+  const bodyOffset = region.startOffset + region.headerText.length;
+  const lead = /^\s*/.exec(region.bodyText)?.[0].length ?? 0;
+  const before = source.substring(0, bodyOffset + lead);
+  const line = before.split("\n").length;
+  return { pou, line, column: before.length - before.lastIndexOf("\n") };
 }
