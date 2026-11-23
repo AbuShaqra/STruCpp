@@ -25,6 +25,7 @@ import type {
   ProgramDeclaration,
   TypeReference,
   StructDefinition,
+  TypeDeclaration,
   VarDeclaration,
 } from "../frontend/ast.js";
 import type { ProjectModel } from "../project-model.js";
@@ -109,10 +110,14 @@ const REFERENCE_KIND_TEXT: Record<string, string> = {
   pointer_to: "a POINTER TO",
   ref_to: "a REF_TO",
   reference_to: "a REFERENCE TO",
+  interface: "an interface reference",
 };
 
 /** Why an array whose elements are pointers or references is left out. */
 function arrayOfReferencesReason(kind: string): string {
+  if (kind === "interface") {
+    return "an array of interface references holds addresses, which the debugger cannot show or write.";
+  }
   const text = (REFERENCE_KIND_TEXT[kind] ?? "a reference").replace(/^a /, "");
   return `an array of ${text} holds addresses, which the debugger cannot show or write.`;
 }
@@ -595,6 +600,8 @@ export function generateDebugTable(
   const aliasReferenceKind = (typeName: string): string | undefined => {
     let name = typeName;
     for (let depth = 0; depth < MAX_TYPE_ALIAS_DEPTH; depth++) {
+      // An interface-typed value is a reference to the implementing instance.
+      if (interfaceNames.has(name.toUpperCase())) return "interface";
       const def = symbolTables.lookupType(name)?.declaration?.definition;
       if (def?.kind !== "TypeReference") return undefined;
       if (def.referenceKind !== undefined && def.referenceKind !== "none") {
@@ -764,9 +771,30 @@ export function generateDebugTable(
       return;
     }
 
+    // An interface variable references the implementing instance, so it is
+    // left out like a POINTER TO / REFERENCE TO. Checked before lookupType:
+    // interfaces are registered as types without a declaration.
+    if (interfaceNames.has(name)) {
+      skipped.push({
+        path,
+        reason:
+          `${REFERENCE_KIND_TEXT.interface} (${typeRef.name}) holds an ` +
+          `address, which the debugger cannot show or write.`,
+      });
+      return;
+    }
+
     // Named type — covers user-defined TYPE..END_TYPE and library-registered
     // types (struct/enum/alias). The symbol table is the unified source.
     const ts = symbolTables.lookupType(name);
+    // A type symbol registered without a declaration has no layout to walk.
+    if (ts && (ts.declaration as TypeDeclaration | undefined) === undefined) {
+      skipped.push({
+        path,
+        reason: `type ${typeRef.name} has no definition the debugger can walk`,
+      });
+      return;
+    }
     if (ts) {
       const def = ts.declaration.definition;
       if (def.kind === "StructDefinition") {
