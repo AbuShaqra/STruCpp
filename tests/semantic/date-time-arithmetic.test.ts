@@ -123,6 +123,68 @@ describe("date/time arithmetic type rules", () => {
     });
   });
 
+  describe("a typed literal on either side of instant - instant", () => {
+    const toTime: Array<[string, string, string]> = [
+      [
+        "DT - DT literal",
+        "d1 : DT := DT#2000-01-02-00:00:00 ;",
+        "d1 - DT#2000-01-01-00:00:00",
+      ],
+      [
+        "DT literal - DT",
+        "d1 : DT := DT#2000-01-02-00:00:00 ;",
+        "DT#2000-01-03-00:00:00 - d1",
+      ],
+      [
+        "DT literal - DT literal",
+        "",
+        "DT#2000-01-03-00:00:00 - DATE_AND_TIME#2000-01-01-00:00:00",
+      ],
+      ["TOD - TOD literal", "t1 : TOD := TOD#12:00:01 ;", "t1 - TOD#12:00:00"],
+      ["TOD literal - TOD literal", "", "TOD#12:00:01 - TIME_OF_DAY#12:00:00"],
+      ["DATE literal - DATE literal", "", "D#2000-01-03 - DATE#2000-01-01"],
+    ];
+
+    for (const [label, decl, expr] of toTime) {
+      it(`${label} is a TIME`, () => {
+        const ok = compileBody(`${decl} r : TIME ;`, `r := ${expr} ;`);
+        expect(ok.errors).toEqual([]);
+        const kind = expr.trimStart().startsWith("D#")
+          ? "DATE"
+          : expr.includes("TOD")
+            ? "TOD"
+            : "DT";
+        const bad = compileBody(`${decl} r : ${kind} ;`, `r := ${expr} ;`);
+        expect(bad.errors.map((e) => e.message)).toEqual([
+          `Cannot assign TIME to ${kind}`,
+        ]);
+      });
+    }
+
+    it("a long instant minus a typed literal is an LTIME", () => {
+      for (const expr of [
+        "LDT#2000-01-02-00:00:00 - DT#2000-01-01-00:00:00",
+        "LTOD#12:00:01 - TOD#12:00:00",
+        "LDATE#2000-01-02 - D#2000-01-01",
+      ]) {
+        expect(compileBody("r : LTIME ;", `r := ${expr} ;`).errors).toEqual([]);
+        expect(
+          compileBody("r : TIME ;", `r := ${expr} ;`).errors.map(
+            (e) => e.message,
+          ),
+        ).toEqual(["Cannot assign LTIME to TIME"]);
+      }
+    });
+
+    it("a typed literal plus a duration keeps its instant type", () => {
+      const result = compileBody(
+        "t : TOD ; d : DT ;",
+        "t := TOD#12:00:00 + T#1s ; d := T#1h + DT#2000-01-01-00:00:00 ;",
+      );
+      expect(result.errors).toEqual([]);
+    });
+  });
+
   describe("rules the standard does NOT permit", () => {
     it("rejects assigning DT to a TIME variable directly (no implicit conversion)", () => {
       const result = compileBody(

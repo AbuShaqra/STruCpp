@@ -156,12 +156,14 @@ const LONG_FORM: Record<string, string> = {
 };
 const LONG_TYPES = new Set(["LDT", "LDATE", "LTOD", "LTIME"]);
 
-/** Instant types by the name the operand carries (TIME_OF_DAY and
- *  DATE_AND_TIME stay out, as before the long forms came). */
+/** Instant types by every name an operand can carry; typed literals carry
+ *  the full names (TIME_OF_DAY, DATE_AND_TIME). */
 const INSTANT_NAMES = new Set([
   "DT",
+  "DATE_AND_TIME",
   "DATE",
   "TOD",
+  "TIME_OF_DAY",
   "LDT",
   "LDATE_AND_TIME",
   "LDATE",
