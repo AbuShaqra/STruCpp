@@ -177,6 +177,110 @@ TEST 'station reads the global and calls its method'
 END_TEST
 `;
 
+const SHADOW_SOURCE = `FUNCTION_BLOCK FB_T
+VAR_OUTPUT n : INT; END_VAR
+METHOD Bump : INT
+n := n + 1;
+Bump := n;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL gT : FB_T; END_VAR
+FUNCTION_BLOCK FB_A
+VAR_EXTERNAL gT : FB_T; END_VAR
+METHOD M1 : INT
+VAR gT : FB_T; END_VAR
+M1 := gT.Bump();
+END_METHOD
+METHOD M2 : INT
+VAR gT : FB_T; END_VAR
+gT.Bump();
+gT.Bump();
+M2 := gT.n;
+END_METHOD
+END_FUNCTION_BLOCK
+`;
+
+const SHADOW_TEST = `TEST 'a method local hides the VAR_EXTERNAL of its name'
+VAR a : FB_A; r : INT; END_VAR
+r := a.M1();
+r := a.M1();
+ASSERT_EQ(r, 1);
+ASSERT_EQ(a.M2(), 2);
+ASSERT_EQ(gT.n, 0);
+END_TEST
+`;
+
+const STATEMENT_SOURCE = `FUNCTION_BLOCK FB_Pump
+VAR_OUTPUT runs : INT; END_VAR
+runs := runs + 1;
+END_FUNCTION_BLOCK
+VAR_GLOBAL Pump : FB_Pump; END_VAR
+FUNCTION_BLOCK FB_S
+VAR_OUTPUT calls, v, seen : INT; END_VAR
+METHOD Pump : INT
+calls := calls + 1;
+Pump := 10;
+END_METHOD
+Pump();
+v := Pump();
+seen := Pump.runs;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR s : FB_S; END_VAR
+Pump();
+s();
+END_PROGRAM
+`;
+
+const STATEMENT_MAIN = `#include <iostream>
+int main() {
+  using namespace strucpp;
+  Program_MAIN p;
+  p.run();
+  p.run();
+  std::cout << p.S.CALLS.get() << '|' << p.S.V.get() << '|' << p.S.SEEN.get()
+            << '|' << PUMP.RUNS.get() << std::endl;
+  return 0;
+}
+`;
+
+const MANGLED_SOURCE = `FUNCTION_BLOCK FB_T
+VAR_OUTPUT n : INT; END_VAR
+METHOD Bump : INT
+n := n + 1;
+Bump := n;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL GT : FB_T; CODE : FB_T; END_VAR
+FUNCTION_BLOCK FB_A
+VAR_OUTPUT r : INT; END_VAR
+VAR_EXTERNAL GT : FB_T; END_VAR
+r := GT.Bump();
+END_FUNCTION_BLOCK
+FUNCTION F_Code : INT
+VAR_EXTERNAL CODE : FB_T; END_VAR
+F_Code := CODE.Bump();
+END_FUNCTION
+PROGRAM Main
+VAR a : FB_A; x, y, z : INT; END_VAR
+a();
+x := F_Code();
+y := GT.Bump() + CODE.Bump();
+z := GT.n * 100 + CODE.n;
+END_PROGRAM
+`;
+
+const MANGLED_MAIN = `#include <iostream>
+int main() {
+  using namespace strucpp;
+  Program_MAIN p;
+  p.run();
+  std::cout << p.A.R.get() << '|' << p.X.get() << '|' << p.Y.get() << '|'
+            << p.Z.get() << std::endl;
+  return 0;
+}
+`;
+
 describeIfGpp("a global named like a member function of the class", () => {
   let tempDir: string;
   let pchPath: string;
@@ -234,5 +338,49 @@ describeIfGpp("a global named like a member function of the class", () => {
     });
     expect(stdout).toContain("1 test, 1 passed, 0 failed");
     expect(exitCode).toBe(0);
+  });
+
+  it("a method local of a VAR_EXTERNAL's mangled name is the local", () => {
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST: SHADOW_SOURCE,
+      testST: SHADOW_TEST,
+      testFileName: "test_shadow.st",
+      tempDirPrefix: "strucpp-gname-shadow-",
+    });
+    expect(stdout).toContain("1 test, 1 passed, 0 failed");
+    expect(exitCode).toBe(0);
+  });
+
+  it("a call statement NAME(); in a class with a method NAME calls the method", () => {
+    const result = compile(STATEMENT_SOURCE, {
+      headerFileName: "generated.hpp",
+    });
+    expect(result.errors).toEqual([]);
+    const out = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "statement_calls_method",
+      mainCode: STATEMENT_MAIN,
+    });
+    // Two runs: the method twice per run (statement and expression); the
+    // global instance only from Main, which has no method Pump.
+    expect(out).toBe("4|10|2|2");
+  });
+
+  it("a dotted call on a global of a runtime name builds and runs", () => {
+    const result = compile(MANGLED_SOURCE, { headerFileName: "generated.hpp" });
+    expect(result.errors).toEqual([]);
+    const out = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "mangled_global_dotted_call",
+      mainCode: MANGLED_MAIN,
+    });
+    // GT bumped by FB_A (1) then Main (2); CODE by F_Code (1) then Main (2).
+    expect(out).toBe("1|1|4|202");
   });
 });

@@ -196,4 +196,80 @@ END_FUNCTION_BLOCK
     expect(out).toContain("::strucpp::PUMP.TWICE()");
     expect(out).toContain("::strucpp::PUMP.TWICE() + PUMP();");
   });
+
+  it("a method local of a VAR_EXTERNAL's mangled name is the local", () => {
+    const out = cpp(`FUNCTION_BLOCK FB_T
+VAR_OUTPUT n : INT; END_VAR
+METHOD Bump : INT
+n := n + 1;
+Bump := n;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL gT : FB_T; END_VAR
+FUNCTION_BLOCK FB_A
+VAR_EXTERNAL gT : FB_T; END_VAR
+METHOD M1 : INT
+VAR gT : FB_T; END_VAR
+M1 := gT.Bump();
+END_METHOD
+METHOD M2 : INT
+VAR gT : FB_T; END_VAR
+M2 := gT.n;
+END_METHOD
+END_FUNCTION_BLOCK
+`);
+    expect(out).toContain("M1_result = GT.BUMP();");
+    expect(out).toContain("M2_result = GT.N;");
+    expect(out).not.toContain("GT_");
+  });
+
+  it("a call statement NAME(); inside a class with a method NAME calls the method", () => {
+    const out = cpp(`FUNCTION_BLOCK FB_Pump
+VAR_OUTPUT runs : INT; END_VAR
+runs := runs + 1;
+END_FUNCTION_BLOCK
+VAR_GLOBAL Pump : FB_Pump; END_VAR
+FUNCTION_BLOCK FB_S
+VAR_OUTPUT v, seen : INT; END_VAR
+METHOD Pump : INT
+Pump := 10;
+END_METHOD
+Pump();
+v := Pump();
+seen := Pump.runs;
+END_FUNCTION_BLOCK
+`);
+    expect(out).toMatch(/^\s*PUMP\(\);$/m);
+    expect(out).not.toContain("::strucpp::PUMP();");
+    expect(out).toContain("V = PUMP();");
+    expect(out).toContain("SEEN = ::strucpp::PUMP.RUNS;");
+  });
+
+  it("a dotted call on a global of a runtime name reaches its mangled name", () => {
+    const out = cpp(`FUNCTION_BLOCK FB_T
+VAR_OUTPUT n : INT; END_VAR
+METHOD Bump : INT
+n := n + 1;
+Bump := n;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL GT : FB_T; CODE : FB_T; END_VAR
+FUNCTION_BLOCK FB_A
+VAR_OUTPUT r : INT; END_VAR
+VAR_EXTERNAL GT : FB_T; END_VAR
+r := GT.Bump();
+END_FUNCTION_BLOCK
+FUNCTION F_Code : INT
+VAR_EXTERNAL CODE : FB_T; END_VAR
+F_Code := CODE.Bump();
+END_FUNCTION
+PROGRAM Main
+VAR y : INT; END_VAR
+y := GT.Bump() + CODE.Bump();
+END_PROGRAM
+`);
+    expect(out).toContain("R = GT_.BUMP();");
+    expect(out).toContain("F_CODE_result = CODE_.BUMP();");
+    expect(out).toContain("Y = GT_.BUMP() + CODE_.BUMP();");
+  });
 });

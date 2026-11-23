@@ -10210,6 +10210,14 @@ export class CodeGenerator {
         .flatMap((b) => b.declarations.flatMap((d) => d.names))
         .map((n) => n.toUpperCase()),
     );
+    // A method's own variable of an FB VAR_EXTERNAL's name is that variable there.
+    for (const block of stackBlocks) {
+      if (block.blockType === "VAR_EXTERNAL") continue;
+      for (const decl of block.declarations) {
+        for (const n of decl.names)
+          this.scopeExternalNames.delete(n.toUpperCase());
+      }
+    }
     this.scopeInOutRefs = this.inheritedInOutRefs();
     for (const block of varBlocks) {
       const fbInOut =
@@ -10509,6 +10517,13 @@ export class CodeGenerator {
   private invocationTargetType(functionName: string): string | undefined {
     const [root, ...members] = functionName.split(".");
     const rootUpper = root!.toUpperCase();
+    // `NAME(...)` inside a class with a method NAME calls the method, as the checker resolves it.
+    if (
+      members.length === 0 &&
+      this.isGlobalHiddenByMemberFunction(rootUpper)
+    ) {
+      return undefined;
+    }
     let type =
       this.currentScopeVarTypes.get(rootUpper) ??
       this.inheritedMemberTypeName(rootUpper) ??
