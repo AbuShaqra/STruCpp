@@ -8158,8 +8158,8 @@ export class CodeGenerator {
   /**
    * The type that owns the method of a method call on `object`: a variable's
    * declared type, the type a member chain lands on (`a.b`, `arr[i]`,
-   * `THIS.f`, `SUPER.f`) or a function's result type. Undefined for any other
-   * object or an unresolved step.
+   * `THIS.f`, `SUPER.f`) or a function's or method's result type. Undefined
+   * for any other object or an unresolved step.
    */
   private methodCallOwnerType(object: Expression): string | undefined {
     // `F().M()`, `F().a.M()`: the type the type checker gave the call result.
@@ -8172,6 +8172,29 @@ export class CodeGenerator {
       return object.resolvedType
         ? typeNameUtil(object.resolvedType)
         : undefined;
+    }
+    // `a.M().N()`, `F().M().N()`: the declared result of the receiving method.
+    if (object.kind === "MethodCallExpression") {
+      return this.methodResultOwnerType(
+        this.findMethodDeclaration(
+          this.methodCallOwnerType(object.object),
+          object.methodName,
+        ),
+      );
+    }
+    // `fb.M().N()`: the receiver is a dotted method call.
+    if (
+      object.kind === "FunctionCallExpression" &&
+      object.instance === undefined &&
+      object.functionName.includes(".")
+    ) {
+      const dotIdx = object.functionName.indexOf(".");
+      return this.methodResultOwnerType(
+        this.findMethodDeclaration(
+          this.dottedCallOwnerType(object.functionName.substring(0, dotIdx)),
+          object.functionName.substring(dotIdx + 1),
+        ),
+      );
     }
     if (object.kind !== "VariableExpression") return undefined;
     const root = object.name.toUpperCase();
@@ -8199,6 +8222,21 @@ export class CodeGenerator {
       }
     }
     return type;
+  }
+
+  /** The type a method returns by value, as the owner of a call on its result; undefined otherwise. */
+  private methodResultOwnerType(
+    method: MethodDeclaration | undefined,
+  ): string | undefined {
+    const ret = method?.returnType;
+    if (
+      ret === undefined ||
+      ret.arrayDimensions !== undefined ||
+      (ret.referenceKind !== undefined && ret.referenceKind !== "none")
+    ) {
+      return undefined;
+    }
+    return ret.name;
   }
 
   // ===========================================================================
