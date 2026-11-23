@@ -8787,7 +8787,7 @@ export class CodeGenerator {
                 : this.currentScopeVarRefKinds.get(prefix.toUpperCase()) ===
                     "reference_to"
                   ? this.refTarget(instance(), prefix, expr)
-                  : prefix;
+                  : this.resolveVariableBaseName(prefix);
         return `${receiver}.${resolvedMethod}(${args.join(", ")})`;
       }
     }
@@ -11343,6 +11343,12 @@ export class CodeGenerator {
    */
   protected resolveVariableBaseName(name: string): string {
     const upper = name.toUpperCase();
+    if (this.isGlobalHiddenByMemberFunction(upper)) {
+      const ns = this.projectModel
+        ? getProjectNamespace(this.projectModel)
+        : "strucpp";
+      return `::${ns}::${globalCppName(name)}`;
+    }
     if (
       !RUNTIME_NAMESPACE_NAMES.has(upper) ||
       (this.currentScopeVarTypes.has(upper) &&
@@ -11352,6 +11358,68 @@ export class CodeGenerator {
       return name;
     }
     return globalCppName(name);
+  }
+
+  /**
+   * A file-level or library VAR_GLOBAL read inside a class (FB, PROGRAM, their
+   * methods, actions and accessors) that has a member function of its name:
+   * the member function would hide the global in C++, so the caller qualifies it.
+   * Not when a variable of the scope, the current result or an inherited
+   * member carries the name, as those are what the name means in ST.
+   */
+  private isGlobalHiddenByMemberFunction(upper: string): boolean {
+    if (this.currentScopeVarTypes.has(upper)) return false;
+    if (this.isCurrentFunctionResult(upper)) return false;
+    if (!this.classMemberFunctionNames().has(upper)) return false;
+    if (this.inheritedMemberTypeName(upper) !== undefined) return false;
+    return this.isNamespaceGlobal(upper);
+  }
+
+  /** Cache of {@link classMemberFunctionNames}, keyed by the class's upper-cased POU name. */
+  private classMemberFunctionNamesCache: Map<string, ReadonlySet<string>> =
+    new Map();
+
+  /**
+   * Upper-cased names of the member functions of the class being generated:
+   * methods (actions are lowered to methods) of the FB and its bases, library
+   * bases included, the interface methods they implement, or a PROGRAM's methods.
+   * Empty outside a class.
+   */
+  private classMemberFunctionNames(): ReadonlySet<string> {
+    const owner = (
+      this.currentFBName ?? this.currentProgramName
+    )?.toUpperCase();
+    if (owner === undefined || !this.ast) return new Set();
+    const cached = this.classMemberFunctionNamesCache.get(owner);
+    if (cached) return cached;
+    const names = new Set<string>();
+    const program = this.ast.programs.find(
+      (p) => p.name.toUpperCase() === owner,
+    );
+    if (program) {
+      for (const m of program.methods) names.add(m.name.toUpperCase());
+    }
+    const seen = new Set<string>();
+    let current: string | undefined = program ? undefined : owner;
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      const fbName: string = current;
+      const fb = this.ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === fbName,
+      );
+      if (!fb) {
+        for (const m of this.libraryMethods.get(fbName) ?? []) {
+          names.add(m.name.toUpperCase());
+        }
+        current = this.libraryFBExtends.get(fbName);
+        continue;
+      }
+      for (const m of fb.methods) names.add(m.name.toUpperCase());
+      for (const m of this.getInterfaceMethodNames(fb)) names.add(m);
+      current = fb.extends?.toUpperCase();
+    }
+    this.classMemberFunctionNamesCache.set(owner, names);
+    return names;
   }
 
   /** A file-level VAR_GLOBAL of this compile or of a library (not a CONFIGURATION one). */
