@@ -29,7 +29,7 @@ exception allows the runtime code to be included in compiled output without
 requiring that output to be GPL-licensed.
 
   Files:  src/runtime/include/*.hpp, src/runtime/repl/iec_repl.hpp,
-          src/runtime/test/iec_test.hpp, libs/*.stlib
+          libs/*.stlib
           (except libs/oscat-basic.stlib, see Third-Party Code)
   License: GPL-3.0-only WITH STruCpp-runtime-exception
            (see LICENSE and COPYING.RUNTIME)

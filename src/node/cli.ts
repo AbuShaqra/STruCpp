@@ -1128,9 +1128,6 @@ function runTestMode(options: CLIOptions): void {
       process.exit(1);
     }
 
-    // Test runtime header directory
-    const testRuntimeDir = resolve(dirname(runtimeIncludeDir), "test");
-
     // 7. Compile with g++
     const binaryPath = join(
       tempDir,
@@ -1146,7 +1143,6 @@ function runTestMode(options: CLIOptions): void {
           // may_alias, and this covers anything it cannot mark.
           "-fno-strict-aliasing",
           `-I${runtimeIncludeDir}`,
-          `-I${testRuntimeDir}`,
           `-I${tempDir}`,
           ...splitCxxFlags(options.cxxFlags),
           join(tempDir, "test_main.cpp"),

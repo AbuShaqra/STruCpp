@@ -11,7 +11,7 @@
  *
  * Supports two output modes:
  * - Text (default): human-readable [PASS]/[FAIL] output for CLI
- * - JSON (--json flag): machine-readable JSON for IDE integration
+ * - JSON output (--json flag): machine-readable, for IDE integration
  */
 #pragma once
 
@@ -381,7 +381,7 @@ struct TestCaseResult {
 
 /**
  * Test runner that orchestrates test execution and reports results.
- * Supports text (default) and JSON (--json) output modes.
+ * Supports text output (default) and JSON output (--json).
  */
 class TestRunner {
     const char* test_file_;
