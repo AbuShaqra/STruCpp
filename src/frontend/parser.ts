@@ -2784,11 +2784,20 @@ export class STParser extends CstParser {
  */
 export const parser = new STParser();
 
+let testParserInstance: STParser | undefined;
+
 /**
- * Singleton parser instance for test files.
+ * Singleton parser instance for test files, built on first use.
  * Uses the test token list which includes TEST/END_TEST/ASSERT_* tokens.
+ * Construction runs chevrotain's self-analysis, so it is deferred until a
+ * test file is parsed instead of paid on every module load.
+ *
+ * @returns The shared test-file parser
  */
-export const testParser = new STParser(tokens.allTestTokens);
+export function getTestParser(): STParser {
+  testParserInstance ??= new STParser(tokens.allTestTokens);
+  return testParserInstance;
+}
 
 /**
  * Parse ST source code into a CST.
@@ -2832,6 +2841,7 @@ export function parseTestSource(source: string): {
 } {
   const lexResult = tokens.tokenizeTest(source);
 
+  const testParser = getTestParser();
   testParser.input = lexResult.tokens;
   const cst = testParser.testFile();
 
