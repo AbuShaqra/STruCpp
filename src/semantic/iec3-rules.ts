@@ -12,6 +12,10 @@
  *   occurrence (`{external}`, a real literal with an exponent and no decimal
  *   point, a store to a FOR control variable in its loop, `8#` literals,
  *   untyped `TRUNC`). IL bodies are warned where IL is transpiled (index.ts).
+ *
+ * Also here, though keyed on `--dialect iec-3` or `--strict` (as the type
+ * checker's ANY_BIT refusals are): an underscore in a numeric literal must
+ * stand between two digits (Ed. 3 Table 5; Table 8 for durations).
  */
 
 import type {
@@ -34,6 +38,7 @@ import type {
 } from "../frontend/ast.js";
 import { walkAST } from "../ast-utils.js";
 import type { CompileError, SourceSpan } from "../types.js";
+import type { IToken } from "chevrotain";
 
 /**
  * Names the compiler reserves or generates before analysis, exempt from the
@@ -446,4 +451,78 @@ export function iec3Warnings(
 /** The Ed. 3 warning for an Instruction List body of POU `pou`. */
 export function iec3IlWarningMessage(pou: string): string {
   return `Instruction List (IL) is deprecated in IEC 61131-3 Ed. 3; write the body of '${pou}' in ST`;
+}
+
+/** The lexer tokens whose image is a numeric literal that may hold underscores. */
+const NUMERIC_LITERAL_TOKENS: ReadonlySet<string> = new Set([
+  "IntegerLiteral",
+  "RealLiteral",
+  "TypedLiteral",
+  "CharLiteral",
+  "TimeLiteral",
+]);
+
+/**
+ * True when a numeric literal, as written, has an underscore Ed. 3 refuses:
+ * one not between two digits of its base (leading, trailing, doubled, or
+ * next to `#`, `.`, a sign or a unit). A duration may also put one between a
+ * unit and the next number (`T#1d_2h`, Table 8). Quoted CHAR literals have none.
+ */
+export function literalUnderscoreRefused(image: string): boolean {
+  if (!image.includes("_") || /['"]/.test(image)) return false;
+  const time = /^(?:LTIME|LT|TIME|T)#(.*)$/is.exec(image);
+  if (time !== null) {
+    const body = time[1] ?? "";
+    for (let i = 0; i < body.length; i++) {
+      if (body[i] !== "_") continue;
+      const prev = body[i - 1] ?? "";
+      const next = body[i + 1] ?? "";
+      if (!/[0-9]/.test(next) || !/[0-9A-Za-z]/.test(prev)) return true;
+    }
+    return false;
+  }
+  const hash = image.lastIndexOf("#");
+  const payload = image.slice(hash + 1);
+  const digit = /16#[^#]*$/.test(image) ? /[0-9A-Fa-f]/ : /[0-9]/;
+  for (let i = 0; i < payload.length; i++) {
+    if (payload[i] !== "_") continue;
+    if (
+      !digit.test(payload[i - 1] ?? "") ||
+      !digit.test(payload[i + 1] ?? "")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The error message for numeric literal `spelling` (see literalUnderscoreRefused). */
+export function literalUnderscoreMessage(spelling: string): string {
+  return `An underscore in a numeric literal must stand between two digits (IEC 61131-3 Ed. 3): '${spelling}'`;
+}
+
+/**
+ * Errors for the numeric literals of one source whose underscores Ed. 3
+ * refuses, at each literal, spelled as written. `tokens` are the lexer's
+ * tokens of `text` (whose offsets the upper-casing lexer keeps).
+ */
+export function literalUnderscoreErrors(
+  text: string,
+  tokens: readonly IToken[],
+  file?: string,
+): CompileError[] {
+  const errors: CompileError[] = [];
+  for (const token of tokens) {
+    if (!NUMERIC_LITERAL_TOKENS.has(token.tokenType.name)) continue;
+    const spelling = text.slice(token.startOffset, (token.endOffset ?? 0) + 1);
+    if (!literalUnderscoreRefused(spelling)) continue;
+    errors.push({
+      message: literalUnderscoreMessage(spelling),
+      line: token.startLine ?? 0,
+      column: token.startColumn ?? 0,
+      severity: "error",
+      ...(file !== undefined ? { file } : {}),
+    });
+  }
+  return errors;
 }
