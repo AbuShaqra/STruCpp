@@ -5167,6 +5167,12 @@ export class CodeGenerator {
           this.emit(line);
         }
         break;
+      case "AdvanceTimeStatement":
+        // Only in test files: lowered in place, so every pass of a loop advances time
+        this.emit(
+          `${indent}strucpp::__CURRENT_TIME_NS += strucpp::iec_duration_ns(${this.generateExpression(stmt.duration)});`,
+        );
+        break;
       default: {
         const _exhaustive: never = stmt;
         throw new Error(

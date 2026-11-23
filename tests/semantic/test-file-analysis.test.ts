@@ -370,6 +370,28 @@ describe("Test File Analysis - Negative (must error)", () => {
     ).toBe(true);
   });
 
+  it("should error on a nested ADVANCE_TIME with undeclared duration", () => {
+    const result = analyzeTest(
+      `
+        PROGRAM Main
+          VAR x : INT; END_VAR
+          x := 1;
+        END_PROGRAM
+      `,
+      `
+        TEST 'advance undeclared in a loop'
+          VAR i : INT; END_VAR
+          FOR i := 1 TO 3 DO
+            ADVANCE_TIME(ghostDuration);
+          END_FOR;
+        END_TEST
+      `,
+    );
+    expect(
+      result.errors.some((e) => e.message.includes("Undeclared variable")),
+    ).toBe(true);
+  });
+
   it("should not allow TEST-local vars to be visible in other TESTs", () => {
     const result = analyzeTest(
       `

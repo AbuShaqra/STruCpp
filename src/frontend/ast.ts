@@ -610,7 +610,8 @@ export type Statement =
   | FunctionCallStatement
   | ExternalCodePragma
   | DeleteStatement
-  | AssertCall;
+  | AssertCall
+  | AdvanceTimeStatement;
 
 /**
  * Assignment statement
@@ -1190,8 +1191,6 @@ export interface AdvanceTimeStatement extends ASTNode {
 
 export type TestStatement =
   | Statement
-  | AssertCall
-  | AdvanceTimeStatement
   | MockFBStatement
   | MockFunctionStatement
   | MockVerifyCalledStatement
