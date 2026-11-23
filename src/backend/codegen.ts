@@ -5477,8 +5477,15 @@ export class CodeGenerator {
     // In a block of its own: a declaration directly under a CASE label would
     // be jumped over by the next label (C++ "jump to case label").
     const inner = indent + this.options.indent;
+    // An interface target binds to the instance: `auto` would copy the FB and
+    // leave the global pointing at that temp once the block ends.
+    const targetType = this.inferExprType(target);
+    const tmpType =
+      targetType !== undefined && this.isInterfaceType(targetType)
+        ? this.mapTypeRefToCpp({ name: targetType })
+        : "auto";
     this.emit(`${indent}{`);
-    this.emit(`${inner}auto ${tmp} = ${value};`);
+    this.emit(`${inner}${tmpType} ${tmp} = ${value};`);
     // A call in the value that took a composite global by copy-in writes it
     // back now, before this store, as the call ran before the assignment.
     this.flushGlobalCopyOuts(inner);
