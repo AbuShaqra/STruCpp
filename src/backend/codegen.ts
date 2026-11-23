@@ -25,6 +25,7 @@ import type {
   FunctionCallExpression,
   Argument,
   MethodCallExpression,
+  CallResultAccessExpression,
   BinaryExpression,
   UnaryExpression,
   LiteralExpression,
@@ -6692,6 +6693,8 @@ export class CodeGenerator {
         return this.wrapGlobalInOutCall(expr, () =>
           this.generateMethodCallExpression(expr),
         );
+      case "CallResultAccessExpression":
+        return this.generateCallResultAccess(expr);
       case "RefExpression":
         return `REF(${this.addressedOperand(expr.operand, "REF", expr)})`;
       case "DrefExpression":
@@ -6722,6 +6725,23 @@ export class CodeGenerator {
             `target type is unknown. It is only valid as a declaration's initial value.`,
         );
     }
+  }
+
+  /**
+   * `F(1).n`, `fb.M()[2].a` (feature call_result_access): the selectors are
+   * rendered on the call's C++ value, so the call runs once.
+   */
+  private generateCallResultAccess(expr: CallResultAccessExpression): string {
+    const call = this.generateExpression(expr.call);
+    const resultType = expr.call.resolvedType;
+    return this.generateAccessChain(
+      `(${call})`,
+      expr.accessChain,
+      "",
+      resultType ? typeNameUtil(resultType) : undefined,
+      expr.namedBitIndex === true,
+      expr,
+    );
   }
 
   /**
@@ -8131,10 +8151,22 @@ export class CodeGenerator {
 
   /**
    * The type that owns the method of a method call on `object`: a variable's
-   * declared type, or the type a member chain lands on (`a.b`, `arr[i]`,
-   * `THIS.f`, `SUPER.f`). Undefined for any other object or an unresolved step.
+   * declared type, the type a member chain lands on (`a.b`, `arr[i]`,
+   * `THIS.f`, `SUPER.f`) or a function's result type. Undefined for any other
+   * object or an unresolved step.
    */
   private methodCallOwnerType(object: Expression): string | undefined {
+    // `F().M()`, `F().a.M()`: the type the type checker gave the call result.
+    if (
+      object.kind === "CallResultAccessExpression" ||
+      (object.kind === "FunctionCallExpression" &&
+        !object.functionName.includes(".") &&
+        object.instance === undefined)
+    ) {
+      return object.resolvedType
+        ? typeNameUtil(object.resolvedType)
+        : undefined;
+    }
     if (object.kind !== "VariableExpression") return undefined;
     const root = object.name.toUpperCase();
     let type: string | undefined =

@@ -947,6 +947,10 @@ class TestFunctionGenerator {
         return `${expr.functionName}(...)`;
       case "MethodCallExpression":
         return `${this.expressionToString(expr.object)}.${expr.methodName}(...)`;
+      case "CallResultAccessExpression":
+        return `${this.expressionToString(expr.call)}${expr.accessChain
+          .map((step) => (step.kind === "field" ? `.${step.name}` : "[...]"))
+          .join("")}`;
       default:
         return "?";
     }

@@ -1184,6 +1184,11 @@ export class STParser extends CstParser {
   public statement = this.RULE("statement", () => {
     this.OR({
       DEF: [
+        // `F().a := v;`: parsed so the type checker refuses the write.
+        {
+          ALT: (): CstNode => this.SUBRULE(this.callResultWriteStatement),
+          GATE: (): boolean => this.isCallResultWriteAhead(),
+        },
         // `a.b.M();` — before the THIS/SUPER and assignment alternatives,
         // which would claim the chain's first tokens.
         {
@@ -1694,8 +1699,9 @@ export class STParser extends CstParser {
       this.SUBRULE(this.argumentList);
     });
     this.CONSUME(tokens.RParen);
-    this.MANY(() => {
-      this.SUBRULE(this.chainedMethodCall);
+    this.MANY({
+      GATE: () => this.isChainedMethodCallAhead(),
+      DEF: () => this.SUBRULE(this.chainedMethodCall),
     });
   });
 
@@ -1870,6 +1876,112 @@ export class STParser extends CstParser {
     }
     return false;
   }
+
+  /**
+   * A statement writing to a member of a call result (`F().a := v;`,
+   * `F().a REF= v;`), or binding a reference to one (`r REF= F().a;`): a call
+   * followed by `.` or `[` before a top-level `:=` / `REF=`, or after `REF=`.
+   */
+  private isCallResultWriteAhead(): boolean {
+    if (this.LA(1).tokenType !== tokens.Identifier) return false;
+    const MAX_LOOKAHEAD = 200;
+    let depth = 0;
+    let callClosed = false;
+    let selectorAfterCall = false;
+    let refAssignSeen = false;
+    for (let i = 1; i <= MAX_LOOKAHEAD; i++) {
+      const type = this.LA(i).tokenType;
+      if (type === EOF || (depth === 0 && type === tokens.Semicolon)) {
+        return refAssignSeen && selectorAfterCall;
+      }
+      if (type === tokens.LParen || type === tokens.LBracket) {
+        depth++;
+        if (depth === 1 && type === tokens.LBracket && callClosed) {
+          selectorAfterCall ||= this.LA(i - 1).tokenType === tokens.RParen;
+        }
+      } else if (type === tokens.RParen || type === tokens.RBracket) {
+        depth--;
+        callClosed = depth === 0 && type === tokens.RParen;
+      } else if (depth === 0) {
+        // A CASE label `C_A:` ends the statement start.
+        if (type === tokens.Colon) return false;
+        if (type === tokens.Assign && !refAssignSeen) return selectorAfterCall;
+        if (type === tokens.RefAssign) {
+          if (selectorAfterCall) return true;
+          refAssignSeen = true;
+          callClosed = false;
+        } else if (callClosed && type === tokens.Dot) {
+          selectorAfterCall = true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** `F().a := v;`, `F().a REF= v;`, `r REF= F().a;`: refused by the type checker (a call result is a temporary). */
+  public callResultWriteStatement = this.RULE(
+    "callResultWriteStatement",
+    () => {
+      this.OR([
+        {
+          // `r REF= F().a;`
+          GATE: (): boolean => this.isReferenceToCallResultAhead(),
+          ALT: (): void => {
+            this.SUBRULE(this.variable);
+            this.CONSUME(tokens.RefAssign);
+            this.SUBRULE(this.callResultTarget);
+          },
+        },
+        {
+          ALT: (): void => {
+            this.SUBRULE2(this.callResultTarget);
+            this.OR2([
+              { ALT: (): IToken => this.CONSUME2(tokens.Assign) },
+              { ALT: (): IToken => this.CONSUME2(tokens.RefAssign) },
+            ]);
+            this.SUBRULE(this.expression);
+          },
+        },
+      ]);
+      this.CONSUME(tokens.Semicolon);
+    },
+  );
+
+  /** `r REF= ...`: the first top-level `REF=` comes before any `(` or `:=`. */
+  private isReferenceToCallResultAhead(): boolean {
+    let depth = 0;
+    for (let i = 1; i <= 200; i++) {
+      const type = this.LA(i).tokenType;
+      if (type === EOF || type === tokens.Semicolon) return false;
+      if (type === tokens.LBracket) depth++;
+      else if (type === tokens.RBracket) depth--;
+      else if (depth === 0) {
+        if (type === tokens.LParen || type === tokens.Assign) return false;
+        if (type === tokens.RefAssign) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * A call and its selectors written to or referenced (`F().a := v`, `REF(F().a)`), as in
+   * primaryExpression. Kept apart from it so `:=` does not join what may
+   * follow an expression, which error recovery uses.
+   */
+  public callResultTarget = this.RULE("callResultTarget", () => {
+    this.OR([
+      {
+        GATE: (): boolean => this.isMemberChainCallAhead(),
+        ALT: (): CstNode => this.SUBRULE(this.memberChainCall),
+      },
+      {
+        GATE: (): boolean => this.isMethodCallAhead(),
+        ALT: (): CstNode => this.SUBRULE(this.methodCall),
+      },
+      { ALT: (): CstNode => this.SUBRULE(this.functionCall) },
+    ]);
+    this.MANY(() => this.SUBRULE(this.callResultSelector));
+  });
 
   /**
    * REF= assignment statement (bind REFERENCE_TO to a variable)
@@ -2252,7 +2364,10 @@ export class STParser extends CstParser {
           GATE: () => this.LA(1).tokenType === tokens.__NEW,
         },
         {
-          ALT: () => this.SUBRULE(this.memberChainCall),
+          ALT: (): void => {
+            this.SUBRULE(this.memberChainCall);
+            this.MANY(() => this.SUBRULE(this.callResultSelector));
+          },
           GATE: () => this.isMemberChainCallAhead(),
         },
         {
@@ -2264,7 +2379,10 @@ export class STParser extends CstParser {
           GATE: () => this.isSuperAhead(),
         },
         {
-          ALT: () => this.SUBRULE(this.methodCall),
+          ALT: (): void => {
+            this.SUBRULE(this.methodCall);
+            this.MANY2(() => this.SUBRULE2(this.callResultSelector));
+          },
           GATE: () => this.isMethodCallAhead(),
         },
         {
@@ -2280,7 +2398,12 @@ export class STParser extends CstParser {
         },
         // functionCall and variable both start with Identifier;
         // functionCall needs Ident( lookahead to disambiguate
-        { ALT: () => this.SUBRULE(this.functionCall) },
+        {
+          ALT: (): void => {
+            this.SUBRULE(this.functionCall);
+            this.MANY3(() => this.SUBRULE3(this.callResultSelector));
+          },
+        },
         { ALT: () => this.SUBRULE(this.variable) },
         {
           ALT: () => {
@@ -2308,10 +2431,19 @@ export class STParser extends CstParser {
     });
     this.CONSUME(tokens.RParen);
     // Method chaining: .method2(args).method3(args)...
-    this.MANY(() => {
-      this.SUBRULE(this.chainedMethodCall);
+    this.MANY({
+      GATE: () => this.isChainedMethodCallAhead(),
+      DEF: () => this.SUBRULE(this.chainedMethodCall),
     });
   });
+
+  /** `.name(` follows: a chained method call, not a member of a call result. */
+  private isChainedMethodCallAhead(): boolean {
+    return (
+      this.LA(1).tokenType === tokens.Dot &&
+      this.LA(3).tokenType === tokens.LParen
+    );
+  }
 
   /**
    * Chained method call: .methodName(args)
@@ -2325,6 +2457,46 @@ export class STParser extends CstParser {
       this.SUBRULE(this.argumentList);
     });
     this.CONSUME(tokens.RParen);
+  });
+
+  /**
+   * A selector after a call in an expression: `.M(args)`, `.member`, `.0` or
+   * `[i, j]`. Member and subscript need the feature call_result_access (checked
+   * in the analyzer); `.M(args)` is a chained method call.
+   */
+  public callResultSelector = this.RULE("callResultSelector", () => {
+    this.OR({
+      DEF: [
+        {
+          GATE: (): boolean => this.LA(1).tokenType === tokens.LBracket,
+          ALT: (): void => {
+            this.CONSUME(tokens.LBracket);
+            this.AT_LEAST_ONE_SEP({
+              SEP: tokens.Comma,
+              DEF: () => this.SUBRULE(this.expression),
+            });
+            this.CONSUME(tokens.RBracket);
+          },
+        },
+        {
+          GATE: (): boolean => this.isChainedMethodCallAhead(),
+          ALT: (): CstNode => this.SUBRULE(this.chainedMethodCall),
+        },
+        {
+          ALT: (): void => {
+            this.CONSUME(tokens.Dot);
+            this.OR2({
+              DEF: [
+                { ALT: (): CstNode => this.SUBRULE(this.identifierOrKeyword) },
+                { ALT: (): IToken => this.CONSUME(tokens.IntegerLiteral) },
+              ],
+              IGNORE_AMBIGUITIES: true,
+            });
+          },
+        },
+      ],
+      IGNORE_AMBIGUITIES: true,
+    });
   });
 
   /**
@@ -2414,9 +2586,39 @@ export class STParser extends CstParser {
   public refExpression = this.RULE("refExpression", () => {
     this.CONSUME(tokens.REF);
     this.CONSUME(tokens.LParen);
-    this.SUBRULE(this.variable);
+    this.OR([
+      {
+        // `REF(F().a)`: parsed so the type checker refuses it (a temporary).
+        GATE: (): boolean => this.isCallResultOperandAhead(),
+        ALT: (): CstNode => this.SUBRULE(this.callResultTarget),
+      },
+      { ALT: () => this.SUBRULE(this.variable) },
+    ]);
     this.CONSUME(tokens.RParen);
   });
+
+  /** A call followed by `.` or `[` before the `)` that closes this operand. */
+  private isCallResultOperandAhead(): boolean {
+    if (this.LA(1).tokenType !== tokens.Identifier) return false;
+    let depth = 0;
+    let callClosed = false;
+    for (let i = 1; i <= 200; i++) {
+      const type = this.LA(i).tokenType;
+      if (type === EOF) return false;
+      if (type === tokens.LParen || type === tokens.LBracket) {
+        if (depth === 0 && type === tokens.LBracket && callClosed) return true;
+        depth++;
+      } else if (type === tokens.RParen || type === tokens.RBracket) {
+        if (depth === 0) return false;
+        depth--;
+        callClosed = depth === 0 && type === tokens.RParen;
+      } else if (depth === 0) {
+        if (callClosed && type === tokens.Dot) return true;
+        callClosed = false;
+      }
+    }
+    return false;
+  }
 
   /**
    * DREF(expression) expression - dereference a reference

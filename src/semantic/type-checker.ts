@@ -22,6 +22,7 @@ import type {
   UnaryExpression,
   LiteralExpression,
   VariableExpression,
+  CallResultAccessExpression,
   FunctionCallExpression,
   MethodCallExpression,
   Argument,
@@ -813,11 +814,15 @@ export class TypeChecker {
     this.misalignedReported.clear();
     this.ast = ast;
     this.writeTargets = new Set();
+    this.referenceSources = new Set();
     walkAST(ast, (node) => {
       if (node.kind === "AssignmentStatement") {
         this.writeTargets.add((node as AssignmentStatement).target);
       } else if (node.kind === "RefAssignStatement") {
         this.writeTargets.add((node as RefAssignStatement).target);
+        this.referenceSources.add((node as RefAssignStatement).source);
+      } else if (node.kind === "RefExpression") {
+        this.referenceSources.add((node as RefExpression).operand);
       } else if (node.kind === "Argument" && (node as Argument).isOutput) {
         this.writeTargets.add((node as Argument).value);
       }
@@ -1430,6 +1435,9 @@ export class TypeChecker {
   /** Assignment and REF= targets and `=>` output targets of the unit: the access paths that write. */
   private writeTargets = new Set<Expression>();
 
+  /** The sources of the unit's `REF=` statements and the operands of its `REF()`. */
+  private referenceSources = new Set<Expression>();
+
   /** Unknown-member reports already made, so an expression visited twice reports once. */
   private unknownMemberReported = new Set<string>();
 
@@ -1442,8 +1450,10 @@ export class TypeChecker {
   private reportUnknownMember(
     ownerName: string,
     name: string,
-    expr: VariableExpression,
+    expr: VariableExpression | CallResultAccessExpression,
     scope: Scope,
+    /** On a call result: `name` is its last selector. */
+    lastOfCallResult = false,
   ): void {
     if (!this.ast || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return;
     const memberUpper = name.toUpperCase();
@@ -1455,7 +1465,12 @@ export class TypeChecker {
       // `w.C_BIT`: a bit selected by a named constant, not a member.
       const sym = scope.lookup(name);
       if (sym?.kind === "constant" || sym?.kind === "variable") {
-        const last = expr.fieldAccess[expr.fieldAccess.length - 1];
+        const last =
+          expr.kind === "VariableExpression"
+            ? expr.fieldAccess[expr.fieldAccess.length - 1]
+            : lastOfCallResult
+              ? name
+              : undefined;
         if (
           getBitAccessWidth(canonicalElementaryName(upper)) !== undefined &&
           last?.toUpperCase() === memberUpper
@@ -1799,6 +1814,8 @@ export class TypeChecker {
         return this.inferFunctionCallType(expr, scope);
       case "MethodCallExpression":
         return this.inferMethodCallType(expr, scope);
+      case "CallResultAccessExpression":
+        return this.inferCallResultAccessType(expr, scope);
       case "ParenthesizedExpression": {
         const inner = this.inferType(expr.expression, scope);
         if (inner) expr.resolvedType = inner;
@@ -2149,6 +2166,171 @@ export class TypeChecker {
       expr.resolvedType = currentType;
     }
     return currentType;
+  }
+
+  /**
+   * `F(1).n`, `fb.M()[2].a` (feature call_result_access): walk the selectors
+   * from the call's result type. A member the type does not have is reported
+   * as on a variable; a selector on a result that is not a STRUCT, function
+   * block, elementary value (bit access) or ARRAY is refused.
+   */
+  private inferCallResultAccessType(
+    expr: CallResultAccessExpression,
+    scope: Scope,
+  ): IECType | undefined {
+    const callType =
+      this.resolveExprType(expr.call, scope) ??
+      this.dottedCallResultType(expr.call, scope);
+    for (const step of expr.accessChain) {
+      if (step.kind !== "subscript") continue;
+      for (const idx of step.indices) {
+        this.resolveExprType(idx, scope);
+        this.refuseEnumIndex(idx);
+      }
+    }
+    const written = this.writeTargets.has(expr);
+    if (written || this.referenceSources.has(expr)) {
+      const span = expr.selectorSpan;
+      this.addError(
+        `A call result cannot ${written ? "be written" : "be bound to a reference"}: it is a temporary value; assign the result to a variable first`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+      return undefined;
+    }
+    if (callType === undefined || !this.ast) return undefined;
+    let currentType: IECType | undefined = callType;
+    let currentTypeName: string | undefined =
+      callType.typeKind === "elementary" ||
+      callType.typeKind === "struct" ||
+      callType.typeKind === "functionBlock"
+        ? typeNameUtil(callType)
+        : undefined;
+    const needs = {
+      subscript: "An array index on a call result needs an ARRAY",
+      field: "Member access on a call result needs a STRUCT or FUNCTION_BLOCK",
+      bit: "A bit access on a call result needs a bit string",
+    };
+    const refuse = (what: keyof typeof needs, typeName: string): undefined => {
+      const span = expr.selectorSpan;
+      this.addError(
+        `${needs[what]}, not ${typeName}; assign the result to a variable first`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+      return undefined;
+    };
+    if (this.callReturnsAddress(expr.call)) {
+      const first = expr.accessChain[0];
+      return refuse(
+        first?.kind === "subscript" ? "subscript" : "field",
+        "a REFERENCE TO or POINTER TO",
+      );
+    }
+    const steps = expr.accessChain;
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i]!;
+      if (currentTypeName === undefined) {
+        return currentType === undefined
+          ? undefined
+          : refuse(
+              step.kind === "subscript" ? "subscript" : "field",
+              typeNameUtil(currentType),
+            );
+      }
+      if (step.kind === "subscript") {
+        const elemType = resolveArrayElementType(currentTypeName, this.ast);
+        if (elemType === undefined) {
+          return refuse("subscript", currentTypeName);
+        }
+        currentTypeName = elemType;
+        currentType = this.resolveNamedType(elemType);
+        continue;
+      }
+      if (step.kind !== "field") return undefined;
+      if (/^\d+$/.test(step.name)) {
+        const bits = getBitAccessWidth(
+          canonicalElementaryName(this.aliasBase(currentTypeName)),
+        );
+        if (bits === undefined) return refuse("bit", currentTypeName);
+        currentType = ELEMENTARY_TYPES["BOOL"];
+        currentTypeName = "BOOL";
+        continue;
+      }
+      const fieldType = this.resolveFieldTypeAnywhere(
+        currentTypeName,
+        step.name,
+      );
+      this.refuseInternalMember(currentTypeName, step.name, expr);
+      if (fieldType === undefined) {
+        this.reportUnknownMember(
+          currentTypeName,
+          step.name,
+          expr,
+          scope,
+          i === steps.length - 1,
+        );
+        if (expr.namedBitIndex === true) {
+          currentType = ELEMENTARY_TYPES["BOOL"];
+          currentTypeName = "BOOL";
+          continue;
+        }
+        return undefined;
+      }
+      currentTypeName = fieldType;
+      currentType = this.resolveNamedType(fieldType);
+    }
+    if (currentType) expr.resolvedType = currentType;
+    return currentType;
+  }
+
+  /** The result type of `inst.M(...)` written as a dotted call, which the call's own inference leaves unset. */
+  private dottedCallResultType(
+    call: FunctionCallExpression | MethodCallExpression,
+    scope: Scope,
+  ): IECType | undefined {
+    if (call.kind !== "FunctionCallExpression" || call.instance !== undefined) {
+      return undefined;
+    }
+    const method = this.dottedMethod(call.functionName, scope);
+    const type = method ? this.methodReturnType(method) : undefined;
+    if (type) call.resolvedType = type;
+    return type;
+  }
+
+  /**
+   * The call's declared result is a REFERENCE TO, REF_TO or POINTER TO. A
+   * method is matched by name: any method of that name returning one counts.
+   */
+  private callReturnsAddress(
+    call: FunctionCallExpression | MethodCallExpression,
+  ): boolean {
+    const isAddress = (type: TypeReference | undefined): boolean =>
+      type !== undefined && type.referenceKind !== "none";
+    if (
+      call.kind === "FunctionCallExpression" &&
+      !call.functionName.includes(".") &&
+      call.instance === undefined
+    ) {
+      return isAddress(
+        this.symbolTables.lookupFunction(call.functionName)?.declaration
+          .returnType,
+      );
+    }
+    const name = (
+      call.kind === "MethodCallExpression"
+        ? call.methodName
+        : (call.functionName.split(".").pop() ?? "")
+    ).toUpperCase();
+    const ast = this.ast;
+    if (!ast) return false;
+    return [
+      ...ast.functionBlocks.flatMap((f) => f.methods),
+      ...ast.programs.flatMap((p) => p.methods),
+      ...ast.interfaces.flatMap((i) => i.methods),
+    ].some((m) => m.name.toUpperCase() === name && isAddress(m.returnType));
   }
 
   /** Variables already checked by refuseReferenceToCaret. */
