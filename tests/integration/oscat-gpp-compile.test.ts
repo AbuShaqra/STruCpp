@@ -24,7 +24,6 @@ import {
   hasGpp,
   createPCH,
   RUNTIME_INCLUDE_PATH,
-  TEST_RUNTIME_PATH,
   cxxEnv,
   CXX_STD,
 } from "./test-helpers.js";
@@ -186,7 +185,6 @@ describe.skipIf(!hasGpp || !oscatStlibAvailable)(
           `-std=${CXX_STD}`,
           `-include "${pchPath}"`,
           `-I"${RUNTIME_INCLUDE_PATH}"`,
-          `-I"${TEST_RUNTIME_PATH}"`,
           `-I"${tempDir}"`,
           `"${testMainPath}"`,
           `"${cppPath}"`,

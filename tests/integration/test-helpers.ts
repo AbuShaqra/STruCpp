@@ -241,9 +241,6 @@ export function precompileIsocline(tempDir: string): string {
 // End-to-end test pipeline for test runner integration tests
 // ============================================================================
 
-/** Resolved path to the test runtime headers (iec_test.hpp) */
-export const TEST_RUNTIME_PATH = path.resolve(__dirname, '../../src/runtime/test');
-
 export interface RunE2ETestPipelineOptions {
   sourceST: string;
   testST: string;
@@ -324,7 +321,6 @@ export function runE2ETestPipeline(
       'g++',
       `-std=${CXX_STD}`,
       `-I${RUNTIME_INCLUDE_PATH}`,
-      `-I${TEST_RUNTIME_PATH}`,
       `-I${tempDir}`,
       path.join(tempDir, 'test_main.cpp'),
       path.join(tempDir, 'generated.cpp'),

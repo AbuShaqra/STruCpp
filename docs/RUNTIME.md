@@ -511,6 +511,7 @@ The interactive REPL binary uses [isocline](https://github.com/daanx/isocline) (
 | `iec_retain.hpp` | RETAIN variable tracking |
 | `iec_memory.hpp` | Dynamic allocation (__NEW/__DELETE) |
 | `iec_std_lib.hpp` | Standard function implementations |
+| `iec_test.hpp` | Test runtime for `--test` builds (assertion context, test runner, failure output); included only by the generated test main |
 
 ## Runtime Unit Tests (`runtime/tests/`)
 

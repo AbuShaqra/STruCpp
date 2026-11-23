@@ -75,11 +75,10 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p staging/strucpp/runtime/include staging/strucpp/runtime/repl staging/strucpp/runtime/test staging/strucpp/libs
+          mkdir -p staging/strucpp/runtime/include staging/strucpp/runtime/repl staging/strucpp/libs
           cp dist/bin/strucpp staging/strucpp/
           cp src/runtime/include/*.hpp staging/strucpp/runtime/include/
           cp src/runtime/repl/* staging/strucpp/runtime/repl/
-          cp src/runtime/test/* staging/strucpp/runtime/test/
           cp libs/*.stlib staging/strucpp/libs/
           cp LICENSE COPYING COPYING.RUNTIME staging/strucpp/ 2>/dev/null || true
           tar -czf strucpp-linux-x64.tar.gz -C staging strucpp
@@ -127,11 +126,10 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p staging/strucpp/runtime/include staging/strucpp/runtime/repl staging/strucpp/runtime/test staging/strucpp/libs
+          mkdir -p staging/strucpp/runtime/include staging/strucpp/runtime/repl staging/strucpp/libs
           cp dist/bin/strucpp staging/strucpp/
           cp src/runtime/include/*.hpp staging/strucpp/runtime/include/
           cp src/runtime/repl/* staging/strucpp/runtime/repl/
-          cp src/runtime/test/* staging/strucpp/runtime/test/
           cp libs/*.stlib staging/strucpp/libs/
           cp LICENSE COPYING COPYING.RUNTIME staging/strucpp/ 2>/dev/null || true
           tar -czf strucpp-linux-arm64.tar.gz -C staging strucpp
@@ -179,11 +177,10 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p staging/strucpp/runtime/include staging/strucpp/runtime/repl staging/strucpp/runtime/test staging/strucpp/libs
+          mkdir -p staging/strucpp/runtime/include staging/strucpp/runtime/repl staging/strucpp/libs
           cp dist/bin/strucpp staging/strucpp/
           cp src/runtime/include/*.hpp staging/strucpp/runtime/include/
           cp src/runtime/repl/* staging/strucpp/runtime/repl/
-          cp src/runtime/test/* staging/strucpp/runtime/test/
           cp libs/*.stlib staging/strucpp/libs/
           cp LICENSE COPYING COPYING.RUNTIME staging/strucpp/ 2>/dev/null || true
           cd staging && zip -r ../strucpp-darwin-x64.zip strucpp
@@ -231,11 +228,10 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p staging/strucpp/runtime/include staging/strucpp/runtime/repl staging/strucpp/runtime/test staging/strucpp/libs
+          mkdir -p staging/strucpp/runtime/include staging/strucpp/runtime/repl staging/strucpp/libs
           cp dist/bin/strucpp staging/strucpp/
           cp src/runtime/include/*.hpp staging/strucpp/runtime/include/
           cp src/runtime/repl/* staging/strucpp/runtime/repl/
-          cp src/runtime/test/* staging/strucpp/runtime/test/
           cp libs/*.stlib staging/strucpp/libs/
           cp LICENSE COPYING COPYING.RUNTIME staging/strucpp/ 2>/dev/null || true
           cd staging && zip -r ../strucpp-darwin-arm64.zip strucpp
@@ -281,11 +277,10 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p staging/strucpp/runtime/include staging/strucpp/runtime/repl staging/strucpp/runtime/test staging/strucpp/libs
+          mkdir -p staging/strucpp/runtime/include staging/strucpp/runtime/repl staging/strucpp/libs
           cp dist/bin/strucpp.exe staging/strucpp/
           cp src/runtime/include/*.hpp staging/strucpp/runtime/include/
           cp src/runtime/repl/* staging/strucpp/runtime/repl/
-          cp src/runtime/test/* staging/strucpp/runtime/test/
           cp libs/*.stlib staging/strucpp/libs/
           cp LICENSE COPYING COPYING.RUNTIME staging/strucpp/ 2>/dev/null || true
           cd staging && zip -r ../strucpp-win32-x64.zip strucpp

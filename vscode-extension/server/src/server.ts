@@ -897,7 +897,6 @@ connection.onRequest(RunTestsRequest, async (params: RunTestsParams): Promise<Ru
         errors: [{ message: "Could not locate runtime include directory", line: 0, column: 0, severity: "error" }],
       };
     }
-    const testRuntimeDir = path.resolve(path.dirname(runtimePaths.includeDir), "test");
 
     // 9. Compile with g++
     const binaryName = process.platform === "win32" ? "test_runner.exe" : "test_runner";
@@ -910,7 +909,6 @@ connection.onRequest(RunTestsRequest, async (params: RunTestsParams): Promise<Ru
         "-std=c++17",
         "-fno-strict-aliasing", // pointer punning is valid IEC
         `-I${runtimePaths.includeDir}`,
-        `-I${testRuntimeDir}`,
         `-I${tempDir}`,
         ...splitCxxFlags(cxxFlags),
         path.join(tempDir, "test_main.cpp"),
