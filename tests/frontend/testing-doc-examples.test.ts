@@ -22,6 +22,17 @@ describe("docs/TESTING.md examples", () => {
   it("has examples", () => {
     expect(examples.length).toBeGreaterThan(3);
   });
+  it("takes a TEST name in either quote form, as it says", () => {
+    expect(DOC).toContain("`TEST 'name'` or `TEST \"name\"`");
+    for (const name of ["'name'", '"name"']) {
+      const { testFile, errors } = parseTestFile(
+        `TEST ${name}\n  ASSERT_TRUE(TRUE);\nEND_TEST\n`,
+        "quotes.st",
+      );
+      expect(errors.map((e) => e.message)).toEqual([]);
+      expect(testFile?.testCases.map((t) => t.name)).toEqual(["name"]);
+    }
+  });
   for (const [i, block] of examples.entries()) {
     it(`parses example ${i + 1}`, () => {
       const { errors } = parseTestFile(block, `example${i + 1}.st`);

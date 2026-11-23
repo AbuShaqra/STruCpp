@@ -91,7 +91,7 @@ END_VAR
 END_TEST
 ```
 
-The test name is a string in single quotes (`TEST 'name'`); a double-quoted name is refused. Each TEST block is an isolated test case. Tests can declare local variables in a VAR block. Any ST statement is valid inside a test (assignments, function calls, FB invocations, control flow).
+The test name is a string in single or double quotes (`TEST 'name'` or `TEST "name"`); both name the test the same way. (Only the name takes either quote: an assertion message is single-quoted, see below.) Each TEST block is an isolated test case. Tests can declare local variables in a VAR block. Any ST statement is valid inside a test (assignments, function calls, FB invocations, control flow).
 
 `RETURN` ends a TEST there, and the test passes unless an assertion before it failed; this holds at the top
 level of the body and nested in an `IF`, `CASE` or loop. TEARDOWN still runs, with or without a SETUP. In SETUP or TEARDOWN a
