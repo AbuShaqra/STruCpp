@@ -545,3 +545,156 @@ END_TEST
     expect(testFileResult(SOURCE, TEST, { dialect: CHILD })).toEqual(clean);
   });
 });
+
+describe("iec-3 and --strict: underscores in numeric literals (Table 5)", () => {
+  const underscore = (spelling: string): string =>
+    `An underscore in a numeric literal must stand between two digits (IEC 61131-3 Ed. 3): '${spelling}'`;
+  /** A vendor-like profile: extends iec-3 and adds features, as TwinCAT or CODESYS does. */
+  const VENDOR: DialectProfile = {
+    id: "vendor-like",
+    name: "vendor-like",
+    extends: "iec-3",
+    features: ["pointer_to", "reference_to", "fb_property", "st_actions"],
+    semantics: {},
+  };
+  const source = (type: string, literal: string): string => `PROGRAM Main
+VAR x : ${type}; END_VAR
+x := ${literal};
+END_PROGRAM
+`;
+  const REFUSED: Array<[string, string]> = [
+    ["TIME", "T#_1s"],
+    ["TIME", "T#1__000ms"],
+    ["TIME", "T#1_ms"],
+    ["TIME", "T#_s"],
+    ["TIME", "T#1._5s"],
+    ["LTIME", "LT#1_ms"],
+    ["LTIME", "LTIME#-_1s"],
+    ["DINT", "1__0"],
+    ["DINT", "10_"],
+    ["DINT", "16#_FF"],
+    ["DINT", "16#FF_"],
+    ["DINT", "2#1__0"],
+    ["INT", "INT#5_"],
+    ["INT", "INT#16#_F"],
+    ["REAL", "REAL#1_.5"],
+    ["CHAR", "CHAR#16#_41"],
+    ["CHAR", "CHAR#6_5_"],
+  ];
+  const ACCEPTED: Array<[string, string]> = [
+    ["DINT", "1_000"],
+    ["DINT", "16#FF_FF"],
+    ["DINT", "2#1010_1010"],
+    ["INT", "INT#-1_0"],
+    ["INT", "INT#16#F_F"],
+    ["REAL", "REAL#1_0.5"],
+    ["TIME", "T#1d_2h"],
+    ["TIME", "T#1s_500ms"],
+    ["TIME", "T#1_000ms"],
+    ["TIME", "T#1.5_0s"],
+    ["LTIME", "LTIME#1d_2h_3m"],
+    ["CHAR", "CHAR#6_5"],
+    ["CHAR", "CHAR#'_'"],
+  ];
+
+  for (const [type, literal] of REFUSED) {
+    it(`refuses ${literal} under iec-3 and --strict, accepts it otherwise`, () => {
+      const src = source(type, literal);
+      const error = [`3:6: ${underscore(literal)}`];
+      expect(errorsOf(src, IEC3)).toEqual(error);
+      expect(errorsOf(src, { strict: true })).toEqual(error);
+      expect(errorsOf(src, { dialect: VENDOR, strict: true })).toEqual(error);
+      expect(errorsOf(src, {})).toEqual([]);
+      expect(errorsOf(src, { dialect: VENDOR })).toEqual([]);
+      expect(errorsOf(src, { dialect: CHILD })).toEqual([]);
+    });
+  }
+
+  for (const [type, literal] of ACCEPTED) {
+    it(`accepts ${literal} in every mode`, () => {
+      const src = source(type, literal);
+      for (const opts of [IEC3, { strict: true }, {}, { dialect: VENDOR }]) {
+        expect(errorsOf(src, opts)).toEqual([]);
+      }
+    });
+  }
+
+  it("checks STRING[...] and STRING(...) lengths, ARRAY bounds and CASE labels", () => {
+    const src = `PROGRAM Main
+VAR s : STRING[1__0]; w : WSTRING(2_0_); a : ARRAY[0..1__0] OF INT; ok : STRING[1_0]; i : INT; END_VAR
+CASE i OF 1__2: i := 0; END_CASE;
+END_PROGRAM
+`;
+    const errors = [
+      `2:16: ${underscore("1__0")}`,
+      `2:35: ${underscore("2_0_")}`,
+      `2:55: ${underscore("1__0")}`,
+      `3:11: ${underscore("1__2")}`,
+    ];
+    expect(errorsOf(src, IEC3)).toEqual(errors);
+    expect(errorsOf(src, { strict: true })).toEqual(errors);
+    expect(errorsOf(src, {})).toEqual([]);
+    expect(errorsOf(src, { dialect: VENDOR })).toEqual([]);
+  });
+
+  it("reports the literal as written, in each file, with analyze() too", () => {
+    const opts: Partial<CompileOptions> = {
+      ...IEC3,
+      fileName: "a.st",
+      additionalSources: [
+        {
+          fileName: "b.st",
+          source: `FUNCTION F : TIME\nF := t#1_Ms;\nEND_FUNCTION\n`,
+        },
+      ],
+    };
+    const src = `PROGRAM Main\nVAR x : DINT := 16#ff_; END_VAR\nEND_PROGRAM\n`;
+    const located = (d: {
+      file?: string;
+      line: number;
+      column: number;
+      message: string;
+    }): string => `${d.file}:${at(d)}`;
+    const expected = [
+      `a.st:2:17: ${underscore("16#ff_")}`,
+      `b.st:2:6: ${underscore("t#1_Ms")}`,
+    ];
+    expect(compile(src, opts).errors.map(located)).toEqual(expected);
+    expect(analyze(src, opts).errors.map(located)).toEqual(expected);
+  });
+
+  it("ignores underscores in comments and strings", () => {
+    const src = `PROGRAM Main
+VAR s : STRING; END_VAR
+(* 1__0 T#_1s *) // 10_
+s := '1__0 T#_s';
+END_PROGRAM
+`;
+    expect(errorsOf(src, IEC3)).toEqual([]);
+    expect(errorsOf(src, { strict: true })).toEqual([]);
+  });
+
+  it("checks test files under iec-3", () => {
+    const SOURCE = `PROGRAM Main
+VAR x : INT; END_VAR
+x := 1;
+END_PROGRAM
+`;
+    const TEST = `TEST 'u'
+VAR t : TIME := T#1_ms; d : DINT; END_VAR
+d := 10_;
+ASSERT_EQ(d, 1_0);
+END_TEST
+`;
+    // A test file's AST holds the literal upper-cased, as its names.
+    const errors = [
+      `2:17: ${underscore("T#1_MS")}`,
+      `3:6: ${underscore("10_")}`,
+    ];
+    expect(testFileResult(SOURCE, TEST, IEC3).errors).toEqual(errors);
+    expect(testFileResult(SOURCE, TEST, {}).errors).toEqual([]);
+    expect(testFileResult(SOURCE, TEST, { dialect: VENDOR }).errors).toEqual(
+      [],
+    );
+  });
+});

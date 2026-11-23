@@ -237,6 +237,8 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
   integer operands the result is the integer in every mode, so `IF i AND 1 THEN`, `WHILE i AND 8 DO`,
   `UNTIL j AND 8` and `SEL(i AND 1, a, b)` are errors with or without `--strict`
   ([DIALECTS.md](DIALECTS.md#bitwise-operators-on-integers));
+- an underscore in a numeric literal that does not stand between two digits (`1__0`, `10_`, `T#1_ms`,
+  `STRING[1__0]`; Ed. 3 Table 5; also refused under `--dialect iec-3`, see DIALECTS.md);
 - the reserved names ON, STEP and MOVE for a variable, POU, method, type, field, enum value,
   configuration, resource, task or program instance (a FUNCTION may still be named MOVE);
 - a FOR loop with no statement in its body (an empty statement, `DO ; END_FOR`, is a
