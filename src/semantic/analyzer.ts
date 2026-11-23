@@ -6934,6 +6934,9 @@ export class SemanticAnalyzer {
         case "AssertCall":
           this.checkAssertCall(stmt, scope, ctx);
           break;
+        case "AdvanceTimeStatement":
+          this.checkExpressionForUndeclaredVars(stmt.duration, scope, ctx);
+          break;
         case "ForStatement":
           this.checkNameDeclared(
             stmt.controlVariable,

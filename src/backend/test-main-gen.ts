@@ -18,7 +18,6 @@ import type {
   TestCase,
   TestStatement,
   AssertCall,
-  AdvanceTimeStatement,
   SetupBlock,
   TeardownBlock,
   MockFBStatement,
@@ -686,9 +685,6 @@ class TestFunctionGenerator {
       case "AssertCall":
         this.generateAssertCall(lines, stmt);
         break;
-      case "AdvanceTimeStatement":
-        this.generateAdvanceTime(lines, stmt);
-        break;
       case "MockFBStatement":
         this.generateMockFB(lines, stmt);
         break;
@@ -724,16 +720,6 @@ class TestFunctionGenerator {
         lines.push(...this.testCodegen.getOutput());
         break;
     }
-  }
-
-  private generateAdvanceTime(
-    lines: string[],
-    stmt: AdvanceTimeStatement,
-  ): void {
-    const durationExpr = this.testCodegen.emitExpression(stmt.duration);
-    lines.push(
-      `${this.indent}strucpp::__CURRENT_TIME_NS += strucpp::iec_duration_ns(${durationExpr});`,
-    );
   }
 
   // ===========================================================================
