@@ -37,6 +37,50 @@ export function isComparisonExpr(expr: Expression): boolean {
   return expr.kind === "BinaryExpression" && isComparison(expr.operator);
 }
 
+/**
+ * True when `expr` yields a BOOL: a comparison, a BOOL literal, NOT of a BOOL,
+ * AND/OR/XOR of two BOOLs, or anything `baseType` names BOOL. Parentheses are
+ * looked through. Used where the C++ form must stay a `bool`.
+ */
+export function isBoolValued(
+  expr: Expression,
+  baseType: (e: Expression) => string | undefined,
+): boolean {
+  switch (expr.kind) {
+    case "ParenthesizedExpression":
+      return isBoolValued(expr.expression, baseType);
+    case "LiteralExpression":
+      if (expr.literalType === "BOOL") return true;
+      break;
+    case "UnaryExpression":
+      if (expr.operator === "NOT") return isBoolValued(expr.operand, baseType);
+      break;
+    case "BinaryExpression":
+      if (isComparison(expr.operator)) return true;
+      if (isBoolLogic(expr, baseType)) return true;
+      break;
+  }
+  return baseType(expr) === "BOOL";
+}
+
+/**
+ * True for AND, OR or XOR of two BOOL operands. C++ promotes `bool & bool`
+ * to an int, so its C++ form is cast back to `bool`.
+ */
+export function isBoolLogic(
+  expr: Expression,
+  baseType: (e: Expression) => string | undefined,
+): boolean {
+  return (
+    expr.kind === "BinaryExpression" &&
+    (expr.operator === "AND" ||
+      expr.operator === "OR" ||
+      expr.operator === "XOR") &&
+    isBoolValued(expr.left, baseType) &&
+    isBoolValued(expr.right, baseType)
+  );
+}
+
 /** True for an integer literal other than 0 and -1, such as the `7` of `x MOD 7`. */
 export function isNonZeroIntegerLiteral(expr: Expression): boolean {
   return (

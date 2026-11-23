@@ -445,7 +445,7 @@ describe("Phase 3.2: WHILE Statement Code Generation", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("while (((X < 10)) & ((Y > 0))) {");
+    expect(result.cppCode).toContain("while (static_cast<bool>(((X < 10)) & ((Y > 0)))) {");
     expect(result.cppCode).toContain("X = strucpp::iec_add<DINT_t>({X, 1});");
     expect(result.cppCode).toContain("Y = strucpp::iec_sub<DINT_t>({Y, 1});");
   });
@@ -638,7 +638,7 @@ describe("Phase 3.2: Complex Control Flow", () => {
       END_FUNCTION_BLOCK
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("if ((ENABLE) & (!PREV)) {");
+    expect(result.cppCode).toContain("if (static_cast<bool>((ENABLE) & (!PREV))) {");
     expect(result.cppCode).toContain("COUNT = strucpp::iec_add<DINT_t>({COUNT, 1});");
     expect(result.cppCode).toContain("PREV = ENABLE;");
   });
@@ -726,7 +726,7 @@ describe("Bitwise AND/OR/XOR Code Generation", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("(A == 1) | (B == 2)");
+    expect(result.cppCode).toContain("static_cast<bool>((A == 1) | (B == 2))");
   });
 });
 

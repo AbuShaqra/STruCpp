@@ -104,6 +104,7 @@ import {
   formatIntegerLiteral,
   iecBaseToCppLiteral,
   isComparison,
+  isBoolLogic,
   isComparisonExpr,
   stringComparisonCpp,
   parenthesizedCpp,
@@ -7361,10 +7362,10 @@ export class CodeGenerator {
       for (let i = 0; i < expr.fieldAccess.length; i++) {
         const field = expr.fieldAccess[i]!;
         const isLast = i === expr.fieldAccess.length - 1;
-        // Bit access: numeric field like .0, .15, .31 → ((var >> N) & 1)
+        // Bit access: numeric field like .0, .15, .31 → a bool, so NOT() negates it
         const bit = this.bitIndexCode(field, isLast && expr.namedBitIndex);
         if (bit !== undefined) {
-          result = `((static_cast<uint64_t>(${result}) >> ${bit}) & 1)`;
+          result = `static_cast<bool>((static_cast<uint64_t>(${result}) >> ${bit}) & 1)`;
           continue;
         }
         if (isLast) {
@@ -7465,10 +7466,10 @@ export class CodeGenerator {
 
       switch (step.kind) {
         case "field": {
-          // Bit access: numeric field like .0, .15, .31
+          // Bit access: numeric field like .0, .15, .31, read as a bool
           const bit = this.bitIndexCode(step.name, isLast && namedBit);
           if (bit !== undefined) {
-            result = `((static_cast<uint64_t>(${result}) >> ${bit}) & 1)`;
+            result = `static_cast<bool>((static_cast<uint64_t>(${result}) >> ${bit}) & 1)`;
             continue;
           }
           // Property access on the last step
@@ -7612,6 +7613,10 @@ export class CodeGenerator {
       if (expr.computeAs !== undefined) {
         const t = `${expr.computeAs}_t`;
         return `static_cast<${t}>(${left}) ${cppOp} static_cast<${t}>(${right})`;
+      }
+      // BOOL operands: C++ gives `bool & bool` an int, which NOT() rejects
+      if (isBoolLogic(expr, (e) => this.baseTypeName(e))) {
+        return `static_cast<bool>((${left}) ${cppOp} (${right}))`;
       }
       return `(${left}) ${cppOp} (${right})`;
     }
