@@ -140,6 +140,8 @@ import { implicitParameterHint } from "./implicit-parameters.js";
 import {
   iec3VarBlockIdentifierErrors,
   iec3Warnings,
+  literalUnderscoreMessage,
+  literalUnderscoreRefused,
   userTruncCalls,
 } from "./iec3-rules.js";
 import {
@@ -6953,6 +6955,9 @@ export class SemanticAnalyzer {
         case "AssertCall":
           this.checkAssertCall(stmt, scope, ctx);
           break;
+        case "AdvanceTimeStatement":
+          this.checkExpressionForUndeclaredVars(stmt.duration, scope, ctx);
+          break;
         case "ForStatement":
           this.checkNameDeclared(
             stmt.controlVariable,
@@ -7636,6 +7641,29 @@ export class SemanticAnalyzer {
           () => sourceAst !== undefined && declaresTrunc(sourceAst),
         ),
       );
+    }
+    // Under iec-3 or --strict: an underscore in a numeric literal stands between two digits
+    if (this.iec3Rules || this.options.strict === true) {
+      for (const root of testRoots) {
+        walkAST(root, (node) => {
+          if (node.kind !== "LiteralExpression") return;
+          const lit = node as LiteralExpression;
+          if (
+            lit.literalType === "STRING" ||
+            lit.literalType === "WSTRING" ||
+            !literalUnderscoreRefused(lit.rawValue)
+          ) {
+            return;
+          }
+          const at = node.sourceSpan;
+          this.addError(
+            literalUnderscoreMessage(lit.rawValue),
+            at.startLine,
+            at.startCol,
+            at.file,
+          );
+        });
+      }
     }
     // TIME, DATE, TOD and DT literals fit their 32-bit types
     for (const root of testRoots) {

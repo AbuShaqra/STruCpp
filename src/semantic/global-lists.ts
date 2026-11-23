@@ -345,6 +345,9 @@ export class GlobalListResolver {
       case "AssertCall":
         stmt.args = stmt.args.map(ex);
         break;
+      case "AdvanceTimeStatement":
+        stmt.duration = ex(stmt.duration);
+        break;
       default:
         break;
     }

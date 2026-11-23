@@ -196,6 +196,21 @@ generates (`__NEW`, `__DELETE`, `__ISVALIDREF`, `__POUNAME`, `__POSITION`, `__XW
 and names beginning `__INLINE_`, `__VLA_` or `__IL_`) and the names a library declares, which are not
 checked when a program uses them.
 
+**Underscores in numeric literals** (Ed. 3, Table 5; Table 8 for durations). Under `--dialect iec-3`, and
+under `--strict` in any dialect (as the AND, OR, XOR and NOT refusals above), an underscore in a numeric
+literal must stand between two digits of its base. A leading, trailing or doubled underscore, or one next to
+the decimal point, a sign, the `#` of a based or typed prefix or a duration unit, is an error at the literal,
+spelled as written: `An underscore in a numeric literal must stand between two digits (IEC 61131-3 Ed. 3):
+'T#1_ms'`. It covers integer, real and based literals, typed ones (`INT#16#_F`, `CHAR#16#_41`,
+`CHAR#6_5_`), durations (`T#_1s`, `T#1__000ms`, `T#1_ms`, `T#_s`, `T#1._5s`, also `LT#` and `LTIME#`) and
+every place a literal is written, a `STRING[1__0]` or `STRING(1__0)` length, an ARRAY bound and a CASE label
+included. A duration may put one between a unit and the next number, as Table 8 does (`T#1d_2h`,
+`T#1s_500ms`). Still valid everywhere: `1_000`, `16#FF_FF`, `2#1010_1010`, `REAL#1_0.5`, `CHAR#16#4_1`,
+`STRING[1_0]`. With no dialect flag and under a profile that extends `iec-3` without `--strict` (a vendor
+profile), every such literal is accepted as before. In a `--test` file the literals of its SETUP, TEST and
+TEARDOWN blocks are checked under `--dialect iec-3`; `--strict` checks the sources of a `--test` run, not the
+test file.
+
 **Warnings.** Forms Ed. 3 deprecates or leaves to the implementer are accepted with a warning, one per
 occurrence:
 

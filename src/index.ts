@@ -70,6 +70,7 @@ import { annotateErrorsWithPouContext } from "./diagnostic-pou-context.js";
 import {
   iec3IdentifierErrors,
   iec3IlWarningMessage,
+  literalUnderscoreErrors,
   sourceNameLocator,
 } from "./semantic/iec3-rules.js";
 import {
@@ -610,7 +611,7 @@ function runPipeline(
   const mergedOptions = { ...defaultOptions, ...options };
   validateCompileOptions(mergedOptions);
   const errors: CompileError[] = [];
-  // Ed. 3 spelling errors: they stop code generation but not the later phases.
+  // Ed. 3 spelling and literal-underscore errors: they stop code generation but not the later phases.
   let spellingErrorCount = 0;
   const warnings: CompileError[] = [];
   let ast: CompilationUnit | undefined;
@@ -884,6 +885,18 @@ function runPipeline(
       );
       errors.push(...spelling);
       spellingErrorCount = spelling.length;
+    }
+    // Ed. 3 Table 5: an underscore in a numeric literal stands between two digits.
+    if (iec3Rules || mergedOptions.strict === true) {
+      for (const [file, text] of sourcesByFile) {
+        const literal = literalUnderscoreErrors(
+          text,
+          tokenize(text).tokens,
+          file,
+        );
+        errors.push(...literal);
+        spellingErrorCount += literal.length;
+      }
     }
     // Actions first, so lowerInlineTypes qualifies inline enum members in
     // action bodies as it does in the owner's methods.

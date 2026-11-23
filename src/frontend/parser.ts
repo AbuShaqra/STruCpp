@@ -1269,6 +1269,11 @@ export class STParser extends CstParser {
           GATE: () => this.isAssertAhead(),
         },
         {
+          // Test files only: the token is lexed there alone, so IF/loop bodies reach it
+          ALT: () => this.SUBRULE(this.advanceTimeStatement),
+          GATE: () => this.LA(1).tokenType === tokens.ADVANCE_TIME,
+        },
+        {
           // Empty statement (bare semicolon) — tolerates ELSE; and similar CODESYS patterns
           ALT: () => this.CONSUME2(tokens.Semicolon),
           GATE: () => this.LA(1).tokenType === tokens.Semicolon,

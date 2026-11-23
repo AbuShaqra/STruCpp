@@ -131,6 +131,18 @@ const ELEMENTARY_TYPE_NAMES = new Set([
   "WCHAR",
 ]);
 
+/**
+ * The long spellings of the date and time types (IEC 61131-3 Ed. 3, Table 10)
+ * and the short name each is an alias of. A conversion to one is the
+ * conversion to its short form: same result type, same runtime function.
+ */
+const LONG_TEMPORAL_ALIASES: ReadonlyMap<string, string> = new Map([
+  ["TIME_OF_DAY", "TOD"],
+  ["LTIME_OF_DAY", "LTOD"],
+  ["DATE_AND_TIME", "DT"],
+  ["LDATE_AND_TIME", "LDT"],
+]);
+
 // =============================================================================
 // Registry Class
 // =============================================================================
@@ -221,7 +233,7 @@ export class StdFunctionRegistry {
     return {
       fromType,
       toType,
-      cppName: `TO_${toType}`,
+      cppName: `TO_${LONG_TEMPORAL_ALIASES.get(toType) ?? toType}`,
     };
   }
 
@@ -628,6 +640,22 @@ export class StdFunctionRegistry {
         returnConstraint: "specific",
         returnMatchesFirstParam: false,
         specificReturnType: target,
+        params: [{ name: "IN", constraint: "ANY", isByRef: false }],
+        isVariadic: false,
+        isConversion: true,
+        category: "conversion",
+      });
+    }
+
+    // TO_TIME_OF_DAY and the other long spellings (Table 22: TO_<type> for
+    // every elementary type name) are the short conversions under another name
+    for (const [long, short] of LONG_TEMPORAL_ALIASES) {
+      this.register({
+        name: `TO_${long}`,
+        cppName: `TO_${short}`,
+        returnConstraint: "specific",
+        returnMatchesFirstParam: false,
+        specificReturnType: short,
         params: [{ name: "IN", constraint: "ANY", isByRef: false }],
         isVariadic: false,
         isConversion: true,

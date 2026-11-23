@@ -2166,6 +2166,11 @@ export class ASTBuilder {
     if (children.assertCall) {
       return this.buildAssertCall(getFirstNode(children.assertCall)!);
     }
+    if (children.advanceTimeStatement) {
+      return this.buildAdvanceTimeStatement(
+        getFirstNode(children.advanceTimeStatement)!,
+      );
+    }
 
     return undefined;
   }

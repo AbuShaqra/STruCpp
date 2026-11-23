@@ -932,3 +932,69 @@ describe("declaration initializers in a TEST var block", () => {
     expect(code).toContain("IEC_INT K = 5;");
   });
 });
+
+describe("ADVANCE_TIME nested in IF and loops", () => {
+  /** Compile ST for its types, then generate a test main against a parsed .stst. */
+  function generateFor(testSource: string): string {
+    const compiled = compile(`
+      PROGRAM Main
+        VAR n : INT; END_VAR
+        n := n + 1;
+      END_PROGRAM
+    `);
+    expect(compiled.errors.map((e) => e.message)).toEqual([]);
+    const parsed = parseTestFile(testSource, "t.stst");
+    expect(parsed.errors).toEqual([]);
+    const { pous } = buildPOUInfoFromAST(compiled.ast!);
+    return generateTestMain([parsed.testFile!], {
+      headerFileName: "generated.hpp",
+      pous,
+      ast: compiled.ast!,
+      isTestBuild: true,
+    });
+  }
+
+  /** The C++ lines from the first line containing `from` up to the first containing `to`. */
+  function between(code: string, from: string, to: string): string {
+    const start = code.indexOf(from);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = code.indexOf(to, start);
+    expect(end).toBeGreaterThan(start);
+    return code.slice(start, end);
+  }
+
+  const ADVANCE = "strucpp::__CURRENT_TIME_NS += strucpp::iec_duration_ns(";
+
+  it("lowers ADVANCE_TIME inside a FOR body into the loop", () => {
+    // It used to be a parse error: only the TEST body's top level knew ADVANCE_TIME.
+    const code = generateFor(
+      `TEST 'for'\n  VAR i : INT; END_VAR\n  FOR i := 1 TO 3 DO\n    ADVANCE_TIME(T#100ms);\n  END_FOR;\nEND_TEST\n`,
+    );
+    expect(between(code, "for (", "return true;")).toContain(ADVANCE);
+  });
+
+  it("lowers ADVANCE_TIME inside WHILE, REPEAT, IF and CASE", () => {
+    const code = generateFor(
+      [
+        "TEST 'nested'",
+        "  VAR i : INT; END_VAR",
+        "  WHILE i < 2 DO ADVANCE_TIME(T#1ms); i := i + 1; END_WHILE;",
+        "  REPEAT ADVANCE_TIME(T#2ms); i := i - 1; UNTIL i = 0 END_REPEAT;",
+        "  IF i = 0 THEN ADVANCE_TIME(T#3ms); END_IF;",
+        "  CASE i OF 0: ADVANCE_TIME(T#4ms); END_CASE;",
+        "END_TEST",
+        "",
+      ].join("\n"),
+    );
+    expect(code.split(ADVANCE).length - 1).toBe(4);
+    expect(between(code, "while (", "do {")).toContain(ADVANCE);
+    expect(between(code, "do {", "} while")).toContain(ADVANCE);
+  });
+
+  it("keeps the top-level ADVANCE_TIME lowering unchanged", () => {
+    const code = generateFor(
+      `TEST 'top'\n  ADVANCE_TIME(T#100ms);\nEND_TEST\n`,
+    );
+    expect(code).toContain(ADVANCE);
+  });
+});

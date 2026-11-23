@@ -144,6 +144,21 @@ END_TEST
 
 `ADVANCE_TIME(nanoseconds)` increments the global scan-cycle time. This lets you simulate the passage of time between FB invocations without real-world delays.
 
+`ADVANCE_TIME` may also stand inside `IF`, `CASE`, `FOR`, `WHILE` or `REPEAT` in a TEST, SETUP or TEARDOWN body, and advances the time every time it runs, so a loop can drive a timer one scan cycle at a time:
+
+```
+TEST 'TON fires after ten 100 ms cycles'
+    VAR i : INT; END_VAR
+    timer(IN := TRUE, PT := T#1s);
+    FOR i := 1 TO 10 DO
+        ASSERT_FALSE(timer.Q);
+        ADVANCE_TIME(T#100ms);
+        timer(IN := TRUE, PT := T#1s);
+    END_FOR;
+    ASSERT_TRUE(timer.Q);
+END_TEST
+```
+
 ## Mocking
 
 ### Mock Function Blocks
