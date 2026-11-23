@@ -4921,14 +4921,7 @@ export class TypeChecker {
   /** The declared return type of a method, or undefined when it has none. */
   private methodReturnType(method: MethodDeclaration): IECType | undefined {
     if (!method.returnType) return undefined;
-    return (
-      ELEMENTARY_TYPES[method.returnType.name.toUpperCase()] ??
-      ({
-        typeKind: "elementary",
-        name: method.returnType.name,
-        sizeBits: 0,
-      } as ElementaryType)
-    );
+    return this.resolveNamedType(method.returnType.name);
   }
 
   // ===========================================================================
