@@ -50,6 +50,7 @@ const RULE_DESCRIPTIONS: Record<string, string> = {
   statement: "parsing a statement",
   assignmentStatement: "parsing an assignment",
   refAssignStatement: "parsing a reference assignment",
+  callResultWriteStatement: "parsing an assignment",
   functionCallStatement: "parsing a function call",
   instanceCallStatement:
     "invoking a function block instance in an array element",
@@ -84,6 +85,8 @@ const RULE_DESCRIPTIONS: Record<string, string> = {
   functionCall: "parsing a function call",
   methodCall: "parsing a method call",
   chainedMethodCall: "parsing a method call",
+  callResultSelector: "parsing a member or index of a call result",
+  callResultTarget: "parsing a call",
   argumentList: "parsing a function-call argument list",
   argument: "parsing a function-call argument",
   qualifiedIdentifier: "parsing an identifier",

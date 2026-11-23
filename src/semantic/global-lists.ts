@@ -392,6 +392,19 @@ export class GlobalListResolver {
         for (const arg of expr.arguments) arg.value = ex(arg.value);
         expr.object = ex(expr.object);
         return this.foldMethodCall(expr);
+      case "CallResultAccessExpression": {
+        const call = ex(expr.call);
+        if (
+          call.kind === "FunctionCallExpression" ||
+          call.kind === "MethodCallExpression"
+        ) {
+          expr.call = call;
+        }
+        for (const step of expr.accessChain) {
+          if (step.kind === "subscript") step.indices = step.indices.map(ex);
+        }
+        return expr;
+      }
       case "BinaryExpression":
         expr.left = ex(expr.left);
         expr.right = ex(expr.right);

@@ -45,6 +45,7 @@ import type {
   UnaryExpression,
   FunctionCallExpression,
   MethodCallExpression,
+  CallResultAccessExpression,
   Argument,
   VariableExpression,
   ParenthesizedExpression,
@@ -354,6 +355,7 @@ const EXPRESSION_KINDS = new Set([
   "NewExpression",
   "ArrayLiteralExpression",
   "StructInitializerExpression",
+  "CallResultAccessExpression",
 ]);
 
 function isExpression(node: ASTNode): boolean {
@@ -614,6 +616,15 @@ function getChildren(node: ASTNode): ASTNode[] {
     case "MethodCallExpression": {
       const mce = node as MethodCallExpression;
       children.push(mce.object, ...mce.arguments);
+      break;
+    }
+
+    case "CallResultAccessExpression": {
+      const cra = node as CallResultAccessExpression;
+      children.push(cra.call);
+      for (const step of cra.accessChain) {
+        if (step.kind === "subscript") children.push(...step.indices);
+      }
       break;
     }
 

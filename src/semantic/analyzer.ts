@@ -35,6 +35,7 @@ import type {
   VarBlock,
   VarDeclaration,
   VariableExpression,
+  CallResultAccessExpression,
   Statement,
   TestFile,
   TestStatement,
@@ -1002,6 +1003,18 @@ export class SemanticAnalyzer {
       case "DeleteStatement":
         this.requireFeature("dynamic_memory", "__DELETE", node.sourceSpan);
         break;
+      case "CallResultAccessExpression": {
+        const access = node as CallResultAccessExpression;
+        this.requireFeature(
+          "call_result_access",
+          access.accessChain[0]?.kind === "subscript"
+            ? "An array index on a call result"
+            : "Member access on a call result",
+          access.selectorSpan,
+          "; assign the result to a variable first",
+        );
+        break;
+      }
       case "VariableExpression":
       case "FunctionCallExpression": {
         const expr = node as VariableExpression | FunctionCallExpression;
@@ -5830,6 +5843,12 @@ export class SemanticAnalyzer {
         this.requireAdrFeatureIn(expr.object);
         for (const arg of expr.arguments) this.requireAdrFeatureIn(arg.value);
         break;
+      case "CallResultAccessExpression":
+        this.requireAdrFeatureIn(expr.call);
+        for (const index of callResultIndices(expr)) {
+          this.requireAdrFeatureIn(index);
+        }
+        break;
       case "BinaryExpression":
         this.requireAdrFeatureIn(expr.left);
         this.requireAdrFeatureIn(expr.right);
@@ -7055,6 +7074,12 @@ export class SemanticAnalyzer {
           this.checkExpressionForUndeclaredVars(arg.value, scope, ctx);
         }
         break;
+      case "CallResultAccessExpression":
+        this.checkExpressionForUndeclaredVars(expr.call, scope, ctx);
+        for (const index of callResultIndices(expr)) {
+          this.checkExpressionForUndeclaredVars(index, scope, ctx);
+        }
+        break;
       case "BinaryExpression":
         this.checkExpressionForUndeclaredVars(expr.left, scope, ctx);
         this.checkExpressionForUndeclaredVars(expr.right, scope, ctx);
@@ -8250,6 +8275,13 @@ export function analyzeTestFile(
 /** The unit declares its own FUNCTION TRUNC, which a `TRUNC(x)` call then names. */
 function declaresTrunc(ast: CompilationUnit): boolean {
   return ast.functions.some((f) => f.name.toUpperCase() === "TRUNC");
+}
+
+/** The index expressions of the subscripts on a call result. */
+function callResultIndices(expr: CallResultAccessExpression): Expression[] {
+  return expr.accessChain.flatMap((step) =>
+    step.kind === "subscript" ? step.indices : [],
+  );
 }
 
 /** The index expressions of a variable access, each once (`a[i].b[j]`: i, j). */

@@ -115,6 +115,37 @@ the root. A profile without `extends` has only its own features.
 | `struct_compare`     | `=` and `<>` of two STRUCT values, compared field by field (default set) |
 | `dynamic_memory`     | `__NEW(type)` and `__DELETE(p)` (default set)                |
 | `var_inst`           | `VAR_INST` blocks in a METHOD (default set)                  |
+| `call_result_access` | `.member`, `[i]` and a bit `.n` on the result of a function or method call, `F(1).nCode`, `fb.M()[2].v` ([below](#member-access-on-a-call-result)) |
+
+## Member access on a call result
+
+IEC 61131-3 Ed. 3 puts selectors on variables only, so `x := F(1).nCode;` is not standard and is refused
+with no dialect flag and under `iec-3` (table [above](#refusals)). With `call_result_access` a function or
+method call in an expression may be followed by `.member` (a STRUCT field, a function block's output or
+property), `[i]` (an element of an ARRAY result, a TYPE alias of an ARRAY) and a bit `.n` of a bit string,
+in any order and chained: `F(3).inner.v`, `FA(7)[2].v`, `fb.GetR(5).nCode.1`, `a.GetB().GetC().n`,
+`F().b.M().c`. The access is type-checked like a variable's access path (`STRUCT 'ST_R' has no member
+'NOPE'`, an internal variable of a function block is refused), and the call is evaluated once.
+
+With the feature off, the refusal is the only error an access gets: its member and type are not checked.
+
+A method call on a call result, `obj.GetItf().Run()` and `F().M()`, needs no feature. It is checked like a
+call through a variable: `Function block 'FB_W' has no method 'NOPE'`, the parameter names and count, and
+`Cannot call method 'M' on 'FS()': it is not a function block instance` for a STRUCT or elementary result.
+A REFERENCE TO or POINTER TO result is refused (`Cannot call method 'RUN' on 'RF()': its result is a
+REFERENCE TO or POINTER TO; assign the result to a variable first`), and so is invoking a function block
+member of a call result. Refused with the feature on (at the first `.` or `[`): a selector on a result that is a REFERENCE TO or POINTER TO (`Member
+access on a call result needs a STRUCT or FUNCTION_BLOCK, not a REFERENCE TO or POINTER TO; assign the
+result to a variable first`), an index on a result that is not an ARRAY, a STRING included (`An array
+index on a call result needs an ARRAY, not STRING; ...`), a member of an enumeration and a bit of a
+non-bit-string. `^` after a call is not accepted.
+
+A call result is a temporary value: in every mode, with the feature on or off, it cannot be written or
+bound to a reference. `F().a := v;`, `F().a REF= x;` and an output binding `fb(q => F().a)` are `A call
+result cannot be written: it is a temporary value; assign the result to a variable first`; `r REF= F().a;`
+and `REF(F().a)` are `A call result cannot be bound to a reference: ...`. Passed to a VAR_IN_OUT, to a
+REFERENCE TO input or to `ADR` it gets those checks' errors (`must be bound to a variable, not an
+expression` and the like).
 
 ## Bitwise operators on integers
 
@@ -243,6 +274,8 @@ When a feature is off the compile fails with an error at the construct's own lin
 | `__NEW(INT)`                                | `dynamic_memory`     | `__NEW needs the feature dynamic_memory`                                             |
 | `__DELETE(p);`                              | `dynamic_memory`     | `__DELETE needs the feature dynamic_memory`                                          |
 | `VAR_INST ... END_VAR`                      | `var_inst`           | `VAR_INST needs the feature var_inst` (at `VAR_INST`)                                |
+| `F(1).nCode`, `fb.M().a.0` (call result)    | `call_result_access` | `Member access on a call result needs the feature call_result_access; assign the result to a variable first` (at the `.`) |
+| `FA()[2]` (call result)                     | `call_result_access` | `An array index on a call result needs the feature call_result_access; assign the result to a variable first` (at the `[`) |
 | `{IF ...}`, `{ELSIF ...}`, `{ELSE}`, `{END_IF}`, `{define ...}`, `{undefine ...}` | `conditional_pragmas` | `Conditional compilation pragmas are not supported: {IF ...}; they need the feature conditional_pragmas` (at each directive). With the feature on, `{define}`/`{undefine}` are accepted ([below](#conditional-pragmas)) |
 
 When profiles were loaded and some have the feature, the message ends with `(profiles: a, b)`.

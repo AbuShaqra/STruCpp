@@ -40,6 +40,7 @@ export const KNOWN_FEATURES = [
   "struct_compare",
   "dynamic_memory",
   "var_inst",
+  "call_result_access",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];

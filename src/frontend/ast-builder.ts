@@ -42,6 +42,7 @@ import type {
   LiteralExpression,
   VariableExpression,
   AccessStep,
+  CallResultAccessExpression,
   AssignmentStatement,
   RefAssignStatement,
   RefExpression,
@@ -2098,6 +2099,26 @@ export class ASTBuilder {
     if (children.deleteStatement) {
       return this.buildDeleteStatement(getFirstNode(children.deleteStatement)!);
     }
+    if (children.callResultWriteStatement) {
+      const stmtNode = getFirstNode(children.callResultWriteStatement)!;
+      const stmt = stmtNode.children as CstChildren;
+      const call =
+        this.buildPrimaryExpression(getFirstNode(stmt.callResultTarget)!) ??
+        this.createDummyLiteral(stmtNode);
+      const sourceSpan = nodeToSourceSpan(stmtNode);
+      const valueNode = getFirstNode(stmt.expression);
+      const value =
+        (valueNode ? this.buildExpression(valueNode) : undefined) ??
+        this.createDummyLiteral(stmtNode);
+      return stmt.RefAssign
+        ? {
+            kind: "RefAssignStatement",
+            sourceSpan,
+            target: call,
+            source: value,
+          }
+        : { kind: "AssignmentStatement", sourceSpan, target: call, value };
+    }
     if (children.functionCallStatement) {
       return this.buildFunctionCallStatement(
         getFirstNode(children.functionCallStatement)!,
@@ -2154,9 +2175,13 @@ export class ASTBuilder {
     const target = variableNodes[0]
       ? this.buildVariableExpression(variableNodes[0])
       : this.createDummyVariable(node);
-    const source = variableNodes[1]
-      ? this.buildVariableExpression(variableNodes[1])
-      : this.createDummyVariable(node);
+    // `r REF= F().a;`: built like a primary expression, for the type checker to refuse.
+    const callNode = getFirstNode(children.callResultTarget);
+    const source =
+      (callNode ? this.buildPrimaryExpression(callNode) : undefined) ??
+      (variableNodes[1]
+        ? this.buildVariableExpression(variableNodes[1])
+        : this.createDummyVariable(node));
 
     return {
       kind: "RefAssignStatement",
@@ -2965,18 +2990,25 @@ export class ASTBuilder {
 
     // Method call through a member chain: a.b.method(args)
     if (children.memberChainCall) {
-      return this.buildMemberChainCall(getFirstNode(children.memberChainCall)!);
+      return this.applyCallResultSelectors(
+        this.buildMemberChainCall(getFirstNode(children.memberChainCall)!),
+        node,
+      );
     }
 
     // Check for method call expression: instance.method(args)
     if (children.methodCall) {
-      return this.buildMethodCallExpression(getFirstNode(children.methodCall)!);
+      return this.applyCallResultSelectors(
+        this.buildMethodCallExpression(getFirstNode(children.methodCall)!),
+        node,
+      );
     }
 
     // Check for function call (before variable - both start with Identifier, parser disambiguates)
     if (children.functionCall) {
-      return this.buildFunctionCallExpression(
-        getFirstNode(children.functionCall)!,
+      return this.applyCallResultSelectors(
+        this.buildFunctionCallExpression(getFirstNode(children.functionCall)!),
+        node,
       );
     }
 
@@ -3046,9 +3078,13 @@ export class ASTBuilder {
   buildRefExpression(node: CstNode): RefExpression {
     const children = node.children as CstChildren;
     const variableNode = getFirstNode(children.variable);
-    const operand = variableNode
-      ? this.buildVariableExpression(variableNode)
-      : this.createDummyVariable(node);
+    // `REF(F().a)`: built like a primary expression, for the type checker to refuse.
+    const primaryNode = getFirstNode(children.callResultTarget);
+    const operand =
+      (primaryNode ? this.buildPrimaryExpression(primaryNode) : undefined) ??
+      (variableNode
+        ? this.buildVariableExpression(variableNode)
+        : this.createDummyVariable(node));
 
     return {
       kind: "RefExpression",
@@ -3891,6 +3927,63 @@ export class ASTBuilder {
       functionName,
       arguments: args,
     };
+  }
+
+  /**
+   * Apply the `callResultSelector`s of a primary expression to its call:
+   * `.M(args)` wraps it in a MethodCallExpression, a run of `.member` / `[i]`
+   * in a CallResultAccessExpression (feature call_result_access).
+   */
+  private applyCallResultSelectors(
+    call: FunctionCallExpression | MethodCallExpression,
+    primaryNode: CstNode,
+  ): Expression {
+    const selectors = getAllNodes(
+      (primaryNode.children as CstChildren).callResultSelector,
+    );
+    let result: FunctionCallExpression | MethodCallExpression = call;
+    let access: CallResultAccessExpression | undefined;
+    for (const selector of selectors) {
+      const sel = selector.children as CstChildren;
+      const chained = getFirstNode(sel.chainedMethodCall);
+      if (chained) {
+        result = this.buildChainedCall(chained, access ?? result, primaryNode);
+        access = undefined;
+        continue;
+      }
+      const opener = getAllTokens(sel.LBracket)[0] ?? getAllTokens(sel.Dot)[0];
+      let step: AccessStep;
+      if (sel.LBracket) {
+        const indices = getAllNodes(sel.expression).flatMap((n) => {
+          const built = this.buildExpression(n);
+          return built ? [built] : [];
+        });
+        step = { kind: "subscript", indices };
+      } else {
+        const idNode = getFirstNode(sel.identifierOrKeyword);
+        const name = idNode
+          ? getIdentifierOrKeywordImage(idNode)
+          : (getAllTokens(sel.IntegerLiteral)[0]?.image ?? "");
+        step = { kind: "field", name };
+      }
+      const end = nodeToSourceSpan(selector);
+      if (access === undefined) {
+        const selectorSpan = opener
+          ? tokenToSourceSpan(opener)
+          : nodeToSourceSpan(selector);
+        access = {
+          kind: "CallResultAccessExpression",
+          sourceSpan: { ...result.sourceSpan },
+          call: result,
+          accessChain: [],
+          selectorSpan,
+        };
+      }
+      access.accessChain.push(step);
+      access.sourceSpan.endLine = end.endLine;
+      access.sourceSpan.endCol = end.endCol;
+    }
+    return access ?? result;
   }
 
   /**

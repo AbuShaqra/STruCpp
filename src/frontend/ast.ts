@@ -800,7 +800,8 @@ export type Expression =
   | DrefExpression
   | NewExpression
   | ArrayLiteralExpression
-  | StructInitializerExpression;
+  | StructInitializerExpression
+  | CallResultAccessExpression;
 
 /**
  * Binary operator
@@ -896,6 +897,22 @@ export interface MethodCallExpression extends TypedNode {
   methodNameSpan?: SourceSpan;
   /** Set by the type checker when `methodName` is a function block instance member, called (`a.b.fb()`). */
   fbInstanceCall?: true;
+}
+
+/**
+ * Member access or subscript on a call result, `F(1).n`, `fb.M()[2].a`
+ * (feature call_result_access). The call is evaluated once.
+ */
+export interface CallResultAccessExpression extends TypedNode {
+  kind: "CallResultAccessExpression";
+  /** The call whose result is accessed: a function, method or chained call. */
+  call: FunctionCallExpression | MethodCallExpression;
+  /** The selectors after the call, in source order (fields and subscripts only). */
+  accessChain: AccessStep[];
+  /** Where the first selector's `.` or `[` is written; a refusal is reported there. */
+  selectorSpan: SourceSpan;
+  /** Set by the type checker when the last field is a bit selected by a named constant. */
+  namedBitIndex?: true;
 }
 
 /**
