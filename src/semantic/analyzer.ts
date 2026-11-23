@@ -8277,7 +8277,6 @@ function declaresTrunc(ast: CompilationUnit): boolean {
   return ast.functions.some((f) => f.name.toUpperCase() === "TRUNC");
 }
 
-/** The index expressions of a variable access, each once (`a[i].b[j]`: i, j). */
 /** The index expressions of the subscripts on a call result. */
 function callResultIndices(expr: CallResultAccessExpression): Expression[] {
   return expr.accessChain.flatMap((step) =>
@@ -8285,6 +8284,7 @@ function callResultIndices(expr: CallResultAccessExpression): Expression[] {
   );
 }
 
+/** The index expressions of a variable access, each once (`a[i].b[j]`: i, j). */
 function indexExpressions(expr: VariableExpression): Expression[] {
   return expr.accessChain
     ? expr.accessChain.flatMap((step) =>

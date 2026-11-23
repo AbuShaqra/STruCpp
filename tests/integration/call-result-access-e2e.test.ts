@@ -47,6 +47,10 @@ VAR_GLOBAL gw : FB_W; END_VAR
 FUNCTION GetI : I_Run
 GetI := gw;
 END_FUNCTION
+FUNCTION MkFB : FB_W
+calls := calls + 1;
+MkFB.q := 40;
+END_FUNCTION
 PROGRAM Main
 VAR
   field : INT;
@@ -55,6 +59,7 @@ VAR
   bumps : INT;
   bit : BOOL;
   runs : INT;
+  fbRun : INT;
   callCount : INT;
   w : FB_W;
 END_VAR
@@ -65,6 +70,7 @@ bumps := w.Bump().nCode + w.Bump().nCode;
 bit := MkR(2).nCode.1;
 runs := GetI().Run();
 runs := runs + GetI().Run();
+fbRun := MkFB().Run();
 callCount := calls;
 END_PROGRAM
 `;
@@ -79,6 +85,7 @@ int main() {
               << static_cast<long>(prog.ELEMENT) << " "
               << static_cast<long>(prog.BUMPS) << " "
               << (prog.BIT ? 1 : 0) << " " << static_cast<long>(prog.RUNS) << " "
+              << static_cast<long>(prog.FBRUN) << " "
               << static_cast<long>(prog.CALLCOUNT) << std::endl;
     return 0;
 }
@@ -156,15 +163,15 @@ describe.skipIf(!hasGpp)("member access on a call result end to end", () => {
       testName: "cra_cli",
       mainCode: MAIN,
     });
-    // MkR, MkR, MkA and MkR run once each: calls = 4.
-    expect(stdout).toBe("4 500 7 3 1 3 4");
+    // MkR, MkR, MkA, MkR and MkFB run once each: calls = 5.
+    expect(stdout).toBe("4 500 7 3 1 3 41 5");
   });
 
   it("the same profile without the feature refuses the program at the selector", () => {
     const compiled = compileWith([]);
     expect(compiled.status).toBe("failed");
     expect(compiled.output).toContain(
-      "main.st:47:16: error: Member access on a call result needs the feature call_result_access; assign the result to a variable first",
+      "main.st:52:16: error: Member access on a call result needs the feature call_result_access; assign the result to a variable first",
     );
   });
 });

@@ -2106,16 +2106,6 @@ export class ASTBuilder {
         this.buildPrimaryExpression(getFirstNode(stmt.callResultTarget)!) ??
         this.createDummyLiteral(stmtNode);
       const sourceSpan = nodeToSourceSpan(stmtNode);
-      // `r REF= F().a;`: the call result is the source.
-      const variableNode = getFirstNode(stmt.variable);
-      if (variableNode) {
-        return {
-          kind: "RefAssignStatement",
-          sourceSpan,
-          target: this.buildVariableExpression(variableNode),
-          source: call,
-        };
-      }
       const valueNode = getFirstNode(stmt.expression);
       const value =
         (valueNode ? this.buildExpression(valueNode) : undefined) ??
@@ -2185,9 +2175,13 @@ export class ASTBuilder {
     const target = variableNodes[0]
       ? this.buildVariableExpression(variableNodes[0])
       : this.createDummyVariable(node);
-    const source = variableNodes[1]
-      ? this.buildVariableExpression(variableNodes[1])
-      : this.createDummyVariable(node);
+    // `r REF= F().a;`: built like a primary expression, for the type checker to refuse.
+    const callNode = getFirstNode(children.callResultTarget);
+    const source =
+      (callNode ? this.buildPrimaryExpression(callNode) : undefined) ??
+      (variableNodes[1]
+        ? this.buildVariableExpression(variableNodes[1])
+        : this.createDummyVariable(node));
 
     return {
       kind: "RefAssignStatement",

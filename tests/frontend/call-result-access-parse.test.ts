@@ -5,6 +5,7 @@
  * parses too, so the type checker can refuse it.
  */
 import { describe, it, expect } from "vitest";
+import { analyze } from "../../src/index.js";
 import { parse } from "../../src/frontend/parser.js";
 import { buildAST } from "../../src/frontend/ast-builder.js";
 import type {
@@ -151,5 +152,56 @@ describe("writes to a call result parse for the type checker to refuse", () => {
       "FunctionCallStatement",
       "IfStatement",
     ]);
+  });
+});
+
+describe("parse errors near the new forms read as before", () => {
+  const wrap = (stmt: string): string =>
+    `PROGRAM P\nVAR r : REFERENCE TO INT; y : INT; x : INT; END_VAR\n${stmt}\ny := 1;\nEND_PROGRAM\n`;
+  const messages = (stmt: string): string[] =>
+    analyze(wrap(stmt)).errors.map(
+      (e) => `${e.line}:${e.column}: ${e.message}`,
+    );
+
+  it.each([
+    [
+      "r REF= ;",
+      ["3:8: Unexpected `;` after `REF=` while parsing an identifier."],
+    ],
+    [
+      "r REF= 5;",
+      [
+        "3:8: Unexpected integer literal `5` after `REF=` while parsing an identifier.",
+      ],
+    ],
+    [
+      "r REF= THIS^;",
+      [
+        "3:8: Unexpected `THIS` after `REF=` while parsing an identifier.",
+        "3:8: Unexpected `THIS` after `REF=` while parsing a statement.",
+        "3:8: Expected `END_PROGRAM`, found `THIS`.",
+      ],
+    ],
+    ["x := F(1).;", ["3:10: Expected `Semicolon`, found `.`."]],
+    ["x := F().[1];", ["3:9: Expected `Semicolon`, found `.`."]],
+    [
+      "IF := 1;",
+      ["3:4: Unexpected `:=` after `IF` while parsing an expression."],
+    ],
+  ])("`%s`", (stmt, expected) => {
+    expect(messages(stmt)).toEqual(expected);
+  });
+
+  it("no message names a grammar rule", () => {
+    for (const stmt of [
+      "x := F(1).",
+      "F().a := ;",
+      "r REF= F().;",
+      "x := F()[;",
+    ]) {
+      for (const message of messages(stmt)) {
+        expect(message).not.toMatch(/rule `|callResult/);
+      }
+    }
   });
 });

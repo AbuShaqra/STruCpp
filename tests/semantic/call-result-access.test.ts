@@ -237,3 +237,140 @@ describe("a call result is never written", () => {
     );
   });
 });
+
+describe("a method call on a call result", () => {
+  const SRC = `TYPE ST_S : STRUCT a : INT; END_STRUCT END_TYPE
+TYPE ST_H : STRUCT w : FB_W; END_STRUCT END_TYPE
+FUNCTION_BLOCK FB_W
+VAR_OUTPUT q : INT; END_VAR
+METHOD Run : INT
+VAR_INPUT n : INT; END_VAR
+Run := n;
+END_METHOD
+METHOD Me : FB_W
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL gw : FB_W; END_VAR
+FUNCTION FW : FB_W
+END_FUNCTION
+FUNCTION FS : ST_S
+END_FUNCTION
+FUNCTION FH : ST_H
+END_FUNCTION
+FUNCTION FI : INT
+END_FUNCTION
+FUNCTION RF : REFERENCE TO FB_W
+RF REF= gw;
+END_FUNCTION
+FUNCTION PF : POINTER TO FB_W
+PF := ADR(gw);
+END_FUNCTION
+PROGRAM Main
+VAR x : INT; f : FB_W; END_VAR
+`;
+  const errors = (body: string): string[] =>
+    compile(`${SRC}${body}\nEND_PROGRAM\n`).errors.map((e) => e.message);
+
+  it("compiles on a function block result, with no feature", () => {
+    expect(errors("x := FW().Run(1) + f.Me().Run(n := 2);")).toEqual([]);
+  });
+
+  it.each([
+    [
+      "a REFERENCE TO result",
+      "x := RF().Run(1);",
+      "Cannot call method 'RUN' on 'RF()': its result is a REFERENCE TO or POINTER TO; assign the result to a variable first",
+    ],
+    [
+      "a POINTER TO result",
+      "x := PF().Run(1);",
+      "Cannot call method 'RUN' on 'PF()': its result is a REFERENCE TO or POINTER TO; assign the result to a variable first",
+    ],
+    [
+      "a STRUCT result",
+      "x := FS().Run(1);",
+      "Cannot call method 'RUN' on 'FS()': it is not a function block instance",
+    ],
+    [
+      "an INT result",
+      "x := FI().Run(1);",
+      "Cannot call method 'RUN' on 'FI()': it is not a function block instance",
+    ],
+    [
+      "a method the block does not have",
+      "x := FW().Nope();",
+      "Function block 'FB_W' has no method 'NOPE'",
+    ],
+    [
+      "a parameter the method does not have",
+      "x := FW().Run(n := 1, b := 2);",
+      "Method 'RUN' of 'FB_W' has no parameter named 'B'",
+    ],
+    [
+      "too many arguments",
+      "x := FW().Run(1, 2);",
+      "Method 'RUN' of 'FB_W' takes 1 argument, got 2",
+    ],
+    [
+      "a method's function block result",
+      "x := f.Me().Nope();",
+      "Function block 'FB_W' has no method 'NOPE'",
+    ],
+    [
+      "a chained method's result",
+      "x := f.Me().Me().Run(1, 2);",
+      "Method 'RUN' of 'FB_W' takes 1 argument, got 2",
+    ],
+  ])("refuses %s", (_name, body, message) => {
+    expect(errors(body)).toEqual([message]);
+  });
+
+  it("refuses invoking a function block member of a call result", () => {
+    expect(
+      compile(`${SRC}x := FH().w(1);\nEND_PROGRAM\n`, ON).errors.map(
+        (e) => e.message,
+      ),
+    ).toContain(
+      "'FH().W' is a member of a call result, not a method; assign the result to a variable first",
+    );
+  });
+});
+
+describe("the declared result of the method actually called", () => {
+  it("a REFERENCE TO result of another block's method of the same name does not refuse", () => {
+    const src = `TYPE ST_R : STRUCT nCode : INT; END_STRUCT END_TYPE
+VAR_GLOBAL gi : INT; END_VAR
+FUNCTION_BLOCK FB_A
+METHOD Get : REFERENCE TO INT
+Get REF= gi;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_B
+METHOD Get : ST_R
+Get.nCode := 7;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR a : FB_A; b : FB_B; x : INT; END_VAR
+x := b.Get().nCode;
+x := a.Get().nCode;
+END_PROGRAM
+`;
+    expect(compile(src, ON).errors.map((e) => e.message)).toEqual([
+      "Member access on a call result needs a STRUCT or FUNCTION_BLOCK, not a REFERENCE TO or POINTER TO; assign the result to a variable first",
+    ]);
+  });
+});
+
+describe("with the feature off, one error per access", () => {
+  it.each([
+    "x := F(1).nope;",
+    "x := FS()[1];",
+    "x := FR().nCode;",
+    "x := F(1).inner;",
+  ])("`%s` gets only the feature refusal", (stmt) => {
+    expect(messages(stmt, {})).toEqual([
+      expect.stringContaining("needs the feature call_result_access"),
+    ]);
+  });
+});

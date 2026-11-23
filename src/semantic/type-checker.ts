@@ -2199,6 +2199,8 @@ export class TypeChecker {
       );
       return undefined;
     }
+    // With the feature off the analyzer's refusal is the one error at the selector.
+    if (!this.features.has("call_result_access")) return undefined;
     if (callType === undefined || !this.ast) return undefined;
     let currentType: IECType | undefined = callType;
     let currentTypeName: string | undefined =
@@ -2222,7 +2224,7 @@ export class TypeChecker {
       );
       return undefined;
     };
-    if (this.callReturnsAddress(expr.call)) {
+    if (this.callReturnsAddress(expr.call, scope)) {
       const first = expr.accessChain[0];
       return refuse(
         first?.kind === "subscript" ? "subscript" : "field",
@@ -2294,43 +2296,19 @@ export class TypeChecker {
     if (call.kind !== "FunctionCallExpression" || call.instance !== undefined) {
       return undefined;
     }
-    const method = this.dottedMethod(call.functionName, scope);
+    const method = this.dottedMethodAnywhere(call.functionName, scope);
     const type = method ? this.methodReturnType(method) : undefined;
     if (type) call.resolvedType = type;
     return type;
   }
 
-  /**
-   * The call's declared result is a REFERENCE TO, REF_TO or POINTER TO. A
-   * method is matched by name: any method of that name returning one counts.
-   */
+  /** The call's declared result is a REFERENCE TO, REF_TO or POINTER TO. */
   private callReturnsAddress(
     call: FunctionCallExpression | MethodCallExpression,
+    scope: Scope,
   ): boolean {
-    const isAddress = (type: TypeReference | undefined): boolean =>
-      type !== undefined && type.referenceKind !== "none";
-    if (
-      call.kind === "FunctionCallExpression" &&
-      !call.functionName.includes(".") &&
-      call.instance === undefined
-    ) {
-      return isAddress(
-        this.symbolTables.lookupFunction(call.functionName)?.declaration
-          .returnType,
-      );
-    }
-    const name = (
-      call.kind === "MethodCallExpression"
-        ? call.methodName
-        : (call.functionName.split(".").pop() ?? "")
-    ).toUpperCase();
-    const ast = this.ast;
-    if (!ast) return false;
-    return [
-      ...ast.functionBlocks.flatMap((f) => f.methods),
-      ...ast.programs.flatMap((p) => p.methods),
-      ...ast.interfaces.flatMap((i) => i.methods),
-    ].some((m) => m.name.toUpperCase() === name && isAddress(m.returnType));
+    const type = this.callResultType(call, scope);
+    return type !== undefined && type.referenceKind !== "none";
   }
 
   /** Variables already checked by refuseReferenceToCaret. */
@@ -3803,12 +3781,30 @@ export class TypeChecker {
       this.resolveExprType(arg.value, scope);
     }
 
+    // `F().M()`, `a.M().N()`, `F().b.M()`: the receiver is a call result.
+    const resultOwner = this.callResultType(expr.object, scope);
     if (
-      expr.object.kind === "VariableExpression" &&
-      this.isMemberChain(expr.object)
+      (expr.object.kind === "VariableExpression" &&
+        this.isMemberChain(expr.object)) ||
+      resultOwner !== undefined
     ) {
-      const owner = this.memberChainOwner(expr.object, scope);
-      const method = this.checkMemberChainCall(expr, expr.object, owner);
+      const object = expr.object;
+      const owner =
+        object.kind === "VariableExpression"
+          ? this.memberChainOwner(object, scope)
+          : resultOwner;
+      const method = this.checkMemberChainCall(
+        expr,
+        object.kind === "VariableExpression"
+          ? { text: this.chainText(object), span: object.sourceSpan }
+          : {
+              text: this.callText(object),
+              span: object.sourceSpan,
+              callResult: true,
+            },
+        owner,
+      );
+      if (method) this.calledMethods.set(expr, method);
       const chainInputs = this.methodInputsOf(owner?.name, expr.methodName);
       if (owner?.name !== undefined) {
         this.bindOutputs(
@@ -3899,9 +3895,108 @@ export class TypeChecker {
     const method = this.methodsOfType(objTypeName)?.find(
       (m) => m.name.toUpperCase() === expr.methodName.toUpperCase(),
     );
+    if (method) this.calledMethods.set(expr, method);
     const retType = method ? this.methodReturnType(method) : undefined;
     if (retType) expr.resolvedType = retType;
     return retType;
+  }
+
+  /** The method each method call of the unit resolved to, so a call on its result knows the result's declared type. */
+  private calledMethods = new WeakMap<
+    MethodCallExpression,
+    MethodDeclaration
+  >();
+
+  /**
+   * The declared result type of a call used as a receiver or with selectors:
+   * a FUNCTION's, a method's (`inst.M()`, a chained call, a library block's),
+   * or the type an access on a call result lands on. Undefined when unknown.
+   */
+  private callResultType(
+    call: Expression,
+    scope: Scope,
+  ): AccessType | undefined {
+    switch (call.kind) {
+      case "FunctionCallExpression":
+        if (call.instance !== undefined) return undefined;
+        return call.functionName.includes(".")
+          ? this.dottedMethodAnywhere(call.functionName, scope)?.returnType
+          : this.symbolTables.lookupFunction(call.functionName)?.declaration
+              .returnType;
+      case "MethodCallExpression":
+        return this.calledMethods.get(call)?.returnType;
+      case "CallResultAccessExpression": {
+        const type = call.resolvedType;
+        if (type === undefined) return undefined;
+        return type.typeKind === "reference"
+          ? {
+              name: typeNameUtil((type as ReferenceType).referencedType),
+              referenceKind: "reference_to",
+            }
+          : { name: typeNameUtil(type), referenceKind: "none" };
+      }
+      default:
+        return undefined;
+    }
+  }
+
+  /** The method `inst.M` names, declared here or in a library block (or a base of one). */
+  private dottedMethodAnywhere(
+    functionName: string,
+    scope: Scope,
+  ): MethodDeclaration | undefined {
+    const local = this.dottedMethod(functionName, scope);
+    if (local !== undefined) return local;
+    const parts = functionName.split(".");
+    if (parts.length !== 2) return undefined;
+    const sym = scope.lookup(parts[0]!);
+    if (sym?.kind !== "variable") return undefined;
+    return this.libraryMethod(
+      (sym.declaration as VarDeclaration | undefined)?.type.name,
+      parts[1]!,
+    );
+  }
+
+  /** A method of a library function block or of one of its bases. */
+  private libraryMethod(
+    typeName: string | undefined,
+    methodName: string,
+  ): MethodDeclaration | undefined {
+    const upper = methodName.toUpperCase();
+    const seen = new Set<string>();
+    let current = typeName;
+    while (current !== undefined && !seen.has(current.toUpperCase())) {
+      seen.add(current.toUpperCase());
+      const fb = this.symbolTables.lookupFunctionBlock(current);
+      if (fb?.libraryName === undefined) return undefined;
+      const found = fb.declaration.methods.find(
+        (m) => m.name.toUpperCase() === upper,
+      );
+      if (found) return found;
+      current = fb.declaration.extends;
+    }
+    return undefined;
+  }
+
+  /** How a call is written in a message: `F()`, `fb.M()`, `F().a.M()`. */
+  private callText(call: Expression): string {
+    switch (call.kind) {
+      case "FunctionCallExpression":
+        return `${call.functionName}()`;
+      case "MethodCallExpression":
+        return `${this.callText(call.object)}.${call.methodName}()`;
+      case "CallResultAccessExpression":
+        return (
+          this.callText(call.call) +
+          call.accessChain
+            .map((step) => (step.kind === "field" ? `.${step.name}` : "[...]"))
+            .join("")
+        );
+      case "VariableExpression":
+        return this.chainText(call);
+      default:
+        return "...";
+    }
   }
 
   /** The object of `a.b.M()`, `arr[i].M()` or `THIS.f.M()`: a chain, not a bare name. */
@@ -4385,7 +4480,7 @@ export class TypeChecker {
    */
   private checkMemberChainCall(
     expr: MethodCallExpression,
-    object: VariableExpression,
+    object: { text: string; span: SourceSpan; callResult?: true },
     owner: AccessType | undefined,
   ): MethodDeclaration | undefined {
     if (!owner || !this.ast) return undefined;
@@ -4397,10 +4492,25 @@ export class TypeChecker {
       }
     };
     const upper = owner.name.toUpperCase();
+    // A call result held by reference or address: `^` cannot follow a call.
+    if (object.callResult === true && owner.referenceKind !== "none") {
+      error(
+        `Cannot call method '${expr.methodName}' on '${object.text}': its result is a REFERENCE TO or POINTER TO; assign the result to a variable first`,
+        object.span,
+      );
+      return undefined;
+    }
     const member =
       owner.referenceKind === "none"
         ? this.lookupMember(owner.name, expr.methodName)
         : undefined;
+    if (member !== undefined && object.callResult === true) {
+      error(
+        `'${object.text}.${expr.methodName}' is a member of a call result, not a method; assign the result to a variable first`,
+        expr.methodNameSpan ?? expr.sourceSpan,
+      );
+      return undefined;
+    }
     // `a.b.fb(args)`: invoking a function block instance held in a member
     if (
       member !== undefined &&
@@ -4415,7 +4525,7 @@ export class TypeChecker {
     }
     if (member !== undefined) {
       error(
-        `'${this.chainText(object)}.${expr.methodName}' is a member that is not a function block instance, not a method`,
+        `'${object.text}.${expr.methodName}' is a member that is not a function block instance, not a method`,
         expr.methodNameSpan ?? expr.sourceSpan,
       );
       return undefined;
@@ -4434,8 +4544,8 @@ export class TypeChecker {
     if ((!isFb && !isInterface) || isPlainValue) {
       if (isPlainValue) {
         error(
-          `Cannot call method '${expr.methodName}' on '${this.chainText(object)}': it is not a function block instance`,
-          object.sourceSpan,
+          `Cannot call method '${expr.methodName}' on '${object.text}': it is not a function block instance`,
+          object.span,
         );
       }
       return undefined;

@@ -127,8 +127,14 @@ in any order and chained: `F(3).inner.v`, `FA(7)[2].v`, `fb.GetR(5).nCode.1`, `a
 `F().b.M().c`. The access is type-checked like a variable's access path (`STRUCT 'ST_R' has no member
 'NOPE'`, an internal variable of a function block is refused), and the call is evaluated once.
 
-A method call on a call result, `obj.GetItf().Run()` and `F().M()`, needs no feature. Refused with the
-feature on (at the first `.` or `[`): a selector on a result that is a REFERENCE TO or POINTER TO (`Member
+With the feature off, the refusal is the only error an access gets: its member and type are not checked.
+
+A method call on a call result, `obj.GetItf().Run()` and `F().M()`, needs no feature. It is checked like a
+call through a variable: `Function block 'FB_W' has no method 'NOPE'`, the parameter names and count, and
+`Cannot call method 'M' on 'FS()': it is not a function block instance` for a STRUCT or elementary result.
+A REFERENCE TO or POINTER TO result is refused (`Cannot call method 'RUN' on 'RF()': its result is a
+REFERENCE TO or POINTER TO; assign the result to a variable first`), and so is invoking a function block
+member of a call result. Refused with the feature on (at the first `.` or `[`): a selector on a result that is a REFERENCE TO or POINTER TO (`Member
 access on a call result needs a STRUCT or FUNCTION_BLOCK, not a REFERENCE TO or POINTER TO; assign the
 result to a variable first`), an index on a result that is not an ARRAY, a STRING included (`An array
 index on a call result needs an ARRAY, not STRING; ...`), a member of an enumeration and a bit of a
