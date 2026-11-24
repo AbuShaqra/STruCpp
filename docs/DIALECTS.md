@@ -181,8 +181,8 @@ flag too, wherever a BOOL is required: as the condition of IF, ELSIF, WHILE or R
 (`Condition must be a boolean or bit type, got INT`) and as the G argument of SEL (`Argument 'G' of 'SEL'
 expects BOOL, got INT`). Such code compiled before. Write the test as a comparison: `IF (i AND 1) <> 0
 THEN`. Assigned to a BOOL variable it gets the narrowing warning, as any INT does. Passed to a BOOL
-VAR_INPUT of a user FUNCTION or function block (`F(i AND 1)`, `fb(b := i AND 1)`) it is accepted with no
-diagnostic outside `--strict`, as an INT variable passed there is.
+VAR_INPUT of a FUNCTION, function block or METHOD (`F(i AND 1)`, `fb(b := i AND 1)`) it gets the same
+narrowing warning, as an INT variable passed there does (an error under `--strict`).
 
 ## Rules of the iec-3 profile itself
 
@@ -217,6 +217,14 @@ included. A duration may put one between a unit and the next number, as Table 8 
 profile), every such literal is accepted as before. In a `--test` file the literals of its SETUP, TEST and
 TEARDOWN blocks are checked under `--dialect iec-3`; `--strict` checks the sources of a `--test` run, not the
 test file.
+
+**Addresses and argument types.** Under `--dialect iec-3`, and under `--strict` in any dialect, a few stores
+that build in C++ but lose or misread a value are errors; with no dialect flag and under a profile that extends
+`iec-3` they are warnings. A REF_TO (or POINTER TO) value assigned to an integer narrower than an address
+(`n := r` into a DWORD, INT or UDINT; `A REF_TO value gives a 64-bit address, which DWORD cannot hold; ...`),
+an integer narrower than an address or a difference of two addresses assigned to a POINTER TO (`An integer is
+not an address; a POINTER TO takes ADR(...), another pointer or 0`), and an argument of a type the assignment
+refuses but C++ converts (`F_UI(si)` with a SINT into a UINT input: `Cannot assign SINT to UINT`).
 
 **Warnings.** Forms Ed. 3 deprecates or leaves to the implementer are accepted with a warning, one per
 occurrence:

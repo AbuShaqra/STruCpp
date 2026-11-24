@@ -313,7 +313,13 @@ describe("strict mode: row f, integer as TIME", () => {
     );
   });
   it("rejects an integer passed to a TIME input", () => {
-    pin(prog(DECLS, "tm(IN := b, PT := 100);"), [], [], [`6: ${TIME_MSG}`]);
+    // An integer is no TIME (its assignment is refused); the C++ build failed.
+    pin(
+      prog(DECLS, "tm(IN := b, PT := 100);"),
+      ["6: Cannot assign INT to TIME"],
+      [],
+      [`6: ${TIME_MSG}`],
+    );
   });
 });
 
