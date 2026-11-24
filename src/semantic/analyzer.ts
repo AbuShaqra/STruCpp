@@ -3249,6 +3249,7 @@ export class SemanticAnalyzer {
         this.validateCharLiteral(literal);
         return;
       }
+      if (this.refuseTypedStringQuotes(literal)) return;
       if (literal.literalType !== "STRING") return;
       const raw = literal.rawValue;
       for (let i = raw.indexOf("'") + 1; i < raw.length; i++) {
@@ -3281,12 +3282,37 @@ export class SemanticAnalyzer {
    * A CHAR or WCHAR literal holds exactly one character, and a CHAR one that
    * Windows-1252 has.
    */
+  /**
+   * STRING#"abc" or WSTRING#'abc': a typed STRING literal is single-quoted and
+   * a WSTRING one double-quoted (Ed. 3 Table 6). True when refused.
+   */
+  private refuseTypedStringQuotes(literal: LiteralExpression): boolean {
+    const prefix = (literal.typePrefix ?? "").toUpperCase();
+    if (prefix !== "STRING" && prefix !== "WSTRING") return false;
+    const want = prefix === "STRING" ? "'" : '"';
+    if (literal.rawValue.startsWith(want)) return false;
+    const span = literal.sourceSpan;
+    this.literalsReported.add(literal);
+    this.addError(
+      `A ${prefix} literal is written in ${prefix === "STRING" ? "single" : "double"} quotes: ${prefix}#${want}...${want}`,
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
+    return true;
+  }
+
   private validateCharLiteral(literal: LiteralExpression): void {
     const { wide, units } = charLiteralUnits(literal.rawValue);
     const type = wide ? "WCHAR" : "CHAR";
     const span = literal.sourceSpan;
     const fail = (message: string): void =>
       this.addError(message, span.startLine, span.startCol, span.file);
+    // CHAR#"A": a CHAR literal is single-quoted (WCHAR#'A' is Table 6's own form)
+    if (!wide && /#"/.test(literal.rawValue)) {
+      fail(`A CHAR literal is written in single quotes: CHAR#'...'`);
+      return;
+    }
     if (units.length !== 1) {
       fail(
         `A ${type} literal holds exactly one character; ${literal.rawValue} holds ${units.length}`,

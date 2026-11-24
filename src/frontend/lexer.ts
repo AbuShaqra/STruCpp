@@ -628,11 +628,20 @@ export const DateTimeLiteral = createToken({
 });
 
 // Typed character literal: CHAR#'A', CHAR#'$41', WCHAR#"B", WCHAR#"$20AC",
-// WCHAR#'X' (Table 6) and a code, CHAR#16#41 / WCHAR#8364 (Table 5)
+// WCHAR#'X' (Table 6) and a code, CHAR#16#41 / WCHAR#8364 (Table 5); CHAR#"A"
+// lexes too, for the analyzer to refuse
 export const CharLiteral = createToken({
   name: "CharLiteral",
   pattern:
-    /W?CHAR#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[0-9][0-9_]*)|CHAR#'(?:[^'$]|\$\$|\$'|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{2}|'')*'|WCHAR#'(?:[^'$]|\$\$|\$'|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{4}|'')*'|WCHAR#"(?:[^"$]|\$\$|\$"|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{4})*"/i,
+    /W?CHAR#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[0-9][0-9_]*)|CHAR#'(?:[^'$]|\$\$|\$'|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{2}|'')*'|CHAR#"(?:[^"$]|\$\$|\$"|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{2})*"|WCHAR#'(?:[^'$]|\$\$|\$'|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{4}|'')*'|WCHAR#"(?:[^"$]|\$\$|\$"|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{4})*"/i,
+});
+
+// Typed string literal: STRING#'abc', WSTRING#"abc" (Ed. 3 Table 6). A prefix
+// with the other quotes (STRING#"abc") lexes too, for the analyzer to refuse.
+export const TypedStringLiteral = createToken({
+  name: "TypedStringLiteral",
+  pattern:
+    /W?STRING#(?:'(?:[^'$]|\$\$|\$'|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{2}|'')*'|"(?:[^"$]|\$\$|\$"|\$[LNPRTlnprt]|\$[0-9A-Fa-f]{4})*")/i,
 });
 
 // Typed literal: BYTE#255, DWORD#16#FF, INT#0, BOOL#1, REAL#1.5E10, INT#-123, etc.
@@ -917,6 +926,7 @@ export const allTokens = [
   DateLiteral,
   TimeOfDayLiteral,
   CharLiteral,
+  TypedStringLiteral,
   TypedLiteral,
   EnumLiteral,
 

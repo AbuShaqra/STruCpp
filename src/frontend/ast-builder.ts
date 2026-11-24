@@ -3340,6 +3340,22 @@ export class ASTBuilder {
       };
     }
 
+    // STRING#'abc' / WSTRING#"abc": the quoted text, typed by its prefix
+    if (children.TypedStringLiteral) {
+      const token = getFirstToken(children.TypedStringLiteral)!;
+      const hashIdx = token.image.indexOf("#");
+      const typePrefix = token.image.substring(0, hashIdx).toUpperCase();
+      const quoted = token.image.substring(hashIdx + 1);
+      return {
+        kind: "LiteralExpression",
+        sourceSpan: tokenToSourceSpan(token),
+        literalType: typePrefix === "WSTRING" ? "WSTRING" : "STRING",
+        value: quoted,
+        rawValue: quoted,
+        typePrefix,
+      };
+    }
+
     if (children.CharLiteral) {
       const token = getFirstToken(children.CharLiteral)!;
       return {

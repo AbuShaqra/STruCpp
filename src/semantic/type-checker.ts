@@ -2508,6 +2508,26 @@ export class TypeChecker {
     this.requireStructCompare(expr, leftType, rightType, scope);
 
     if (leftType === undefined || rightType === undefined) {
+      // `p^ = 'b'`: a dereferenced CHAR or WCHAR takes a one-character literal
+      // as that character; a string operand is refused as for a CHAR variable
+      const [deref, other, otherType] =
+        leftType === undefined
+          ? [expr.left, expr.right, rightType]
+          : [expr.right, expr.left, leftType];
+      const accessed = this.accessedElementaryType(deref, scope);
+      const derefChar = this.charTypeOf(accessed);
+      if (
+        derefChar !== undefined &&
+        !this.adaptCharLiteral(other, derefChar) &&
+        otherType?.typeKind === "elementary" &&
+        isStringBase(this.aliasBase((otherType as ElementaryType).name))
+      ) {
+        this.inferCharBinaryType(
+          expr,
+          leftType ?? accessed!,
+          rightType ?? accessed!,
+        );
+      }
       // `p^ MOD i`: a dereference has no expression type here; its declared one decides
       if (expr.operator === "MOD") {
         const left = leftType ?? this.accessedElementaryType(expr.left, scope);
@@ -2648,7 +2668,10 @@ export class TypeChecker {
    * a one-character literal is that character, and every compared argument
    * is the same character type (no implicit conversion to a number).
    */
-  private checkCharStdArguments(expr: FunctionCallExpression): void {
+  private checkCharStdArguments(
+    expr: FunctionCallExpression,
+    scope?: Scope,
+  ): void {
     const name = expr.functionName.toUpperCase();
     const skip = CHAR_COMPARE_FUNCTIONS.get(name);
     if (skip === undefined || this.findUserFunction(name)) return;
@@ -2660,8 +2683,14 @@ export class TypeChecker {
       return;
     }
     const args = stripEnEno(expr.arguments).slice(skip);
+    // `EQ(p^, 'b')`: a dereference has no expression type; its declared one counts
     const charType = args
-      .map((a) => this.charTypeOf(a.value.resolvedType))
+      .map((a) =>
+        this.charTypeOf(
+          a.value.resolvedType ??
+            (scope && this.accessedElementaryType(a.value, scope)),
+        ),
+      )
       .find((t) => t !== undefined);
     if (charType === undefined) return;
     for (const arg of args) {
@@ -2860,6 +2889,38 @@ export class TypeChecker {
       return leftType;
     }
     return undefined;
+  }
+
+  /**
+   * A store into a CHAR or WCHAR reached through `^` (its target has no
+   * expression type): a one-character literal is that character, and a STRING
+   * or WSTRING value is refused, as for a CHAR variable.
+   */
+  private adaptDereferencedCharStore(
+    target: Expression,
+    value: Expression,
+    scope: Scope,
+  ): void {
+    const accessed = this.accessedElementaryType(target, scope);
+    const charType = this.charTypeOf(accessed);
+    if (charType === undefined || this.adaptCharLiteral(value, charType)) {
+      return;
+    }
+    const valueType = value.resolvedType;
+    if (
+      valueType?.typeKind !== "elementary" ||
+      !isStringBase(this.aliasBase((valueType as ElementaryType).name)) ||
+      this.reportedCharValues.has(value)
+    ) {
+      return;
+    }
+    this.reportedCharValues.add(value);
+    this.addError(
+      `Cannot assign ${typeNameUtil(valueType)} to ${charType}`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
   }
 
   /** The elementary type a variable path names through `^`, fields and subscripts, if any. */
@@ -3805,7 +3866,7 @@ export class TypeChecker {
     }
     this.refuseNarrowAddressArguments(expr, scope);
     this.refuseBitMemberArguments(expr, scope);
-    this.checkCharStdArguments(expr);
+    this.checkCharStdArguments(expr, scope);
     this.adaptCharConversionArgument(expr);
     this.validateReferenceArguments(expr, scope);
     this.checkOutputBindings(expr, scope);
@@ -6231,7 +6292,8 @@ export class TypeChecker {
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope) ??
       methodParams?.filter((p) => !p.output) ??
-      this.libraryShapedFunctionInputs(expr, scope);
+      this.libraryShapedFunctionInputs(expr, scope) ??
+      this.stdSpecificInputs(expr, scope);
     if (inputs) {
       let positional = 0;
       for (const arg of args) {
@@ -6242,7 +6304,10 @@ export class TypeChecker {
             ? inputs[positional++]
             : inputs.find((p) => p.name.toUpperCase() === argName);
         // A VAR_IN_OUT binds, it stores nothing (the binding check refuses an ADR).
-        if (input === undefined || input.inOut) continue;
+        // A generic standard input (no type name) is not checked here.
+        if (input === undefined || input.inOut || input.type.name === "") {
+          continue;
+        }
         this.refuseMisalignedPointerStore(input.type, arg.value, scope);
         if ((input.type.referenceKind ?? "none") !== "none") continue;
         this.checkAddressStore(input.type.name, arg.value);
@@ -6402,6 +6467,10 @@ export class TypeChecker {
               this.resolveNamedType(this.currentReturn.type.name),
             ),
           );
+        }
+        // `p^ := 'b'` into a CHAR or WCHAR: the literal is that character; a string is refused
+        if (targetType === undefined) {
+          this.adaptDereferencedCharStore(stmt.target, stmt.value, scope);
         }
         // NOT of an untyped constant into a result or through `p^`
         if (targetType === undefined) {
@@ -9412,6 +9481,36 @@ export class TypeChecker {
           ]
         : [];
     });
+  }
+
+  /**
+   * The inputs of a standard function that take one elementary type (`L` and
+   * `P` of LEFT, MID, INSERT: INT), from the registry, as the standard
+   * library records no parameter shapes; generic inputs are left out.
+   */
+  private stdSpecificInputs(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): CallInput[] | undefined {
+    const name = expr.functionName;
+    if (!this.stdRegistry || expr.instance || name.includes(".")) {
+      return undefined;
+    }
+    if (this.calledInstance(name, scope) || this.ownMethod(name)) {
+      return undefined;
+    }
+    if (!this.isStdCharFunction(name.toUpperCase())) return undefined;
+    const desc = this.stdRegistry.lookup(name.toUpperCase());
+    if (!desc) return undefined;
+    // Each parameter keeps its place; a generic one has no type name.
+    return desc.params.map((p) => ({
+      name: p.name,
+      type: {
+        name: p.constraint === "specific" ? (p.specificType ?? "") : "",
+        referenceKind: "none",
+      },
+      inOut: false,
+    }));
   }
 
   /**

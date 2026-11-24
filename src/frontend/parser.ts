@@ -1506,6 +1506,7 @@ export class STParser extends CstParser {
       la1Type !== tokens.CharLiteral &&
       la1Type !== tokens.StringLiteral &&
       la1Type !== tokens.WideStringLiteral &&
+      la1Type !== tokens.TypedStringLiteral &&
       !this.isIdentifierOrKeywordToken(la1Type)
     ) {
       return false;
@@ -2748,6 +2749,7 @@ export class STParser extends CstParser {
       { ALT: () => this.CONSUME(tokens.StringLiteral) },
       { ALT: () => this.CONSUME(tokens.WideStringLiteral) },
       { ALT: (): IToken => this.CONSUME(tokens.CharLiteral) },
+      { ALT: (): IToken => this.CONSUME(tokens.TypedStringLiteral) },
       { ALT: () => this.CONSUME(tokens.TimeLiteral) },
       { ALT: () => this.CONSUME(tokens.DateLiteral) },
       { ALT: () => this.CONSUME(tokens.TimeOfDayLiteral) },
