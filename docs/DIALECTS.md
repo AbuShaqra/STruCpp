@@ -1127,4 +1127,7 @@ test file); without the feature it is 254.
   length written as a constant's name (`STRING(LEN_C)`) compares by the constant's value. A library
   in/out written without a length has the library's default length when its archive records every
   length (`stringLengthsRecorded`); in an older archive it may be of any length, so a library FUNCTION's
-  or METHOD's is left unchecked and a FUNCTION_BLOCK's is compared as written, as before.
+  or METHOD's is left unchecked and a FUNCTION_BLOCK's is compared as written, as before. An older
+  archive's FUNCTION or METHOD whose C++ prototype gives every parameter's shape and length, and a
+  FUNCTION_BLOCK whose C++ class gives every STRING in/out's length, are the exception: the loader reads
+  them from it, and their in/outs are then checked and copied as a marked archive's are.

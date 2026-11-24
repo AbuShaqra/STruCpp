@@ -250,6 +250,21 @@ function resolveDateTimeArithmetic(
 // Type Checker
 // =============================================================================
 
+/** `__VLA_<rank>D_<ElementType>`, the AST builder's name for an `ARRAY [*]`. */
+const VLA_PARAM_NAME = /^__VLA_(\d+)D_(.+)$/i;
+
+/** An array's shape as refuseArrayBinding compares it, or an elementary scalar. */
+type ArrayShape =
+  | {
+      kind: "array";
+      rank: number;
+      /** Undefined for an ARRAY[*]. */
+      dims?: ReadonlyArray<{ start: number; end: number }>;
+      chain: string[];
+      base: string;
+    }
+  | { kind: "scalar"; text: string };
+
 const REFERENCE_LEVEL_TEXT: Record<string, string> = {
   ref_to: "REF_TO",
   reference_to: "REFERENCE TO",
@@ -562,6 +577,14 @@ function accessIndices(expr: VariableExpression): Expression[] {
 
 /** A call's parameters in declaration order, outputs marked. */
 type OutputParams = Array<{ name: string; type: AccessType; output: boolean }>;
+
+/** A METHOD's or FUNCTION's VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT, in order. */
+type MethodParams = Array<{
+  name: string;
+  type: AccessType;
+  output: boolean;
+  inOut: boolean;
+}>;
 
 const COMPARISON_OPS: ReadonlySet<string> = new Set([
   "=",
@@ -4239,7 +4262,10 @@ export class TypeChecker {
       expr.arguments,
     );
     this.validateInterfaceArguments(inputs, expr.arguments);
-    this.markPointerZeroArguments(inputs, expr.arguments);
+    const pointerInputs =
+      inputs ?? this.pointerInputsOfLibraryCall(expr, scope);
+    this.markPointerZeroArguments(pointerInputs, expr.arguments);
+    this.refuseIntegerPointerArguments(pointerInputs, expr.arguments, scope);
     this.validateStructArguments(inputs, expr.arguments);
     this.validateEnumArguments(inputs, expr.arguments);
     this.validateReferenceToArguments(inputs, expr.arguments, scope);
@@ -4250,6 +4276,7 @@ export class TypeChecker {
       this.isFBInstanceCall(expr, scope),
       expr,
     );
+    if (inputs === undefined) this.refuseLibraryArrayInOuts(expr, scope);
     {
       this.checkStrictArguments(
         this.callInputs(expr, scope) ??
@@ -4476,6 +4503,9 @@ export class TypeChecker {
       if (method) this.calledMethods.set(expr, method);
       const chainInputs = this.methodInputsOf(owner?.name, expr.methodName);
       if (owner?.name !== undefined) {
+        this.checkMethodCallShapes(owner.name, expr, scope);
+      }
+      if (owner?.name !== undefined) {
         this.bindOutputs(
           this.methodParametersOf(owner.name, expr.methodName),
           expr.arguments,
@@ -4509,6 +4539,9 @@ export class TypeChecker {
 
     const methodInputs = this.methodInputs(objType, expr, scope);
     this.checkMethodOutputBindings(expr, objType, scope);
+    if (objType?.typeKind === "elementary") {
+      this.checkMethodCallShapes((objType as ElementaryType).name, expr, scope);
+    }
     if (objType?.typeKind === "elementary") {
       this.checkMemberFbOutputBindings(
         expr,
@@ -6013,6 +6046,20 @@ export class TypeChecker {
           );
           continue;
         }
+        // `pz : PINT := 5`: no integer initialises a POINTER TO alias; 0 is NULL.
+        if (this.isPointerAlias(decl.type)) {
+          if (isUntypedZero(decl.initialValue)) {
+            decl.initialValue.asNull = true;
+          } else if (this.isIntegerValue(decl.initialValue, scope)) {
+            this.addError(
+              `An integer cannot initialise the POINTER TO '${(decl.names[0] ?? "").toUpperCase()}'; use 0 or ADR(...), or assign it in the body`,
+              decl.initialValue.sourceSpan.startLine,
+              decl.initialValue.sourceSpan.startCol,
+              decl.initialValue.sourceSpan.file,
+            );
+            continue;
+          }
+        }
         // An address stored in an integer, also in an array literal or
         // structure initializer at any depth.
         if ((outerKind ?? "none") === "none") {
@@ -6727,28 +6774,114 @@ export class TypeChecker {
         this.checkAddressStore(input.type.name, arg.value, scope);
       }
     }
-    if (!args.some((a) => a.isOutput) || !this.ast) return;
+    if (!this.ast) return;
     const fbType = this.calledFbType(expr, scope);
+    const params =
+      fbType !== undefined
+        ? undefined
+        : (this.calledFunctionParameters(expr.functionName) ??
+          methodParams ??
+          this.libraryMethodParameters(expr, scope));
+    this.capturePointerOutputs(args, params, fbType, scope);
+  }
+
+  /**
+   * `obj.M(...)` on an instance reached through an index or a member
+   * (`fa[1].M`, `s.f.M`): its POINTER TO outputs are captured as a named
+   * call's are, and a library METHOD's ARRAY in/outs and outputs checked.
+   */
+  private checkMethodCallShapes(
+    ownerType: string,
+    expr: MethodCallExpression,
+    scope: Scope,
+  ): void {
+    const local = this.methodParametersOf(ownerType, expr.methodName);
+    const library =
+      local === undefined
+        ? this.libraryMethodOf(this.aliasBase(ownerType), expr.methodName)
+        : undefined;
+    const params =
+      local ??
+      (library !== undefined
+        ? this.methodParameters(library.method)
+        : undefined);
+    if (params === undefined) return;
+    this.refuseIntegerPointerArguments(
+      params
+        .filter((p) => !p.output)
+        .map((p) => ({
+          name: p.name,
+          type: p.type,
+          inOut: "inOut" in p && p.inOut === true,
+        })),
+      expr.arguments,
+      scope,
+    );
+    this.capturePointerOutputs(
+      stripEnEno([...expr.arguments]),
+      params,
+      undefined,
+      scope,
+    );
+    if (library !== undefined) {
+      this.refuseLibraryArrayArguments(
+        this.methodParameters(library.method),
+        expr.arguments,
+        scope,
+        true,
+      );
+    }
+  }
+
+  /**
+   * The POINTER TO and REF_TO outputs of a call bound to an integer, named
+   * (`o => lw`) or by position (`F(x, lw)`, slots bound as codegen binds them):
+   * captured as the address when it fits, else refused. `params` are a
+   * FUNCTION's or METHOD's, in order; `fbType` an FB instance call's block.
+   */
+  private capturePointerOutputs(
+    args: readonly Argument[],
+    params: OutputParams | undefined,
+    fbType: string | undefined,
+    scope: Scope,
+  ): void {
+    if (!this.ast) return;
+    const positionalOutputs = new Map<Argument, string>();
+    if (params !== undefined && args.some((a) => a.name === undefined)) {
+      const claimed = new Set(
+        args.flatMap((a) =>
+          a.name === undefined ? [] : [a.name.toUpperCase()],
+        ),
+      );
+      const free = params.filter((p) => !claimed.has(p.name.toUpperCase()));
+      let index = 0;
+      for (const arg of args) {
+        if (arg.name !== undefined) continue;
+        const param = free[index++];
+        if (param?.output === true) positionalOutputs.set(arg, param.name);
+      }
+    }
+    if (!args.some((a) => a.isOutput) && positionalOutputs.size === 0) return;
     const outputs =
       fbType !== undefined
         ? this.fbOutputsOf(fbType).map((o) => ({
             name: o.name,
             kind: o.referenceKind ?? "none",
           }))
-        : (
-            this.calledFunctionParameters(expr.functionName) ??
-            methodParams ??
-            []
-          )
+        : (params ?? [])
             .filter((p) => p.output)
             .map((p) => ({
               name: p.name,
               kind: p.type.referenceKind ?? "none",
             }));
     for (const arg of args) {
-      if (!arg.isOutput || arg.name === undefined) continue;
+      const outName =
+        arg.isOutput && arg.name !== undefined
+          ? arg.name
+          : positionalOutputs.get(arg);
+      if (outName === undefined) continue;
       const out = outputs.find(
-        (o) => o.name.toUpperCase() === arg.name!.toUpperCase(),
+        (o) => o.name.toUpperCase() === outName.toUpperCase(),
       );
       if (
         out === undefined ||
@@ -8304,6 +8437,13 @@ export class TypeChecker {
       ? resolveAccessType(declared.type, value, this.accessLookup)
       : declared.type;
     if (!argType) return;
+    this.refuseArrayBinding(
+      `VAR_IN_OUT '${input.name}'`,
+      input.type,
+      value,
+      scope,
+      true,
+    );
     if (this.stringElementLengthsDiffer(input.type, argType)) {
       // Another C++ element type: passed by copy, as before lengths were kept.
       arg.inOutCopy = true;
@@ -9114,8 +9254,280 @@ export class TypeChecker {
             );
       if (param?.output !== true) continue;
       if (arg.name !== undefined && !arg.isOutput) continue;
+      this.refuseArrayBinding(
+        `VAR_OUTPUT '${param.name.toUpperCase()}'`,
+        param.type,
+        arg.value,
+        scope,
+        false,
+      );
       this.checkOutputBinding(param.type, arg, scope);
     }
+  }
+
+  /**
+   * The ARRAY in/outs of a library FUNCTION whose archive records parameter
+   * shapes, and the ARRAY in/outs and outputs of a library block's METHOD
+   * (`inst.M(...)`), checked as refuseArrayBinding checks a local one's.
+   */
+  private refuseLibraryArrayInOuts(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    const method = this.libraryMethodParameters(expr, scope);
+    if (method !== undefined) {
+      this.refuseLibraryArrayArguments(method, expr.arguments, scope, true);
+      return;
+    }
+    if (this.libraryShapedFunctionInputs(expr, scope) === undefined) return;
+    const fn = this.symbolTables.lookupFunction(expr.functionName);
+    if (fn === undefined) return;
+    const params: MethodParams = [];
+    for (const p of fn.parameters) {
+      const type = p.declaration?.type;
+      if (type === undefined) return;
+      params.push({
+        name: p.name,
+        type,
+        output: p.isOutput && !p.isInput && !p.isInOut,
+        inOut: p.isInOut,
+      });
+    }
+    // A library FUNCTION's outputs are checked by bindOutputs.
+    this.refuseLibraryArrayArguments(params, expr.arguments, scope, false);
+  }
+
+  /**
+   * refuseArrayBinding for each argument bound to an in/out of `params` (in
+   * declaration order), and to an output when `outputs`.
+   */
+  private refuseLibraryArrayArguments(
+    params: MethodParams,
+    callArgs: readonly Argument[],
+    scope: Scope,
+    outputs: boolean,
+  ): void {
+    const args = stripEnEno([...callArgs]);
+    const claimed = new Set(
+      args.flatMap((a) => (a.name === undefined ? [] : [a.name.toUpperCase()])),
+    );
+    const free = params.filter((p) => !claimed.has(p.name.toUpperCase()));
+    let index = 0;
+    for (const arg of args) {
+      const argName = arg.name?.toUpperCase();
+      const param =
+        argName === undefined
+          ? free[index++]
+          : params.find((p) => p.name.toUpperCase() === argName);
+      if (param === undefined) continue;
+      if (param.inOut && !arg.isOutput) {
+        this.refuseArrayBinding(
+          `VAR_IN_OUT '${param.name.toUpperCase()}'`,
+          param.type,
+          arg.value,
+          scope,
+          true,
+        );
+      } else if (
+        outputs &&
+        param.output &&
+        (argName === undefined || arg.isOutput)
+      ) {
+        this.refuseArrayBinding(
+          `VAR_OUTPUT '${param.name.toUpperCase()}'`,
+          param.type,
+          arg.value,
+          scope,
+          false,
+        );
+      }
+    }
+  }
+
+  /**
+   * An ARRAY or ARRAY[*] output or in/out bound to a variable that cannot be
+   * one: an elementary scalar, or an array of other bounds, rank or element
+   * type. Elements of one C++ storage under two names (WORD and UINT) bind
+   * unless the scalar binding of that pair is refused in this mode.
+   */
+  private refuseArrayBinding(
+    what: string,
+    param: AccessType,
+    value: Expression,
+    scope: Scope,
+    inOut: boolean,
+  ): void {
+    if ((param.referenceKind ?? "none") !== "none") return;
+    const expected = this.bindingShapeOf(param);
+    if (expected === undefined || expected.kind === "scalar") return;
+    if (value.kind !== "VariableExpression" || value.isDereference) return;
+    if (value.accessChain?.some((st) => st.kind === "dereference") === true) {
+      return;
+    }
+    const sym = scope.lookup(value.name);
+    if (sym?.kind !== "variable") return;
+    const declared = sym.declaration as VarDeclaration | undefined;
+    if (!declared) return;
+    const arg = this.hasMemberAccess(value)
+      ? resolveAccessType(declared.type, value, this.accessLookup)
+      : declared.type;
+    if (arg === undefined) return;
+    const argLevels = arg.referenceChain ?? [arg.referenceKind ?? "none"];
+    if (argLevels.some((k) => k !== "none")) return;
+    const actual = this.bindingShapeOf(arg);
+    if (actual === undefined) return;
+    const describe = (shape: ArrayShape): string =>
+      shape.kind === "scalar"
+        ? shape.text
+        : `ARRAY[${
+            shape.dims === undefined
+              ? Array(shape.rank).fill("*").join(", ")
+              : shape.dims.map((d) => `${d.start}..${d.end}`).join(", ")
+          }] OF ${describeReferenceShape({ chain: shape.chain, base: shape.base })}`;
+    let refused = actual.kind === "scalar";
+    if (actual.kind === "array") {
+      const dims =
+        expected.dims === undefined
+          ? actual.rank === expected.rank
+          : actual.dims !== undefined &&
+            actual.dims.length === expected.dims.length &&
+            actual.dims.every(
+              (d, i) =>
+                d.start === expected.dims![i]!.start &&
+                d.end === expected.dims![i]!.end,
+            );
+      const sameChain = actual.chain.join(" ") === expected.chain.join(" ");
+      const storage = (base: string): string | undefined =>
+        INTEGER_STORAGE[base];
+      const elements =
+        sameChain && actual.base === expected.base
+          ? "same"
+          : sameChain &&
+              actual.chain.length === 0 &&
+              storage(actual.base) !== undefined &&
+              storage(actual.base) === storage(expected.base)
+            ? "storage"
+            : "other";
+      // Where the scalar binding of the pair is an error, so is the array's.
+      const modeRefuses = this.strict || (inOut && this.inOutErrors);
+      refused =
+        !dims ||
+        elements === "other" ||
+        (elements === "storage" && modeRefuses);
+    }
+    if (!refused) return;
+    this.addError(
+      `${what} of type ${describe(expected)} cannot be bound to a variable of type ${describe(actual)}`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
+  }
+
+  /**
+   * The array shape of a declared type (inline, ARRAY[*], or a TYPE of an
+   * ARRAY with constant bounds, through aliases), an elementary type as a
+   * scalar, or undefined when it is neither or cannot be told.
+   */
+  private bindingShapeOf(t: AccessType): ArrayShape | undefined {
+    const vla = VLA_PARAM_NAME.exec(t.name);
+    if (vla !== null) {
+      return {
+        kind: "array",
+        rank: Number(vla[1]),
+        ...this.elementKey(t.elementReferenceChain ?? [], vla[2]!),
+      };
+    }
+    if (t.arrayDimensions !== undefined) {
+      if (t.elementTypeName === undefined) return undefined;
+      return {
+        kind: "array",
+        rank: t.arrayDimensions.length,
+        dims: t.arrayDimensions,
+        ...this.elementKey(t.elementReferenceChain ?? [], t.elementTypeName),
+      };
+    }
+    let name = t.name.toUpperCase();
+    for (let depth = 0; depth < 32; depth++) {
+      const current = name;
+      const def =
+        this.ast?.types.find((td) => td.name.toUpperCase() === current)
+          ?.definition ??
+        this.symbolTables.lookupType(current)?.declaration?.definition;
+      if (def?.kind === "ArrayDefinition") {
+        const element = def.elementType;
+        const elementChain =
+          element.referenceChain ??
+          (element.referenceKind !== undefined &&
+          element.referenceKind !== "none"
+            ? [element.referenceKind]
+            : []);
+        const key = this.elementKey(elementChain, element.name);
+        if (def.dimensions.some((d) => d.isVariableLength)) return undefined;
+        const dims: Array<{ start: number; end: number }> = [];
+        for (const d of def.dimensions) {
+          const start =
+            d.start === undefined
+              ? undefined
+              : this.constantIntegerValue(d.start);
+          const end =
+            d.end === undefined ? undefined : this.constantIntegerValue(d.end);
+          if (start === undefined || end === undefined) return undefined;
+          dims.push({ start: Number(start), end: Number(end) });
+        }
+        return { kind: "array", rank: dims.length, dims, ...key };
+      }
+      if (
+        def?.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        (def.referenceKind ?? "none") !== "none"
+      ) {
+        break;
+      }
+      name = def.name.toUpperCase();
+    }
+    const base = canonicalElementaryName(this.aliasBase(t.name));
+    if (ELEMENTARY_TYPES[base] === undefined) return undefined;
+    return {
+      kind: "scalar",
+      text: describeReferenceShape({
+        chain: [],
+        base: t.name,
+        ...(t.maxLength !== undefined ? { length: t.maxLength } : {}),
+      }),
+    };
+  }
+
+  /**
+   * An array element's reference levels and base type, a single-level
+   * POINTER TO alias read as its target (`PINT` is `POINTER TO INT`) and an
+   * elementary alias as its base.
+   */
+  private elementKey(
+    chain: readonly string[],
+    name: string,
+  ): { chain: string[]; base: string } {
+    let levels = [...chain];
+    let base = name.toUpperCase();
+    if (levels.length === 0) {
+      const def =
+        this.ast?.types.find((td) => td.name.toUpperCase() === base)
+          ?.definition ??
+        this.symbolTables.lookupType(base)?.declaration?.definition;
+      if (
+        def?.kind === "TypeReference" &&
+        def.arrayDimensions === undefined &&
+        def.referenceKind === "pointer_to" &&
+        (def.referenceChain?.length ?? 1) === 1
+      ) {
+        levels = ["pointer_to"];
+        base = def.name.toUpperCase();
+      }
+    }
+    return {
+      chain: levels,
+      base: canonicalElementaryName(this.aliasBase(base)),
+    };
   }
 
   /** VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT of a user or library FUNCTION, in order. */
@@ -9580,6 +9992,109 @@ export class TypeChecker {
     return outer === "pointer_to" || outer === "ref_to";
   }
 
+  /**
+   * An integer (a literal other than 0, or an integer variable, member or
+   * arithmetic of them) bound to a POINTER TO input, its alias's included:
+   * refused, as no integer converts to a pointer argument.
+   */
+  private refuseIntegerPointerArguments(
+    inputs: CallInput[] | undefined,
+    args: readonly Argument[],
+    scope: Scope,
+  ): void {
+    if (!inputs) return;
+    stripEnEno([...args]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (!input || input.inOut) return;
+      if (
+        referenceShapeOf(input.type)?.chain[0] !== "pointer_to" &&
+        !this.isPointerAlias(input.type)
+      ) {
+        return;
+      }
+      if (isUntypedZero(arg.value) || !this.isIntegerValue(arg.value, scope)) {
+        return;
+      }
+      this.addError(
+        `An integer cannot be passed to the POINTER TO input '${input.name.toUpperCase()}'; pass an address (ADR) or 0`,
+        arg.value.sourceSpan.startLine,
+        arg.value.sourceSpan.startCol,
+        arg.value.sourceSpan.file,
+      );
+    });
+  }
+
+  /**
+   * An integer value that is not a pointer: an integer literal, an integer or
+   * bit-string variable or member (not a POINTER TO or its alias), or `-`, `+`,
+   * `-`, `*`, `/`, MOD, AND, OR, XOR of those.
+   */
+  private isIntegerValue(expr: Expression, scope: Scope): boolean {
+    switch (expr.kind) {
+      case "ParenthesizedExpression":
+        return this.isIntegerValue(expr.expression, scope);
+      case "UnaryExpression":
+        return (
+          expr.operator === "-" && this.isIntegerValue(expr.operand, scope)
+        );
+      case "LiteralExpression":
+        return expr.literalType === "INT";
+      case "BinaryExpression":
+        return (
+          ["+", "-", "*", "/", "MOD", "AND", "OR", "XOR"].includes(
+            expr.operator,
+          ) &&
+          this.isIntegerValue(expr.left, scope) &&
+          this.isIntegerValue(expr.right, scope)
+        );
+      case "VariableExpression": {
+        if (expr.isDereference) return false;
+        if (
+          expr.accessChain?.some((st) => st.kind === "dereference") === true
+        ) {
+          return false;
+        }
+        const sym = scope.lookup(expr.name);
+        if (sym?.kind !== "variable" && sym?.kind !== "constant") return false;
+        const declared = sym.declaration as VarDeclaration | undefined;
+        if (!declared) return false;
+        const type = this.hasMemberAccess(expr)
+          ? resolveAccessType(declared.type, expr, this.accessLookup)
+          : declared.type;
+        if (type === undefined || type.arrayDimensions !== undefined) {
+          return false;
+        }
+        if ((type.referenceKind ?? "none") !== "none") return false;
+        if (this.isPointerAlias(type)) return false;
+        const base = canonicalElementaryName(this.aliasBase(type.name));
+        return (
+          INTEGER_STORAGE[base] !== undefined ||
+          ["__XWORD", "XWORD", "__UXINT", "__XINT"].includes(base)
+        );
+      }
+      default:
+        return false;
+    }
+  }
+
+  /** The inputs of a library FUNCTION (shaped archive) or of a library block's METHOD (`inst.M`). */
+  private pointerInputsOfLibraryCall(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): CallInput[] | undefined {
+    const shaped = this.libraryShapedFunctionInputs(expr, scope);
+    if (shaped !== undefined) return shaped;
+    const method = this.libraryMethodParameters(expr, scope);
+    return method
+      ?.filter((p) => !p.output)
+      .map((p) => ({ name: p.name, type: p.type, inOut: p.inOut }));
+  }
+
   /** Mark an untyped `0` bound to a POINTER TO input as NULL. */
   private markPointerZeroArguments(
     inputs: CallInput[] | undefined,
@@ -9594,7 +10109,12 @@ export class TypeChecker {
           ? inputs[i]
           : inputs.find((p) => p.name.toUpperCase() === argName);
       if (!input || input.inOut) return;
-      if (referenceShapeOf(input.type)?.chain[0] !== "pointer_to") return;
+      if (
+        referenceShapeOf(input.type)?.chain[0] !== "pointer_to" &&
+        !this.isPointerAlias(input.type)
+      ) {
+        return;
+      }
       if (isUntypedZero(arg.value)) arg.value.asNull = true;
     });
   }
@@ -9610,10 +10130,45 @@ export class TypeChecker {
   ): boolean {
     if (!isUntypedZero(value)) return false;
     if (this.declaredReferenceShape(target, scope)?.chain[0] !== "pointer_to") {
+      // A POINTER TO alias of this unit: NULL too, checked as before.
+      if (this.isPointerAliasTarget(target, scope)) value.asNull = true;
       return false;
     }
     value.asNull = true;
     return true;
+  }
+
+  /** `target` is a variable or member declared with a POINTER TO alias of this unit (`p : PINT`). */
+  private isPointerAliasTarget(target: Expression, scope: Scope): boolean {
+    if (target.kind !== "VariableExpression") return false;
+    const sym = scope.lookup(target.name);
+    if (sym?.kind !== "variable") return false;
+    const declared = sym.declaration as VarDeclaration | undefined;
+    if (!declared) return false;
+    const type = this.hasMemberAccess(target)
+      ? resolveAccessType(declared.type, target, this.accessLookup)
+      : declared.type;
+    return type !== undefined && this.isPointerAlias(type);
+  }
+
+  /** A type declared by name as a single-level POINTER TO alias (of this unit or a library). */
+  private isPointerAlias(type: AccessType): boolean {
+    if ((type.referenceKind ?? "none") !== "none") return false;
+    if (type.arrayDimensions !== undefined) return false;
+    const upper = type.name.toUpperCase();
+    // This unit's TYPE, else a library's (archives with `pointerTarget`).
+    const def =
+      this.ast?.types.find((td) => td.name.toUpperCase() === upper)
+        ?.definition ??
+      (this.symbolTables.globalScope.definedByLibrary(upper)
+        ? this.symbolTables.lookupType(upper)?.declaration?.definition
+        : undefined);
+    return (
+      def?.kind === "TypeReference" &&
+      def.arrayDimensions === undefined &&
+      def.referenceKind === "pointer_to" &&
+      (def.referenceChain?.length ?? 1) === 1
+    );
   }
 
   /** Report `value` when it cannot be held by a target of shape `t`. */
@@ -9820,6 +10375,15 @@ export class TypeChecker {
       const upper = arg.name.toUpperCase();
       if (upper === "ENO") continue;
       const out = outputs.find((o) => o.name.toUpperCase() === upper);
+      if (out !== undefined) {
+        this.refuseArrayBinding(
+          `VAR_OUTPUT '${out.name.toUpperCase()}'`,
+          out.type,
+          arg.value,
+          scope,
+          false,
+        );
+      }
       if (
         out === undefined ||
         out.arrayDimensions !== undefined ||
@@ -9899,6 +10463,7 @@ export class TypeChecker {
     typeName: string;
     arrayDimensions?: unknown;
     referenceKind?: string;
+    type: AccessType;
   }> {
     const upper = this.aliasBase(fbTypeName).toUpperCase();
     const out: Array<{
@@ -9906,6 +10471,7 @@ export class TypeChecker {
       typeName: string;
       arrayDimensions?: unknown;
       referenceKind?: string;
+      type: AccessType;
     }> = [];
     let current: string | undefined = upper;
     for (let depth = 0; current !== undefined && depth < 32; depth++) {
@@ -9922,6 +10488,7 @@ export class TypeChecker {
             typeName: t.name,
             arrayDimensions: t.arrayDimensions,
             referenceKind: t.referenceKind,
+            type: t,
           });
         }
         break;
@@ -9935,6 +10502,7 @@ export class TypeChecker {
               typeName: d.type.name,
               arrayDimensions: d.type.arrayDimensions,
               referenceKind: d.type.referenceKind,
+              type: d.type,
             });
           }
         }
@@ -9983,7 +10551,9 @@ export class TypeChecker {
       name: m.name,
       type: m.declaration.type,
       inOut,
-      fromLibrary: libraryFb.stringLengthsRecorded !== true,
+      fromLibrary:
+        libraryFb.stringLengthsRecorded !== true &&
+        libraryFb.inOutLengthsRecovered !== true,
     }));
   }
 
@@ -10142,6 +10712,43 @@ export class TypeChecker {
     typeName: string,
     methodName: string,
   ): CallInput[] | undefined {
+    const found = this.libraryMethodOf(typeName, methodName);
+    return found === undefined
+      ? undefined
+      : callInputsOfBlocks(found.method.varBlocks).map((input) => ({
+          ...input,
+          fromLibrary: !found.recorded,
+        }));
+  }
+
+  /** The parameters of `inst.M(...)` where `inst` is an instance of a library block. */
+  private libraryMethodParameters(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): MethodParams | undefined {
+    const parts = expr.functionName.split(".");
+    if (parts.length !== 2 || expr.instance !== undefined) return undefined;
+    const sym = scope.lookup(parts[0]!);
+    if (sym?.kind !== "variable") return undefined;
+    const type = (sym.declaration as VarDeclaration | undefined)?.type;
+    if (type === undefined || (type.referenceKind ?? "none") !== "none") {
+      return undefined;
+    }
+    const found = this.libraryMethodOf(type.name, parts[1]!);
+    return found === undefined
+      ? undefined
+      : this.methodParameters(found.method);
+  }
+
+  /**
+   * METHOD `methodName` of library block `typeName` (or a base of it), with
+   * whether its archive records every STRING length; undefined when a block
+   * of this compile declares it or it is not found.
+   */
+  private libraryMethodOf(
+    typeName: string,
+    methodName: string,
+  ): { method: MethodDeclaration; recorded: boolean } | undefined {
     const upper = methodName.toUpperCase();
     const seen = new Set<string>();
     let method: MethodDeclaration | undefined;
@@ -10166,15 +10773,12 @@ export class TypeChecker {
       method = fb
         .libraryMethods?.()
         ?.find((m) => m.name.toUpperCase() === upper);
-      recorded = fb.stringLengthsRecorded === true;
+      recorded =
+        fb.stringLengthsRecorded === true ||
+        fb.prototypeShapedMethods?.includes(upper) === true;
       current = fb.declaration.extends;
     }
-    return method === undefined
-      ? undefined
-      : callInputsOfBlocks(method.varBlocks).map((input) => ({
-          ...input,
-          fromLibrary: !recorded,
-        }));
+    return method === undefined ? undefined : { method, recorded };
   }
 
   /** `inputs` with only its STRING, WSTRING and library alias in-outs marked; undefined without one. */

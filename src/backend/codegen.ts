@@ -3395,8 +3395,13 @@ export class CodeGenerator {
       } else if (block.blockType === "VAR_IN_OUT") {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
-            // A STRING(n) keeps its length: the argument binds when it has it.
-            params.push(`${this.inOutParamType(decl.type)}& ${name}`);
+            // An ARRAY[*] is a view, passed by value as a FUNCTION's is; a
+            // STRING(n) keeps its length: the argument binds when it has it.
+            params.push(
+              VLA_TYPE_NAME.test(decl.type.name)
+                ? `${this.mapTypeRefToCpp(decl.type)} ${name}`
+                : `${this.inOutParamType(decl.type)}& ${name}`,
+            );
           }
         }
       } else if (block.blockType === "VAR_OUTPUT") {
@@ -9755,7 +9760,7 @@ export class CodeGenerator {
           param.blockType === "VAR_OUTPUT" ||
           param.blockType === "VAR_IN_OUT"
         ) {
-          result[i] = this.emitOutputTempVar(param.typeName);
+          result[i] = this.emitOutputTempVar(param.type);
         } else {
           result[i] = param.defaultExpr ?? this.typeDefaultArgument(param.type);
         }
@@ -9769,7 +9774,7 @@ export class CodeGenerator {
         param.blockType === "VAR_OUTPUT" ||
         param.blockType === "VAR_IN_OUT"
       ) {
-        return this.emitOutputTempVar(param.typeName);
+        return this.emitOutputTempVar(param.type);
       }
       return param.defaultExpr ?? this.typeDefaultArgument(param.type);
     });
@@ -9806,7 +9811,7 @@ export class CodeGenerator {
         for (let n = 0; n < decl.names.length; n++, index++) {
           if (index < args.length) continue;
           if (block.blockType !== "VAR_INPUT") {
-            args.push(this.emitOutputTempVar(decl.type.name));
+            args.push(this.emitOutputTempVar(decl.type));
           } else if (decl.initialValue) {
             args.push(
               this.generateInitializer(
@@ -9831,10 +9836,13 @@ export class CodeGenerator {
    * Emit a temporary variable declaration for an omitted VAR_OUTPUT/VAR_IN_OUT argument.
    * The temp is emitted before the current statement line (since generateExpression()
    * runs before the statement's emit() call). Returns the temp variable name.
+   * It has the parameter's C++ type (an inline array, a pointer, a STRING(n)).
    */
-  private emitOutputTempVar(typeName: string): string {
+  private emitOutputTempVar(type: TypeReference): string {
     const name = `__output_tmp_${this.tempVarCounter++}`;
-    const cppType = this.mapVarTypeToCpp(typeName);
+    const cppType = VLA_TYPE_NAME.test(type.name)
+      ? this.mapVarTypeToCpp(type.name)
+      : this.inOutParamType(type);
     this.emit(`${this.currentStatementIndent}${cppType} ${name};`);
     return name;
   }

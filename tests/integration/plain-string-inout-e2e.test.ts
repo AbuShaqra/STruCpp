@@ -255,7 +255,7 @@ END_PROGRAM
     expect(
       runLf("STRING(80)", ["+string_default_80"], true, "plainstr_lf_80"),
     ).toBe("1 1 1 45");
-    // Without the marker: FUNCTION and METHOD as before, the FB copied.
-    expect(runLf("STRING(254)", [], false, "plainstr_lf_old")).toBe("1 1 4 45");
+    // Without the marker: lengths read from the C++ prototypes and class, as marked.
+    expect(runLf("STRING(254)", [], false, "plainstr_lf_old")).toBe("1 1 1 45");
   });
 });

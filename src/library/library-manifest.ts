@@ -62,6 +62,9 @@ export interface LibraryFunctionEntry {
      *  ARRAY[*] parameter's included. Absent in older archives. */
     elementMaxLength?: number | string;
   }>;
+  /** Set by the loader on an older archive's function whose C++ prototype
+   *  gave every parameter's shape and STRING length; never written. */
+  prototypeShapes?: true;
   /** Variadic call shape. When set, `parameters` describes the leading
    *  required parameters and the function accepts any number of
    *  additional arguments matching the LAST parameter's type. `minArgs`
@@ -151,6 +154,9 @@ export interface LibraryMethodEntry {
   >;
   /** Declared visibility when not PUBLIC. */
   visibility?: "PRIVATE" | "PROTECTED";
+  /** Set by the loader on an older archive's method whose C++ prototype gave
+   *  every STRING length; never written. */
+  prototypeShapes?: true;
 }
 
 /**
@@ -206,6 +212,9 @@ export interface LibraryFBEntry {
    * and back around the call, and warns that the library should be rebuilt.
    */
   inoutByReference?: true;
+  /** Set by the loader on an older archive's block whose C++ class gave every
+   *  STRING / WSTRING in/out's length; never written. */
+  prototypeInOuts?: true;
   /**
    * `VAR` members — the block's own internal state, declared exactly as the
    * interface arrays are.
@@ -264,6 +273,9 @@ export interface LibraryTypeEntry {
   /** Base type (for alias/enum). Recorded for an alias of a named or
    *  elementary type, not of an ARRAY, POINTER TO or REF_TO; absent in older archives. */
   baseType?: string;
+  /** The target of an alias of a single-level POINTER TO (`TYPE PINT : POINTER
+   *  TO INT`); absent in older archives. */
+  pointerTarget?: string;
   /** Length of an alias of STRING(n) / WSTRING(n) (`baseType` STRING / WSTRING). */
   maxLength?: number | string;
   /** Struct member fields (name + declared type), so a consuming compilation

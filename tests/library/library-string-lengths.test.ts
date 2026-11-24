@@ -148,7 +148,7 @@ describe("library STRING lengths in the manifest", () => {
     }
   });
 
-  it("records an alias's base type and length, not an ARRAY's or POINTER's", () => {
+  it("records an alias's base type and length, a POINTER's target, not an ARRAY's", () => {
     const types = library().manifest.types;
     expect(types.find((t) => t.name === "TS")).toEqual({
       name: "TS",
@@ -164,6 +164,7 @@ describe("library STRING lengths in the manifest", () => {
     expect(types.find((t) => t.name === "TP")).toEqual({
       name: "TP",
       kind: "alias",
+      pointerTarget: "INT",
     });
   });
 

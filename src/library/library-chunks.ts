@@ -220,6 +220,9 @@ function collectReferencedNames(node: ASTNode, out: Set<string>): void {
         if (tr.elementTypeName) {
           out.add(tr.elementTypeName.toUpperCase());
         }
+        // An ARRAY[*] (`__VLA_1D_PINT`) uses its element type.
+        const vla = /^__VLA_\d+D_(.+)$/i.exec(tr.name);
+        if (vla !== null) out.add(vla[1]!.toUpperCase());
         break;
       }
       case "FunctionBlockDeclaration": {

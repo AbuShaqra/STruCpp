@@ -97,6 +97,7 @@ END_FUNCTION_BLOCK
   const archive = (
     constants: Record<string, number>,
     strip = false,
+    opaque = false,
   ): StlibArchive => {
     const lib = compileStlib([{ source: LIB, fileName: "l.st" }], {
       name: "l",
@@ -110,6 +111,12 @@ END_FUNCTION_BLOCK
       delete raw.manifest.stringLengthsRecorded;
       for (const fb of raw.manifest.functionBlocks) {
         for (const v of fb.inouts) delete v.maxLength;
+      }
+    }
+    // A C++ class the loader cannot read lengths from.
+    if (opaque) {
+      for (const chunk of raw.chunks) {
+        chunk.header = chunk.header.replaceAll("IECStringVar<", "OpaqueVar<");
       }
     }
     return loadStlibArchive(raw);
@@ -150,9 +157,15 @@ END_PROGRAM
     );
   });
 
-  it("keeps an archive without recorded lengths as written: a plain in/out is not taken for 254", () => {
+  it("reads an older archive's unrecorded in/out lengths from its C++ class, as a marked archive records them", () => {
     expect(
       warnings("m(s1 := b, s2 := b);", archive({ LEN_C: 254 }, true)),
+    ).toEqual([]);
+  });
+
+  it("keeps an archive without readable lengths as written: a plain in/out is not taken for 254", () => {
+    expect(
+      warnings("m(s1 := b, s2 := b);", archive({ LEN_C: 254 }, true, true)),
     ).toEqual([
       "VAR_IN_OUT 'S1' of type STRING is bound to a variable of type STRING(254)",
       "VAR_IN_OUT 'S2' of type STRING is bound to a variable of type STRING(254)",
@@ -199,7 +212,11 @@ M := LEN(s2);
 END_METHOD
 END_FUNCTION_BLOCK
 `;
-  const archive = (features: string[], marked: boolean): StlibArchive => {
+  const archive = (
+    features: string[],
+    marked: boolean,
+    opaque = false,
+  ): StlibArchive => {
     const lib = compileStlib([{ source: LIB, fileName: "l.st" }], {
       name: "l",
       version: "1.0.0",
@@ -210,6 +227,12 @@ END_FUNCTION_BLOCK
     expect(lib.archive.manifest.stringLengthsRecorded).toBe(true);
     const raw = JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
     if (!marked) delete raw.manifest.stringLengthsRecorded;
+    // C++ prototypes and a class the loader cannot read lengths from.
+    if (opaque) {
+      for (const chunk of raw.chunks) {
+        chunk.header = chunk.header.replaceAll("IEC_STRING", "OPAQUE_STRING");
+      }
+    }
     return loadStlibArchive(raw);
   };
   const warned = (
@@ -262,9 +285,13 @@ END_PROGRAM
     ]);
   });
 
-  it("keeps development's behaviour for an archive without the marker", () => {
+  it("reads an archive without the marker from its C++ prototypes and class, as a marked one", () => {
+    expect(warned("STRING(254)", [], archive([], false))).toEqual([]);
+  });
+
+  it("keeps development's behaviour for an archive without the marker or readable lengths", () => {
     // FUNCTION and METHOD in-outs unchecked; the FB's compared as written.
-    expect(warned("STRING(254)", [], archive([], false))).toEqual([
+    expect(warned("STRING(254)", [], archive([], false, true))).toEqual([
       "VAR_IN_OUT 'F1' of type STRING",
       "VAR_IN_OUT 'F2' of type STRING",
     ]);
