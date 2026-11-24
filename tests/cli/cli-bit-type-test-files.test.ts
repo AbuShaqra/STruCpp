@@ -1,7 +1,7 @@
 /**
  * A STRUCT with BIT members (feature bit_type) used from a --test file (g++).
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
 import { mkdirSync, writeFileSync, existsSync, rmSync } from "fs";
 import { resolve, join } from "path";
@@ -51,4 +51,8 @@ describe.skipIf(!hasGpp)("BIT members in a --test run", () => {
     expect(r.out).toContain("1 test, 1 passed, 0 failed");
     expect(r.status).toBe(0);
   });
+});
+
+afterAll(() => {
+  rmSync(DIR, { recursive: true, force: true });
 });

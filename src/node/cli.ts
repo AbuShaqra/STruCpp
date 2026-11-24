@@ -164,12 +164,15 @@ function printDiagnostics(
  * Coerce a stlib-compile error (optional line/column/file) into the
  * CompileError shape `printDiagnostics` consumes. `column` defaults to 1.
  */
-function toDiagnostic(err: LibraryCompileError): CompileError {
+function toDiagnostic(
+  err: LibraryCompileError,
+  severity: CompileError["severity"] = "error",
+): CompileError {
   return {
     message: err.message,
     line: err.line ?? 0,
     column: err.column ?? 1,
-    severity: "error",
+    severity,
     ...(err.file ? { file: err.file } : {}),
   };
 }
@@ -927,12 +930,20 @@ function compileLibraryMode(options: CLIOptions): void {
     stlibOpts.globalConstants = options.defines;
   }
   const result = compileStlib(sources, stlibOpts);
+  const warnings = (result.warnings ?? []).map((w) =>
+    toDiagnostic(w, "warning"),
+  );
 
   if (!result.success) {
     console.error("\nLibrary compilation failed:\n");
-    printDiagnostics(result.errors.map(toDiagnostic), sources);
+    printDiagnostics(
+      result.errors.map((e) => toDiagnostic(e)),
+      sources,
+    );
+    printDiagnostics(warnings, sources, "warn");
     process.exit(1);
   }
+  printDiagnostics(warnings, sources, "warn");
 
   // Write single .stlib archive
   const stlibPath = resolve(outputDir, `${options.libName}.stlib`);
@@ -1007,20 +1018,17 @@ function runTestMode(options: CLIOptions): void {
   }
 
   const result = compile(source, compileOptions);
+  const sourceDiagSources = [
+    { fileName: basename(inputPath), source },
+    ...additionalSources,
+  ];
   if (!result.success) {
     console.error("Error compiling source files:\n");
-    const sourceDiagSources = [
-      { fileName: basename(inputPath), source },
-      ...additionalSources,
-    ];
     printDiagnostics(result.errors, sourceDiagSources);
     printDiagnostics(result.warnings, sourceDiagSources, "warn");
     process.exit(1);
   }
-  // A test run shows no other source warning, but a skipped profile's.
-  for (const w of result.warnings) {
-    if (w.code === "dialect") console.error(`warning: ${w.message}`);
-  }
+  printDiagnostics(result.warnings, sourceDiagSources, "warn");
 
   // 2. Build POU info from the compiled AST
   const { pous } = result.ast ? buildPOUInfoFromAST(result.ast) : { pous: [] };
@@ -1082,6 +1090,7 @@ function runTestMode(options: CLIOptions): void {
         console.error(`Error in test file '${tf.fileName}':\n`);
         printDiagnostics(analysisResult.errors, testSources);
       }
+      printDiagnostics(analysisResult.warnings, testSources, "warn");
     }
     if (hasTestErrors) {
       process.exit(1);
@@ -1111,91 +1120,17 @@ function runTestMode(options: CLIOptions): void {
     process.exit(1);
   }
 
-  // 5. Write to temp directory
+  // 5. Write to temp directory; exit only after it is removed
   const tempDir = mkdtempSync(join(tmpdir(), "strucpp-test-"));
+  let exitCode = 1;
   try {
-    writeFileSync(join(tempDir, "generated.hpp"), result.headerCode, "utf-8");
-    writeFileSync(join(tempDir, "generated.cpp"), result.cppCode, "utf-8");
-    writeFileSync(join(tempDir, "test_main.cpp"), testMainCpp, "utf-8");
-
-    // 6. Find runtime include directory
-    const runtimeIncludeDir = findRuntimeIncludeDir(options.cxxFlags);
-    if (!runtimeIncludeDir) {
-      console.error(
-        "Error: Could not locate runtime include directory.\n" +
-          '  Use --cxx-flags "-I/path/to/runtime/include" to specify it.',
-      );
-      process.exit(1);
-    }
-
-    // 7. Compile with g++
-    const binaryPath = join(
+    exitCode = buildAndRunTests(
       tempDir,
-      process.platform === "win32" ? "test_runner.exe" : "test_runner",
+      result.headerCode,
+      result.cppCode,
+      testMainCpp,
+      options,
     );
-
-    try {
-      execFileSync(
-        options.gpp,
-        [
-          "-std=c++14",
-          // Pointer punning is valid IEC; the runtime marks its types
-          // may_alias, and this covers anything it cannot mark.
-          "-fno-strict-aliasing",
-          `-I${runtimeIncludeDir}`,
-          `-I${tempDir}`,
-          ...splitCxxFlags(options.cxxFlags),
-          join(tempDir, "test_main.cpp"),
-          join(tempDir, "generated.cpp"),
-          "-o",
-          binaryPath,
-        ],
-        { stdio: ["pipe", "pipe", "pipe"], env: getCxxEnv() },
-      );
-    } catch (err: unknown) {
-      const execErr = err as {
-        status?: number;
-        stderr?: Buffer | string;
-        stdout?: Buffer | string;
-      };
-      const stderr = execErr.stderr
-        ? typeof execErr.stderr === "string"
-          ? execErr.stderr
-          : execErr.stderr.toString()
-        : "";
-      console.error("Error: C++ compilation failed:");
-      if (stderr) console.error(stderr);
-      process.exit(1);
-    }
-
-    // 8. Execute test binary and display results
-    let exitCode = 0;
-    try {
-      const output = execFileSync(binaryPath, [], {
-        encoding: "utf-8",
-        timeout: 30000,
-      });
-      process.stdout.write(output);
-    } catch (err: unknown) {
-      const execErr = err as {
-        status?: number;
-        stdout?: string;
-        stderr?: string;
-        signal?: string;
-      };
-      if (execErr.stdout) {
-        process.stdout.write(execErr.stdout);
-      }
-      if (execErr.signal) {
-        console.error(
-          `Error: Test binary crashed with signal ${execErr.signal}`,
-        );
-      }
-      exitCode = execErr.status ?? 1;
-    }
-
-    // 9. Exit with test result code
-    process.exit(exitCode);
   } finally {
     // 10. Cleanup temp directory
     try {
@@ -1204,6 +1139,101 @@ function runTestMode(options: CLIOptions): void {
       // Ignore cleanup errors
     }
   }
+  process.exit(exitCode);
+}
+
+/**
+ * Write the generated sources into `tempDir`, build the test runner with g++
+ * and run it. Returns the process exit code; never calls `process.exit`, so the
+ * caller's cleanup of `tempDir` always runs.
+ */
+function buildAndRunTests(
+  tempDir: string,
+  headerCode: string,
+  cppCode: string,
+  testMainCpp: string,
+  options: CLIOptions,
+): number {
+  writeFileSync(join(tempDir, "generated.hpp"), headerCode, "utf-8");
+  writeFileSync(join(tempDir, "generated.cpp"), cppCode, "utf-8");
+  writeFileSync(join(tempDir, "test_main.cpp"), testMainCpp, "utf-8");
+
+  // 6. Find runtime include directory
+  const runtimeIncludeDir = findRuntimeIncludeDir(options.cxxFlags);
+  if (!runtimeIncludeDir) {
+    console.error(
+      "Error: Could not locate runtime include directory.\n" +
+        '  Use --cxx-flags "-I/path/to/runtime/include" to specify it.',
+    );
+    return 1;
+  }
+
+  // 7. Compile with g++
+  const binaryPath = join(
+    tempDir,
+    process.platform === "win32" ? "test_runner.exe" : "test_runner",
+  );
+
+  try {
+    execFileSync(
+      options.gpp,
+      [
+        "-std=c++14",
+        // Pointer punning is valid IEC; the runtime marks its types
+        // may_alias, and this covers anything it cannot mark.
+        "-fno-strict-aliasing",
+        `-I${runtimeIncludeDir}`,
+        `-I${tempDir}`,
+        ...splitCxxFlags(options.cxxFlags),
+        join(tempDir, "test_main.cpp"),
+        join(tempDir, "generated.cpp"),
+        "-o",
+        binaryPath,
+      ],
+      { stdio: ["pipe", "pipe", "pipe"], env: getCxxEnv() },
+    );
+  } catch (err: unknown) {
+    const execErr = err as {
+      status?: number;
+      stderr?: Buffer | string;
+      stdout?: Buffer | string;
+    };
+    const stderr = execErr.stderr
+      ? typeof execErr.stderr === "string"
+        ? execErr.stderr
+        : execErr.stderr.toString()
+      : "";
+    console.error("Error: C++ compilation failed:");
+    if (stderr) console.error(stderr);
+    return 1;
+  }
+
+  // 8. Execute test binary and display results
+  let exitCode = 0;
+  try {
+    const output = execFileSync(binaryPath, [], {
+      encoding: "utf-8",
+      timeout: 30000,
+    });
+    process.stdout.write(output);
+  } catch (err: unknown) {
+    const execErr = err as {
+      status?: number;
+      stdout?: string;
+      stderr?: string;
+      signal?: string;
+    };
+    if (execErr.stdout) {
+      process.stdout.write(execErr.stdout);
+    }
+    if (execErr.signal) {
+      console.error(`Error: Test binary crashed with signal ${execErr.signal}`);
+    }
+    exitCode = execErr.status ?? 1;
+  }
+
+  // 9. Report the test result code
+  return exitCode;
 }
 
 /**
@@ -1349,7 +1379,10 @@ async function importLibMode(options: CLIOptions): Promise<void> {
 
   if (!result.success) {
     console.error("\nLibrary compilation failed:\n");
-    printDiagnostics(result.errors.map(toDiagnostic), importResult.sources);
+    printDiagnostics(
+      result.errors.map((e) => toDiagnostic(e)),
+      importResult.sources,
+    );
     console.error(
       "Note: Extracted ST sources may need manual adjustments for compilation.",
     );

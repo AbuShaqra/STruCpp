@@ -590,3 +590,55 @@ describe("isILBody edge cases (issue 9 + mixed detection)", () => {
     expect(isILBody("(* multi\nline comment *)\nx := 1;")).toBe(false);
   });
 });
+
+describe("IL POU keeps its line count", () => {
+  // A short IL body whose ST needs more lines, and a long one that needs fewer
+  const SHORT = `FUNCTION F1 : INT
+VAR_INPUT a : BOOL; END_VAR
+  LD a
+  JMPC skip
+  LD 2
+  ST F1
+skip:
+  LD 1
+  ST F1
+END_FUNCTION
+`;
+  const LONG = `FUNCTION F2 : INT
+VAR_INPUT a : INT; END_VAR
+  LD a
+
+  (* a comment *)
+
+  ADD 1
+
+
+  ST F2
+END_FUNCTION
+`;
+  const AFTER = `PROGRAM Main
+VAR s : STRING(2); n : INT; END_VAR
+n := 1;
+s := 'abcdef';
+END_PROGRAM
+`;
+
+  it.each([
+    ["more lines", SHORT],
+    ["fewer lines", LONG],
+  ])("when the ST takes %s", (_label, il) => {
+    const result = transpileILSource(il + AFTER, "a.st");
+    expect(result.hasIL).toBe(true);
+    expect(result.stSource.split("\n").length).toBe(
+      (il + AFTER).split("\n").length,
+    );
+    const lines = il.split("\n").length - 1;
+    const compiled = compile(il + AFTER, { fileName: "a.st" });
+    expect(compiled.errors).toEqual([]);
+    expect(
+      compiled.warnings
+        .filter((w) => w.message.includes("is cut to"))
+        .map((w) => `${w.line}:${w.column}`),
+    ).toEqual([`${lines + 4}:6`]);
+  });
+});

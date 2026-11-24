@@ -69,6 +69,7 @@ import type { LibraryChunk, StlibArchive } from "./library/library-manifest.js";
 import { annotateErrorsWithPouContext } from "./diagnostic-pou-context.js";
 import {
   iec3IdentifierErrors,
+  iec3IlLabelErrors,
   iec3IlWarningMessage,
   literalUnderscoreErrors,
   sourceNameLocator,
@@ -521,17 +522,20 @@ function prepareFile(
   prep: SourcePrep,
   lex: (s: string) => ILexingResult,
   fileDefines?: Record<string, string>,
-  /** Warn at each IL body (Ed. 3 deprecates IL): `--dialect iec-3` only. */
+  /** The iec-3 rules: warn at each IL body, check IL label spelling. `--dialect iec-3` only. */
   warnIl = false,
 ): {
   text: string;
   errors: CompileError[];
   warnings: CompileError[];
+  /** Ed. 3 spelling errors of IL labels, which stop no later phase. */
+  labelErrors: CompileError[];
   stopsOnError: boolean;
   blankedLines: number[];
 } {
   const errors: CompileError[] = [];
   const warnings: CompileError[] = [];
+  const labelErrors: CompileError[] = [];
   let out = text;
   let stopsOnError = false;
   let blankedLines: number[] = [];
@@ -573,8 +577,18 @@ function prepareFile(
         ...(fileName !== undefined ? { file: fileName } : {}),
       });
     }
+    if (warnIl) {
+      labelErrors.push(...iec3IlLabelErrors(ilResult.ilLabels ?? [], fileName));
+    }
   }
-  return { text: out, errors, warnings, stopsOnError, blankedLines };
+  return {
+    text: out,
+    errors,
+    warnings,
+    labelErrors,
+    stopsOnError,
+    blankedLines,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -697,6 +711,8 @@ function runPipeline(
         stringDefaultLength,
       };
     }
+    errors.push(...prepared.labelErrors);
+    spellingErrorCount += prepared.labelErrors.length;
   }
 
   // Phase 1: Parse ST source to CST. Lexer errors do not stop the parse,
@@ -805,6 +821,8 @@ function runPipeline(
         if (prepared.stopsOnError && errors.length > 0 && !continueOnError) {
           continue;
         }
+        errors.push(...prepared.labelErrors);
+        spellingErrorCount += prepared.labelErrors.length;
 
         const addlParseResult = parseSource(effectiveAddlSource);
         implicitPragmas.push(
@@ -861,7 +879,7 @@ function runPipeline(
       }
     }
 
-    if (!continueOnError && errors.length > 0) {
+    if (!continueOnError && errors.length > spellingErrorCount) {
       return {
         ast,
         projectModel,
@@ -884,7 +902,7 @@ function runPipeline(
         sourceNameLocator(sourcesByFile),
       );
       errors.push(...spelling);
-      spellingErrorCount = spelling.length;
+      spellingErrorCount += spelling.length;
     }
     // Ed. 3 Table 5: an underscore in a numeric literal stands between two digits.
     if (iec3Rules || mergedOptions.strict === true) {
@@ -1155,6 +1173,7 @@ function runPipeline(
       strict: mergedOptions.strict === true,
       features: dialect.features,
       dialect,
+      sources: sourcesByFile,
     });
     const semanticResult = analyzer.analyze(ast, semanticSymbolTables);
     symbolTables = semanticResult.symbolTables;

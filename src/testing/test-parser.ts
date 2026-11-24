@@ -146,6 +146,7 @@ export function parseTestFile(
       lowerDefaultStringLength(testFile, defaultStringLength(dialect.features));
     }
     testFile.dialect = dialect;
+    testFile.source = text;
     return { testFile, errors };
   } catch (e) {
     errors.push({

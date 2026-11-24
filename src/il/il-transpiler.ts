@@ -54,12 +54,14 @@ export function transpileILSource(
   // Rebuild the source, replacing IL bodies with ST equivalents.
   // Process regions in reverse order so offsets remain valid.
   let result = source;
+  const ilLabels: NonNullable<ILTranspileResult["ilLabels"]> = [];
 
   for (let i = ilRegions.length - 1; i >= 0; i--) {
     const region = ilRegions[i]!;
 
     // Parse IL body
     const parseResult = parseILBody(region.bodyText, region.bodyStartLine);
+    ilLabels.unshift(...parseResult.labels);
     for (const err of parseResult.errors) {
       const entry: ILTranspileResult["errors"][number] = {
         message: err.message,
@@ -90,16 +92,20 @@ export function transpileILSource(
     }
 
     // Reconstruct the POU: header + extra vars (if needed) + ST body + closing
-    let newPOU = region.headerText;
+    let body = "";
 
     // If the state machine needs extra variables, inject a VAR block
     if (convertResult.extraVars) {
       // Insert VAR block with the state machine variables
-      newPOU += "\n  VAR\n" + convertResult.extraVars + "\n  END_VAR\n";
+      body += "\n  VAR\n" + convertResult.extraVars + "\n  END_VAR\n";
     }
 
-    newPOU += "\n" + convertResult.stBody + "\n";
-    newPOU += region.closingText;
+    body += "\n" + convertResult.stBody + "\n";
+    // As many lines as the IL body, so a diagnostic after the POU keeps its line
+    const newPOU =
+      region.headerText +
+      fitLineCount(body, lineBreaks(region.bodyText)) +
+      region.closingText;
 
     // Replace the original POU text in the source
     result =
@@ -113,7 +119,28 @@ export function transpileILSource(
     stSource: result,
     errors,
     ilBodies: ilRegions.map((r) => ilBodyStart(source, r)),
+    ilLabels,
   };
+}
+
+/** The number of line breaks in `text`. */
+function lineBreaks(text: string): number {
+  let n = 0;
+  for (const ch of text) if (ch === "\n") n++;
+  return n;
+}
+
+/**
+ * `text` with exactly `breaks` line breaks: blank lines appended, or the
+ * excess lines joined by spaces (generated ST holds no line comment).
+ */
+function fitLineCount(text: string, breaks: number): string {
+  const lines = text.split("\n");
+  const have = lines.length - 1;
+  if (have <= breaks) return text + "\n".repeat(breaks - have);
+  const kept = lines.slice(0, breaks);
+  kept.push(lines.slice(breaks).join(" "));
+  return kept.join("\n");
 }
 
 /** The first non-blank character of an IL body, and the POU's name from its header. */

@@ -28,13 +28,18 @@ import type {
   FunctionBlockDeclaration,
   FunctionCallExpression,
   LiteralExpression,
+  MethodCallExpression,
   MethodDeclaration,
   ProgramDeclaration,
   ProgramInstance,
   PropertyDeclaration,
+  RefAssignStatement,
+  RefExpression,
   TypeDeclaration,
+  TypeReference,
   VarBlock,
   VarDeclaration,
+  VariableExpression,
 } from "../frontend/ast.js";
 import { walkAST } from "../ast-utils.js";
 import type { CompileError, SourceSpan } from "../types.js";
@@ -78,13 +83,68 @@ export type NameLocator = (
 ) => { line: number; column: number; spelling: string };
 
 /**
+ * The offset ranges `[start, end)` of `text` that hold no name: comments,
+ * pragmas and string literals, in order.
+ */
+function nonCodeRanges(text: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  let i = 0;
+  const until = (close: string, from: number): number => {
+    const at = text.indexOf(close, from);
+    return at < 0 ? text.length : at + close.length;
+  };
+  while (i < text.length) {
+    const two = text.slice(i, i + 2);
+    let end = -1;
+    if (two === "(*") end = until("*)", i + 2);
+    else if (two === "/*") end = until("*/", i + 2);
+    else if (two === "//") end = until("\n", i + 2);
+    else if (text[i] === "{") end = until("}", i + 1);
+    else if (text[i] === "'" || text[i] === '"') {
+      const q = text[i]!;
+      let j = i + 1;
+      while (j < text.length && text[j] !== q && text[j] !== "\n") {
+        j += text[j] === "$" ? 2 : 1;
+      }
+      end = Math.min(j + 1, text.length);
+    }
+    if (end < 0) {
+      i++;
+      continue;
+    }
+    ranges.push([i, end]);
+    i = end;
+  }
+  return ranges;
+}
+
+/**
  * A locator over the source texts by file: the first whole-word occurrence
- * of the name inside its span, with its spelling as written. A name not
- * found there is reported at the span's start, as the AST holds it.
+ * of the name inside its span outside comments, pragmas and strings, with its
+ * spelling as written. A name not found there is reported at the span's
+ * start, as the AST holds it.
  */
 export function sourceNameLocator(
   sources: ReadonlyMap<string, string>,
 ): NameLocator {
+  const skipped = new Map<string, Array<[number, number]>>();
+  const inSkipped = (file: string, text: string, at: number): boolean => {
+    let ranges = skipped.get(file);
+    if (ranges === undefined) {
+      ranges = nonCodeRanges(text);
+      skipped.set(file, ranges);
+    }
+    let lo = 0;
+    let hi = ranges.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const [start, end] = ranges[mid]!;
+      if (at < start) hi = mid - 1;
+      else if (at >= end) lo = mid + 1;
+      else return true;
+    }
+    return false;
+  };
   const lineStarts = new Map<string, number[]>();
   const startsOf = (file: string, text: string): number[] => {
     let starts = lineStarts.get(file);
@@ -110,7 +170,10 @@ export function sourceNameLocator(
     const to = (starts[span.endLine - 1] ?? text.length) + span.endCol;
     const re = new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, "gi");
     re.lastIndex = from;
-    const m = re.exec(text);
+    let m = re.exec(text);
+    while (m !== null && m.index < to && inSkipped(span.file, text, m.index)) {
+      m = re.exec(text);
+    }
     if (m === null || m.index >= to) return fallback;
     let line = span.startLine;
     while ((starts[line] ?? Infinity) <= m.index) line++;
@@ -259,17 +322,37 @@ export function iec3IdentifierErrors(
   return identifierErrors(names, locate);
 }
 
+/** Ed. 3 spelling errors for the labels of IL bodies, at each label as written. */
+export function iec3IlLabelErrors(
+  labels: ReadonlyArray<{ name: string; line: number; column: number }>,
+  file?: string,
+): CompileError[] {
+  return identifierErrors(
+    labels.map((l) => ({
+      name: l.name,
+      span: {
+        file: file ?? "",
+        startLine: l.line,
+        startCol: l.column,
+        endLine: l.line,
+        endCol: l.column + l.name.length,
+      },
+    })),
+  );
+}
+
 /** Ed. 3 spelling errors for the names test-file VAR blocks declare. */
 export function iec3VarBlockIdentifierErrors(
   blocks: readonly VarBlock[],
   inlineTypes: readonly TypeDeclaration[] = [],
+  locate?: NameLocator,
 ): CompileError[] {
   const names: DeclaredName[] = [];
   varBlockNames(blocks, names);
   for (const t of inlineTypes) {
     if (t.definition.kind === "EnumDefinition") enumNames(t.definition, names);
   }
-  return identifierErrors(names);
+  return identifierErrors(names, locate);
 }
 
 /** The digits of a literal after its type prefix (`REAL#1E-4` → `1E-4`). */
@@ -312,21 +395,217 @@ function storesTo(stmt: AssignmentStatement, upperName: string): boolean {
   );
 }
 
+/** The name of a plain variable access (no member, index or dereference). */
+function plainName(e: ASTNode): string | undefined {
+  if (e.kind !== "VariableExpression") return undefined;
+  const v = e as VariableExpression;
+  return v.fieldAccess.length === 0 &&
+    v.subscripts.length === 0 &&
+    !v.isDereference &&
+    (v.accessChain === undefined || v.accessChain.length === 0)
+    ? v.name
+    : undefined;
+}
+
+/** A POU whose body holds a FOR loop: what its calls and references resolve against. */
+interface PouContext {
+  /** The POU's statements: where a reference to the control variable is taken. */
+  body: readonly ASTNode[];
+  /** The variables in scope, own before owner's before global, by upper-cased name. */
+  vars: Map<string, TypeReference>;
+  unit: CompilationUnit;
+}
+
+/** Map each FOR loop of `unit` to the POU it is written in. */
+function mapLoopPous(
+  unit: CompilationUnit,
+  out: Map<ForStatement, PouContext>,
+): void {
+  const globals = [
+    ...unit.globalVarBlocks,
+    ...unit.configurations.flatMap((c) => c.varBlocks),
+  ];
+  const add = (
+    body: readonly ASTNode[],
+    blocks: ReadonlyArray<readonly VarBlock[]>,
+  ): void => {
+    const vars = new Map<string, TypeReference>();
+    for (const list of [globals, ...[...blocks].reverse()]) {
+      for (const b of list) {
+        for (const d of b.declarations) {
+          for (const n of d.names) vars.set(n.toUpperCase(), d.type);
+        }
+      }
+    }
+    const ctx: PouContext = { body, vars, unit };
+    for (const stmt of body) {
+      walkAST(stmt, (n) => {
+        if (n.kind === "ForStatement") out.set(n as ForStatement, ctx);
+      });
+    }
+  };
+  for (const pou of [...unit.programs, ...unit.functionBlocks]) {
+    add(pou.body, [pou.varBlocks]);
+    for (const m of pou.methods) add(m.body, [m.varBlocks, pou.varBlocks]);
+    for (const a of pou.actions) add(a.body, [pou.varBlocks]);
+  }
+  for (const f of unit.functions) add(f.body, [f.varBlocks]);
+}
+
+/**
+ * The plain variables of `pou` that are given a reference to `control`
+ * (`r := REF(i)`, `p := ADR(i)`, `r REF= i`), by upper-cased name.
+ */
+function aliasesOf(pou: PouContext, control: string): Set<string> {
+  const out = new Set<string>();
+  const isRefTo = (e: ASTNode): boolean => {
+    if (e.kind === "RefExpression") {
+      return plainName((e as RefExpression).operand)?.toUpperCase() === control;
+    }
+    if (e.kind !== "FunctionCallExpression") return false;
+    const call = e as FunctionCallExpression;
+    const fn = call.functionName.toUpperCase();
+    if ((fn !== "REF" && fn !== "ADR") || call.arguments.length !== 1) {
+      return false;
+    }
+    return plainName(call.arguments[0]!.value)?.toUpperCase() === control;
+  };
+  for (const stmt of pou.body) {
+    walkAST(stmt, (n) => {
+      if (n.kind === "AssignmentStatement") {
+        const a = n as AssignmentStatement;
+        const target = plainName(a.target);
+        if (target !== undefined && isRefTo(a.value)) {
+          out.add(target.toUpperCase());
+        }
+      } else if (n.kind === "RefAssignStatement") {
+        const a = n as RefAssignStatement;
+        const target = plainName(a.target);
+        if (
+          target !== undefined &&
+          plainName(a.source)?.toUpperCase() === control
+        ) {
+          out.add(target.toUpperCase());
+        }
+      }
+    });
+  }
+  out.delete(control);
+  return out;
+}
+
+/**
+ * A store through one of `aliases`: `r^ := v` for a REF_TO or POINTER TO,
+ * `r := v` for a REFERENCE TO.
+ */
+function storesThrough(
+  stmt: AssignmentStatement,
+  aliases: ReadonlySet<string>,
+  pou: PouContext,
+): boolean {
+  const t = stmt.target;
+  if (t.kind === "DrefExpression") {
+    const name = plainName(t.operand);
+    return name !== undefined && aliases.has(name.toUpperCase());
+  }
+  if (t.kind !== "VariableExpression") return false;
+  const v = t;
+  const upper = v.name.toUpperCase();
+  if (!aliases.has(upper)) return false;
+  if (v.fieldAccess.length > 0 || v.subscripts.length > 0) return false;
+  const chain = v.accessChain ?? [];
+  const derefOnce = chain.length === 1 && chain[0]!.kind === "dereference";
+  if (v.isDereference || derefOnce) {
+    return chain.length <= 1;
+  }
+  return (
+    chain.length === 0 && pou.vars.get(upper)?.referenceKind === "reference_to"
+  );
+}
+
+/** What a parameter of a call does with the variable it is bound to. */
+type ParamUse = "input" | "output" | "inout";
+
+/**
+ * How the arguments of `call` bind, when the callee is a FUNCTION or a
+ * FUNCTION_BLOCK instance of the unit (no EXTENDS): the VAR_IN_OUT names, and
+ * each position's parameter (VAR_INPUT, VAR_OUTPUT and VAR_IN_OUT in
+ * declaration order, as codegen maps them).
+ */
+function paramSlots(
+  call: FunctionCallExpression,
+  pou: PouContext,
+): { inouts: Set<string>; positional?: ParamUse[] } | undefined {
+  if (call.instance !== undefined) return undefined;
+  const upper = call.functionName.toUpperCase();
+  let blocks: readonly VarBlock[] | undefined;
+  const local = pou.vars.get(upper);
+  if (local !== undefined) {
+    const fb = pou.unit.functionBlocks.find(
+      (f) => f.name.toUpperCase() === local.name.toUpperCase(),
+    );
+    if (fb === undefined || fb.extends !== undefined) return undefined;
+    blocks = fb.varBlocks;
+  } else {
+    blocks = pou.unit.functions.find(
+      (f) => f.name.toUpperCase() === upper,
+    )?.varBlocks;
+  }
+  if (blocks === undefined) return undefined;
+  const uses: Partial<Record<string, ParamUse>> = {
+    VAR_INPUT: "input",
+    VAR_OUTPUT: "output",
+    VAR_IN_OUT: "inout",
+  };
+  const inouts = new Set<string>();
+  const positional: ParamUse[] = [];
+  for (const b of blocks) {
+    const use = uses[b.blockType];
+    if (use === undefined) continue;
+    for (const d of b.declarations) {
+      for (const n of d.names) {
+        positional.push(use);
+        if (use === "inout") inouts.add(n.toUpperCase());
+      }
+    }
+  }
+  // Positions are certain only when no argument is named
+  return call.arguments.some((a) => a.name !== undefined)
+    ? { inouts }
+    : { inouts, positional };
+}
+
 /** The key of a call's position, which a copy of the call shares. */
 function callKey(call: FunctionCallExpression): string {
   const s = call.sourceSpan;
   return `${s.file ?? ""}:${s.startLine}:${s.startCol}`;
 }
 
+/** True when `blocks` declare a variable named TRUNC (an FB instance called as `TRUNC(...)`). */
+function declaresTruncVar(blocks: readonly VarBlock[]): boolean {
+  return blocks.some((b) =>
+    b.declarations.some((d) =>
+      d.names.some((n) => n.toUpperCase() === "TRUNC"),
+    ),
+  );
+}
+
 /**
  * The untyped `TRUNC(...)` calls of `ast` that name a user TRUNC: a FUNCTION
- * TRUNC anywhere, or a METHOD or ACTION TRUNC of the enclosing PROGRAM or
- * FUNCTION_BLOCK or of a FUNCTION_BLOCK it extends.
+ * or global variable TRUNC anywhere, a METHOD, ACTION or variable TRUNC of
+ * the enclosing PROGRAM or FUNCTION_BLOCK or of a FUNCTION_BLOCK it extends,
+ * or a local TRUNC of the enclosing FUNCTION or METHOD. `libraryBaseDeclares`
+ * tells whether a base FUNCTION_BLOCK not in `ast` (a library's) may declare one.
  */
 export function userTruncCalls(
   ast: CompilationUnit,
+  libraryBaseDeclares: (base: string) => boolean = () => false,
 ): (call: FunctionCallExpression) => boolean {
-  if (ast.functions.some((f) => f.name.toUpperCase() === "TRUNC")) {
+  if (
+    ast.functions.some((f) => f.name.toUpperCase() === "TRUNC") ||
+    declaresTruncVar(ast.globalVarBlocks) ||
+    ast.configurations.some((c) => declaresTruncVar(c.varBlocks))
+  ) {
     return () => true;
   }
   const isTrunc = (d: { name: string }): boolean =>
@@ -342,7 +621,8 @@ export function userTruncCalls(
   ): boolean =>
     pou.methods.some(isTrunc) ||
     pou.actions.some(isTrunc) ||
-    outerActions(pou.name).some(isTrunc);
+    outerActions(pou.name).some(isTrunc) ||
+    declaresTruncVar(pou.varBlocks);
   const inScope = (
     pou: ProgramDeclaration | FunctionBlockDeclaration,
   ): boolean => {
@@ -353,7 +633,9 @@ export function userTruncCalls(
       seen.add(cur.name.toUpperCase());
       const base: string | undefined =
         cur.kind === "FunctionBlockDeclaration" ? cur.extends : undefined;
-      cur = base !== undefined ? fbs.get(base.toUpperCase()) : undefined;
+      if (base === undefined) return false;
+      cur = fbs.get(base.toUpperCase());
+      if (cur === undefined) return libraryBaseDeclares(base);
     }
     return false;
   };
@@ -365,9 +647,17 @@ export function userTruncCalls(
       if (call.functionName.toUpperCase() === "TRUNC") keys.add(callKey(call));
     });
   for (const pou of [...ast.programs, ...ast.functionBlocks]) {
-    if (!inScope(pou)) continue;
-    collect(pou);
-    for (const a of outerActions(pou.name)) collect(a);
+    if (inScope(pou)) {
+      collect(pou);
+      for (const a of outerActions(pou.name)) collect(a);
+      continue;
+    }
+    for (const m of pou.methods) {
+      if (declaresTruncVar(m.varBlocks)) collect(m);
+    }
+  }
+  for (const f of ast.functions) {
+    if (declaresTruncVar(f.varBlocks)) collect(f);
   }
   return (call) => keys.has(callKey(call));
 }
@@ -380,6 +670,8 @@ export function userTruncCalls(
 export function iec3Warnings(
   roots: readonly ASTNode[],
   userTrunc: (call: FunctionCallExpression) => boolean = () => false,
+  /** Spells a name as written; without it a name shows as the AST holds it. */
+  locate?: NameLocator,
 ): CompileError[] {
   const warnings: CompileError[] = [];
   const seen = new Set<string>();
@@ -395,6 +687,13 @@ export function iec3Warnings(
       ...(span.file ? { file: span.file } : {}),
     });
   };
+  // The POU around each FOR loop of a compilation unit among `roots`
+  const loopPou = new Map<ForStatement, PouContext>();
+  for (const root of roots) {
+    if (root.kind === "CompilationUnit") {
+      mapLoopPous(root as CompilationUnit, loopPou);
+    }
+  }
   const visit = (node: ASTNode): void => {
     switch (node.kind) {
       case "ExternalCodePragma":
@@ -425,17 +724,58 @@ export function iec3Warnings(
       case "ForStatement": {
         const loop = node as ForStatement;
         const control = loop.controlVariable.toUpperCase();
+        const pou = loopPou.get(loop);
+        const aliases =
+          pou === undefined ? new Set<string>() : aliasesOf(pou, control);
+        // The AST holds names upper-cased: spell it as the FOR statement does
+        const spelling =
+          locate?.(loop.controlVariable, loop.sourceSpan).spelling ??
+          loop.controlVariable;
+        const changed = (span: SourceSpan, how = ""): void =>
+          warn(
+            `IEC 61131-3 Ed. 3 does not allow the FOR control variable '${spelling}' to be changed in the loop body${how}; use a WHILE or REPEAT loop to step it yourself`,
+            span,
+          );
         for (const stmt of loop.body) {
           walkAST(stmt, (inner) => {
-            if (
-              inner.kind === "AssignmentStatement" &&
-              storesTo(inner as AssignmentStatement, control)
-            ) {
-              warn(
-                `IEC 61131-3 Ed. 3 does not allow the FOR control variable '${loop.controlVariable}' to be changed in the loop body; use a WHILE or REPEAT loop to step it yourself`,
-                inner.sourceSpan,
-              );
+            if (inner.kind === "AssignmentStatement") {
+              const a = inner as AssignmentStatement;
+              if (storesTo(a, control)) {
+                changed(a.sourceSpan);
+              } else if (pou !== undefined && storesThrough(a, aliases, pou)) {
+                changed(a.sourceSpan, " (here through a reference to it)");
+              }
+              return;
             }
+            if (
+              inner.kind !== "FunctionCallExpression" &&
+              inner.kind !== "MethodCallExpression"
+            ) {
+              return;
+            }
+            const call = inner as FunctionCallExpression | MethodCallExpression;
+            const slots =
+              pou !== undefined && inner.kind === "FunctionCallExpression"
+                ? paramSlots(inner as FunctionCallExpression, pou)
+                : undefined;
+            call.arguments.forEach((arg, i) => {
+              if (plainName(arg.value)?.toUpperCase() !== control) return;
+              const use: ParamUse | undefined = arg.isOutput
+                ? "output"
+                : arg.name === undefined
+                  ? slots?.positional?.[i]
+                  : slots?.inouts.has(arg.name.toUpperCase()) === true
+                    ? "inout"
+                    : undefined;
+              if (use === "output") {
+                changed(arg.value.sourceSpan, " (here by an output)");
+              } else if (use === "inout") {
+                changed(
+                  arg.value.sourceSpan,
+                  " (here as a VAR_IN_OUT argument)",
+                );
+              }
+            });
           });
         }
         break;
