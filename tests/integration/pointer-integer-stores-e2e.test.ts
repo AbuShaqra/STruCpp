@@ -18,7 +18,9 @@ import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 
 const LIBS_DIR = path.resolve(__dirname, "../../libs");
 
-const SOURCE = `FUNCTION F_UI : UDINT
+const SOURCE = `TYPE PINT : POINTER TO INT; END_TYPE
+TYPE ST_PA : STRUCT pa : PINT; END_STRUCT END_TYPE
+FUNCTION F_UI : UDINT
 VAR_INPUT x : UINT; END_VAR
 F_UI := UINT_TO_UDINT(x);
 END_FUNCTION
@@ -28,7 +30,7 @@ F_LI := x;
 END_FUNCTION
 PROGRAM Main
 VAR
-  lt : LTIME := LTIME#1h2m3s; ok5 : BOOL;
+  lt : LTIME := LTIME#1h2m3s; ok5 : BOOL; qs : ST_PA; v2 : INT;
   x : INT := 7; r : REF_TO INT; p : POINTER TO INT; q : POINTER TO INT;
   la : LWORD; lw : LWORD; ul : ULINT; li : LINT; dw : DWORD; si : SINT := SINT#-1;
   ok1 : BOOL; ok2 : BOOL; ok3 : BOOL; ok4 : BOOL; v : INT; u : UDINT;
@@ -56,6 +58,8 @@ pb := pb + 2;
 b3 := pb^;
 ok4 := b3 = 3;
 ok5 := F_LI(lt) = LTIME_TO_LINT(lt);
+qs.pa := la;
+v2 := qs.pa^;
 END_PROGRAM
 `;
 
@@ -66,7 +70,7 @@ int main() {
     p.run();
     std::cout << p.OK1.get() << " " << p.OK2.get() << " " << p.OK3.get() << " "
               << p.V.get() << " " << p.U.get() << " " << p.ET.get() << " "
-              << p.OK4.get() << " " << p.OK5.get() << std::endl;
+              << p.OK4.get() << " " << p.OK5.get() << " " << p.V2.get() << std::endl;
     return 0;
 }
 `;
@@ -87,9 +91,9 @@ describe.skipIf(!hasGpp)("pointer and argument stores — g++ e2e", () => {
     });
     expect(result.errors).toEqual([]);
     expect(result.warnings.map((w) => `${w.line}: ${w.message}`)).toEqual([
-      "25: A REF_TO value gives a 64-bit address, which DWORD cannot hold; use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT",
-      "31: Cannot pass SINT to an input of type UINT without a conversion; use SINT_TO_UINT",
-      "38: Cannot pass LTIME to an input of type LINT without a conversion; use LTIME_TO_LINT",
+      "27: A REF_TO value gives a 64-bit address, which DWORD cannot hold; use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT",
+      "33: Cannot pass SINT to an input of type UINT without a conversion; use SINT_TO_UINT",
+      "40: Cannot pass LTIME to an input of type LINT without a conversion; use LTIME_TO_LINT",
     ]);
     const stdout = compileAndRunStandalone({
       tempDir,
@@ -100,7 +104,7 @@ describe.skipIf(!hasGpp)("pointer and argument stores — g++ e2e", () => {
       mainCode: MAIN,
     });
     // The address truncated to 32 bits equals the DWORD it was stored into.
-    expect(stdout).toBe("1 1 1 7 65535 0 1 1");
+    expect(stdout).toBe("1 1 1 7 65535 0 1 1 7");
   });
 
   it("moves a POINTER TO BYTE under --strict", () => {

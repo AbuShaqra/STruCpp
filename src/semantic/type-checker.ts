@@ -1288,6 +1288,7 @@ export class TypeChecker {
    * Public so codegen can call it for standalone expressions.
    */
   resolveExprType(expr: Expression, scope: Scope): IECType | undefined {
+    this.lastResolvedScope = scope;
     const type = this.inferType(expr, scope);
     if (type) {
       expr.resolvedType = type;
@@ -2030,6 +2031,9 @@ export class TypeChecker {
       ({ typeKind: "elementary", name, sizeBits: 0 } as ElementaryType)
     );
   }
+
+  /** The scope of the latest resolveExprType: named constants are folded in it (valueFitsNarrowTarget). */
+  private lastResolvedScope: Scope | undefined;
 
   /**
    * Infer the type of an expression.
@@ -7885,6 +7889,7 @@ export class TypeChecker {
         // Narrowing conversions are warnings, not errors
         if (isNarrowingConversion(tName, vName)) {
           if (argument?.narrowingWarning(tName) === false) return;
+          if (this.valueFitsNarrowTarget(value, tName)) return;
           this.addWarning(
             `Implicit narrowing conversion from ${vName} to ${tName}`,
             value.sourceSpan.startLine,
@@ -7927,6 +7932,62 @@ export class TypeChecker {
       );
       return;
     }
+  }
+
+  /**
+   * A value the narrowing warning into integer type `target` leaves alone: a
+   * constant (`-1`, a named constant) whose value fits it, or arithmetic of a
+   * value no wider than it with an untyped constant that fits it (`s + 1` is
+   * a SINT, the literal taking its operand's type).
+   */
+  private valueFitsNarrowTarget(value: Expression, target: string): boolean {
+    const range = integerTypeRange(target);
+    if (range === undefined) return false;
+    const scope = this.lastResolvedScope;
+    const v =
+      this.constantIntegerValue(value) ??
+      (scope !== undefined
+        ? this.foldIntegerConstant(value, scope, 0)
+        : undefined);
+    if (v !== undefined) return v >= range.min && v <= range.max;
+    const adapted = this.adaptedIntegerType(value, range);
+    return adapted !== undefined && !isNarrowingConversion(target, adapted);
+  }
+
+  /**
+   * The integer type of `e` when an untyped constant in it takes the type of
+   * the other operand: `s + 1` with a SINT `s` is a SINT. Undefined when no
+   * constant adapts or one does not fit `range`.
+   */
+  private adaptedIntegerType(
+    e: Expression,
+    range: { min: bigint; max: bigint },
+    depth = 0,
+  ): string | undefined {
+    if (depth > 16) return undefined;
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    if (
+      e.kind !== "BinaryExpression" ||
+      !["+", "-", "*", "/", "MOD"].includes(e.operator)
+    ) {
+      return undefined;
+    }
+    const typed = (x: Expression): string | undefined => {
+      const inner = this.adaptedIntegerType(x, range, depth + 1);
+      if (inner !== undefined) return inner;
+      const t = x.resolvedType;
+      if (t?.typeKind !== "elementary") return undefined;
+      const name = canonicalElementaryName((t as ElementaryType).name);
+      return integerTypeRange(name) !== undefined ? name : undefined;
+    };
+    const fits = (x: Expression): boolean => {
+      if (this.untypedConstantKind(x) !== "INT") return false;
+      const v = this.constantIntegerValue(x);
+      return v !== undefined && v >= range.min && v <= range.max;
+    };
+    if (fits(e.right)) return typed(e.left);
+    if (fits(e.left)) return typed(e.right);
+    return undefined;
   }
 
   /** The elementary type an alias of one names (through aliases); `type` otherwise. */
@@ -10408,7 +10469,7 @@ export class TypeChecker {
     const span = value.sourceSpan;
     // A POINTER TO member of a STRUCT is a plain C++ pointer: no integer
     // converts to it, so the C++ build failed.
-    if (this.isStructMemberTarget(target, scope)) {
+    if (!alias && this.isStructMemberTarget(target, scope)) {
       this.addError(
         "A POINTER TO member of a STRUCT cannot take an integer; assign ADR(...), another pointer or 0",
         span.startLine,
@@ -10503,7 +10564,9 @@ export class TypeChecker {
     // The declared type it reaches (`pst^` of a POINTER TO ST_Q is ST_Q)
     const declared = this.accessedType(owner, scope);
     if (declared !== undefined) {
-      return declared.referenceKind === "none" &&
+      // A REFERENCE TO is read through implicitly (`rq.p`).
+      const kind = declared.referenceKind ?? "none";
+      return (kind === "none" || kind === "reference_to") &&
         declared.arrayDimensions === undefined
         ? declared.name
         : undefined;

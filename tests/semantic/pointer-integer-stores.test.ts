@@ -281,14 +281,38 @@ END_FUNCTION
 
   it("accepts 0 and an address into a STRUCT member, and a 64-bit integer into an element", () => {
     expect(
-      run(
-        decls,
-        vars,
-        "q.p := 0;\nq.p := ADR(d);\nq.a[0] := lw;\nppd := lw;",
-        {
-          strict: true,
-        },
-      ),
+      run(decls, vars, "q.p := 0;\nq.p := ADR(d);\nq.a[0] := lw;\nppd := lw;", {
+        strict: true,
+      }),
     ).toEqual({ errors: [], warnings: [] });
   });
+});
+
+describe("STRUCT members: a POINTER TO alias, and a STRUCT through a REFERENCE TO", () => {
+  const decls = `TYPE PINT : POINTER TO INT; END_TYPE
+TYPE ST_Q : STRUCT p : POINTER TO DINT; pa : PINT; END_STRUCT END_TYPE
+`;
+  const vars =
+    "q : ST_Q; qa : ARRAY[0..1] OF ST_Q; rq : REFERENCE TO ST_Q; lw : LWORD; udi : UDINT;";
+  const integer =
+    "An integer is not an address; a POINTER TO takes ADR(...), another pointer or 0";
+  const member =
+    "A POINTER TO member of a STRUCT cannot take an integer; assign ADR(...), another pointer or 0";
+
+  it("follows the alias rule for a member of a POINTER TO alias type (it converts)", () => {
+    expect(
+      run(decls, vars, "q.pa := lw;\nqa[1].pa := lw;\nq.pa := udi;", {}),
+    ).toEqual({ errors: [], warnings: [`3: ${integer}`] });
+    expect(
+      run(decls, vars, "q.pa := lw;\nq.pa := udi;", { strict: true }).errors,
+    ).toEqual([`2: ${integer}`]);
+  });
+
+  for (const options of [{}, { strict: true }] as Options[]) {
+    it(`refuses an integer into a member reached through a REFERENCE TO (${JSON.stringify(options)})`, () => {
+      expect(
+        run(decls, vars, "rq REF= q;\nrq.p := lw;\nrq.p := 7;", options).errors,
+      ).toEqual([`2: ${member}`, `3: ${member}`]);
+    });
+  }
 });
