@@ -48,6 +48,7 @@ import {
   stringBodyBeforeNul,
   exactIntegerLiteralValue,
   exactIntegerValue,
+  untypedIntegerConstant,
 } from "../literal-utils.js";
 import { isEnEnoArgument, stripEnEno, walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
@@ -103,6 +104,7 @@ import {
   NS_PER_DAY,
   formatArrayType,
   formatIntegerLiteral,
+  pastDintConstantCpp,
   iecBaseToCppLiteral,
   isComparison,
   isBoolLogic,
@@ -1286,6 +1288,8 @@ export class CodeGenerator {
 
   /** An untyped integer literal (in parentheses or negated) outside DINT. */
   private isPastDintLiteral(expr: Expression): boolean {
+    // A folded untyped constant subexpression past DINT (`2147483647 + 1`)
+    if (untypedIntegerConstant(expr)?.pastDint === true) return true;
     if (expr.kind === "ParenthesizedExpression") {
       return this.isPastDintLiteral(expr.expression);
     }
@@ -6648,9 +6652,9 @@ export class CodeGenerator {
           : code;
       }
       case "BinaryExpression":
-        return this.generateBinaryExpression(expr);
+        return pastDintConstantCpp(expr) ?? this.generateBinaryExpression(expr);
       case "UnaryExpression":
-        return this.generateUnaryExpression(expr);
+        return pastDintConstantCpp(expr) ?? this.generateUnaryExpression(expr);
       case "ParenthesizedExpression":
         return parenthesizedCpp(expr, this.generateExpression(expr.expression));
       case "FunctionCallExpression":
@@ -7550,6 +7554,10 @@ export class CodeGenerator {
 
     // Power operator needs special handling
     if (expr.operator === "**") {
+      // An integer power stored as an integer: exact and wrapping, never through double
+      if (expr.integerPower !== undefined) {
+        return `strucpp::iec_expt<${expr.integerPower}_t>(${left}, ${right})`;
+      }
       return `std::pow(static_cast<double>(${left}), static_cast<double>(${right}))`;
     }
 
@@ -7635,6 +7643,16 @@ export class CodeGenerator {
       return expr.operator === "MOD"
         ? `iec_mod(${wl}, ${wr})`
         : `iec_div(${wl}, ${wr}, ${this.faultSite(expr)})`;
+    }
+
+    // LTIME `/` an LTIME or an integer that may be 0: a fault, as for integers
+    if (
+      expr.operator === "/" &&
+      lk === "LTIME" &&
+      (rk === "LTIME" || this.isIntegerExpression(expr.right)) &&
+      !isNonZeroIntegerLiteral(expr.right)
+    ) {
+      return `iec_div(${left}, ${right}, ${this.faultSite(expr)})`;
     }
 
     // TIME, DATE, TOD or DT MOD an integer or a duration: unsigned, MOD 0 is 0

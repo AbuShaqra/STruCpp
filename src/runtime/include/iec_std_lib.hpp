@@ -207,7 +207,7 @@ inline T iec_abs_impl(T value, V v, std::true_type /*floating*/, std::false_type
 template<typename T, typename V>
 inline T iec_abs_impl(T value, V v, std::false_type, std::true_type /*signed*/) noexcept {
     (void)value;
-    return T(v < 0 ? -v : v);
+    return T(v < 0 ? iec_neg<V>(v) : v);
 }
 template<typename T, typename V>
 inline T iec_abs_impl(T value, V, std::false_type, std::false_type /*unsigned*/) noexcept {
@@ -282,6 +282,40 @@ template<typename T,
     std::enable_if_t<(is_any_int_v<T> || is_any_bit_v<T>) && !is_any_real_v<T>, int> = 0>
 inline IEC_LREAL EXPT(T base, T exponent) noexcept {
     return IEC_LREAL(std::pow(static_cast<double>(iec_unwrap(base)), static_cast<double>(iec_unwrap(exponent))));
+}
+
+namespace detail {
+template<typename V>
+constexpr bool iec_negative(V v, std::true_type /*signed*/) noexcept { return v < 0; }
+template<typename V>
+constexpr bool iec_negative(V, std::false_type) noexcept { return false; }
+}  // namespace detail
+
+/**
+ * `base ** exponent` of integers whose result is an integer of type T: exact,
+ * by repeated squaring in the unsigned type of T's computed width, so it wraps
+ * instead of overflowing. A negative exponent gives the truncated quotient:
+ * 1 for a base of 1, +/-1 for -1, otherwise 0 (0 ** -n included).
+ */
+template<typename T, typename A, typename E>
+inline detail::iec_arith_t<T> iec_expt(const A& base, const E& exponent) noexcept {
+    using R = detail::iec_arith_t<T>;
+    using U = std::make_unsigned_t<R>;
+    const R b = static_cast<R>(static_cast<T>(iec_unwrap(base)));
+    auto e = iec_unwrap(exponent) + 0;
+    if (detail::iec_negative(e, std::is_signed<decltype(e)>{})) {
+        if (b == 1) return 1;
+        if (std::is_signed<R>::value && b == static_cast<R>(-1)) return (e % 2 == 0) ? 1 : b;
+        return 0;
+    }
+    U result = 1;
+    U square = static_cast<U>(b);
+    while (e != 0) {
+        if (e % 2 != 0) result = static_cast<U>(result * square);
+        square = static_cast<U>(square * square);
+        e /= 2;
+    }
+    return static_cast<R>(result);
 }
 
 // =============================================================================
@@ -1732,7 +1766,8 @@ inline double TIME_TO_S(const IECVar<L_>& t) noexcept { return static_cast<doubl
  */
 template<typename T, enable_if_any_num<T> = 0>
 inline T NEG(T value) noexcept {
-    return T(-iec_unwrap(value));
+    using V = decltype(iec_unwrap(value));
+    return T(iec_neg<V>(iec_unwrap(value)));
 }
 
 /**
@@ -1742,12 +1777,13 @@ inline T NEG(T value) noexcept {
  */
 template<typename T, enable_if_any_num<T> = 0>
 inline T ADD(T a, T b) noexcept {
-    return T(iec_unwrap(a) + iec_unwrap(b));
+    using V = decltype(iec_unwrap(a));
+    return T(iec_add<V>(iec_unwrap(a), iec_unwrap(b)));
 }
 
 template<typename T, typename... Args, enable_if_any_num<T> = 0>
 inline T ADD(T first, T second, Args... rest) noexcept {
-    return ADD(T(iec_unwrap(first) + iec_unwrap(second)), rest...);
+    return ADD(ADD(first, second), rest...);
 }
 
 /**
@@ -1757,12 +1793,13 @@ inline T ADD(T first, T second, Args... rest) noexcept {
  */
 template<typename T, enable_if_any_num<T> = 0>
 inline T MUL(T a, T b) noexcept {
-    return T(iec_unwrap(a) * iec_unwrap(b));
+    using V = decltype(iec_unwrap(a));
+    return T(iec_mul<V>(iec_unwrap(a), iec_unwrap(b)));
 }
 
 template<typename T, typename... Args, enable_if_any_num<T> = 0>
 inline T MUL(T first, T second, Args... rest) noexcept {
-    return MUL(T(iec_unwrap(first) * iec_unwrap(second)), rest...);
+    return MUL(MUL(first, second), rest...);
 }
 
 /**
@@ -1772,7 +1809,8 @@ inline T MUL(T first, T second, Args... rest) noexcept {
  */
 template<typename T, enable_if_any_num<T> = 0>
 inline T SUB(T a, T b) noexcept {
-    return T(iec_unwrap(a) - iec_unwrap(b));
+    using V = decltype(iec_unwrap(a));
+    return T(iec_sub<V>(iec_unwrap(a), iec_unwrap(b)));
 }
 
 /**
