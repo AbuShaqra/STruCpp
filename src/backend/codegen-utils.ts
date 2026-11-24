@@ -9,7 +9,12 @@ import type {
   Expression,
   ParenthesizedExpression,
 } from "../frontend/ast.js";
-import { exactIntegerLiteralValue } from "../literal-utils.js";
+import {
+  IEC_INTEGER_MAX,
+  IEC_INTEGER_MIN,
+  exactIntegerLiteralValue,
+  untypedIntegerConstant,
+} from "../literal-utils.js";
 import { cp1252Byte } from "../byte-utils.js";
 import {
   parseDateLiteralToDays,
@@ -213,6 +218,29 @@ export function formatIntegerLiteral(rawValue: string, value: number): string {
   if (exact < -CPP_SIGNED_LITERAL_MAX)
     return `(-${CPP_SIGNED_LITERAL_MAX}LL - 1)`;
   return exact > CPP_SIGNED_LITERAL_MAX ? `${exact}ULL` : exact.toString();
+}
+
+/**
+ * An untyped integer constant expression that leaves DINT anywhere
+ * (`2147483647 + 1`): its exact value as a literal (to 64 bits), cut to the
+ * declared width only where it is stored, as a literal past the type is.
+ * Undefined otherwise, and for `-3000000000`, which stays as written.
+ */
+export function pastDintConstantCpp(expr: Expression): string | undefined {
+  if (
+    expr.kind === "UnaryExpression" &&
+    expr.operand.kind === "LiteralExpression"
+  ) {
+    return undefined;
+  }
+  const c = untypedIntegerConstant(expr);
+  if (c === undefined || !c.pastDint) return undefined;
+  const v =
+    c.value > IEC_INTEGER_MAX || c.value < IEC_INTEGER_MIN
+      ? BigInt.asIntN(64, c.value)
+      : c.value;
+  const text = formatIntegerLiteral(v.toString(), Number(v));
+  return text.startsWith("-") ? `(${text})` : text;
 }
 
 /**

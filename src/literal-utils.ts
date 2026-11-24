@@ -204,3 +204,76 @@ export function exactIntegerValue(expr: Expression): bigint | undefined {
     return value;
   return value > range.max ? value - (1n << BigInt(bits)) : value;
 }
+
+/**
+ * The exact value of an untyped integer constant expression (untyped literals,
+ * parentheses, unary +/- and + - * /, ** by a non-negative exponent), and
+ * whether it or any part of it lies outside DINT. Undefined for anything else,
+ * a division by 0, or a power outside 64 bits.
+ */
+export function untypedIntegerConstant(
+  expr: Expression,
+): { value: bigint; pastDint: boolean } | undefined {
+  const outside = (v: bigint): boolean => v > 2147483647n || v < -2147483648n;
+  switch (expr.kind) {
+    case "LiteralExpression": {
+      if (expr.literalType !== "INT" || (expr.typePrefix ?? "") !== "") {
+        return undefined;
+      }
+      const value = exactIntegerLiteralValue(expr.rawValue);
+      return value === undefined
+        ? undefined
+        : { value, pastDint: outside(value) };
+    }
+    case "ParenthesizedExpression":
+      return untypedIntegerConstant(expr.expression);
+    case "UnaryExpression": {
+      if (expr.operator !== "-" && expr.operator !== "+") return undefined;
+      const inner = untypedIntegerConstant(expr.operand);
+      if (inner === undefined) return undefined;
+      const value = expr.operator === "-" ? -inner.value : inner.value;
+      return { value, pastDint: inner.pastDint || outside(value) };
+    }
+    case "BinaryExpression": {
+      const l = untypedIntegerConstant(expr.left);
+      const r = untypedIntegerConstant(expr.right);
+      if (l === undefined || r === undefined) return undefined;
+      let value: bigint;
+      switch (expr.operator) {
+        case "+":
+          value = l.value + r.value;
+          break;
+        case "-":
+          value = l.value - r.value;
+          break;
+        case "*":
+          value = l.value * r.value;
+          break;
+        case "/":
+          if (r.value === 0n) return undefined;
+          value = l.value / r.value;
+          break;
+        case "**": {
+          if (r.value < 0n) return undefined;
+          if (l.value >= -1n && l.value <= 1n) {
+            value = r.value % 2n === 0n ? l.value * l.value : l.value;
+            if (r.value === 0n) value = 1n;
+          } else if (r.value > 64n) {
+            return undefined;
+          } else {
+            value = l.value ** r.value;
+          }
+          if (value > IEC_INTEGER_MAX || value < IEC_INTEGER_MIN) {
+            return undefined;
+          }
+          break;
+        }
+        default:
+          return undefined;
+      }
+      return { value, pastDint: l.pastDint || r.pastDint || outside(value) };
+    }
+    default:
+      return undefined;
+  }
+}
