@@ -837,8 +837,8 @@ export interface BinaryExpression extends TypedNode {
   addressArithmetic?: true;
   /** Set by the type checker on AND/OR/XOR of a signed and an unsigned integer: the type both are widened to. */
   computeAs?: string;
-  /** Set by the type checker on an integer `**` whose result is stored as an integer: exact integer power, not `pow`. */
-  integerPower?: true;
+  /** Set by the type checker on an integer `**` stored as an integer: the integer type its exact power is computed in, not `pow`. */
+  integerPower?: string;
 }
 
 /**

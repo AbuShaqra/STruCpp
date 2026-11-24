@@ -124,6 +124,58 @@ END_PROGRAM
       );
     });
 
+    it("computes integer ** in the target's width when the target is wider", () => {
+      const stdout = run(
+        `PROGRAM Main
+VAR d : DINT := 2; u2 : UDINT := 2; u : UDINT := 3000000000; i3 : INT := 3;
+l1 : LINT := 2 ** 40; l2, l3, x, li : LINT; ul : ULINT; s : SINT; dd : DINT; END_VAR
+l2 := 2 ** 31;
+l3 := d ** 40;
+ul := u2 ** 40;
+x := u ** d;
+li := i3 ** 39;
+s := 2 ** 7;
+dd := d ** 31;
+END_PROGRAM
+`,
+        [
+          "p.L1.get()",
+          "p.L2.get()",
+          "p.L3.get()",
+          "p.UL.get()",
+          "p.X.get()",
+          "p.LI.get()",
+          "static_cast<int>(p.S.get())",
+          "p.DD.get()",
+        ],
+        "ovf_expt_wide",
+      );
+      expect(stdout).toBe(
+        "1099511627776 2147483648 1099511627776 1099511627776 9000000000000000000 4052555153018976267 -128 -2147483648",
+      );
+    });
+
+    it("evaluates an untyped constant past DINT exactly in a call, a comparison, MOD and /", () => {
+      const stdout = run(
+        `FUNCTION F : LINT
+VAR_INPUT x : LINT; END_VAR
+F := x;
+END_FUNCTION
+PROGRAM Main
+VAR dz : DINT := 0; a : LINT; b : BOOL; c : DINT; d : DINT; m : LINT; END_VAR
+a := F(2147483647 + 1);
+b := dz < 2147483647 + 1;
+c := (-2147483647 - 2) MOD 10;
+d := (2147483647 + 1) / 2;
+m := 2147483647 + 1 + dz;
+END_PROGRAM
+`,
+        ["p.A.get()", "p.B.get()", "p.C.get()", "p.D.get()", "p.M.get()"],
+        "ovf_exact_uses",
+      );
+      expect(stdout).toBe("2147483648 1 -9 1073741824 2147483648");
+    });
+
     it("gives an untyped constant expression its exact value, cut where it is stored", () => {
       const stdout = run(
         `TYPE S : STRUCT

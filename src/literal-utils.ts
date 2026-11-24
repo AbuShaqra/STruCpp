@@ -207,8 +207,9 @@ export function exactIntegerValue(expr: Expression): bigint | undefined {
 
 /**
  * The exact value of an untyped integer constant expression (untyped literals,
- * parentheses, unary +/- and + - * /), and whether it or any part of it lies
- * outside DINT. Undefined for anything else, or a division by 0.
+ * parentheses, unary +/- and + - * /, ** by a non-negative exponent), and
+ * whether it or any part of it lies outside DINT. Undefined for anything else,
+ * a division by 0, or a power outside 64 bits.
  */
 export function untypedIntegerConstant(
   expr: Expression,
@@ -252,6 +253,21 @@ export function untypedIntegerConstant(
           if (r.value === 0n) return undefined;
           value = l.value / r.value;
           break;
+        case "**": {
+          if (r.value < 0n) return undefined;
+          if (l.value >= -1n && l.value <= 1n) {
+            value = r.value % 2n === 0n ? l.value * l.value : l.value;
+            if (r.value === 0n) value = 1n;
+          } else if (r.value > 64n) {
+            return undefined;
+          } else {
+            value = l.value ** r.value;
+          }
+          if (value > IEC_INTEGER_MAX || value < IEC_INTEGER_MIN) {
+            return undefined;
+          }
+          break;
+        }
         default:
           return undefined;
       }

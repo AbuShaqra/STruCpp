@@ -48,6 +48,7 @@ import {
   stringBodyBeforeNul,
   exactIntegerLiteralValue,
   exactIntegerValue,
+  untypedIntegerConstant,
 } from "../literal-utils.js";
 import { isEnEnoArgument, stripEnEno, walkAST } from "../ast-utils.js";
 import type { SymbolTables } from "../semantic/symbol-table.js";
@@ -1287,6 +1288,8 @@ export class CodeGenerator {
 
   /** An untyped integer literal (in parentheses or negated) outside DINT. */
   private isPastDintLiteral(expr: Expression): boolean {
+    // A folded untyped constant subexpression past DINT (`2147483647 + 1`)
+    if (untypedIntegerConstant(expr)?.pastDint === true) return true;
     if (expr.kind === "ParenthesizedExpression") {
       return this.isPastDintLiteral(expr.expression);
     }
@@ -7552,10 +7555,8 @@ export class CodeGenerator {
     // Power operator needs special handling
     if (expr.operator === "**") {
       // An integer power stored as an integer: exact and wrapping, never through double
-      const base = this.baseTypeName(expr);
-      if (expr.integerPower === true && base !== undefined) {
-        const computed = WRAPPING_COMPUTE_TYPE[base] ?? base;
-        return `strucpp::iec_expt<${computed}_t>(${left}, ${right})`;
+      if (expr.integerPower !== undefined) {
+        return `strucpp::iec_expt<${expr.integerPower}_t>(${left}, ${right})`;
       }
       return `std::pow(static_cast<double>(${left}), static_cast<double>(${right}))`;
     }

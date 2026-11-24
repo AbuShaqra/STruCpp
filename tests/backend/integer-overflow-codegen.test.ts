@@ -71,6 +71,42 @@ ${program("s : S; l : LINT;", "l := 2147483647 * 4;")}`,
     });
   }
 
+  for (const [label, options] of [
+    ["no dialect", {}],
+    ["iec-3", { dialect: "iec-3" }],
+    ["strict", { strict: true }],
+  ] as const) {
+    it(`accepts a non-negative one into ULINT and refuses a negative one into UDINT or ULINT (${label})`, () => {
+      compileOk(program("u : ULINT := 9223372036854775807 + 1;"), options);
+      for (const decl of [
+        "u : UDINT := -1;",
+        "u : UDINT := 5 - 10;",
+        "u : UDINT := -(1 + 1);",
+        "u : ULINT := -1;",
+      ]) {
+        const result = compile(program(decl), options);
+        expect(result.errors.map((e) => e.message)).toEqual([
+          `Cannot assign INT to ${decl.includes("ULINT") ? "ULINT" : "UDINT"}`,
+        ]);
+      }
+    });
+  }
+
+  it("computes an operation on a folded constant past DINT in LINT", () => {
+    const { cpp } = compileOk(
+      program("dz : DINT; m : LINT;", "m := 2147483647 + 1 + dz;"),
+    );
+    expect(cpp).toContain("strucpp::iec_add<LINT_t>({2147483648, DZ})");
+  });
+
+  it("folds an untyped power by a non-negative constant exponent", () => {
+    const { cpp } = compileOk(
+      program("l : LINT := 2 ** 40; m : LINT;", "m := 2 ** 31;"),
+    );
+    expect(cpp).toContain("L(1099511627776)");
+    expect(cpp).toContain("M = 2147483648;");
+  });
+
   it("keeps the narrowing warning for an integer constant expression into BOOL", () => {
     const { warnings } = compileOk(program("b : BOOL := 1 + 1;"));
     expect(warnings).toContain(
@@ -92,6 +128,21 @@ describe("integer ** stored as an integer", () => {
     );
     expect(cpp).toContain("strucpp::iec_expt<DINT_t>(I, 3)");
     expect(cpp).toContain("strucpp::iec_expt<DINT_t>(I, 2)");
+  });
+
+  it("is computed in the wider of the target and its own type", () => {
+    const { cpp } = compileOk(
+      program(
+        "d : DINT := 2; u2 : UDINT := 2; u : UDINT; i3 : INT := 3; l : LINT; ul : ULINT; s : SINT; dd : DINT;",
+        "l := d ** 40; ul := u2 ** 40; l := u ** d; l := i3 ** 39; s := 2 ** 7; dd := d ** 31;",
+      ),
+    );
+    expect(cpp).toContain("strucpp::iec_expt<LINT_t>(D, 40)");
+    expect(cpp).toContain("strucpp::iec_expt<ULINT_t>(U2, 40)");
+    expect(cpp).toContain("strucpp::iec_expt<LINT_t>(U, D)");
+    expect(cpp).toContain("strucpp::iec_expt<LINT_t>(I3, 39)");
+    expect(cpp).toContain("strucpp::iec_expt<DINT_t>(2, 7)");
+    expect(cpp).toContain("strucpp::iec_expt<DINT_t>(D, 31)");
   });
 
   it("keeps pow for a REAL target, a negative constant exponent or a REAL operand", () => {
