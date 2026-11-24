@@ -639,6 +639,22 @@ export interface CodeGenResult {
 /**
  * C++ code generator for IEC 61131-3 programs.
  */
+/** The value range of each integer and bit string type, for literal fitting. */
+const INTEGER_RANGES: Readonly<Record<string, readonly [bigint, bigint]>> = {
+  SINT: [-128n, 127n],
+  INT: [-32768n, 32767n],
+  DINT: [-2147483648n, 2147483647n],
+  LINT: [-9223372036854775808n, 9223372036854775807n],
+  USINT: [0n, 255n],
+  UINT: [0n, 65535n],
+  UDINT: [0n, 4294967295n],
+  ULINT: [0n, 18446744073709551615n],
+  BYTE: [0n, 255n],
+  WORD: [0n, 65535n],
+  DWORD: [0n, 4294967295n],
+  LWORD: [0n, 18446744073709551615n],
+};
+
 /** The runtime helper that computes +, - or * so that it wraps instead of overflowing. */
 const WRAPPING_ARITHMETIC: Readonly<Record<string, string>> = {
   "+": "iec_add",
@@ -8404,6 +8420,34 @@ export class CodeGenerator {
   }
 
   /** Returns true if expr is a bare literal (no typePrefix), possibly negated */
+  /**
+   * `dominant`, or DINT or LINT when an untyped integer literal lies outside
+   * it (`LIMIT(0, w + 1, 100000)` with a WORD `w`), so the value is kept; the
+   * mixed-type overloads then compare in the common type.
+   */
+  private literalHoldingType(expr: Expression, dominant: string): string {
+    const range = INTEGER_RANGES[dominant];
+    const inner = expr.kind === "UnaryExpression" ? expr.operand : expr;
+    if (
+      range === undefined ||
+      inner.kind !== "LiteralExpression" ||
+      inner.literalType !== "INT"
+    ) {
+      return dominant;
+    }
+    const raw = exactIntegerLiteralValue(inner.rawValue);
+    if (raw === undefined) return dominant;
+    const value =
+      expr.kind === "UnaryExpression" && expr.operator === "-" ? -raw : raw;
+    const [min, max] = range;
+    if (value >= min && value <= max) return dominant;
+    const holds = (t: string): boolean => {
+      const [tMin, tMax] = INTEGER_RANGES[t]!;
+      return tMin <= min && tMax >= max && value >= tMin && value <= tMax;
+    };
+    return ["DINT", "LINT"].find(holds) ?? dominant;
+  }
+
   private isBareLiteral(expr: Expression): boolean {
     const inner = expr.kind === "UnaryExpression" ? expr.operand : expr;
     return inner.kind === "LiteralExpression" && !inner.typePrefix;
@@ -8623,7 +8667,8 @@ export class CodeGenerator {
       // the inferred IEC type matches `dominant`, to lift raw C++ literals
       // into the IECVar<> template space.
       if (this.isBareLiteral(expr) && varTypes.length > 0) {
-        args[i] = `static_cast<IEC_${dominant}>(${args[i]})`;
+        const fit = this.literalHoldingType(expr, dominant);
+        args[i] = `static_cast<IEC_${fit}>(${args[i]})`;
         continue;
       }
       if (litType === dominant) continue;

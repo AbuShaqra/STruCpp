@@ -89,4 +89,19 @@ END_PROGRAM
 `);
     expect(cpp).toContain("U = SHR(DW, 1) * 2 + 3;");
   });
+
+  it("casts an untyped literal argument outside the other arguments' type to DINT or LINT", () => {
+    const cpp = generate(`PROGRAM Main
+VAR w : WORD; u : UDINT; r : LINT; END_VAR
+r := LIMIT(0, w, 100000);
+r := MAX(u, -1);
+r := MIN(w, 5);
+END_PROGRAM
+`);
+    expect(cpp).toContain(
+      "LIMIT(static_cast<IEC_WORD>(0), W, static_cast<IEC_DINT>(100000))",
+    );
+    expect(cpp).toContain("MAX(U, static_cast<IEC_LINT>(-1))");
+    expect(cpp).toContain("MIN(W, static_cast<IEC_WORD>(5))");
+  });
 });

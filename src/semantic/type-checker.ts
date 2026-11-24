@@ -2581,7 +2581,7 @@ export class TypeChecker {
     // Arithmetic operators return the "wider" type
     else if (["+", "-", "*", "/", "MOD", "**"].includes(expr.operator)) {
       type =
-        expr.addressArithmetic === true
+        expr.addressArithmetic === true && this.isAddressValue(expr, scope)
           ? ELEMENTARY_TYPES["__XWORD"]
           : (this.untypedWithBitString(expr, leftType, rightType) ??
             getCommonType(leftType, rightType) ??
@@ -2793,7 +2793,7 @@ export class TypeChecker {
 
   /**
    * `dw / 86400`, `3 + w`: an untyped integer constant with a bit string
-   * (BYTE, WORD, DWORD, LWORD, __XWORD) takes its type. Undefined otherwise.
+   * (BYTE, WORD, DWORD, LWORD) takes its type. Undefined otherwise.
    */
   private untypedWithBitString(
     expr: BinaryExpression,
@@ -2803,8 +2803,7 @@ export class TypeChecker {
     if (expr.operator === "**") return undefined;
     const bitString = (t: IECType): boolean =>
       t.typeKind === "elementary" &&
-      (STRICT_BIT_STRINGS.has(this.aliasBase((t as ElementaryType).name)) ||
-        this.aliasBase((t as ElementaryType).name) === "__XWORD");
+      STRICT_BIT_STRINGS.has(this.aliasBase((t as ElementaryType).name));
     if (this.untypedConstantKind(expr.left) === "INT" && bitString(rightType)) {
       return rightType;
     }
@@ -8665,6 +8664,24 @@ export class TypeChecker {
     }
     if (expr.kind === "BinaryExpression")
       return expr.addressArithmetic === true;
+    return isAddressOf(expr) || this.isReferenceItself(expr, scope);
+  }
+
+  /**
+   * An address itself: ADR(), REF(), a POINTER TO or REF_TO variable, or one
+   * offset by + or - an integer. A difference of two addresses is a byte
+   * count, not an address, and neither is arithmetic on one.
+   */
+  private isAddressValue(expr: Expression, scope: Scope): boolean {
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.isAddressValue(expr.expression, scope);
+    }
+    if (expr.kind === "BinaryExpression") {
+      if (expr.addressArithmetic !== true) return false;
+      const left = this.isAddressValue(expr.left, scope);
+      const right = this.isAddressValue(expr.right, scope);
+      return expr.operator === "-" ? left && !right : left !== right;
+    }
     return isAddressOf(expr) || this.isReferenceItself(expr, scope);
   }
 

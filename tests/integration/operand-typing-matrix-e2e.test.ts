@@ -253,4 +253,84 @@ int main() {
     });
     expect(stdout).toBe("20 51");
   });
+
+  for (const [label, options] of [
+    ["no dialect", {}],
+    ["strict", { strict: true }],
+    ["iec-3 with pointer_to", { dialect: "iec-3", features: ["+pointer_to"] }],
+  ] as const) {
+    it(`computes arithmetic on a difference of two addresses as a byte count (${label})`, () => {
+      const result = compile(
+        `PROGRAM Main
+VAR arr : ARRAY[0..9] OF INT; p, q : POINTER TO INT; n : INT := 2;
+  y : INT; d1, d2, d3, d4, d5, d6, d7, d8 : DINT; l1 : LINT; END_VAR
+p := ADR(arr[6]); q := ADR(arr[0]);
+y := (p - q) / 2;
+d1 := (p - q) / 2;
+d2 := (p - q) / n;
+d3 := (p - q) + 1;
+d4 := (p - q) * 2;
+d5 := (p - q) MOD 5;
+d6 := (p - q) - 1;
+d7 := (ADR(arr[6]) - ADR(arr[0])) / 2;
+d8 := (p - q) / INT#2;
+l1 := p - q;
+END_PROGRAM
+`,
+        { headerFileName: "generated.hpp", ...options },
+      );
+      expect(result.errors).toEqual([]);
+      const stdout = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: "optyping_difference",
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.Y.get() << " " << p.D1.get() << " " << p.D2.get() << " " << p.D3.get() << " "
+              << p.D4.get() << " " << p.D5.get() << " " << p.D6.get() << " " << p.D7.get() << " "
+              << p.D8.get() << " " << p.L1.get() << std::endl;
+    return 0;
+}
+`,
+      });
+      expect(stdout).toBe("6 6 6 13 24 2 11 6 6 12");
+    });
+  }
+
+  it("keeps an untyped literal argument of LIMIT or MAX that lies outside the other arguments' type", () => {
+    const result = compile(
+      `PROGRAM Main
+VAR w : WORD := 16#FFFF; i : INT := 32767; r1, r2, r3, r4 : DINT; END_VAR
+r1 := LIMIT(0, w + 1, 100000);
+r2 := LIMIT(0, i + 1, 100000);
+r3 := MAX(w, 70000);
+r4 := MIN(i, -40000);
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "optyping_literal_args",
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.R1.get() << " " << p.R2.get() << " " << p.R3.get() << " " << p.R4.get() << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("65536 32768 70000 -40000");
+  });
 });

@@ -118,7 +118,7 @@ END_PROGRAM
 VAR v : INT; pp, pq : POINTER TO INT; pb : POINTER TO BYTE; x : LWORD; END_VAR
 x := pp + 2;
 x := 2 + pp;
-x := pp - pq;
+x := pp - 2 + 1;
 x := ADR(v) + 2;
 pb := pb + 1;
 END_PROGRAM
@@ -133,6 +133,49 @@ END_PROGRAM
       "__XWORD",
       "__XWORD",
       "__XWORD",
+    ]);
+  });
+
+  for (const [label, options] of [
+    ["no dialect", {}],
+    ["strict", { strict: true }],
+    ["iec-3 with pointer_to", { dialect: "iec-3", features: ["+pointer_to"] }],
+  ] as const) {
+    it(`types no difference of two addresses, nor arithmetic on one, as an __XWORD (${label})`, () => {
+      const r = compile(
+        `PROGRAM Main
+VAR arr : ARRAY[0..9] OF INT; p, q : POINTER TO INT; n : INT := 2;
+  y : INT; d : DINT; END_VAR
+y := (p - q) / 2;
+d := (p - q) / 2;
+d := (p - q) + 1;
+d := (p - q) * 2;
+d := (p - q) MOD 5;
+d := (p - q) - 1;
+d := (ADR(arr[6]) - ADR(arr[0])) / 2;
+d := (p - q) / n;
+d := (p - q) / INT#2;
+END_PROGRAM
+`,
+        { ...OPTIONS, ...options },
+      );
+      expect(r.errors).toEqual([]);
+      expect(valueTypes(r.ast!.programs[0]!.body)).not.toContain("__XWORD");
+    });
+  }
+
+  it("refuses a difference of two addresses under iec-3 for the feature only", () => {
+    const r = compile(
+      `PROGRAM Main
+VAR arr : ARRAY[0..9] OF INT; d : DINT; END_VAR
+d := (ADR(arr[6]) - ADR(arr[0])) / 2;
+d := (ADR(arr[6]) - ADR(arr[0])) + 1;
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp", dialect: "iec-3" },
+    );
+    expect([...new Set(r.errors.map((e) => e.message))]).toEqual([
+      "ADR needs the feature pointer_to",
     ]);
   });
 
