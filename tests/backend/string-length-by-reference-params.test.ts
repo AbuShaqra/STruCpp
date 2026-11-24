@@ -63,7 +63,7 @@ END_PROGRAM
           options,
         );
         expect(r.cppCode).toContain(
-          "I = strucpp::iec_add<DINT_t>({FL(T5), FO(W5)}) + F.M(T5, W5);",
+          "I = strucpp::iec_add<DINT_t>({strucpp::iec_add<DINT_t>({FL(T5), FO(W5)}), F.M(T5, W5)});",
         );
         expect(r.cppCode).toMatch(
           /IECStringVar<5> (__gio_\d+); \1 = U;\n\s*I = FL\(\1\);\n\s*U = \1;/,

@@ -60,7 +60,7 @@ o := THIS.a.b + THIS.arr[2] + SUPER.s.b + SUPER.arrB[1] + THIS.xs[1].q + SUPER.i
         expect(withoutSites(r.cppCode)).toContain(
           "static_cast<FB_B&>(*this).ARRB.at(1) = 6;",
         );
-        expect(withoutSites(r.cppCode)).toContain("FB_B::X = FB_B::X + 100;");
+        expect(withoutSites(r.cppCode)).toContain("FB_B::X = strucpp::iec_add<DINT_t>({FB_B::X, 100});");
       });
 
       it("applies the member access rule at every step", () => {

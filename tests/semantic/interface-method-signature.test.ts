@@ -104,10 +104,13 @@ END_METHOD`),
 
       it("refuses another or a missing return type", () => {
         expect(
-          errors(`METHOD M : DINT
+          errors(
+            `METHOD M : DINT
 VAR_INPUT a : INT; END_VAR
 M := a;
-END_METHOD`),
+END_METHOD`,
+            "f.M(2);",
+          ),
         ).toEqual([`${WHERE}: it returns DINT, the interface INT`]);
         expect(
           errors(

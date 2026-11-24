@@ -638,9 +638,43 @@ export interface CodeGenResult {
 // Code Generator
 // =============================================================================
 
-/**
- * C++ code generator for IEC 61131-3 programs.
- */
+/** The value range of each integer and bit string type, for literal fitting. */
+const INTEGER_RANGES: Readonly<Record<string, readonly [bigint, bigint]>> = {
+  SINT: [-128n, 127n],
+  INT: [-32768n, 32767n],
+  DINT: [-2147483648n, 2147483647n],
+  LINT: [-9223372036854775808n, 9223372036854775807n],
+  USINT: [0n, 255n],
+  UINT: [0n, 65535n],
+  UDINT: [0n, 4294967295n],
+  ULINT: [0n, 18446744073709551615n],
+  BYTE: [0n, 255n],
+  WORD: [0n, 65535n],
+  DWORD: [0n, 4294967295n],
+  LWORD: [0n, 18446744073709551615n],
+};
+
+/** Argument expressions that are computed values, not variables. */
+const COMPUTED_ARGUMENT_KINDS: ReadonlySet<string> = new Set([
+  "BinaryExpression",
+  "UnaryExpression",
+  "ParenthesizedExpression",
+  "FunctionCallExpression",
+  "MethodCallExpression",
+  "CallResultAccessExpression",
+]);
+
+/** Standard functions whose runtime overloads take arguments of different types, at any count. */
+const MIXED_TYPE_STD_FUNCTIONS: ReadonlySet<string> = new Set([
+  "LIMIT",
+  "GT",
+  "GE",
+  "EQ",
+  "LE",
+  "LT",
+  "NE",
+]);
+
 /** The runtime helper that computes +, - or * so that it wraps instead of overflowing. */
 const WRAPPING_ARITHMETIC: Readonly<Record<string, string>> = {
   "+": "iec_add",
@@ -680,6 +714,9 @@ function isPlainString(type: {
   );
 }
 
+/**
+ * C++ code generator for IEC 61131-3 programs.
+ */
 export class CodeGenerator {
   private options: CodeGenOptions;
 
@@ -8421,6 +8458,34 @@ export class CodeGenerator {
     }
   }
 
+  /**
+   * `dominant`, or DINT or LINT when an untyped integer literal lies outside
+   * it (`LIMIT(0, w + 1, 100000)` with a WORD `w`), so the value is kept; the
+   * mixed-type overloads then compare in the common type.
+   */
+  private literalHoldingType(expr: Expression, dominant: string): string {
+    const range = INTEGER_RANGES[dominant];
+    const inner = expr.kind === "UnaryExpression" ? expr.operand : expr;
+    if (
+      range === undefined ||
+      inner.kind !== "LiteralExpression" ||
+      inner.literalType !== "INT"
+    ) {
+      return dominant;
+    }
+    const raw = exactIntegerLiteralValue(inner.rawValue);
+    if (raw === undefined) return dominant;
+    const value =
+      expr.kind === "UnaryExpression" && expr.operator === "-" ? -raw : raw;
+    const [min, max] = range;
+    if (value >= min && value <= max) return dominant;
+    const holds = (t: string): boolean => {
+      const [tMin, tMax] = INTEGER_RANGES[t]!;
+      return tMin <= min && tMax >= max && value >= tMin && value <= tMax;
+    };
+    return ["DINT", "LINT"].find(holds) ?? dominant;
+  }
+
   /** Returns true if expr is a bare literal (no typePrefix), possibly negated */
   private isBareLiteral(expr: Expression): boolean {
     const inner = expr.kind === "UnaryExpression" ? expr.operand : expr;
@@ -8558,7 +8623,7 @@ export class CodeGenerator {
   private harmonizeStdFuncArgs(
     args: string[],
     argExprs: FunctionCallExpression["arguments"],
-    stdFunc: { params: Array<{ constraint: string }> },
+    stdFunc: { name: string; params: Array<{ constraint: string }> },
   ): void {
     // Only harmonize when all params share the same generic constraint
     if (stdFunc.params.length === 0) return;
@@ -8568,6 +8633,12 @@ export class CodeGenerator {
       (p) => p.constraint === firstConstraint,
     );
     if (!allSame) return;
+    // Only these have runtime overloads taking arguments of different types
+    const name = stdFunc.name.toUpperCase();
+    const mixedOverloads =
+      MIXED_TYPE_STD_FUNCTIONS.has(name) ||
+      ((name === "MAX" || name === "MIN") &&
+        stripEnEno([...argExprs]).length === 2);
 
     // Infer types for all arguments
     const argTypes: (string | undefined)[] = argExprs.map((a) =>
@@ -8641,7 +8712,10 @@ export class CodeGenerator {
       // the inferred IEC type matches `dominant`, to lift raw C++ literals
       // into the IECVar<> template space.
       if (this.isBareLiteral(expr) && varTypes.length > 0) {
-        args[i] = `static_cast<IEC_${dominant}>(${args[i]})`;
+        const fit = mixedOverloads
+          ? this.literalHoldingType(expr, dominant)
+          : dominant;
+        args[i] = `static_cast<IEC_${fit}>(${args[i]})`;
         continue;
       }
       if (litType === dominant) continue;
@@ -8658,6 +8732,30 @@ export class CodeGenerator {
       if (literalIndices.includes(i)) continue;
       const t = argTypes[i];
       if (t && t !== dominant && this.canImplicitWiden(t, dominant)) {
+        args[i] = `static_cast<IEC_${dominant}>(${args[i]})`;
+      }
+    }
+
+    // A computed integer is a raw C++ number: beside a variable (an IECVar<T>)
+    // the template would not deduce, so it is passed as IEC_<dominant> there.
+    // EXPT takes its operands at different types already.
+    if (
+      mixedOverloads ||
+      name === "EXPT" ||
+      INTEGER_RANGES[dominant] === undefined
+    ) {
+      return;
+    }
+    const isVariable = argExprs.map(
+      (a) => !isEnEnoArgument(a) && a.value.kind === "VariableExpression",
+    );
+    for (let i = 0; i < args.length && i < argExprs.length; i++) {
+      if (
+        argTypes[i] === dominant &&
+        !literalIndices.includes(i) &&
+        COMPUTED_ARGUMENT_KINDS.has(argExprs[i]!.value.kind) &&
+        isVariable.some((v, j) => v && j !== i)
+      ) {
         args[i] = `static_cast<IEC_${dominant}>(${args[i]})`;
       }
     }

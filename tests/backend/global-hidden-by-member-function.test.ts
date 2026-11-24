@@ -40,7 +40,7 @@ END_PROGRAM
     expect(out).toContain("SEEN = ::strucpp::RESET;");
     expect(out).toContain("RESET_result = true;");
     // Main has no member function RESET: the global keeps its plain name.
-    expect(out).toContain(".RESET()) & (RESET);");
+    expect(out).toContain(".RESET()) & (RESET));");
   });
 
   it("qualifies it in another method, a property getter and a write", () => {
@@ -194,7 +194,7 @@ n := Pump.Twice() + Pump();
 END_FUNCTION_BLOCK
 `);
     expect(out).toContain("::strucpp::PUMP.TWICE()");
-    expect(out).toContain("::strucpp::PUMP.TWICE() + PUMP();");
+    expect(out).toContain("strucpp::iec_add<DINT_t>({::strucpp::PUMP.TWICE(), PUMP()});");
   });
 
   it("a method local of a VAR_EXTERNAL's mangled name is the local", () => {
@@ -270,6 +270,6 @@ END_PROGRAM
 `);
     expect(out).toContain("R = GT_.BUMP();");
     expect(out).toContain("F_CODE_result = CODE_.BUMP();");
-    expect(out).toContain("Y = GT_.BUMP() + CODE_.BUMP();");
+    expect(out).toContain("Y = strucpp::iec_add<DINT_t>({GT_.BUMP(), CODE_.BUMP()});");
   });
 });
