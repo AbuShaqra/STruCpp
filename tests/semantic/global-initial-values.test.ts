@@ -176,22 +176,38 @@ PROGRAM Main END_PROGRAM
     );
   });
 
-  it("refuses a call whose reads cannot be followed", () => {
-    expect(
-      located(
-        compile(`${FBS}VAR_GLOBAL
+  it("follows a call through an interface to its implementers or bound instance", () => {
+    const r = compile(`${FBS}VAR_GLOBAL
   z : INT := fi.M();
-  w : INT := pa^.M();
   i : I_A := f;
   v : INT := i.M();
-  f : FB_A; fi : FB_I; pa : POINTER TO FB_A := ADR(f); gy : INT := 4;
+  f : FB_A; fi : FB_I; gy : INT := 4;
 END_VAR
 PROGRAM Main END_PROGRAM
+`);
+    expect(r.errors).toEqual([]);
+    const gy = r.headerCode.indexOf("IEC_INT GY = 4");
+    expect(r.headerCode.indexOf("IEC_INT Z =")).toBeGreaterThan(gy);
+    expect(r.headerCode.indexOf("IEC_INT V =")).toBeGreaterThan(gy);
+  });
+
+  it("refuses a method called on a call result", () => {
+    expect(
+      located(
+        compile(`FUNCTION_BLOCK FB_A
+METHOD Self : REFERENCE TO FB_A
+Self REF= gfa;
+END_METHOD
+METHOD M : INT
+M := 2;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL f : FB_A; gfa : FB_A; x : INT := f.Self().M(); END_VAR
+PROGRAM Main END_PROGRAM
 `),
-      ),
+      ).filter((m) => m.includes("call result")),
     ).toEqual([
-      "17:14 The initial value of global 'Z' leads to a call through an interface (line 13), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign 'Z' in a program instead",
-      "20:14 The initial value of global 'V' leads to a call through an interface (line 20), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign 'V' in a program instead",
+      "9:45 The initial value of global 'X' leads to a method called on a call result (line 9), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign 'X' in a program instead",
     ]);
   });
 

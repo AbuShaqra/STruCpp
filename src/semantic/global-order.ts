@@ -137,9 +137,11 @@ export function orderGlobalBlocks(
       : new CallReadTracer(
           pous,
           owner,
-          new Map(items.map((i) => [i.name.toUpperCase(), i.decl.type])),
+          new Map(items.map((i) => [i.name.toUpperCase(), i.decl])),
         );
   const dependencies = new Map<string, string[]>();
+  // Dependencies only through an address taken in code the creation runs
+  const soft = new Map<string, Set<string>>();
   const unresolved = new Map<string, { node: ASTNode; reason: string }>();
   for (const item of items) {
     const self = item.name.toUpperCase();
@@ -150,6 +152,11 @@ export function orderGlobalBlocks(
       for (const g of reads.globals) {
         if (!named.includes(g)) named.push(g);
       }
+      const addressed = [...reads.addresses].filter(
+        (g) => g !== self && !named.includes(g),
+      );
+      named.push(...addressed);
+      if (addressed.length > 0) soft.set(self, new Set(addressed));
       if (reads.unresolved) unresolved.set(self, reads.unresolved);
     }
     dependencies.set(self, named);
@@ -159,21 +166,54 @@ export function orderGlobalBlocks(
   const cycles: string[][] = [];
   const done = new Set<string>();
   const path: string[] = [];
-  const visit = (name: string): void => {
+  // Whether the edge into each `path` entry is an address only
+  const softPath: boolean[] = [];
+  /** Whether `from` reaches a global on `path` through globals not yet ordered. */
+  const reachesPath = (from: string): boolean => {
+    const seen = new Set<string>([from]);
+    const queue = [from];
+    for (let i = 0; i < queue.length; i++) {
+      const at = queue[i]!;
+      if (path.includes(at)) return true;
+      for (const next of dependencies.get(at) ?? []) {
+        if (!done.has(next) && !seen.has(next)) {
+          seen.add(next);
+          queue.push(next);
+        }
+      }
+    }
+    return false;
+  };
+  const visit = (name: string, viaAddress: boolean): void => {
     if (done.has(name)) return;
     const at = path.indexOf(name);
     if (at >= 0) {
-      cycles.push(path.slice(at));
+      // A cycle through an address taken in code is ordered best-effort
+      if (!viaAddress && !softPath.slice(at + 1).some(Boolean)) {
+        cycles.push(path.slice(at));
+      }
       return;
     }
     path.push(name);
-    for (const dep of dependencies.get(name) ?? []) visit(dep);
+    softPath.push(viaAddress);
+    const deps = dependencies.get(name) ?? [];
+    const addressOnly = soft.get(name);
+    for (const dep of deps) {
+      if (addressOnly?.has(dep) !== true) visit(dep, false);
+    }
+    // An address-only dependency orders only when that closes no cycle
+    for (const dep of deps) {
+      if (addressOnly?.has(dep) === true && !reachesPath(dep)) {
+        visit(dep, true);
+      }
+    }
     path.pop();
+    softPath.pop();
     if (done.has(name)) return;
     done.add(name);
     const item = byName.get(name);
     if (item) order.push(item);
   };
-  for (const item of items) visit(item.name.toUpperCase());
+  for (const item of items) visit(item.name.toUpperCase(), false);
   return { order, dependencies, cycles, duplicates, unresolved };
 }
