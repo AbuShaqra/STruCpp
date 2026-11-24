@@ -76,7 +76,10 @@ END_PROGRAM
 `;
     expect(msgs(src)).toEqual([`7: ${conv("DINT", "INT")}`]);
     expect(laxMsgs(src)).toEqual([]);
-    expect(laxWarnings(src)).toEqual([]);
+    // Outside --strict it warns, as its assignment does.
+    expect(laxWarnings(src)).toEqual([
+      "7: Implicit narrowing conversion from DINT to INT",
+    ]);
   });
   it("accepts an integer literal initial value", () => {
     const src = prog("k : INT := 5;", "k := 1;");
@@ -346,7 +349,10 @@ END_PROGRAM
       `11: ${conv("DINT", "INT")}`,
     ]);
     expect(laxMsgs(src)).toEqual([]);
-    expect(laxWarnings(src)).toEqual([]);
+    expect(laxWarnings(src)).toEqual([
+      "10: Implicit narrowing conversion from DINT to INT",
+      "11: Implicit narrowing conversion from DINT to INT",
+    ]);
   });
 });
 

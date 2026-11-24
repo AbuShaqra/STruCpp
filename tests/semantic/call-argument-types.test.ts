@@ -95,30 +95,30 @@ describe("argument types follow the assignment rule", () => {
   }
 
   it("warns about a refused type C++ converts, by default only", () => {
-    const vars2 = "si : SINT; lt : LTIME; ld : LDATE; n : INT;";
+    const vars2 = "si : SINT; lt : LTIME; ld : LDT; n : INT;";
     const body = "n := F_UI(si);\nn := F_I(lt);\nn := F_DW(ld);";
     const def = diagnostics(DECLS, vars2, body, {});
     expect(def.errors).toEqual([]);
     expect(def.warnings).toEqual([
       "1: Cannot pass SINT to an input of type UINT without a conversion; use SINT_TO_UINT",
       "2: Cannot pass LTIME to an input of type INT without a conversion; use LTIME_TO_INT",
-      "3: Cannot pass LDATE to an input of type DWORD without a conversion; use LDATE_TO_DWORD",
+      "3: Cannot pass LDT to an input of type DWORD without a conversion; use LDT_TO_DWORD",
     ]);
     expect(
       diagnostics(DECLS, vars2, body, { dialect: "iec-3" }).errors,
     ).toEqual([
       "1: Cannot assign SINT to UINT",
       "2: Cannot assign LTIME to INT",
-      "3: Cannot assign LDATE to DWORD",
+      "3: Cannot assign LDT to DWORD",
     ]);
     expect(diagnostics(DECLS, vars2, body, { strict: true }).errors).toEqual([
       "1: Implicit conversion from SINT to UINT is not allowed; use SINT_TO_UINT",
       "2: Cannot assign LTIME to INT",
-      "3: Cannot assign LDATE to DWORD",
+      "3: Cannot assign LDT to DWORD",
     ]);
   });
 
-  it("keeps non-BOOL narrowing silent outside --strict, as before", () => {
+  it("warns about narrowing outside --strict, as its assignment does", () => {
     const body = "n := F_I(di);\nn := F_I(r);";
     for (const options of [{}, { dialect: "iec-3" }] as Options[]) {
       const r = diagnostics(
@@ -127,7 +127,13 @@ describe("argument types follow the assignment rule", () => {
         body,
         options,
       );
-      expect(r).toEqual({ errors: [], warnings: [] });
+      expect(r).toEqual({
+        errors: [],
+        warnings: [
+          "1: Implicit narrowing conversion from DINT to INT",
+          "2: Implicit narrowing conversion from REAL to INT",
+        ],
+      });
     }
     expect(
       diagnostics(DECLS, "di : DINT; r : REAL; n : INT;", body, {
@@ -137,6 +143,38 @@ describe("argument types follow the assignment rule", () => {
       "1: Implicit conversion from DINT to INT is not allowed; use DINT_TO_INT",
       "2: Implicit conversion from REAL to INT is not allowed; use REAL_TO_INT",
     ]);
+  });
+
+  it("refuses a date or time whose count C++ would pass in another unit", () => {
+    // Each converts in C++, to another value than <from>_TO_<to> gives
+    // (TIME counts ms, LTIME ns, LDATE days).
+    const pairs: Array<[string, string]> = [
+      ["TIME", "LINT"],
+      ["DATE", "LINT"],
+      ["TOD", "LTIME"],
+      ["DT", "LTIME"],
+      ["LDATE", "DINT"],
+      ["LDT", "LDATE"],
+      ["INT", "LDATE"],
+      ["LDT", "LTOD"],
+    ];
+    const decls = pairs
+      .map(
+        ([, to], i) =>
+          `FUNCTION G${i} : INT\nVAR_INPUT x : ${to}; END_VAR\nG${i} := 0;\nEND_FUNCTION\n`,
+      )
+      .join("");
+    const vars = pairs.map(([from], i) => `v${i} : ${from};`).join(" ");
+    const body = pairs.map((_, i) => `n := G${i}(v${i});`).join("\n");
+    for (const [, options] of MODES) {
+      expect(
+        diagnostics(decls, `${vars} n : INT;`, body, options).errors,
+      ).toEqual(
+        pairs.map(
+          ([from, to], i) => `${i + 1}: Cannot assign ${from} to ${to}`,
+        ),
+      );
+    }
   });
 
   it("accepts matching, widening and untyped constant arguments", () => {
@@ -356,4 +394,71 @@ END_PROGRAM
       ).toEqual([]);
     });
   }
+});
+
+describe("review follow-ups", () => {
+  it("refuses a STRING literal into a WSTRING input, as its assignment", () => {
+    for (const [, options] of MODES) {
+      expect(
+        diagnostics(
+          "FUNCTION F_WS : INT\nVAR_INPUT w : WSTRING; END_VAR\nF_WS := 0;\nEND_FUNCTION\n",
+          "n : INT;",
+          "n := F_WS('abc');\nn := F_WS(\"abc\");",
+          options,
+        ).errors,
+      ).toEqual(["1: Cannot assign STRING to WSTRING"]);
+    }
+  });
+
+  it("refuses a scalar or address into a named ARRAY type input", () => {
+    const decls = `TYPE TArr : ARRAY[0..3] OF INT; END_TYPE
+TYPE TArr2 : TArr; END_TYPE
+FUNCTION F_A : INT
+VAR_INPUT a : TArr; END_VAR
+F_A := a[0];
+END_FUNCTION
+FUNCTION F_A2 : INT
+VAR_INPUT a : TArr2; END_VAR
+F_A2 := a[0];
+END_FUNCTION
+`;
+    for (const [, options] of [MODES[0]!, MODES[2]!]) {
+      const r = diagnostics(
+        decls,
+        "vi : INT; ar : TArr; n : INT;",
+        "n := F_A(vi);\nn := F_A(5);\nn := F_A(ADR(ar));\nn := F_A2(vi);\nn := F_A(ar);\nn := F_A2(ar);",
+        options,
+      );
+      expect(r.errors).toEqual([
+        "1: Cannot pass a value of type INT to input 'A', which takes an ARRAY",
+        "2: Cannot pass a value of type INT to input 'A', which takes an ARRAY",
+        "3: Cannot pass an address to input 'A', which takes an ARRAY",
+        "4: Cannot pass a value of type INT to input 'A', which takes an ARRAY",
+      ]);
+    }
+  });
+
+  it("gives a FUNCTION's EN only its own error, an FB's EN the BOOL rule", () => {
+    const decls = `FUNCTION F : INT
+VAR_INPUT x : INT; END_VAR
+F := x;
+END_FUNCTION
+FUNCTION_BLOCK FB
+END_FUNCTION_BLOCK
+`;
+    const en = "1: 'EN' input must be a BOOL expression, got INT";
+    for (const [, options] of MODES) {
+      expect(
+        diagnostics(
+          decls,
+          "vi : INT; n : INT;",
+          "n := F(EN := vi, x := 1);",
+          options,
+        ),
+      ).toEqual({ errors: [en], warnings: [] });
+    }
+    expect(
+      diagnostics(decls, "vi : INT; fb1 : FB;", "fb1(EN := vi);", {}).warnings,
+    ).toEqual(["1: Implicit narrowing conversion from INT to BOOL"]);
+  });
 });

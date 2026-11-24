@@ -241,3 +241,54 @@ END_FUNCTION_BLOCK
     ]);
   });
 });
+
+describe("an integer into a POINTER TO reached through a STRUCT, an alias or a result", () => {
+  const decls = `TYPE ST_Q : STRUCT p : POINTER TO DINT; a : ARRAY[0..1] OF POINTER TO DINT; END_STRUCT END_TYPE
+TYPE PDI : POINTER TO DINT; END_TYPE
+FUNCTION F_DW : DWORD
+F_DW := 0;
+END_FUNCTION
+`;
+  const vars =
+    "d : DINT; q : ST_Q; qa : ARRAY[0..1] OF ST_Q; pst : POINTER TO ST_Q; lw : LWORD; udi : UDINT; dw : DWORD; ppd : PDI; pd : POINTER TO DINT;";
+  const member =
+    "A POINTER TO member of a STRUCT cannot take an integer; assign ADR(...), another pointer or 0";
+  const integer =
+    "An integer is not an address; a POINTER TO takes ADR(...), another pointer or 0";
+
+  for (const options of [{}, { strict: true }] as Options[]) {
+    it(`refuses any integer into a STRUCT member, no C++ conversion exists (${JSON.stringify(options)})`, () => {
+      expect(
+        run(
+          decls,
+          vars,
+          "pst := ADR(q);\nq.p := lw;\nq.p := udi;\npst^.p := dw;\npst^.p := lw;\nqa[1].p := lw;",
+          options,
+        ).errors,
+      ).toEqual([2, 3, 4, 5, 6].map((l) => `${l}: ${member}`));
+    });
+  }
+
+  it("warns about a narrow integer into a pointer alias or from a function result", () => {
+    expect(run(decls, vars, "ppd := udi;\npd := F_DW();", {})).toEqual({
+      errors: [],
+      warnings: [`1: ${integer}`, `2: ${integer}`],
+    });
+    expect(
+      run(decls, vars, "ppd := udi;\npd := F_DW();", { strict: true }).errors,
+    ).toEqual([`1: ${integer}`, `2: ${integer}`]);
+  });
+
+  it("accepts 0 and an address into a STRUCT member, and a 64-bit integer into an element", () => {
+    expect(
+      run(
+        decls,
+        vars,
+        "q.p := 0;\nq.p := ADR(d);\nq.a[0] := lw;\nppd := lw;",
+        {
+          strict: true,
+        },
+      ),
+    ).toEqual({ errors: [], warnings: [] });
+  });
+});

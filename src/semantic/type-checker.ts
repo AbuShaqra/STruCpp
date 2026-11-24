@@ -403,13 +403,18 @@ function failsAsCppArgument(value: string, target: string): boolean {
   return TEMPORAL_32.has(value) && !WIDE_INTEGERS.has(target);
 }
 
-/** A STRING literal without a `STRING#` prefix. */
-function isUntypedStringLiteral(expr: Expression): boolean {
-  return (
-    expr.kind === "LiteralExpression" &&
-    expr.literalType === "STRING" &&
-    (expr.typePrefix ?? "") === ""
-  );
+/**
+ * Whether an argument of type `value` into an input of type `target` (both
+ * temporal or one an integer; C++ converts it) gets another value than the
+ * named conversion `<value>_TO_<target>`: the raw count changes unit (an
+ * LDATE counts days, TIME milliseconds). Measured on development.
+ */
+function temporalValueDiffers(value: string, target: string): boolean {
+  if (target === "LDATE") return value !== "LTIME" && value !== "LTOD";
+  if (value === "LDATE") return !["BOOL", "LTIME", "LTOD"].includes(target);
+  // A 32-bit TIME, DATE, TOD or DT reaches here only into a 64-bit type.
+  if (TEMPORAL_32.has(value)) return !(value === "TOD" && target === "LDT");
+  return value === "LDT" && target === "LTOD";
 }
 
 /** `NULL` or `0`: the only initializers a pointer or reference keeps (it starts null anyway). */
@@ -4447,6 +4452,9 @@ export class TypeChecker {
     );
     if (inputs === undefined) this.refuseLibraryArrayInOuts(expr, scope);
     {
+      if (this.isFBInstanceCall(expr, scope)) {
+        this.checkEnArgument(expr.arguments, scope);
+      }
       this.checkStrictArguments(
         this.argumentInputs(expr, scope),
         expr.arguments,
@@ -10378,52 +10386,134 @@ export class TypeChecker {
     value: Expression,
     scope: Scope,
   ): boolean {
-    if (
-      this.declaredReferenceShape(target, scope)?.chain[0] !== "pointer_to" &&
-      !this.isPointerAliasTarget(target, scope)
-    ) {
-      return false;
-    }
+    const alias = this.isPointerAliasTarget(target, scope);
+    const shape = this.declaredReferenceShape(target, scope);
+    if (shape?.chain[0] !== "pointer_to" && !alias) return false;
     if (isUntypedZero(value)) return false;
     // A STRUCT or FB target refuses an integer through the assignment check.
-    const pointee = target.resolvedType;
     if (
-      pointee?.typeKind !== "elementary" ||
-      ELEMENTARY_TYPES[
-        canonicalElementaryName(
-          this.aliasBase((pointee as ElementaryType).name),
-        )
-      ] === undefined
+      !alias &&
+      (shape?.chain.length !== 1 ||
+        ELEMENTARY_TYPES[
+          canonicalElementaryName(this.aliasBase(shape.base))
+        ] === undefined)
     ) {
       return false;
     }
     const difference = this.isAddressDifference(value);
-    if (!difference) {
-      if (!this.isIntegerValue(value, scope)) return false;
-      const t = value.resolvedType;
-      const base =
-        t?.typeKind === "elementary"
-          ? canonicalElementaryName(this.aliasBase((t as ElementaryType).name))
-          : undefined;
-      if (base === undefined) return false;
-      // A 64-bit integer may hold an address: no narrowing to the target type.
-      if (
-        addressFit(base, []) === "wide" ||
-        ["__XWORD", "XWORD", "__UXINT", "__XINT"].includes(base)
-      ) {
-        return true;
-      }
+    const integer = difference
+      ? undefined
+      : this.integerValueBase(value, scope);
+    if (!difference && integer === undefined) return false;
+    const span = value.sourceSpan;
+    // A POINTER TO member of a STRUCT is a plain C++ pointer: no integer
+    // converts to it, so the C++ build failed.
+    if (this.isStructMemberTarget(target, scope)) {
+      this.addError(
+        "A POINTER TO member of a STRUCT cannot take an integer; assign ADR(...), another pointer or 0",
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+      return true;
+    }
+    // A 64-bit integer may hold an address: no narrowing to the target type.
+    if (
+      integer !== undefined &&
+      (addressFit(integer, []) === "wide" ||
+        ["__XWORD", "XWORD", "__UXINT", "__XINT"].includes(integer))
+    ) {
+      return true;
     }
     const message = difference
       ? "A difference of two addresses is a byte count, not an address; a POINTER TO takes ADR(...), another pointer or 0"
       : "An integer is not an address; a POINTER TO takes ADR(...), another pointer or 0";
-    const span = value.sourceSpan;
     if (this.strict || this.inOutErrors) {
       this.addError(message, span.startLine, span.startCol, span.file);
     } else {
       this.addWarning(message, span.startLine, span.startCol, span.file);
     }
     return true;
+  }
+
+  /**
+   * The canonical integer type of a value that is an integer, not an address:
+   * a literal, an integer variable, member, dereference, function result or
+   * arithmetic of them. Undefined otherwise.
+   */
+  private integerValueBase(
+    value: Expression,
+    scope: Scope,
+  ): string | undefined {
+    if (this.isAddressArgument(value, scope)) return undefined;
+    if (!this.isIntegerValue(value, scope)) {
+      let v = value;
+      while (v.kind === "ParenthesizedExpression") v = v.expression;
+      if (
+        v.kind !== "FunctionCallExpression" &&
+        v.kind !== "VariableExpression"
+      ) {
+        return undefined;
+      }
+    }
+    const t = value.resolvedType;
+    if (t?.typeKind !== "elementary") return undefined;
+    const base = canonicalElementaryName(
+      this.aliasBase((t as ElementaryType).name),
+    );
+    return INTEGER_STORAGE[base] !== undefined ||
+      ["__XWORD", "XWORD", "__UXINT", "__XINT"].includes(base)
+      ? base
+      : undefined;
+  }
+
+  /** `target` is a member of a STRUCT (or UNION) value: `q.p`, `pst^.p`, `arr[i].p`. */
+  private isStructMemberTarget(target: Expression, scope: Scope): boolean {
+    const owner = this.lastFieldOwnerType(target, scope);
+    if (owner === undefined) return false;
+    const name = this.aliasTarget(owner);
+    return (
+      this.isStructType(name) ||
+      this.symbolTables.lookupType(name)?.resolvedType?.typeKind === "struct"
+    );
+  }
+
+  /** The type name of the value whose member `target` names last, typed silently; undefined when its last step is no field. */
+  private lastFieldOwnerType(
+    target: Expression,
+    scope: Scope,
+  ): string | undefined {
+    if (target.kind !== "VariableExpression") return undefined;
+    const chain = target.accessChain ?? [];
+    const last = chain[chain.length - 1];
+    if (last !== undefined) {
+      if (last.kind !== "field") return undefined;
+    } else if (
+      target.subscripts.length !== 0 ||
+      target.fieldAccess.length === 0
+    ) {
+      return undefined;
+    }
+    const owner: VariableExpression = {
+      ...target,
+      fieldAccess: target.fieldAccess.slice(0, -1),
+    };
+    if (chain.length > 0) owner.accessChain = chain.slice(0, -1);
+    else delete owner.accessChain;
+    // The declared type it reaches (`pst^` of a POINTER TO ST_Q is ST_Q)
+    const declared = this.accessedType(owner, scope);
+    if (declared !== undefined) {
+      return declared.referenceKind === "none" &&
+        declared.arrayDimensions === undefined
+        ? declared.name
+        : undefined;
+    }
+    const errors = this.errors.length;
+    const warnings = this.warnings.length;
+    const ownerType = this.inferType(owner, scope);
+    this.errors.length = errors;
+    this.warnings.length = warnings;
+    return ownerType !== undefined ? typeNameUtil(ownerType) : undefined;
   }
 
   /** `target` is a variable or member declared with a POINTER TO alias of this unit (`p : PINT`). */
@@ -12342,7 +12432,6 @@ export class TypeChecker {
     scope: Scope,
     stdTimer = false,
   ): void {
-    this.checkEnArgument(args, scope);
     if (!inputs) return;
     stripEnEno([...args]).forEach((arg, i) => {
       if (arg.isOutput) return;
@@ -12428,19 +12517,18 @@ export class TypeChecker {
   private compositeTypeKind(name: string): "STRUCT" | "ARRAY" | undefined {
     const target = this.aliasTarget(name);
     if (this.isStructType(target)) return "STRUCT";
+    const upper = target.toUpperCase();
+    const def = this.ast?.types.find(
+      (t) => t.name.toUpperCase() === upper,
+    )?.definition;
+    if (def?.kind === "ArrayDefinition") return "ARRAY";
     const resolved = this.symbolTables.lookupType(target)?.resolvedType;
     if (resolved?.typeKind === "struct") return "STRUCT";
     if (resolved?.typeKind === "array") return "ARRAY";
     return undefined;
   }
 
-  /**
-   * Non-BOOL narrowing into an input warns as the assignment does: off
-   * outside `--strict` for now (only BOOL inputs warn there).
-   */
-  private readonly narrowingArgumentWarnings = false;
-
-  /** `EN := v`: checked as a BOOL input. */
+  /** `EN := v` of an FB call: checked as a BOOL input (a FUNCTION's EN has its own check). */
   private checkEnArgument(args: readonly Argument[], scope: Scope): void {
     const en = args.find((a) => !a.isOutput && a.name?.toUpperCase() === "EN");
     if (en !== undefined) this.checkArgumentValue("BOOL", en.value, scope);
@@ -12459,10 +12547,8 @@ export class TypeChecker {
     const base = canonicalElementaryName(this.aliasBase(typeName));
     const target = ELEMENTARY_TYPES[base];
     if (target === undefined || this.isUserTypeOfEd3Name(base)) return;
-    // CHAR and WCHAR inputs have their own check (adaptCharArguments); a
-    // STRING literal adapts to a WSTRING input.
+    // CHAR and WCHAR inputs have their own check (adaptCharArguments).
     if (base === "CHAR" || base === "WCHAR") return;
-    if (base === "WSTRING" && isUntypedStringLiteral(value)) return;
     if (this.isAddressArgument(value, scope)) return;
     const valueType = value.resolvedType;
     if (valueType?.typeKind !== "elementary") return;
@@ -12472,7 +12558,7 @@ export class TypeChecker {
     );
     if (ELEMENTARY_TYPES[valueBase] === undefined) return;
     // An untyped constant adapts as in the assignment; into a BOOL input it
-    // gets no narrowing warning, as before.
+    // gets no narrowing warning.
     const untypedConstant = this.untypedConstantKind(value) !== undefined;
     const strictMode = this.strict || this.inOutErrors;
     this.validateAssignment(
@@ -12481,9 +12567,11 @@ export class TypeChecker {
       { ...ARGUMENT_TARGET, sourceSpan: value.sourceSpan },
       value,
       {
-        narrowingWarning: (t) =>
-          t === "BOOL" ? !untypedConstant : this.narrowingArgumentWarnings,
-        warnOnly: (t, v) => !strictMode && !failsAsCppArgument(v, t),
+        narrowingWarning: (t) => t !== "BOOL" || !untypedConstant,
+        warnOnly: (t, v) =>
+          !strictMode &&
+          !failsAsCppArgument(v, t) &&
+          !temporalValueDiffers(v, t),
       },
     );
   }
