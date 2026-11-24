@@ -235,6 +235,15 @@ describe("LOWER_BOUND / UPPER_BOUND in a test file", () => {
         "UPPER_BOUND(a, e)",
         "Argument 'DIM' of 'UPPER_BOUND' expects ANY_INT, got E_DIM",
       ],
+      // A test file's variables carry only their declaration
+      [
+        "UPPER_BOUND(a, s)",
+        "Argument 'DIM' of 'UPPER_BOUND' expects ANY_INT, got STRING",
+      ],
+      [
+        "LOWER_BOUND(DIM := s, ARR := a)",
+        "Argument 'DIM' of 'LOWER_BOUND' expects ANY_INT, got STRING",
+      ],
       [
         "UPPER_BOUND(a, E_DIM#ONE)",
         "Argument 'DIM' of 'UPPER_BOUND' expects ANY_INT, got E_DIM",
@@ -243,6 +252,24 @@ describe("LOWER_BOUND / UPPER_BOUND in a test file", () => {
     for (const [call, message] of cases) {
       expect(testErrors(call)).toEqual([[message], [message]]);
     }
+  });
+
+  it("refuses a REAL variable as DIM (it was truncated)", () => {
+    const parsed = parseTestFile(
+      `TEST 'b'\nVAR a : ARRAY[0..4] OF INT; r : REAL := 1.7; l : LREAL; x : DINT; END_VAR\nx := UPPER_BOUND(a, r);\nx := LOWER_BOUND(a, l);\nEND_TEST\n`,
+      "t.st",
+    );
+    expect(parsed.errors).toEqual([]);
+    expect(
+      analyzeTestFile(
+        parsed.testFile!,
+        source.symbolTables!,
+        source.ast,
+      ).errors.map((e) => e.message),
+    ).toEqual([
+      "Argument 'DIM' of 'UPPER_BOUND' expects ANY_INT, got REAL",
+      "Argument 'DIM' of 'LOWER_BOUND' expects ANY_INT, got LREAL",
+    ]);
   });
 
   it("accepts correct calls", () => {

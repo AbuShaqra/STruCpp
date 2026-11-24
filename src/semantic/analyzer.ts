@@ -3244,6 +3244,8 @@ export class SemanticAnalyzer {
     const visit = (node: ASTNode): void => {
       if (node.kind !== "LiteralExpression") return;
       const literal = node as LiteralExpression;
+      // Its quotes are wrong whatever else was reported at it (`s := WSTRING#'a'`).
+      if (this.refuseTypedStringQuotes(literal)) return;
       if (this.literalsReported.has(literal)) return;
       if (literal.literalType === "CHAR" || literal.literalType === "WCHAR") {
         this.validateCharLiteral(literal);
@@ -3277,6 +3279,31 @@ export class SemanticAnalyzer {
     }
   }
 
+  /** Typed string literals refused for their quotes, each once. */
+  private typedQuotesReported = new WeakSet<LiteralExpression>();
+
+  /**
+   * STRING#"abc" or WSTRING#'abc': a typed STRING literal is single-quoted and
+   * a WSTRING one double-quoted (Ed. 3 Table 6). True when refused.
+   */
+  private refuseTypedStringQuotes(literal: LiteralExpression): boolean {
+    const prefix = (literal.typePrefix ?? "").toUpperCase();
+    if (prefix !== "STRING" && prefix !== "WSTRING") return false;
+    const want = prefix === "STRING" ? "'" : '"';
+    if (literal.rawValue.startsWith(want)) return false;
+    if (this.typedQuotesReported.has(literal)) return true;
+    this.typedQuotesReported.add(literal);
+    const span = literal.sourceSpan;
+    this.literalsReported.add(literal);
+    this.addError(
+      `A ${prefix} literal is written in ${prefix === "STRING" ? "single" : "double"} quotes: ${prefix}#${want}...${want}`,
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
+    return true;
+  }
+
   /**
    * A CHAR or WCHAR literal holds exactly one character, and a CHAR one that
    * Windows-1252 has.
@@ -3287,6 +3314,11 @@ export class SemanticAnalyzer {
     const span = literal.sourceSpan;
     const fail = (message: string): void =>
       this.addError(message, span.startLine, span.startCol, span.file);
+    // CHAR#"A": a CHAR literal is single-quoted (WCHAR#'A' is Table 6's own form)
+    if (!wide && /#"/.test(literal.rawValue)) {
+      fail(`A CHAR literal is written in single quotes: CHAR#'...'`);
+      return;
+    }
     if (units.length !== 1) {
       fail(
         `A ${type} literal holds exactly one character; ${literal.rawValue} holds ${units.length}`,
@@ -4759,24 +4791,31 @@ export class SemanticAnalyzer {
   }
 
   /**
-   * Argument counts of the standard function calls in initial values, which
-   * the statement walk does not reach (`hi : DINT := UPPER_BOUND();` failed in
-   * codegen). Counts only: the other call checks stay with the bodies.
+   * Argument counts of the standard function calls in initial values (STRUCT
+   * field defaults included), which the statement walk does not reach
+   * (`hi : DINT := UPPER_BOUND();` failed in codegen). Counts only: the other
+   * call checks stay with the bodies.
    */
   private validateInitialValueCallCounts(ast: CompilationUnit): void {
+    const visitValue = (
+      value: Expression | undefined,
+      varTypeMap: ReadonlyMap<string, string>,
+    ): void => {
+      if (value === undefined) return;
+      walkAST(value, (node) => {
+        if (node.kind !== "FunctionCallExpression") return;
+        const call = node as FunctionCallExpression;
+        if (call.functionName.includes(".")) return;
+        this.checkStdFunctionArgs(call, varTypeMap, true);
+      });
+    };
     const visit = (
       blocks: VarBlock[],
       varTypeMap: ReadonlyMap<string, string>,
     ): void => {
       for (const block of blocks) {
         for (const decl of block.declarations) {
-          if (decl.initialValue === undefined) continue;
-          walkAST(decl.initialValue, (node) => {
-            if (node.kind !== "FunctionCallExpression") return;
-            const call = node as FunctionCallExpression;
-            if (call.functionName.includes(".")) return;
-            this.checkStdFunctionArgs(call, varTypeMap, true);
-          });
+          visitValue(decl.initialValue, varTypeMap);
         }
       }
     };
@@ -4811,6 +4850,13 @@ export class SemanticAnalyzer {
       }
     }
     this.callOwner = {};
+    // A STRUCT field's default (a TYPE's own one is applied to its variables)
+    for (const type of ast.types) {
+      if (type.definition.kind !== "StructDefinition") continue;
+      for (const field of type.definition.fields) {
+        visitValue(field.initialValue, new Map());
+      }
+    }
   }
 
   /**
@@ -7816,7 +7862,13 @@ export class SemanticAnalyzer {
         testScope,
         sourceAst,
       );
+      this.checkTestStatementOperands(tc.body, testScope, sourceAst);
     }
+    this.checkTestStatementOperands(
+      [...(testFile.setup?.body ?? []), ...(testFile.teardown?.body ?? [])],
+      setupScope,
+      sourceAst,
+    );
     if (testFile.setup) {
       this.checkTestStructComparisons(
         [
@@ -7965,6 +8017,30 @@ export class SemanticAnalyzer {
         }
       }
     }
+  }
+
+  /**
+   * REAL MOD, `__DELETE` operands and `__NEW` into a REF_TO in test statements
+   * (VARs are typed), refused as in a POU.
+   */
+  private checkTestStatementOperands(
+    roots: readonly TestStatement[],
+    scope: Scope,
+    sourceAst: CompilationUnit | undefined,
+  ): void {
+    const checker = new TypeChecker(
+      this.symbolTables,
+      this.stdRegistry,
+      false,
+      this.features,
+    );
+    this.errors.push(
+      ...checker.checkTestStatementOperands(
+        roots as readonly ASTNode[],
+        scope,
+        sourceAst,
+      ),
+    );
   }
 
   /** `=` and `<>` of two STRUCTs in test bodies, where struct_compare is off. */

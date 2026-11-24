@@ -18,6 +18,7 @@ import type {
   RefExpression,
   VarAccess,
   AssignmentStatement,
+  DeleteStatement,
   Expression,
   BinaryExpression,
   UnaryExpression,
@@ -829,6 +830,50 @@ export class TypeChecker {
   }
 
   /**
+   * In a test file's statements, which are not otherwise type-checked, as in
+   * a POU: MOD of a REAL or LREAL operand (operator or standard function),
+   * `__DELETE` of what is no POINTER TO and `__NEW` stored into a REF_TO.
+   * Operand types come from declarations and literals; nothing is inferred.
+   */
+  checkTestStatementOperands(
+    roots: readonly ASTNode[],
+    scope: Scope,
+    ast: CompilationUnit | undefined,
+  ): CompileError[] {
+    this.errors = [];
+    this.warnings = [];
+    this.ast = ast;
+    for (const root of roots) {
+      walkAST(root, (node) => {
+        if (node.kind === "FunctionCallExpression") {
+          this.refuseRealModCall(node as FunctionCallExpression, scope);
+        } else if (
+          node.kind === "BinaryExpression" &&
+          (node as BinaryExpression).operator === "MOD"
+        ) {
+          this.refuseRealMod(
+            node as BinaryExpression,
+            undefined,
+            undefined,
+            scope,
+          );
+        } else if (node.kind === "DeleteStatement") {
+          this.refuseDeleteOperand((node as DeleteStatement).pointer, scope);
+        } else if (node.kind === "AssignmentStatement") {
+          const { target, value } = node as AssignmentStatement;
+          if (unparenthesized(value).kind !== "NewExpression") return;
+          const shape = this.declaredReferenceShape(target, scope);
+          if (shape) this.validateReferenceValue(shape, value, scope);
+        }
+      });
+    }
+    const found = this.errors;
+    this.errors = [];
+    this.warnings = [];
+    return found;
+  }
+
+  /**
    * `=` and `<>` of two STRUCTs in TEST, SETUP and TEARDOWN bodies, which are
    * not otherwise type-checked: refused where struct_compare is off.
    */
@@ -1007,9 +1052,10 @@ export class TypeChecker {
   /**
    * Operators in an initial value the checks above do not type (a STRUCT
    * field default, an array or structure initializer, a global's initial
-   * value) are refused as in a body: a mixed STRING/WSTRING comparison and a
-   * negated TIME constant. Operand types come from literals, declared
-   * variables and types already resolved; nothing is inferred anew.
+   * value) are refused as in a body: a mixed STRING/WSTRING comparison, a
+   * negated TIME constant and MOD of a REAL or LREAL. Operand types come from
+   * literals, declared variables and types already resolved; nothing is
+   * inferred anew.
    */
   private checkInitialValueOperators(ast: CompilationUnit): void {
     const global = this.symbolTables.globalScope;
@@ -1022,11 +1068,15 @@ export class TypeChecker {
         }
         if (node.kind === "FunctionCallExpression") {
           this.checkInitialBoundCall(node as FunctionCallExpression, scope);
+          this.refuseRealModCall(node as FunctionCallExpression, scope);
           return;
         }
         if (node.kind !== "BinaryExpression") return;
         const expr = node as BinaryExpression;
         this.markInitialMixedSignBitwise(expr, scope);
+        if (expr.operator === "MOD") {
+          this.refuseRealMod(expr, undefined, undefined, scope);
+        }
         if (
           !["=", "<>", "<", ">", "<=", ">="].includes(expr.operator) ||
           this.refusedMixedComparisons.has(expr)
@@ -2531,14 +2581,29 @@ export class TypeChecker {
     this.requireStructCompare(expr, leftType, rightType, scope);
 
     if (leftType === undefined || rightType === undefined) {
-      // `p^ MOD i`: a dereference has no expression type here; its declared one decides
+      // `p^ = 'b'`: a dereferenced CHAR or WCHAR takes a one-character literal
+      // as that character; a string operand is refused as for a CHAR variable
+      const [deref, other, otherType] =
+        leftType === undefined
+          ? [expr.left, expr.right, rightType]
+          : [expr.right, expr.left, leftType];
+      const accessed = this.accessedElementaryType(deref, scope);
+      const derefChar = this.charTypeOf(accessed);
+      if (
+        derefChar !== undefined &&
+        !this.adaptCharLiteral(other, derefChar) &&
+        otherType?.typeKind === "elementary" &&
+        isStringBase(this.aliasBase((otherType as ElementaryType).name))
+      ) {
+        this.inferCharBinaryType(
+          expr,
+          leftType ?? accessed!,
+          rightType ?? accessed!,
+        );
+      }
+      // `p^ MOD i`: an operand with no expression type is judged by its reads
       if (expr.operator === "MOD") {
-        const left = leftType ?? this.accessedElementaryType(expr.left, scope);
-        const right =
-          rightType ?? this.accessedElementaryType(expr.right, scope);
-        if (left !== undefined && right !== undefined) {
-          this.refuseRealMod(expr, left, right);
-        }
+        this.refuseRealMod(expr, leftType, rightType, scope);
       }
       return undefined;
     }
@@ -2555,6 +2620,10 @@ export class TypeChecker {
       return this.inferCharBinaryType(expr, leftType, rightType);
     }
 
+    if (this.refuseStringOperands(expr, leftType, rightType, scope)) {
+      return undefined;
+    }
+
     if (
       (expr.operator === "+" || expr.operator === "-") &&
       !this.innerChainNodes.has(expr)
@@ -2566,7 +2635,9 @@ export class TypeChecker {
     }
     // The result of arithmetic on an enumeration has no type to check further.
     if (this.checkEnumOperands(expr, leftType, rightType)) return undefined;
-    if (expr.operator === "MOD") this.refuseRealMod(expr, leftType, rightType);
+    if (expr.operator === "MOD") {
+      this.refuseRealMod(expr, leftType, rightType, scope);
+    }
 
     let type: IECType | undefined;
 
@@ -2671,7 +2742,10 @@ export class TypeChecker {
    * a one-character literal is that character, and every compared argument
    * is the same character type (no implicit conversion to a number).
    */
-  private checkCharStdArguments(expr: FunctionCallExpression): void {
+  private checkCharStdArguments(
+    expr: FunctionCallExpression,
+    scope?: Scope,
+  ): void {
     const name = expr.functionName.toUpperCase();
     const skip = CHAR_COMPARE_FUNCTIONS.get(name);
     if (skip === undefined || this.findUserFunction(name)) return;
@@ -2683,8 +2757,14 @@ export class TypeChecker {
       return;
     }
     const args = stripEnEno(expr.arguments).slice(skip);
+    // `EQ(p^, 'b')`: a dereference has no expression type; its declared one counts
     const charType = args
-      .map((a) => this.charTypeOf(a.value.resolvedType))
+      .map((a) =>
+        this.charTypeOf(
+          a.value.resolvedType ??
+            (scope && this.accessedElementaryType(a.value, scope)),
+        ),
+      )
       .find((t) => t !== undefined);
     if (charType === undefined) return;
     for (const arg of args) {
@@ -2885,7 +2965,45 @@ export class TypeChecker {
     return undefined;
   }
 
-  /** The elementary type a variable path names through `^`, fields and subscripts, if any. */
+  /**
+   * A store into a CHAR or WCHAR reached through `^` (its target has no
+   * expression type): a one-character literal is that character, and a STRING,
+   * WSTRING or the other character type is refused, as for a CHAR variable.
+   */
+  private adaptDereferencedCharStore(
+    target: Expression,
+    value: Expression,
+    scope: Scope,
+  ): void {
+    const accessed = this.accessedElementaryType(target, scope);
+    const charType = this.charTypeOf(accessed);
+    if (charType === undefined || this.adaptCharLiteral(value, charType)) {
+      return;
+    }
+    const valueType = value.resolvedType;
+    const valueChar = this.charTypeOf(valueType);
+    if (
+      valueType?.typeKind !== "elementary" ||
+      (!isStringBase(this.aliasBase((valueType as ElementaryType).name)) &&
+        (valueChar === undefined || valueChar === charType)) ||
+      this.reportedCharValues.has(value)
+    ) {
+      return;
+    }
+    this.reportedCharValues.add(value);
+    this.addError(
+      `Cannot assign ${typeNameUtil(valueType)} to ${charType}`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
+  }
+
+  /**
+   * The elementary type a variable path names through `^`, fields, PROPERTYs
+   * and subscripts, TYPE aliases (`TYPE PR : POINTER TO REAL`) expanded, if
+   * any.
+   */
   private accessedElementaryType(
     expr: Expression,
     scope: Scope,
@@ -2895,10 +3013,14 @@ export class TypeChecker {
     }
     if (expr.kind !== "VariableExpression") return undefined;
     const sym = scope.lookup(expr.name);
-    if (sym?.kind !== "variable") return undefined;
+    if (sym?.kind !== "variable" && sym?.kind !== "constant") return undefined;
     const declared = sym.declaration as VarDeclaration | undefined;
     if (!declared) return undefined;
-    const type = resolveAccessType(declared.type, expr, this.accessLookup);
+    const type = resolveAccessType(
+      this.bitAliasTarget(declared.type),
+      expr,
+      this.aliasedMemberLookup,
+    );
     if (
       type === undefined ||
       type.arrayDimensions !== undefined ||
@@ -2910,22 +3032,60 @@ export class TypeChecker {
     return t;
   }
 
+  /** `accessLookup` with PROPERTYs as members and TYPE aliases expanded. */
+  private readonly aliasedMemberLookup: AccessLookup = {
+    field: (typeName, fieldName) => {
+      const owner = this.bitAliasTarget({
+        name: typeName,
+        referenceKind: "none",
+      }).name;
+      const decl = this.memberOrPropertyLookup.field(owner, fieldName);
+      return decl && { ...decl, type: this.bitAliasTarget(decl.type) };
+    },
+    arrayElement: (typeName) => {
+      const element = this.accessLookup.arrayElement(
+        this.bitAliasTarget({ name: typeName, referenceKind: "none" }).name,
+      );
+      return element && this.bitAliasTarget(element);
+    },
+  };
+
+  /** MOD operators and calls already refused for a REAL operand. */
+  private refusedRealMods = new WeakSet<Expression>();
+
   /**
    * MOD takes integers (ANY_INT, IEC 61131-3 Table 29): a REAL or LREAL
-   * operand is refused, in every mode, as the C++ build would fail.
+   * operand is refused, in every mode, as the C++ build would fail. An
+   * operand's type is its expression type when known, else what it reads
+   * (see realOperandName).
    */
   private refuseRealMod(
     expr: BinaryExpression,
-    leftType: IECType,
-    rightType: IECType,
+    leftType: IECType | undefined,
+    rightType: IECType | undefined,
+    scope: Scope,
   ): void {
-    for (const [operand, type] of [
-      [expr.left, leftType],
-      [expr.right, rightType],
-    ] as const) {
-      if (type.typeKind !== "elementary") continue;
-      const name = this.aliasBase((type as ElementaryType).name);
-      if (name !== "REAL" && name !== "LREAL") continue;
+    this.refuseRealModOperands(
+      expr,
+      [
+        [expr.left, leftType],
+        [expr.right, rightType],
+      ],
+      scope,
+    );
+  }
+
+  /** The MOD refusal for `operands` of the operator or call `at`, once each. */
+  private refuseRealModOperands(
+    at: Expression,
+    operands: ReadonlyArray<readonly [Expression, IECType | undefined]>,
+    scope: Scope,
+  ): void {
+    if (this.refusedRealMods.has(at)) return;
+    for (const [operand, type] of operands) {
+      const name = this.realOperandName(operand, type, scope);
+      if (name === undefined) continue;
+      this.refusedRealMods.add(at);
       this.addError(
         `MOD takes integers (ANY_INT, IEC 61131-3 Table 29), not ${name}`,
         operand.sourceSpan.startLine,
@@ -2934,6 +3094,141 @@ export class TypeChecker {
       );
       return;
     }
+  }
+
+  /**
+   * `MOD(a, b)`, the standard function, takes integers as the operator does:
+   * a REAL or LREAL argument is refused in every mode.
+   */
+  private refuseRealModCall(expr: FunctionCallExpression, scope: Scope): void {
+    if (expr.functionName.toUpperCase() !== "MOD" || expr.instance) return;
+    const fn = this.symbolTables.lookupFunction("MOD");
+    if (fn !== undefined && fn.libraryName !== STD_FUNCTIONS_LIBRARY) return;
+    this.refuseRealModOperands(
+      expr,
+      stripEnEno(expr.arguments)
+        .filter((a) => !a.isOutput)
+        .map((a) => [a.value, a.value.resolvedType] as const),
+      scope,
+    );
+  }
+
+  /**
+   * "REAL" or "LREAL" when an operand's value is of that type (see
+   * numericOperandKind); undefined otherwise.
+   */
+  private realOperandName(
+    expr: Expression,
+    type: IECType | undefined,
+    scope: Scope,
+  ): "REAL" | "LREAL" | undefined {
+    const kind = this.numericOperandKind(expr, type, scope);
+    return kind === "REAL" || kind === "LREAL" ? kind : undefined;
+  }
+
+  /**
+   * The numeric kind of an operand: by `type` or the type already known, else
+   * through parentheses, unary +/-, `+ - * /` of two known numbers, a literal,
+   * a variable path read through `^` and a call result (callResultKind).
+   * "INT" stands for any integer or bit string. Undefined when not known or
+   * not a number.
+   */
+  private numericOperandKind(
+    expr: Expression,
+    type: IECType | undefined,
+    scope: Scope,
+  ): "REAL" | "LREAL" | "INT" | undefined {
+    const typed = type ?? this.knownOperandType(expr, scope);
+    // A generic result (`ANY_NUM` of SEL, LIMIT) is judged by its inputs
+    const known =
+      typed !== undefined && isGenericGroupType(typed) ? undefined : typed;
+    if (known !== undefined) {
+      if (known.typeKind !== "elementary") return undefined;
+      const name = this.aliasBase((known as ElementaryType).name);
+      if (name === "REAL" || name === "LREAL") return name;
+      const t = ELEMENTARY_TYPES[canonicalElementaryName(name)];
+      return t !== undefined &&
+        (_isTypeInCategory(t, "ANY_INT") || _isTypeInCategory(t, "ANY_BIT"))
+        ? "INT"
+        : undefined;
+    }
+    switch (expr.kind) {
+      case "ParenthesizedExpression":
+        return this.numericOperandKind(expr.expression, undefined, scope);
+      case "UnaryExpression":
+        return expr.operator === "-" || expr.operator === "+"
+          ? this.numericOperandKind(expr.operand, undefined, scope)
+          : undefined;
+      case "BinaryExpression": {
+        if (!["+", "-", "*", "/"].includes(expr.operator)) return undefined;
+        const l = this.numericOperandKind(expr.left, undefined, scope);
+        const r = this.numericOperandKind(expr.right, undefined, scope);
+        if (l === undefined || r === undefined) return undefined;
+        if (l === "LREAL" || r === "LREAL") return "LREAL";
+        return l === "REAL" || r === "REAL" ? "REAL" : "INT";
+      }
+      case "LiteralExpression": {
+        const prefix = expr.typePrefix;
+        if (prefix !== undefined) {
+          const t = ELEMENTARY_TYPES[prefix.toUpperCase()];
+          return t === undefined
+            ? undefined
+            : this.numericOperandKind(expr, t, scope);
+        }
+        if (expr.literalType === "REAL") return "REAL";
+        return expr.literalType === "INT" ? "INT" : undefined;
+      }
+      case "VariableExpression": {
+        const t = this.accessedElementaryType(expr, scope);
+        return t === undefined
+          ? undefined
+          : this.numericOperandKind(expr, t, scope);
+      }
+      case "FunctionCallExpression":
+        return this.callResultKind(expr, scope);
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * The numeric kind of a call result no typing pass set: a FUNCTION's
+   * declared result, or for the standard SEL, MUX, LIMIT, MAX and MIN the
+   * common kind of their selectable inputs.
+   */
+  private callResultKind(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): "REAL" | "LREAL" | "INT" | undefined {
+    const name = expr.functionName;
+    if (expr.instance || name.includes(".") || this.ownMethod(name)) {
+      return undefined;
+    }
+    if (scope.lookup(name)?.kind === "variable") return undefined;
+    const upper = name.toUpperCase();
+    const fn = this.symbolTables.lookupFunction(upper);
+    if (fn !== undefined && fn.libraryName !== STD_FUNCTIONS_LIBRARY) {
+      return isGenericGroupType(fn.returnType)
+        ? undefined
+        : this.numericOperandKind(expr, fn.returnType, scope);
+    }
+    if (!["SEL", "MUX", "LIMIT", "MAX", "MIN"].includes(upper)) {
+      return undefined;
+    }
+    const selector = upper === "SEL" ? "G" : upper === "MUX" ? "K" : undefined;
+    const inputs = stripEnEno(expr.arguments).filter(
+      (a, i) =>
+        !a.isOutput &&
+        (selector === undefined ||
+          (a.name === undefined ? i > 0 : a.name.toUpperCase() !== selector)),
+    );
+    if (inputs.length === 0) return undefined;
+    const kinds = inputs.map((a) =>
+      this.numericOperandKind(a.value, undefined, scope),
+    );
+    if (kinds.some((k) => k === undefined)) return undefined;
+    if (kinds.includes("LREAL")) return "LREAL";
+    return kinds.includes("REAL") ? "REAL" : "INT";
   }
 
   /** + / - nodes inside a chain, checked with the chain's top node. */
@@ -3180,17 +3475,8 @@ export class TypeChecker {
     leftType: IECType,
     rightType: IECType,
   ): void {
-    const kind = (t: IECType): string | undefined => {
-      if (t.typeKind !== "elementary") return undefined;
-      const name = this.aliasBase((t as ElementaryType).name).toUpperCase();
-      return /^WSTRING\b/.test(name)
-        ? "WSTRING"
-        : /^STRING\b/.test(name)
-          ? "STRING"
-          : undefined;
-    };
-    const l = kind(leftType);
-    const r = kind(rightType);
+    const l = this.stringKindOf(leftType);
+    const r = this.stringKindOf(rightType);
     if (l === undefined || r === undefined || l === r) return;
     this.refusedMixedComparisons.add(expr);
     this.addError(
@@ -3199,6 +3485,138 @@ export class TypeChecker {
       expr.sourceSpan.startCol,
       expr.sourceSpan.file,
     );
+  }
+
+  /** True for a POINTER TO or REF_TO variable read as itself (not through `^`). */
+  private isReferenceValue(e: Expression, scope: Scope): boolean {
+    let v = e;
+    while (v.kind === "ParenthesizedExpression") v = v.expression;
+    if (v.kind !== "VariableExpression") return false;
+    const declared = this.declaredVariableType(v, scope);
+    if (declared === undefined) return false;
+    const kind = resolveAccessType(
+      declared,
+      v,
+      this.accessLookup,
+    )?.referenceKind;
+    return kind === "pointer_to" || kind === "ref_to";
+  }
+
+  /** STRING or WSTRING when the type is one of them (any length, through aliases). */
+  private stringKindOf(
+    t: IECType | undefined,
+  ): "STRING" | "WSTRING" | undefined {
+    if (t?.typeKind !== "elementary") return undefined;
+    const name = this.aliasBase((t as ElementaryType).name).toUpperCase();
+    return /^WSTRING\b/.test(name)
+      ? "WSTRING"
+      : /^STRING\b/.test(name)
+        ? "STRING"
+        : undefined;
+  }
+
+  /**
+   * A STRING or WSTRING operand: compared only with its own string type, and
+   * no arithmetic or logic (join strings with CONCAT). True when refused.
+   */
+  private refuseStringOperands(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+    scope: Scope,
+  ): boolean {
+    // A POINTER TO STRING read (`ps <> 0`) and an address are no strings here.
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    if (
+      [expr.left, expr.right].some(
+        (e) =>
+          this.isReferenceValue(e, scope) ||
+          addressSource(e, user, this.isPointerRead) !== undefined,
+      )
+    ) {
+      return false;
+    }
+    const l = this.stringKindOf(leftType);
+    const r = this.stringKindOf(rightType);
+    if (l === undefined && r === undefined) return false;
+    const fail = (message: string): true => {
+      this.addError(
+        message,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+      return true;
+    };
+    if (!COMPARISON_OPS.has(expr.operator)) {
+      return fail(
+        `Operator '${expr.operator}' does not apply to ${l ?? r}${expr.operator === "+" ? "; join strings with CONCAT" : ""}`,
+      );
+    }
+    // STRING against WSTRING has its own message (refuseMixedStringComparison).
+    if (l !== undefined && r !== undefined) return false;
+    const other = l === undefined ? leftType : rightType;
+    if (isGenericGroupType(other)) return false;
+    return fail(
+      `Cannot compare ${typeNameUtil(leftType)} with ${typeNameUtil(rightType)}`,
+    );
+  }
+
+  /**
+   * MAX, MIN, LIMIT, the comparison functions, SEL and MUX with a STRING or
+   * WSTRING argument: every compared or selected argument is that same string
+   * type (no implicit conversion), else the C++ build would fail.
+   */
+  private checkStringStdArguments(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    const name = expr.functionName.toUpperCase();
+    const skip = CHAR_COMPARE_FUNCTIONS.get(name);
+    if (
+      skip === undefined ||
+      expr.instance !== undefined ||
+      !this.isStdCharFunction(name)
+    ) {
+      return;
+    }
+    const args = stripEnEno(expr.arguments)
+      .slice(skip)
+      .filter((a) => !a.isOutput);
+    // A POINTER TO STRING read is typed as its target: left unchecked.
+    const types = args.map((a) =>
+      this.isReferenceValue(a.value, scope)
+        ? undefined
+        : (a.value.resolvedType ?? this.accessedElementaryType(a.value, scope)),
+    );
+    // CHAR among them: checkCharStdArguments reports the mismatch.
+    if (types.some((t) => this.charTypeOf(t) !== undefined)) return;
+    const kind = types
+      .map((t) => this.stringKindOf(t))
+      .find((k) => k !== undefined);
+    if (kind === undefined) return;
+    args.forEach((arg, i) => {
+      const t = types[i];
+      if (
+        t === undefined ||
+        isGenericGroupType(t) ||
+        this.stringKindOf(t) === kind ||
+        // MAX, MIN and LIMIT refuse an enumeration on their own.
+        (t.typeKind === "enum" &&
+          CHAR_SELECTION_FUNCTIONS.has(name) &&
+          name !== "SEL" &&
+          name !== "MUX")
+      ) {
+        return;
+      }
+      this.addError(
+        `Argument of '${name}' is ${typeNameUtil(t)} where the others are ${kind}; ${kind} does not convert implicitly`,
+        arg.value.sourceSpan.startLine,
+        arg.value.sourceSpan.startCol,
+        arg.value.sourceSpan.file,
+      );
+    });
   }
 
   /**
@@ -3828,7 +4246,8 @@ export class TypeChecker {
     }
     this.refuseNarrowAddressArguments(expr, scope);
     this.refuseBitMemberArguments(expr, scope);
-    this.checkCharStdArguments(expr);
+    this.checkCharStdArguments(expr, scope);
+    this.checkStringStdArguments(expr, scope);
     this.adaptCharConversionArgument(expr);
     this.validateReferenceArguments(expr, scope);
     this.checkOutputBindings(expr, scope);
@@ -3917,6 +4336,7 @@ export class TypeChecker {
       expr.resolvedType = overload.returnType;
       return overload.returnType;
     }
+    this.refuseRealModCall(expr, scope);
 
     // Check user-defined functions in symbol tables
     const funcSymbol = this.symbolTables.lookupFunction(expr.functionName);
@@ -5924,6 +6344,7 @@ export class TypeChecker {
   private checkAddressStore(
     typeName: string | undefined,
     value: Expression,
+    scope?: Scope,
   ): boolean {
     if (typeName === undefined) return false;
     const user = (name: string): boolean =>
@@ -5951,7 +6372,12 @@ export class TypeChecker {
     }
     if (chainError !== undefined) return true;
     const source = addressSource(value, user, this.isPointerRead);
-    if (source === undefined) return this.checkXwordStore(typeName, value);
+    if (source === undefined) {
+      return (
+        this.checkPointerValueStore(typeName, value, scope) ||
+        this.checkXwordStore(typeName, value)
+      );
+    }
     // A user FUNCTION named ADR is called, not the operator.
     if (source.op === "ADR" && this.userAddressFunction()) return false;
     const fit = addressFit(typeName, this.ast?.types ?? []);
@@ -5988,6 +6414,55 @@ export class TypeChecker {
       span.startCol,
       span.file,
     );
+    return true;
+  }
+
+  /**
+   * A POINTER TO or REF_TO variable passed to an input (`LEFT(s, p)`): refused
+   * as an ADR is when the input is an integer narrower than 64 bits or a
+   * non-integer; a 64-bit integer input takes it as its address. Only `scope`
+   * (inputs) enables it: bundled OSCAT stores a pointer into a DWORD.
+   */
+  private checkPointerValueStore(
+    typeName: string,
+    value: Expression,
+    scope: Scope | undefined,
+  ): boolean {
+    let v = value;
+    while (v.kind === "ParenthesizedExpression") v = v.expression;
+    if (scope === undefined || v.kind !== "VariableExpression") return false;
+    const declared = this.declaredVariableType(v, scope);
+    if (declared === undefined) return false;
+    const type = resolveAccessType(declared, v, this.accessLookup);
+    const kind = type?.referenceKind;
+    if (
+      type === undefined ||
+      type.arrayDimensions !== undefined ||
+      (kind !== "pointer_to" && kind !== "ref_to")
+    ) {
+      return false;
+    }
+    const fit = addressFit(typeName, this.ast?.types ?? []);
+    if (fit === undefined) return false;
+    if (fit === "wide") {
+      // An input takes it as its 64-bit integer.
+      value.addressInto ??= typeName;
+      return true;
+    }
+    const span = value.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+    if (!this.addressStoresReported.has(key)) {
+      this.addressStoresReported.add(key);
+      this.addError(
+        narrowAddressMessage(
+          `A ${kind === "pointer_to" ? "POINTER TO" : "REF_TO"} value`,
+          fit.narrow,
+        ),
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    }
     return true;
   }
 
@@ -6261,7 +6736,8 @@ export class TypeChecker {
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope) ??
       methodParams?.filter((p) => !p.output) ??
-      this.libraryShapedFunctionInputs(expr, scope);
+      this.libraryShapedFunctionInputs(expr, scope) ??
+      this.stdSpecificInputs(expr, scope);
     if (inputs) {
       let positional = 0;
       for (const arg of args) {
@@ -6272,10 +6748,13 @@ export class TypeChecker {
             ? inputs[positional++]
             : inputs.find((p) => p.name.toUpperCase() === argName);
         // A VAR_IN_OUT binds, it stores nothing (the binding check refuses an ADR).
-        if (input === undefined || input.inOut) continue;
+        // A generic standard input (no type name) is not checked here.
+        if (input === undefined || input.inOut || input.type.name === "") {
+          continue;
+        }
         this.refuseMisalignedPointerStore(input.type, arg.value, scope);
         if ((input.type.referenceKind ?? "none") !== "none") continue;
-        this.checkAddressStore(input.type.name, arg.value);
+        this.checkAddressStore(input.type.name, arg.value, scope);
       }
     }
     if (!this.ast) return;
@@ -6508,6 +6987,10 @@ export class TypeChecker {
             ),
           );
         }
+        // `p^ := 'b'` into a CHAR or WCHAR: the literal is that character; a string is refused
+        if (targetType === undefined) {
+          this.adaptDereferencedCharStore(stmt.target, stmt.value, scope);
+        }
         // NOT of an untyped constant into a result or through `p^`
         if (targetType === undefined) {
           this.typeNotFromExpected(
@@ -6661,8 +7144,11 @@ export class TypeChecker {
         if (!this.refuseAddressSelector(stmt.selector) && selectorType) {
           this.validateCaseSelector(selectorType, stmt.selector);
         }
+        // `CASE p^ OF`: a dereference has no expression type; its declared one counts
+        const selectorChar = this.charTypeOf(
+          selectorType ?? this.accessedElementaryType(stmt.selector, scope),
+        );
         for (const c of stmt.cases) {
-          const selectorChar = this.charTypeOf(selectorType);
           for (const label of c.labels) {
             this.resolveExprType(label.start, scope);
             if (label.end) this.resolveExprType(label.end, scope);
@@ -6862,6 +7348,7 @@ export class TypeChecker {
 
       case "DeleteStatement": {
         this.resolveExprType(stmt.pointer, scope);
+        this.refuseDeleteOperand(stmt.pointer, scope);
         break;
       }
 
@@ -6875,6 +7362,130 @@ export class TypeChecker {
   // ===========================================================================
   // Validation Helpers
   // ===========================================================================
+
+  /**
+   * `__DELETE(p)` frees what `__NEW` returned, a POINTER TO: its operand is a
+   * variable declared POINTER TO (aliases expanded, `POINTER TO ARRAY` too),
+   * also through a REFERENCE TO. A REF_TO, any other type, a PROPERTY and a
+   * computed value are refused; a path whose declaration is not known here is
+   * left alone.
+   */
+  private refuseDeleteOperand(operand: Expression, scope: Scope): void {
+    const inner = unparenthesized(operand);
+    const refuse = (what: string): void =>
+      this.addError(
+        `__DELETE takes a POINTER TO variable (what __NEW returns), not ${what}`,
+        operand.sourceSpan.startLine,
+        operand.sourceSpan.startCol,
+        operand.sourceSpan.file,
+      );
+    if (inner.kind !== "VariableExpression") {
+      refuse("a computed value");
+      return;
+    }
+    // A PROPERTY is read through its getter: a value, not the variable
+    if (this.namesProperty(inner, scope)) {
+      refuse("a PROPERTY");
+      return;
+    }
+    const sym = scope.lookup(inner.name);
+    if (sym?.kind !== "variable" && sym?.kind !== "constant") return;
+    const declared = sym.declaration as VarDeclaration | undefined;
+    if (!declared) return;
+    const type = resolveAccessType(
+      this.bitAliasTarget(declared.type),
+      inner,
+      this.aliasedMemberLookup,
+    );
+    if (type === undefined) return;
+    const levels =
+      type.referenceChain ??
+      ((type.referenceKind ?? "none") === "none" ? [] : [type.referenceKind]);
+    const chain = levels[0] === "reference_to" ? levels.slice(1) : levels;
+    if (chain[0] === "pointer_to") return;
+    if (type.arrayDimensions !== undefined) {
+      refuse("an ARRAY");
+      return;
+    }
+    const shape = referenceShapeOf(type);
+    if (shape === undefined) return;
+    // A REFERENCE TO an alias of a POINTER TO is that pointer.
+    if (chain.length === 0) {
+      const target = this.bitAliasTarget({
+        name: shape.base,
+        referenceKind: "none",
+      });
+      if (
+        (target.referenceChain?.[0] ?? target.referenceKind) === "pointer_to"
+      ) {
+        return;
+      }
+    }
+    refuse(describeReferenceShape(shape));
+  }
+
+  /**
+   * Whether a variable path ends at a PROPERTY of an FB of this compile: the
+   * enclosing FB's by its bare name or through THIS^/SUPER^, or a member's.
+   */
+  private namesProperty(expr: VariableExpression, scope: Scope): boolean {
+    const steps: AccessStep[] = expr.accessChain ?? [
+      ...(expr.subscripts.length > 0
+        ? [{ kind: "subscript" as const, indices: expr.subscripts }]
+        : []),
+      ...expr.fieldAccess.map((name) => ({ kind: "field" as const, name })),
+      ...(expr.isDereference ? [{ kind: "dereference" as const }] : []),
+    ];
+    const fbName = this.currentFBName;
+    const root = expr.name.toUpperCase();
+    const sym = scope.lookup(expr.name);
+    if (steps.length === 0) {
+      return (
+        sym === undefined &&
+        fbName !== undefined &&
+        this.fbPropertyType(fbName, expr.name) !== undefined
+      );
+    }
+    const last = steps[steps.length - 1]!;
+    if (last.kind !== "field") return false;
+    let base: AccessType | undefined;
+    if (fbName !== undefined && (root === "THIS" || root === "SUPER")) {
+      const owner =
+        fbName === undefined
+          ? undefined
+          : root === "THIS"
+            ? fbName
+            : this.fbExtends(fbName);
+      // `THIS^.x` is parsed with its caret folded in (no dereference step)
+      if (owner !== undefined) {
+        base = {
+          name: owner,
+          referenceKind:
+            steps[0]?.kind === "dereference" ? "pointer_to" : "none",
+        };
+      }
+    } else if (sym?.kind === "variable" || sym?.kind === "constant") {
+      const declared = sym.declaration as VarDeclaration | undefined;
+      if (declared) base = this.bitAliasTarget(declared.type);
+    }
+    if (base === undefined) return false;
+    const owner = resolveAccessType(
+      base,
+      { ...expr, accessChain: steps.slice(0, -1) },
+      this.aliasedMemberLookup,
+    );
+    if (
+      owner === undefined ||
+      owner.arrayDimensions !== undefined ||
+      (owner.referenceKind ?? "none") !== "none"
+    ) {
+      return false;
+    }
+    return (
+      this.lookupMember(owner.name, last.name) === undefined &&
+      this.fbPropertyType(owner.name, last.name) !== undefined
+    );
+  }
 
   /**
    * Marks each integer `**` whose result is stored in the integer `target`
@@ -7382,8 +7993,7 @@ export class TypeChecker {
     if (type?.typeKind === "elementary") {
       name = (type as ElementaryType).name;
     } else if (type === undefined) {
-      const inner =
-        expr.kind === "ParenthesizedExpression" ? expr.expression : expr;
+      const inner = unparenthesized(expr);
       if (inner.kind !== "VariableExpression") return undefined;
       const sym = scope.lookup(inner.name);
       if (sym?.kind !== "variable") return undefined;
@@ -9453,7 +10063,12 @@ export class TypeChecker {
   ): void {
     let t = declaredTarget;
     if (t.chain[0] !== "ref_to") return;
-    const declaredValue = this.declaredReferenceShape(value, scope);
+    const inner = unparenthesized(value);
+    // `__NEW(T)` returns a POINTER TO T.
+    const declaredValue =
+      inner.kind === "NewExpression"
+        ? { chain: ["pointer_to"], base: inner.allocationType.name }
+        : this.declaredReferenceShape(value, scope);
     if (!declaredValue || declaredValue.chain.length === 0) return;
     // An alias of a STRING(n) is that STRING(n).
     t = this.stringAliasResolved(t);
@@ -9869,6 +10484,36 @@ export class TypeChecker {
   }
 
   /**
+   * The inputs of a standard function that take one elementary type (`L` and
+   * `P` of LEFT, MID, INSERT: INT), from the registry, as the standard
+   * library records no parameter shapes; generic inputs are left out.
+   */
+  private stdSpecificInputs(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): CallInput[] | undefined {
+    const name = expr.functionName;
+    if (!this.stdRegistry || expr.instance || name.includes(".")) {
+      return undefined;
+    }
+    if (this.calledInstance(name, scope) || this.ownMethod(name)) {
+      return undefined;
+    }
+    if (!this.isStdCharFunction(name.toUpperCase())) return undefined;
+    const desc = this.stdRegistry.lookup(name.toUpperCase());
+    if (!desc) return undefined;
+    // Each parameter keeps its place; a generic one has no type name.
+    return desc.params.map((p) => ({
+      name: p.name,
+      type: {
+        name: p.constraint === "specific" ? (p.specificType ?? "") : "",
+        referenceKind: "none",
+      },
+      inOut: false,
+    }));
+  }
+
+  /**
    * The inputs and in-outs of a library FUNCTION whose archive records its
    * parameters' POINTER TO, REF_TO and ARRAY shapes; undefined otherwise.
    */
@@ -10267,8 +10912,12 @@ export class TypeChecker {
       dim.kind === "LiteralExpression" && dim.literalType !== "INT"
         ? { name: dim.literalType, isEnum: false }
         : this.knownDimType(dim, scope);
-    // A typed call's elementary arguments are checked by validateFunctionCallArgs
-    if (dimType !== undefined && (checkDimType || dimType.isEnum)) {
+    // validateFunctionCallArgs checks a typed call's elementary arguments; one
+    // it found no type for (a test file's variable) is checked here
+    if (
+      dimType !== undefined &&
+      (checkDimType || dimType.isEnum || dim.resolvedType === undefined)
+    ) {
       this.addError(
         `Argument 'DIM' of '${upper}' expects ANY_INT, got ${dimType.name}`,
         dim.sourceSpan.startLine,
@@ -10331,7 +10980,12 @@ export class TypeChecker {
           declared.arrayDimensions === undefined &&
           (declared.referenceKind ?? "none") === "none"
         ) {
-          type = enumNamed(declared.name);
+          // A test file's variables carry their declaration only
+          type =
+            enumNamed(declared.name) ??
+            ELEMENTARY_TYPES[
+              canonicalElementaryName(this.aliasBase(declared.name))
+            ];
         }
       }
     }

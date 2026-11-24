@@ -6763,8 +6763,13 @@ export class CodeGenerator {
    */
   private generateLiteralExpression(expr: LiteralExpression): string {
     if (expr.asNull === true) return "IEC_NULL";
-    // Handle typed literals: BYTE#255 → static_cast<IEC_BYTE>(255)
-    if (expr.typePrefix) {
+    // Handle typed literals: BYTE#255 → static_cast<IEC_BYTE>(255); a
+    // STRING#'abc' / WSTRING#"abc" lowers as its text, below
+    if (
+      expr.typePrefix &&
+      expr.literalType !== "STRING" &&
+      expr.literalType !== "WSTRING"
+    ) {
       const cppType = `IEC_${expr.typePrefix}`;
       const hashIdx = expr.rawValue.indexOf("#");
       const valuePart = expr.rawValue.substring(hashIdx + 1);
@@ -8039,6 +8044,10 @@ export class CodeGenerator {
   }
 
   private comparedStructName(expr: Expression): string | undefined {
+    // `((a)) = (b)`: a parenthesized operand is its inner expression
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.comparedStructName(expr.expression);
+    }
     const rt = expr.resolvedType;
     if (rt !== undefined && "name" in rt && typeof rt.name === "string") {
       if (this.structFieldsOf(rt.name) !== undefined) return rt.name;
