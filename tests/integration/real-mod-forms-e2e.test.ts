@@ -20,12 +20,13 @@ import {
 } from "./test-helpers.js";
 
 const SOURCE = `TYPE PI : POINTER TO INT; END_TYPE
-TYPE ST : STRUCT a : INT := 7 MOD 3; b : INT := MOD(9, 4); p : PI; END_STRUCT; END_TYPE
+TYPE ST : STRUCT a : INT := 7 MOD 3; b : INT := MOD(9, 4); p : PI; pa : POINTER TO ARRAY[0..3] OF INT; END_STRUCT; END_TYPE
 VAR_GLOBAL CONSTANT C : INT := 8 MOD 5; END_VAR
 PROGRAM MAIN
 VAR
   i : INT := 7; q : PI; pi : POINTER TO INT; s : ST; arr : ARRAY[0..1] OF PI;
-  m1, m2, m3, m4, m5, m6 : INT; freed : BOOL;
+  m1, m2, m3, m4, m5, m6, m7 : INT; freed : BOOL; b : BOOL := TRUE;
+  pa : POINTER TO ARRAY[0..3] OF INT;
 END_VAR
 q := __NEW(INT); q^ := 7; pi := ADR(i);
 m1 := q^ MOD 4;
@@ -34,8 +35,10 @@ m3 := MOD(i, 5);
 m4 := C + s.a + s.b;
 s.p := __NEW(INT); s.p^ := 11; m5 := s.p^ MOD 4;
 arr[1] := __NEW(INT); arr[1]^ := 13; m6 := arr[1]^ MOD 5;
-__DELETE(s.p); __DELETE(arr[1]); __DELETE((q));
-freed := s.p = 0 AND arr[1] = 0 AND q = 0;
+pa := __NEW(INT, 4); (* s.pa stays NULL: __DELETE of NULL does nothing *)
+m7 := SEL(b, i, 3) MOD 4 + LIMIT(0, i, 9) MOD 5;
+__DELETE(s.p); __DELETE(arr[1]); __DELETE((q)); __DELETE(pa); __DELETE(s.pa);
+freed := s.p = 0 AND arr[1] = 0 AND q = 0 AND pa = 0 AND s.pa = 0;
 END_PROGRAM
 `;
 
@@ -65,6 +68,21 @@ const REFUSED: Array<[string, string, string]> = [
     "function form on a dereference",
     "PROGRAM MAIN\nVAR x : REAL := 5.5; p : POINTER TO REAL; r : REAL; END_VAR\np := ADR(x);\nr := MOD(p^, 2);\nEND_PROGRAM\n",
     "MOD takes integers (ANY_INT, IEC 61131-3 Table 29), not REAL",
+  ],
+  [
+    "SEL of REALs",
+    "PROGRAM MAIN\nVAR x : REAL := 5.5; b : BOOL; r : REAL; END_VAR\nr := SEL(b, x, 2.5) MOD 2;\nEND_PROGRAM\n",
+    "MOD takes integers (ANY_INT, IEC 61131-3 Table 29), not REAL",
+  ],
+  [
+    "MOD() of a LIMIT of REALs",
+    "PROGRAM MAIN\nVAR x : REAL := 5.5; r : REAL; END_VAR\nr := MOD(LIMIT(0.0, x, 9.0), 2);\nEND_PROGRAM\n",
+    "MOD takes integers (ANY_INT, IEC 61131-3 Table 29), not REAL",
+  ],
+  [
+    "__DELETE of a PROPERTY",
+    "FUNCTION_BLOCK FB\nVAR v : POINTER TO INT; END_VAR\nPROPERTY PP : POINTER TO INT\nGET\nPP := v;\nEND_GET\nEND_PROPERTY\nEND_FUNCTION_BLOCK\nPROGRAM MAIN\nVAR f : FB; END_VAR\n__DELETE(f.PP);\nEND_PROGRAM\n",
+    "__DELETE takes a POINTER TO variable (what __NEW returns), not a PROPERTY",
   ],
   [
     "__DELETE of a REF_TO",
@@ -109,12 +127,12 @@ int main() {
     static strucpp::Program_MAIN p;
     p.run();
     std::cout << p.M1.get() << " " << p.M2.get() << " " << p.M3.get() << " " << p.M4.get() << " "
-              << p.M5.get() << " " << p.M6.get() << " " << p.FREED.get() << std::endl;
+              << p.M5.get() << " " << p.M6.get() << " " << p.M7.get() << " " << p.FREED.get() << std::endl;
     return 0;
 }
 `,
       });
-      expect(stdout).toBe("3 2 2 5 3 3 1");
+      expect(stdout).toBe("3 2 2 5 3 3 5 1");
     });
   }
 
@@ -124,6 +142,28 @@ int main() {
       expect(result.errors.map((e) => e.message)).toEqual([message]);
     });
   }
+
+  it("frees a POINTER TO ARRAY in a test file", () => {
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST: `TYPE S : STRUCT p : POINTER TO ARRAY[0..3] OF INT; END_STRUCT; END_TYPE
+PROGRAM Main
+VAR x : INT; END_VAR
+x := x + 1;
+END_PROGRAM
+`,
+      testST: `TEST 'free an array'
+  VAR p : POINTER TO ARRAY[0..3] OF INT; s : S; END_VAR
+  p := __NEW(INT, 4);
+  __DELETE(p); __DELETE(s.p);
+  ASSERT_TRUE(p = 0);
+  ASSERT_TRUE(s.p = 0);
+END_TEST
+`,
+      tempDirPrefix: "strucpp-realmod-test-",
+    });
+    expect(stdout).toContain("[PASS] free an array");
+    expect(exitCode).toBe(0);
+  });
 
   it("compares two parenthesized STRUCTs memberwise in a test file", () => {
     const source = `TYPE S : STRUCT a : INT; b : REAL; END_STRUCT; END_TYPE

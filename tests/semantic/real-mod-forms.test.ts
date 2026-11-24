@@ -86,6 +86,34 @@ describe("REAL MOD refused on every route", () => {
         ]);
       });
 
+      it("refuses a REAL result of SEL, MUX, LIMIT, MAX, MIN and a FUNCTION", () => {
+        const src = (line: string): string =>
+          `FUNCTION FR : REAL\nFR := 5.5;\nEND_FUNCTION\nPROGRAM Main\nVAR x : REAL := 5.5; l : LREAL; b : BOOL; i : INT; r : REAL; END_VAR\n${line}\nEND_PROGRAM\n`;
+        for (const line of [
+          "r := SEL(b, x, x) MOD 2;",
+          "r := LIMIT(x, x, x) MOD 2;",
+          "r := MUX(i, x, x) MOD 2;",
+          "r := SEL(b, 1.0, 2.5) MOD 2;",
+          "r := SEL(G := b, IN0 := 1, IN1 := x) MOD 2;",
+          "r := MAX(x, 1) MOD 2;",
+          "r := MOD(SEL(b, x, x), 2);",
+          "r := MOD(LIMIT(x, x, x), 2);",
+          "r := FR() MOD 2;",
+        ]) {
+          expect(errors(src(line), options), line).toEqual([mod("REAL")]);
+        }
+        expect(errors(src("l := MIN(l, x) MOD 2;"), options)).toEqual([
+          mod("LREAL"),
+        ]);
+        for (const line of [
+          "i := SEL(b, i, 3) MOD 2;",
+          "i := LIMIT(0, i, 9) MOD 2;",
+          "i := MOD(MUX(i, i, 4), 2);",
+        ]) {
+          expect(errors(src(line), options), line).toEqual([]);
+        }
+      });
+
       it("refuses it in STRUCT defaults and global initial values", () => {
         const src = `TYPE ST : STRUCT a : REAL := 5.5 MOD 2; b : REAL := MOD(5.5, 2); END_STRUCT; END_TYPE
 VAR_GLOBAL CONSTANT C : REAL := 5.5 MOD 2; END_VAR
@@ -124,7 +152,9 @@ END_PROGRAM
 });
 
 describe("REAL MOD and __DELETE in a test file", () => {
-  const source = compile(`PROGRAM Main\nEND_PROGRAM\n`);
+  const source = compile(
+    `FUNCTION FR : REAL\nFR := 5.5;\nEND_FUNCTION\nFUNCTION FI : INT\nFI := 5;\nEND_FUNCTION\nTYPE S : STRUCT p : POINTER TO ARRAY[0..3] OF INT; END_STRUCT; END_TYPE\nPROGRAM Main\nEND_PROGRAM\n`,
+  );
   const testErrors = (text: string): string[] => {
     const parsed = parseTestFile(text, "t.st");
     expect(parsed.errors).toEqual([]);
@@ -158,6 +188,22 @@ describe("REAL MOD and __DELETE in a test file", () => {
       "__DELETE takes a POINTER TO variable (what __NEW returns), not REF_TO INT",
       "__DELETE takes a POINTER TO variable (what __NEW returns), not INT",
     ]);
+  });
+
+  it("refuses a FUNCTION's REAL result and a selection of REALs", () => {
+    expect(
+      testErrors(
+        "TEST 't'\nVAR r : REAL; b : BOOL; i : INT; END_VAR\nr := FR() MOD 2;\nr := SEL(b, r, 1.0) MOD 2;\ni := FI() MOD 2;\nEND_TEST\n",
+      ),
+    ).toEqual([mod("REAL"), mod("REAL")]);
+  });
+
+  it("accepts __DELETE of a POINTER TO ARRAY, also as a STRUCT member", () => {
+    expect(
+      testErrors(
+        "TEST 't'\nVAR p : POINTER TO ARRAY[0..3] OF INT; s : S; END_VAR\np := __NEW(INT, 4);\n__DELETE(p);\n__DELETE(s.p);\nEND_TEST\n",
+      ),
+    ).toEqual([]);
   });
 
   it("reports a VAR's initial value once", () => {
@@ -206,6 +252,53 @@ END_PROGRAM
         errors(src("r : REF_TO INT;", "r := __NEW(INT);"), options),
       ).toEqual([
         "Cannot assign POINTER TO INT to REF_TO INT: a REF_TO can only hold a reference to its declared type",
+      ]);
+    });
+
+    it(`accepts a POINTER TO ARRAY, inline and as a STRUCT member (${label})`, () => {
+      expect(
+        errors(
+          `TYPE SA : STRUCT p : POINTER TO ARRAY[0..3] OF INT; END_STRUCT; END_TYPE
+PROGRAM Main
+VAR p : POINTER TO ARRAY[0..3] OF INT; s : SA; END_VAR
+p := __NEW(INT, 4);
+__DELETE(p);
+__DELETE(s.p);
+END_PROGRAM
+`,
+          options,
+        ),
+      ).toEqual([]);
+    });
+
+    it(`refuses a PROPERTY, also by its bare name and THIS^ (${label})`, () => {
+      const found = errors(
+        `FUNCTION_BLOCK FB
+VAR v : POINTER TO INT; END_VAR
+PROPERTY PP : POINTER TO INT
+GET
+PP := v;
+END_GET
+END_PROPERTY
+METHOD M
+__DELETE(PP);
+__DELETE(THIS^.PP);
+__DELETE(v);
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR f : FB; pf : POINTER TO FB; END_VAR
+__DELETE(f.PP);
+__DELETE(pf^.PP);
+END_PROGRAM
+`,
+        options,
+      );
+      expect(found).toEqual([
+        del("a PROPERTY"),
+        del("a PROPERTY"),
+        del("a PROPERTY"),
+        del("a PROPERTY"),
       ]);
     });
 

@@ -2558,7 +2558,7 @@ export class TypeChecker {
     this.requireStructCompare(expr, leftType, rightType, scope);
 
     if (leftType === undefined || rightType === undefined) {
-      // `p^ MOD i`: an operand with no expression type is judged by what it reads
+      // `p^ MOD i`: an operand with no expression type is judged by its reads
       if (expr.operator === "MOD") {
         this.refuseRealMod(expr, leftType, rightType, scope);
       }
@@ -2911,7 +2911,8 @@ export class TypeChecker {
 
   /**
    * The elementary type a variable path names through `^`, fields, PROPERTYs
-   * and subscripts, TYPE aliases (`TYPE PR : POINTER TO REAL`) expanded, if any.
+   * and subscripts, TYPE aliases (`TYPE PR : POINTER TO REAL`) expanded, if
+   * any.
    */
   private accessedElementaryType(
     expr: Expression,
@@ -2941,7 +2942,7 @@ export class TypeChecker {
     return t;
   }
 
-  /** `accessLookup` with PROPERTYs as members and TYPE aliases expanded at each step. */
+  /** `accessLookup` with PROPERTYs as members and TYPE aliases expanded. */
   private readonly aliasedMemberLookup: AccessLookup = {
     field: (typeName, fieldName) => {
       const owner = this.bitAliasTarget({
@@ -2984,7 +2985,7 @@ export class TypeChecker {
     );
   }
 
-  /** The MOD refusal for `operands` of the operator or call `at`, once per node. */
+  /** The MOD refusal for `operands` of the operator or call `at`, once each. */
   private refuseRealModOperands(
     at: Expression,
     operands: ReadonlyArray<readonly [Expression, IECType | undefined]>,
@@ -3037,16 +3038,20 @@ export class TypeChecker {
 
   /**
    * The numeric kind of an operand: by `type` or the type already known, else
-   * through parentheses, unary +/-, `+ - * /` of two known numbers, a literal
-   * and a variable path read through `^`. "INT" stands for any integer or bit
-   * string. Undefined when not known or not a number.
+   * through parentheses, unary +/-, `+ - * /` of two known numbers, a literal,
+   * a variable path read through `^` and a call result (callResultKind).
+   * "INT" stands for any integer or bit string. Undefined when not known or
+   * not a number.
    */
   private numericOperandKind(
     expr: Expression,
     type: IECType | undefined,
     scope: Scope,
   ): "REAL" | "LREAL" | "INT" | undefined {
-    const known = type ?? this.knownOperandType(expr, scope);
+    const typed = type ?? this.knownOperandType(expr, scope);
+    // A generic result (`ANY_NUM` of SEL, LIMIT) is judged by its inputs
+    const known =
+      typed !== undefined && isGenericGroupType(typed) ? undefined : typed;
     if (known !== undefined) {
       if (known.typeKind !== "elementary") return undefined;
       const name = this.aliasBase((known as ElementaryType).name);
@@ -3089,9 +3094,51 @@ export class TypeChecker {
           ? undefined
           : this.numericOperandKind(expr, t, scope);
       }
+      case "FunctionCallExpression":
+        return this.callResultKind(expr, scope);
       default:
         return undefined;
     }
+  }
+
+  /**
+   * The numeric kind of a call result no typing pass set: a FUNCTION's
+   * declared result, or for the standard SEL, MUX, LIMIT, MAX and MIN the
+   * common kind of their selectable inputs.
+   */
+  private callResultKind(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): "REAL" | "LREAL" | "INT" | undefined {
+    const name = expr.functionName;
+    if (expr.instance || name.includes(".") || this.ownMethod(name)) {
+      return undefined;
+    }
+    if (scope.lookup(name)?.kind === "variable") return undefined;
+    const upper = name.toUpperCase();
+    const fn = this.symbolTables.lookupFunction(upper);
+    if (fn !== undefined && fn.libraryName !== STD_FUNCTIONS_LIBRARY) {
+      return isGenericGroupType(fn.returnType)
+        ? undefined
+        : this.numericOperandKind(expr, fn.returnType, scope);
+    }
+    if (!["SEL", "MUX", "LIMIT", "MAX", "MIN"].includes(upper)) {
+      return undefined;
+    }
+    const selector = upper === "SEL" ? "G" : upper === "MUX" ? "K" : undefined;
+    const inputs = stripEnEno(expr.arguments).filter(
+      (a, i) =>
+        !a.isOutput &&
+        (selector === undefined ||
+          (a.name === undefined ? i > 0 : a.name.toUpperCase() !== selector)),
+    );
+    if (inputs.length === 0) return undefined;
+    const kinds = inputs.map((a) =>
+      this.numericOperandKind(a.value, undefined, scope),
+    );
+    if (kinds.some((k) => k === undefined)) return undefined;
+    if (kinds.includes("LREAL")) return "LREAL";
+    return kinds.includes("REAL") ? "REAL" : "INT";
   }
 
   /** + / - nodes inside a chain, checked with the chain's top node. */
@@ -6956,9 +7003,10 @@ export class TypeChecker {
 
   /**
    * `__DELETE(p)` frees what `__NEW` returned, a POINTER TO: its operand is a
-   * variable declared POINTER TO (aliases expanded), also through a
-   * REFERENCE TO. A REF_TO, any other type and a computed value are refused;
-   * a path whose declaration is not known here is left alone.
+   * variable declared POINTER TO (aliases expanded, `POINTER TO ARRAY` too),
+   * also through a REFERENCE TO. A REF_TO, any other type, a PROPERTY and a
+   * computed value are refused; a path whose declaration is not known here is
+   * left alone.
    */
   private refuseDeleteOperand(operand: Expression, scope: Scope): void {
     const inner = unparenthesized(operand);
@@ -6973,6 +7021,11 @@ export class TypeChecker {
       refuse("a computed value");
       return;
     }
+    // A PROPERTY is read through its getter: a value, not the variable
+    if (this.namesProperty(inner, scope)) {
+      refuse("a PROPERTY");
+      return;
+    }
     const sym = scope.lookup(inner.name);
     if (sym?.kind !== "variable" && sym?.kind !== "constant") return;
     const declared = sym.declaration as VarDeclaration | undefined;
@@ -6983,15 +7036,17 @@ export class TypeChecker {
       this.aliasedMemberLookup,
     );
     if (type === undefined) return;
+    const levels =
+      type.referenceChain ??
+      ((type.referenceKind ?? "none") === "none" ? [] : [type.referenceKind]);
+    const chain = levels[0] === "reference_to" ? levels.slice(1) : levels;
+    if (chain[0] === "pointer_to") return;
     if (type.arrayDimensions !== undefined) {
       refuse("an ARRAY");
       return;
     }
     const shape = referenceShapeOf(type);
     if (shape === undefined) return;
-    const chain =
-      shape.chain[0] === "reference_to" ? shape.chain.slice(1) : shape.chain;
-    if (chain[0] === "pointer_to") return;
     // A REFERENCE TO an alias of a POINTER TO is that pointer.
     if (chain.length === 0) {
       const target = this.bitAliasTarget({
@@ -7005,6 +7060,69 @@ export class TypeChecker {
       }
     }
     refuse(describeReferenceShape(shape));
+  }
+
+  /**
+   * Whether a variable path ends at a PROPERTY of an FB of this compile: the
+   * enclosing FB's by its bare name or through THIS^/SUPER^, or a member's.
+   */
+  private namesProperty(expr: VariableExpression, scope: Scope): boolean {
+    const steps: AccessStep[] = expr.accessChain ?? [
+      ...(expr.subscripts.length > 0
+        ? [{ kind: "subscript" as const, indices: expr.subscripts }]
+        : []),
+      ...expr.fieldAccess.map((name) => ({ kind: "field" as const, name })),
+      ...(expr.isDereference ? [{ kind: "dereference" as const }] : []),
+    ];
+    const fbName = this.currentFBName;
+    const root = expr.name.toUpperCase();
+    const sym = scope.lookup(expr.name);
+    if (steps.length === 0) {
+      return (
+        sym === undefined &&
+        fbName !== undefined &&
+        this.fbPropertyType(fbName, expr.name) !== undefined
+      );
+    }
+    const last = steps[steps.length - 1]!;
+    if (last.kind !== "field") return false;
+    let base: AccessType | undefined;
+    if (fbName !== undefined && (root === "THIS" || root === "SUPER")) {
+      const owner =
+        fbName === undefined
+          ? undefined
+          : root === "THIS"
+            ? fbName
+            : this.fbExtends(fbName);
+      // `THIS^.x` is parsed with its caret folded in (no dereference step)
+      if (owner !== undefined) {
+        base = {
+          name: owner,
+          referenceKind:
+            steps[0]?.kind === "dereference" ? "pointer_to" : "none",
+        };
+      }
+    } else if (sym?.kind === "variable" || sym?.kind === "constant") {
+      const declared = sym.declaration as VarDeclaration | undefined;
+      if (declared) base = this.bitAliasTarget(declared.type);
+    }
+    if (base === undefined) return false;
+    const owner = resolveAccessType(
+      base,
+      { ...expr, accessChain: steps.slice(0, -1) },
+      this.aliasedMemberLookup,
+    );
+    if (
+      owner === undefined ||
+      owner.arrayDimensions !== undefined ||
+      (owner.referenceKind ?? "none") !== "none"
+    ) {
+      return false;
+    }
+    return (
+      this.lookupMember(owner.name, last.name) === undefined &&
+      this.fbPropertyType(owner.name, last.name) !== undefined
+    );
   }
 
   /**
@@ -10019,8 +10137,8 @@ export class TypeChecker {
       dim.kind === "LiteralExpression" && dim.literalType !== "INT"
         ? { name: dim.literalType, isEnum: false }
         : this.knownDimType(dim, scope);
-    // A typed call's elementary arguments are checked by validateFunctionCallArgs;
-    // an argument it found no type for (a test file's variable) is checked here
+    // validateFunctionCallArgs checks a typed call's elementary arguments; one
+    // it found no type for (a test file's variable) is checked here
     if (
       dimType !== undefined &&
       (checkDimType || dimType.isEnum || dim.resolvedType === undefined)

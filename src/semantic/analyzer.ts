@@ -4760,8 +4760,9 @@ export class SemanticAnalyzer {
 
   /**
    * Argument counts of the standard function calls in initial values (STRUCT
-   * field defaults included), which the statement walk does not reach (`hi : DINT := UPPER_BOUND();` failed in
-   * codegen). Counts only: the other call checks stay with the bodies.
+   * field defaults included), which the statement walk does not reach
+   * (`hi : DINT := UPPER_BOUND();` failed in codegen). Counts only: the other
+   * call checks stay with the bodies.
    */
   private validateInitialValueCallCounts(ast: CompilationUnit): void {
     const visitValue = (
@@ -4817,7 +4818,7 @@ export class SemanticAnalyzer {
       }
     }
     this.callOwner = {};
-    // A STRUCT field's default (a TYPE's own default is applied to its variables)
+    // A STRUCT field's default (a TYPE's own one is applied to its variables)
     for (const type of ast.types) {
       if (type.definition.kind !== "StructDefinition") continue;
       for (const field of type.definition.fields) {
