@@ -79,6 +79,7 @@ PROGRAM Main VAR x : DINT; END_VAR x := hi; END_PROGRAM
           options,
         ).errors.map((e) => `${e.line}:${e.column} ${e.message}`),
       ).toEqual([
+        "1:16 'V' is a variable-length ARRAY[*] in a VAR_GLOBAL: it needs fixed bounds there; ARRAY[*] is only a FUNCTION or METHOD VAR_INPUT, VAR_OUTPUT or VAR_IN_OUT, or a FUNCTION_BLOCK VAR_IN_OUT",
         "1:58 The initial value of global 'HI' reads global 'V', which is no CONSTANT: an initial value is a constant expression",
       ]);
     });

@@ -297,3 +297,1004 @@ int main() {
     expect(out).toBe("7 106 22 4 23 42");
   });
 });
+
+describe.skipIf(!hasGpp)(
+  "a method call on an FB global and VAR_EXTERNAL CONSTANT, run",
+  () => {
+    let tempDir: string;
+    let pchPath: string;
+    beforeAll(() => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-gmethod-"));
+      pchPath = createPCH(tempDir);
+    });
+    afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+    it("creates the global after the FB whose method it calls", () => {
+      const r = compile(
+        `FUNCTION_BLOCK FB_A
+VAR v : INT := 3; END_VAR
+METHOD M : INT
+M := v * 2;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL CONSTANT K : INT := 7; END_VAR
+VAR_GLOBAL
+  x : INT := f.M() + 1;
+  f : FB_A;
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR_EXTERNAL CONSTANT K : INT; END_VAR
+VAR n1, n2 : INT; END_VAR
+n1 := x;
+n2 := K;
+END_PROGRAM
+`,
+        { headerFileName: "generated.hpp" },
+      );
+      expect(r.errors).toEqual([]);
+      const out = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: r.headerCode,
+        cppCode: r.cppCode,
+        testName: "global_method_call",
+        mainCode: `#include <iostream>
+int main() {
+  strucpp::Program_MAIN p;
+  p.run();
+  std::cout << (int)p.N1 << " " << (int)p.N2 << std::endl;
+  return 0;
+}
+`,
+      });
+      expect(out).toBe("7 7");
+    });
+
+    it("creates it after the globals the called code reads, transitively", () => {
+      const r = compile(
+        `FUNCTION_BLOCK FB_A
+VAR inner : FB_C; END_VAR
+METHOD M : INT
+M := gy;
+END_METHOD
+METHOD N : INT
+inner();
+N := inner.q + Fn();
+END_METHOD
+PROPERTY P : INT
+GET
+P := gp;
+END_GET
+END_PROPERTY
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_B
+VAR v : INT := 7; END_VAR
+METHOD M : INT
+M := v;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_C
+VAR_OUTPUT q : INT; END_VAR
+q := gq;
+END_FUNCTION_BLOCK
+FUNCTION Fn : INT
+VAR_EXTERNAL gf : INT; END_VAR
+Fn := gf;
+END_FUNCTION
+VAR_GLOBAL
+  x : INT := f.M();
+  n : INT := f.N();
+  y : INT := f.P;
+  f : FB_A;
+  g2 : FB_B;
+  gy : INT := g2.M();
+  gq : INT := 1;
+  gp : INT := 2;
+  gf : INT := 3;
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x, n, y : INT; END_VAR
+VAR n1, n2, n3 : INT; END_VAR
+n1 := x;
+n2 := n;
+n3 := y;
+END_PROGRAM
+`,
+        { headerFileName: "generated.hpp" },
+      );
+      expect(r.errors).toEqual([]);
+      const out = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: r.headerCode,
+        cppCode: r.cppCode,
+        testName: "global_method_reads",
+        mainCode: `#include <iostream>
+int main() {
+  strucpp::Program_MAIN p;
+  p.run();
+  std::cout << (int)p.N1 << " " << (int)p.N2 << " " << (int)p.N3 << std::endl;
+  return 0;
+}
+`,
+      });
+      expect(out).toBe("7 4 2");
+    });
+
+    const run = (
+      name: string,
+      src: string,
+      outputs: string[],
+      features: string[] = [],
+    ): string => {
+      const r = compile(src, { headerFileName: "generated.hpp", features });
+      expect(r.errors).toEqual([]);
+      return compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: r.headerCode,
+        cppCode: r.cppCode,
+        testName: name,
+        mainCode: `#include <iostream>
+int main() {
+  strucpp::Program_MAIN p;
+  p.run();
+  std::cout${outputs.map((o) => ` << (int)p.${o} << " "`).join("")} << std::endl;
+  return 0;
+}
+`,
+      }).trim();
+    };
+
+    it("follows a bare property, a property through a member and member initial values", () => {
+      expect(
+        run(
+          "global_reads_members",
+          `FUNCTION_BLOCK FB_P
+PROPERTY P : INT
+GET
+P := gp;
+END_GET
+END_PROPERTY
+METHOD M : INT
+M := P;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_O
+VAR_OUTPUT inner : FB_P; END_VAR
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_C
+VAR v : INT := gz; END_VAR
+METHOD M : INT
+M := v;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_H
+VAR c : FB_C; END_VAR
+METHOD M : INT
+M := c.M() + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_K
+VAR_INPUT v : INT; END_VAR
+METHOD Get : INT
+Get := v;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  y2 : INT := f.M();
+  y3 : INT := o.inner.P;
+  x : INT := c.M();
+  xh : INT := h.M();
+  f : FB_P;
+  o : FB_O;
+  h : FB_H;
+  c : FB_C;
+  k1 : FB_K := (v := 6);
+  k2 : FB_K := (v := 9);
+  gp : INT := k1.Get();
+  gz : INT := k2.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL y2, y3, x, xh : INT; END_VAR
+VAR o1, o2, o3, o4 : INT; END_VAR
+o1 := y2; o2 := y3; o3 := x; o4 := xh;
+END_PROGRAM
+`,
+          ["O1", "O2", "O3", "O4"],
+        ),
+      ).toBe("6 6 9 10");
+    });
+
+    it("a property read runs only its getter", () => {
+      expect(
+        run(
+          "global_reads_fc5",
+          `FUNCTION_BLOCK FB_P
+VAR inner : INT := 7; END_VAR
+PROPERTY P : INT
+GET
+P := inner;
+END_GET
+SET
+inner := P + gq;
+END_SET
+END_PROPERTY
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  f : FB_P;
+  x : INT := f.P;
+  gq : INT := x + 1;
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL gq : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := gq;
+END_PROGRAM
+`,
+          ["O1"],
+          [],
+        ),
+      ).toBe("8");
+    });
+
+    it("a bare method call on an exact instance runs its own method", () => {
+      expect(
+        run(
+          "global_reads_fc4c",
+          `FUNCTION_BLOCK FB_A
+METHOD M : INT
+M := 1;
+END_METHOD
+PROPERTY Q : INT
+GET
+Q := M() + 10;
+END_GET
+END_PROPERTY
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_B EXTENDS FB_A
+METHOD M : INT
+M := g;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  a : FB_A;
+  x : INT := a.Q;
+  g : INT := x + 100;
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL g : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := g;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property"],
+        ),
+      ).toBe("111");
+    });
+
+    it("FB_init is not part of creating a global instance", () => {
+      expect(
+        run(
+          "global_reads_fc8",
+          `FUNCTION_BLOCK FB_P
+VAR v : INT := 4; c : INT; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+c := g;
+END_METHOD
+PROPERTY P : INT
+GET
+P := v;
+END_GET
+END_PROPERTY
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  f : FB_P;
+  x : INT := f.P;
+  g : INT := x + 1;
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL g : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := g;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property", "+fb_init"],
+        ),
+      ).toBe("5");
+    });
+
+    it("a property through an interface bound to a global instance", () => {
+      expect(
+        run(
+          "global_reads_i1",
+          `INTERFACE I_P
+PROPERTY P : INT
+GET
+END_GET
+END_PROPERTY
+END_INTERFACE
+FUNCTION_BLOCK FB_F IMPLEMENTS I_P
+VAR v : INT := 4; END_VAR
+PROPERTY P : INT
+GET
+P := v;
+END_GET
+END_PROPERTY
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  f : FB_F;
+  itf : I_P := f;
+  x : INT := itf.P;
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property"],
+        ),
+      ).toBe("4");
+    });
+
+    it("an address taken in a getter closes no cycle", () => {
+      expect(
+        run(
+          "global_reads_fc7",
+          `FUNCTION_BLOCK FB_P
+VAR v : INT := 4; pp : POINTER TO INT; END_VAR
+PROPERTY P : INT
+GET
+pp := ADR(gbuf);
+P := v;
+END_GET
+END_PROPERTY
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  f : FB_P;
+  x : INT := f.P;
+  gbuf : INT := x + 1;
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL gbuf : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := gbuf;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property"],
+        ),
+      ).toBe("5");
+    });
+
+    it("a dereferenced global pointer still orders", () => {
+      expect(
+        run(
+          "global_reads_m2",
+          `FUNCTION_BLOCK FB_K
+VAR v : INT := 5; END_VAR
+METHOD N : INT
+N := v;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_F
+METHOD M : INT
+M := gp^ * 2;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  x : INT := f.M();
+  f : FB_F;
+  gp : POINTER TO INT := ADR(g);
+  g : INT := k.N();
+  k : FB_K;
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`,
+          ["O1"],
+          [],
+        ),
+      ).toBe("10");
+    });
+
+    it("a VAR_IN_OUT may be bound to a derived instance", () => {
+      expect(
+        run(
+          "global_reads_n8",
+          `FUNCTION_BLOCK FB_K
+VAR v : INT := 5; END_VAR
+METHOD N : INT
+N := v;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_T
+METHOD M : INT
+M := 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_T2 EXTENDS FB_T
+METHOD M : INT
+M := g * 2;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_F
+METHOD M : INT
+VAR_IN_OUT io : FB_T; END_VAR
+M := io.M();
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  x : INT := f.M(io := t2);
+  f : FB_F;
+  t2 : FB_T2;
+  g : INT := k.N();
+  k : FB_K;
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`,
+          ["O1"],
+          [],
+        ),
+      ).toBe("10");
+    });
+
+    it("a pointer is followed to what a method stores into it", () => {
+      expect(
+        run(
+          "global_reads_a2",
+          `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+IF gp = 0 THEN Get := 42; ELSE Get := 42; END_IF
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_A
+METHOD Addr : POINTER TO INT
+Addr := ADR(gb);
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_D
+METHOD M : INT
+M := gp^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  a : FB_A;
+  d : FB_D;
+  k : FB_K;
+  y : INT := d.M();
+  gp : POINTER TO INT := a.Addr();
+  gb : INT := k.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL y : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := y;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property"],
+        ),
+      ).toBe("43");
+    });
+
+    it("a REF_TO is followed to what a method stores into it", () => {
+      expect(
+        run(
+          "global_reads_a9",
+          `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+IF gp = NULL THEN Get := 42; ELSE Get := 42; END_IF
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_A
+METHOD Addr : REF_TO INT
+Addr := REF(gb);
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_D
+METHOD M : INT
+M := gp^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  a : FB_A;
+  d : FB_D;
+  k : FB_K;
+  y : INT := d.M();
+  gp : REF_TO INT := a.Addr();
+  gb : INT := k.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL y : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := y;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property"],
+        ),
+      ).toBe("43");
+    });
+
+    it("a pointer is followed to what a getter stores into it", () => {
+      expect(
+        run(
+          "global_reads_a3",
+          `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+IF gp = 0 THEN Get := 42; ELSE Get := 42; END_IF
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_A
+PROPERTY P : POINTER TO INT
+GET
+P := ADR(gb);
+END_GET
+END_PROPERTY
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_D
+METHOD M : INT
+M := gp^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  a : FB_A;
+  d : FB_D;
+  k : FB_K;
+  y : INT := d.M();
+  gp : POINTER TO INT := a.P;
+  gb : INT := k.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL y : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := y;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property"],
+        ),
+      ).toBe("43");
+    });
+
+    it("a local pointer reads only what it is given", () => {
+      expect(
+        run(
+          "global_reads_a8",
+          `FUNCTION_BLOCK FB_F
+METHOD M : INT
+VAR p : POINTER TO INT; END_VAR
+p := ADR(gb);
+M := p^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 42;
+END_METHOD
+METHOD Use : INT
+VAR q : POINTER TO INT; END_VAR
+q := ADR(x);
+Use := 0;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  f : FB_F;
+  k : FB_K;
+  x : INT := f.M();
+  gb : INT := k.Get() + k.Use();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property"],
+        ),
+      ).toBe("43");
+    });
+
+    it("a local pointer given an address in the method reads it", () => {
+      expect(
+        run(
+          "global_reads_a6",
+          `FUNCTION_BLOCK FB_F
+METHOD M : INT
+VAR p : POINTER TO INT; END_VAR
+p := ADR(gb);
+M := p^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 42;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  f : FB_F;
+  k : FB_K;
+  x : INT := f.M();
+  gb : INT := k.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property"],
+        ),
+      ).toBe("43");
+    });
+
+    it("orders by a pointer bound positionally to an FB instance's VAR_IN_OUT", () => {
+      expect(
+        run(
+          "global_reads_q1",
+          `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 42;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_R
+VAR_IN_OUT io : POINTER TO INT; END_VAR
+io := ADR(gb);
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_S
+VAR r : FB_R; END_VAR
+METHOD Run : INT
+r(gp);
+Run := 0;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_D
+METHOD M : INT
+M := gp^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  s : FB_S;
+  d : FB_D;
+  k : FB_K;
+  z : INT := s.Run();
+  y : INT := d.M();
+  gp : POINTER TO INT;
+  gb : INT := k.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL y : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := y;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property", "+self_caret", "+bare_self_caret"],
+        ),
+      ).toBe("43");
+    });
+
+    it("orders by a pointer member written through THIS^", () => {
+      expect(
+        run(
+          "global_reads_q2",
+          `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 42;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_D
+VAR p : POINTER TO INT; END_VAR
+METHOD SetP : INT
+THIS^.p := ADR(gb);
+SetP := 0;
+END_METHOD
+METHOD M : INT
+M := p^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  d : FB_D;
+  k : FB_K;
+  z : INT := d.SetP();
+  y : INT := d.M();
+  gb : INT := k.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL y : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := y;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property", "+self_caret", "+bare_self_caret"],
+        ),
+      ).toBe("43");
+    });
+
+    it("orders by a pointer member written through SUPER^", () => {
+      expect(
+        run(
+          "global_reads_q12",
+          `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 42;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_B
+VAR p : POINTER TO INT; END_VAR
+METHOD M : INT
+M := p^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_D EXTENDS FB_B
+METHOD SetP : INT
+SUPER^.p := ADR(gb);
+SetP := 0;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  d : FB_D;
+  k : FB_K;
+  z : INT := d.SetP();
+  y : INT := d.M();
+  gb : INT := k.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL y : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := y;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property", "+self_caret", "+bare_self_caret"],
+        ),
+      ).toBe("43");
+    });
+
+    it("orders by a pointer written through the address of a pointer", () => {
+      expect(
+        run(
+          "global_reads_q4",
+          `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 42;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_D
+VAR p : POINTER TO INT; END_VAR
+METHOD SetP : INT
+VAR pp : POINTER TO POINTER TO INT; END_VAR
+pp := ADR(THIS^.p);
+pp^ := ADR(gb);
+SetP := 0;
+END_METHOD
+METHOD M : INT
+M := p^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  d : FB_D;
+  k : FB_K;
+  z : INT := d.SetP();
+  y : INT := d.M();
+  gb : INT := k.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL y : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := y;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property", "+self_caret", "+bare_self_caret"],
+        ),
+      ).toBe("43");
+    });
+
+    it("orders by a pointer copied from an FB output, not a method of that name", () => {
+      expect(
+        run(
+          "global_reads_q7c",
+          `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 42;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_A
+VAR_OUTPUT q : POINTER TO INT; END_VAR
+q := ADR(gb);
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_X
+METHOD Q : POINTER TO INT
+Q := ADR(ga);
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_D
+VAR a : FB_A; p : POINTER TO INT; END_VAR
+METHOD M : INT
+a(); p := a.q;
+M := p^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  d : FB_D;
+  k : FB_K;
+  ga : INT;
+  y : INT := d.M();
+  gb : INT := k.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL y : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := y;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property", "+self_caret", "+bare_self_caret"],
+        ),
+      ).toBe("43");
+    });
+
+    it("orders by a pointer copied from a STRUCT field", () => {
+      expect(
+        run(
+          "global_reads_mq6b",
+          `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 42;
+END_METHOD
+END_FUNCTION_BLOCK
+TYPE ST_P : STRUCT p : POINTER TO INT; END_STRUCT; END_TYPE
+FUNCTION_BLOCK FB_X
+METHOD P : POINTER TO INT
+P := ADR(ga);
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_I
+METHOD Init : INT
+s.p := ADR(gb);
+gp := s.p;
+Init := 0;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_RD
+METHOD Rd : INT
+Rd := gp^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  k : FB_K;
+  fi : FB_I;
+  fr : FB_RD;
+  ga : INT;
+  z : INT := fi.Init();
+  y : INT := fr.Rd();
+  s : ST_P;
+  gp : POINTER TO INT;
+  gb : INT := k.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL y : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := y;
+END_PROGRAM
+`,
+          ["O1"],
+          ["+property", "+self_caret", "+bare_self_caret"],
+        ),
+      ).toBe("43");
+    });
+
+    it("follows a call through a pointer, an FB member and a STRUCT member", () => {
+      expect(
+        run(
+          "global_reads_receivers",
+          `INTERFACE I_X
+METHOD M : INT
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FB_X IMPLEMENTS I_X
+VAR_OUTPUT sub : FB_Y; END_VAR
+METHOD M : INT
+M := gq;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Y
+METHOD M : INT
+M := gw;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Q
+VAR_INPUT v : INT; END_VAR
+METHOD Get : INT
+Get := v;
+END_METHOD
+END_FUNCTION_BLOCK
+TYPE ST_S : STRUCT f : FB_Y; END_STRUCT END_TYPE
+VAR_GLOBAL
+  x1 : INT := px^.M();
+  x2 : INT := fx.sub.M();
+  x3 : INT := ss.f.M();
+  fx : FB_X;
+  px : POINTER TO FB_X := ADR(fx);
+  ss : ST_S;
+  k1 : FB_Q := (v := 3);
+  k2 : FB_Q := (v := 4);
+  gq : INT := k1.Get();
+  gw : INT := k2.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x1, x2, x3 : INT; END_VAR
+VAR o1, o2, o3 : INT; END_VAR
+o1 := x1; o2 := x2; o3 := x3;
+END_PROGRAM
+`,
+          ["O1", "O2", "O3"],
+        ),
+      ).toBe("3 4 4");
+      expect(
+        run(
+          "global_reads_receivers_const",
+          `INTERFACE I_X
+METHOD M : INT
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FB_X IMPLEMENTS I_X
+VAR_OUTPUT sub : FB_Y; END_VAR
+METHOD M : INT
+M := 3;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Y
+METHOD M : INT
+M := 4;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Q
+VAR_INPUT v : INT; END_VAR
+METHOD Get : INT
+Get := v;
+END_METHOD
+END_FUNCTION_BLOCK
+TYPE ST_S : STRUCT f : FB_Y; END_STRUCT END_TYPE
+VAR_GLOBAL
+  x1 : INT := px^.M();
+  x2 : INT := fx.sub.M();
+  x3 : INT := ss.f.M();
+  fx : FB_X;
+  px : POINTER TO FB_X := ADR(fx);
+  ss : ST_S;
+  k1 : FB_Q := (v := 3);
+  k2 : FB_Q := (v := 4);
+  gq : INT := k1.Get();
+  gw : INT := k2.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x1, x2, x3 : INT; END_VAR
+VAR o1, o2, o3 : INT; END_VAR
+o1 := x1; o2 := x2; o3 := x3;
+END_PROGRAM
+`,
+          ["O1", "O2", "O3"],
+        ),
+      ).toBe("3 4 4");
+    });
+  },
+);

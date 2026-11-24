@@ -5605,8 +5605,8 @@ export class TypeChecker {
 
   /**
    * `__ISVALIDREF` and `XSIZEOF` in a top-level or CONFIGURATION global's
-   * initial value; an initial value that is such a call is checked as an
-   * assignment to the global.
+   * initial value; the initial value of an elementary global is checked as
+   * an assignment to the global, as a POU variable's is.
    */
   private markGlobalVendorOperators(ast: CompilationUnit): void {
     const scopes: Array<{ blocks: VarBlock[]; scope: Scope }> = [
@@ -5637,11 +5637,16 @@ export class TypeChecker {
           if (decl.type.arrayDimensions === undefined) {
             typeUntypedNot(value, this.aliasBase(decl.type.name).toUpperCase());
           }
-          // Any expression holding an operator, `(XSIZEOF(g))` or `XSIZEOF(g) + 1` too.
+          // Checked as a POU variable's initial value is (checkVarBlocks); an
+          // address stored is refuseNarrowAddressInGlobals's, a CHAR value
+          // checkCharInitialValue's.
           const valueType =
-            hasOperator &&
             targetType !== undefined &&
-            (decl.type.referenceKind ?? "none") === "none"
+            (decl.type.referenceKind ?? "none") === "none" &&
+            decl.type.referenceChain === undefined &&
+            decl.type.arrayDimensions === undefined &&
+            !this.reportedCharValues.has(value) &&
+            (hasOperator || !this.storesAddress(value))
               ? this.resolveExprType(value, scope)
               : undefined;
           if (targetType !== undefined && valueType !== undefined) {
@@ -5968,6 +5973,44 @@ export class TypeChecker {
       if (this.strict || this.inOutErrors) {
         this.refuseDependentGlobalInitials(ordered, outer);
       }
+      this.refuseUnorderedGlobalCalls(ordered);
+    }
+  }
+
+  /**
+   * A global's initial value calling code whose reads of other globals cannot
+   * be followed (global-order.ts): it is refused, as no creation order can be
+   * shown right. One already refused at the call is not reported again.
+   */
+  private refuseUnorderedGlobalCalls({ order, unresolved }: GlobalOrder): void {
+    for (const item of order) {
+      const found = unresolved.get(item.name.toUpperCase());
+      const value = item.decl.initialValue;
+      if (
+        found === undefined ||
+        value === undefined ||
+        item.decl.names[0] !== item.name
+      ) {
+        continue;
+      }
+      const span = value.sourceSpan;
+      const at = found.node.sourceSpan;
+      if (
+        this.errors.some(
+          (e) =>
+            e.line === span.startLine &&
+            e.column === span.startCol &&
+            e.file === span.file,
+        )
+      ) {
+        continue;
+      }
+      this.addError(
+        `The initial value of global '${item.name}' leads to ${found.reason} (line ${at.startLine}), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign '${item.name}' in a program instead`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
     }
   }
 
@@ -5978,7 +6021,7 @@ export class TypeChecker {
    * automatic creation order.
    */
   private refuseDependentGlobalInitials(
-    { order }: GlobalOrder,
+    { order, duplicates }: GlobalOrder,
     outer: readonly GlobalItem[],
   ): void {
     const own = new Set(order.map((i) => i.name.toUpperCase()));
@@ -5993,6 +6036,11 @@ export class TypeChecker {
         .map((i) => i.name.toUpperCase()),
     );
     const known = new Set(visible.map((i) => i.name.toUpperCase()));
+    // A name declared twice is reported as such; which one is read is moot
+    const duplicated = new Set([
+      ...duplicates,
+      ...outer.map((i) => i.name.toUpperCase()).filter((n) => own.has(n)),
+    ]);
     const declared = new Map(
       visible.map((i) => [i.name.toUpperCase(), i.decl.type] as const),
     );
@@ -6034,30 +6082,54 @@ export class TypeChecker {
             return false;
           }
         }
-        if (node.kind !== "VariableExpression") return;
-        const v = node as VariableExpression;
-        const upper = v.name.toUpperCase();
-        if (!known.has(upper) || constant.has(upper) || reported.has(upper)) {
+        // `f.M()` calls a method of the global f: it reads f
+        const callee =
+          node.kind === "FunctionCallExpression"
+            ? (node as FunctionCallExpression).functionName.split(".")
+            : [];
+        const name =
+          node.kind === "VariableExpression"
+            ? (node as VariableExpression).name
+            : callee.length > 1
+              ? callee[0]!
+              : undefined;
+        if (name === undefined) return;
+        const upper = name.toUpperCase();
+        if (
+          !known.has(upper) ||
+          constant.has(upper) ||
+          reported.has(upper) ||
+          duplicated.has(upper)
+        ) {
           return;
         }
         reported.add(upper);
         this.addError(
-          `The initial value of global '${item.name}' reads global '${v.name}', which is no CONSTANT: an initial value is a constant expression`,
-          v.sourceSpan.startLine,
-          v.sourceSpan.startCol,
-          v.sourceSpan.file,
+          `The initial value of global '${item.name}' reads global '${name}', which is no CONSTANT: an initial value is a constant expression`,
+          node.sourceSpan.startLine,
+          node.sourceSpan.startCol,
+          node.sourceSpan.file,
         );
       };
       walkAST(value, visit);
     }
   }
 
-  /** Walk the index expressions of an address operand, which are evaluated. */
+  /**
+   * Walk what an address operand evaluates: its indices, and its base when a
+   * dereference reads it (`ADR(p^)`, `ADR(pa^[1])` read `p` and `pa`).
+   */
   private walkOperandIndices(
     operand: Expression,
     visit: (node: ASTNode) => boolean | void,
   ): void {
     if (operand.kind !== "VariableExpression") return;
+    if (
+      operand.isDereference ||
+      operand.accessChain?.some((s) => s.kind === "dereference") === true
+    ) {
+      visit(operand);
+    }
     for (const index of accessIndices(operand)) {
       walkAST(index, visit);
     }
@@ -6105,7 +6177,9 @@ export class TypeChecker {
       const span = order.find((i) => i.name.toUpperCase() === cycle[0])?.decl
         .sourceSpan;
       this.addError(
-        `The initial values of the globals ${list} depend on each other (${[...cycle, cycle[0]!].join(" -> ")})`,
+        cycle.length === 1
+          ? `The initial value of global ${list} reads ${list} itself, through the code it calls`
+          : `The initial values of the globals ${list} depend on each other (${[...cycle, cycle[0]!].join(" -> ")})`,
         span?.startLine ?? 0,
         span?.startCol ?? 0,
         span?.file,
@@ -6533,6 +6607,36 @@ export class TypeChecker {
 
   /** Positions already refused by checkAddressStore (a repeated literal element is one). */
   private addressStoresReported = new Set<string>();
+
+  /**
+   * `value` holds an address or a pointer read (ADR, REF, an address offset,
+   * a POINTER TO value): its store into an integer is checkAddressStore's.
+   */
+  private storesAddress(value: Expression): boolean {
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    if (
+      addressMisuse(value, user, this.isPointerRead) ||
+      addressSource(value, user, this.isPointerRead) !== undefined
+    ) {
+      return true;
+    }
+    let found = false;
+    walkAST(value, (node) => {
+      if (
+        node.kind === "RefExpression" ||
+        (node.kind === "FunctionCallExpression" &&
+          ADDRESS_CALLS.has(
+            (node as FunctionCallExpression).functionName.toUpperCase(),
+          )) ||
+        (node.kind === "VariableExpression" &&
+          this.isPointerRead(node as VariableExpression))
+      ) {
+        found = true;
+      }
+    });
+    return found;
+  }
 
   /**
    * The one check of an address (`ADR(x)`, `ADR(x) ± n`, `REF(x)`) stored into
