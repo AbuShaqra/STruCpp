@@ -424,6 +424,7 @@ public:
 #endif
         return union_ref_t<W>(element(i));
     }
+    static constexpr int rank = 1;
     static constexpr std::int64_t lower_bound(int = 1) noexcept { return L; }
     static constexpr std::int64_t upper_bound(int = 1) noexcept { return U; }
     static constexpr std::size_t length() noexcept {
@@ -481,6 +482,7 @@ public:
 #endif
         return union_ref_t<W>(element(i, j));
     }
+    static constexpr int rank = 2;
     static constexpr std::int64_t lower_bound(int dim = 1) noexcept { return dim == 2 ? L2 : L1; }
     static constexpr std::int64_t upper_bound(int dim = 1) noexcept { return dim == 2 ? U2 : U1; }
 
@@ -539,6 +541,7 @@ public:
 #endif
         return union_ref_t<W>(element(i, j, k));
     }
+    static constexpr int rank = 3;
     static constexpr std::int64_t lower_bound(int dim = 1) noexcept {
         return dim == 3 ? L3 : dim == 2 ? L2 : L1;
     }
