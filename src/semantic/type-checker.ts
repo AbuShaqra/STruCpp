@@ -402,6 +402,43 @@ const TEMPORAL_ANY_NAMES: ReadonlySet<string> = new Set([
   "LDT",
 ]);
 
+/** The short kind of a date or time type: LDT counts as DT, LTIME as TIME. */
+const SHORT_TEMPORAL_KIND: Readonly<Record<string, string>> = {
+  TIME: "TIME",
+  LTIME: "TIME",
+  DATE: "DATE",
+  LDATE: "DATE",
+  TOD: "TOD",
+  LTOD: "TOD",
+  DT: "DT",
+  LDT: "DT",
+};
+
+/** The number types a date or time meets in arithmetic (ANY_NUM and ANY_BIT but BOOL). */
+const TABLE30_NUMBERS: ReadonlySet<string> = new Set([
+  "SINT",
+  "INT",
+  "DINT",
+  "LINT",
+  "USINT",
+  "UINT",
+  "UDINT",
+  "ULINT",
+  "REAL",
+  "LREAL",
+  "BYTE",
+  "WORD",
+  "DWORD",
+  "LWORD",
+]);
+
+/** The forms of date and time arithmetic IEC 61131-3 Table 30 allows. */
+const TABLE30_FORMS =
+  "date and time arithmetic is TIME + or - TIME, DATE, TOD or DT + or - TIME, " +
+  "TIME + DATE, TOD or DT, DT - DT, TOD - TOD or DATE - DATE (a TIME), " +
+  "TIME * or / a number, TIME / TIME and TIME, TOD or DT MOD TIME " +
+  "(an L form counts as its short one)";
+
 /** `ADR(x)`. */
 function isAddressOf(expr: Expression): expr is FunctionCallExpression {
   return (
@@ -2395,6 +2432,7 @@ export class TypeChecker {
     }
 
     if (this.refuseTemporalOperands(expr, scope)) return undefined;
+    if (this.refuseTable30Operands(expr, scope)) return undefined;
     this.requireStructCompare(expr, leftType, rightType, scope);
 
     if (leftType === undefined || rightType === undefined) {
@@ -3442,6 +3480,81 @@ export class TypeChecker {
     this.refusedTemporalOperands.add(expr);
     this.addError(
       message,
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
+    return true;
+  }
+
+  /**
+   * Date and time arithmetic outside IEC 61131-3 Table 30, in every mode:
+   * `+` and `-` other than TIME +/- TIME, an instant +/- a TIME, a TIME + an
+   * instant and the difference of two instants of one kind; an instant in
+   * `*`, `/` or `**`, or in MOD other than TOD or DT MOD a TIME. A number
+   * +/- a date or time and TOD or DT MOD a number are refused under iec-3 and
+   * --strict only. Long forms
+   * count as their short kind. True when refused.
+   */
+  private refuseTable30Operands(expr: BinaryExpression, scope: Scope): boolean {
+    const op = expr.operator;
+    if (!["+", "-", "*", "/", "MOD", "**"].includes(op)) return false;
+    if (expr.addressArithmetic === true) return false;
+    if (this.refusedTemporalOperands.has(expr)) return true;
+    const l = this.operandElementaryName(expr.left, scope);
+    const r = this.operandElementaryName(expr.right, scope);
+    if (l === undefined || r === undefined) return false;
+    const kindOf = (k: string): string | undefined =>
+      TEMPORAL_ANY_NAMES.has(k) ? SHORT_TEMPORAL_KIND[k] : undefined;
+    const lk = kindOf(l);
+    const rk = kindOf(r);
+    if (lk === undefined && rk === undefined) return false;
+    // The other operand must be a known number (not ANY, a STRING or a struct)
+    if (
+      (lk === undefined && !TABLE30_NUMBERS.has(l)) ||
+      (rk === undefined && !TABLE30_NUMBERS.has(r))
+    ) {
+      return false;
+    }
+    const instant = (k: string | undefined): boolean =>
+      k !== undefined && k !== "TIME";
+    let allowed: boolean;
+    switch (op) {
+      case "+":
+        allowed =
+          (lk === "TIME" && rk !== undefined) || (instant(lk) && rk === "TIME");
+        break;
+      case "-":
+        allowed =
+          (lk === "TIME" && rk === "TIME") ||
+          (instant(lk) && (rk === "TIME" || rk === lk));
+        break;
+      case "*":
+        allowed =
+          (lk === "TIME" && rk === undefined) ||
+          (lk === undefined && rk === "TIME");
+        break;
+      case "/":
+        allowed = lk === "TIME" && (rk === undefined || rk === "TIME");
+        break;
+      case "MOD":
+        allowed =
+          (lk === "TIME" && (rk === undefined || rk === "TIME")) ||
+          ((lk === "TOD" || lk === "DT") && rk === "TIME");
+        break;
+      default:
+        allowed = false;
+    }
+    if (allowed) return false;
+    // A number +/- a date or time, and TOD or DT MOD a number, build (in the
+    // type's unit): refused under iec-3 and --strict only
+    const withNumber =
+      ((op === "+" || op === "-") && (lk === undefined || rk === undefined)) ||
+      (op === "MOD" && (lk === "TOD" || lk === "DT") && rk === undefined);
+    if (withNumber && !this.strict && !this.inOutErrors) return false;
+    this.refusedTemporalOperands.add(expr);
+    this.addError(
+      `Operator '${op}' does not apply to ${l} and ${r}; ${TABLE30_FORMS}`,
       expr.sourceSpan.startLine,
       expr.sourceSpan.startCol,
       expr.sourceSpan.file,

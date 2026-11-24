@@ -152,7 +152,8 @@ inline int64_t DIFF_DT(const IECVar<L_>& a, const IECVar<L_>& b) noexcept {
 // ---------------------------------------------------------------------------
 // + and - on the 32-bit types (Table 30): a TOD, DT or DATE moved by a TIME,
 // and the TIME between two of them, each modulo 2^32. A DT or DATE moved by a
-// TIME is the second or day that holds the resulting instant.
+// TIME is the second or day that holds the resulting instant. A DATE moves by whole
+// days in its raw seconds, so a wrapped day before 1970 moves as on the PLC.
 // ---------------------------------------------------------------------------
 namespace detail {
 inline TIME_t time_of_ms(int64_t ms) noexcept {
@@ -163,15 +164,14 @@ inline TOD_t temporal_add(TIME_t t, TOD_t a) noexcept { return TOD_t(a.raw + t.r
 inline DT_t temporal_add(DT_t a, TIME_t t) noexcept { return DT_OF_NS(DT_AS_NS(a) + TIME_AS_NS(t)); }
 inline DT_t temporal_add(TIME_t t, DT_t a) noexcept { return temporal_add(a, t); }
 inline DATE_t temporal_add(DATE_t d, TIME_t t) noexcept {
-    return DATE_OF_DAYS(DATE_AS_DAYS(d) + static_cast<int64_t>(t.raw / 86400000u));
+    return DATE_PLUS_DAYS(d, static_cast<int64_t>(t.raw / 86400000u));
 }
 inline DATE_t temporal_add(TIME_t t, DATE_t d) noexcept { return temporal_add(d, t); }
 
 inline TOD_t temporal_sub(TOD_t a, TIME_t t) noexcept { return TOD_t(a.raw - t.raw); }
 inline DT_t temporal_sub(DT_t a, TIME_t t) noexcept { return DT_OF_NS(DT_AS_NS(a) - TIME_AS_NS(t)); }
 inline DATE_t temporal_sub(DATE_t d, TIME_t t) noexcept {
-    return DATE_OF_DAYS(iec_floor_div(DATE_AS_DAYS(d) * 86400000LL - static_cast<int64_t>(t.raw),
-                                      86400000LL));
+    return DATE_PLUS_DAYS(d, iec_floor_div(-static_cast<int64_t>(t.raw), 86400000LL));
 }
 inline TIME_t temporal_sub(TOD_t a, TOD_t b) noexcept { return TIME_t(a.raw - b.raw); }
 inline TIME_t temporal_sub(DT_t a, DT_t b) noexcept {

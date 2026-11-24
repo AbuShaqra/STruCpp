@@ -211,7 +211,9 @@ Used by standard function templates for type-safe dispatch.
 TIME, DATE, TOD and DT are 4 bytes, as on the PLC: `IecTemporal32<Kind>`, a
 distinct value type per kind holding a `uint32_t` (TIME and TOD in ms, DATE and
 DT in seconds since 1970-01-01, a DATE a whole number of days). Arithmetic
-wraps modulo 2^32; a raw count converts in only explicitly (`TIME_t(1000u)`,
+wraps modulo 2^32, a day before 1970 included (`DATE_OF_DAYS(-1)` is
+2^32 - 86400 s on every route, and a DATE moves by whole days in its raw
+seconds, `DATE_PLUS_DAYS`); a raw count converts in only explicitly (`TIME_t(1000u)`,
 the form a `T#1s` literal takes). `iec_temporal_add` / `iec_temporal_sub` give
 TOD, DT or DATE plus or minus a TIME and the TIME between two of them; the
 `*_TO_*` helpers keep the vendor units (ms, s) for integers. For debugger hosts
