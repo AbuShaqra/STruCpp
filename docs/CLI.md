@@ -320,7 +320,8 @@ Compilation failed:
 ```
 
 All errors include file, line, column, severity, and message. Compilation aborts on errors but continues on warnings.
-Warnings are printed when compilation fails too.
+Warnings are printed when compilation fails too, and in `--test` (the sources' and the test files') and
+`--compile-lib` runs.
 
 Lexer errors (a character that starts no token) carry the real line and column, and parsing continues
 after them, so the rest of the file is still checked. A file with a lexer error never compiles.

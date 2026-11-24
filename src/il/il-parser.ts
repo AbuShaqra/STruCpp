@@ -29,6 +29,8 @@ export interface ILParseResult {
   errors: ILParseError[];
   /** Whether any labels or jump instructions were found */
   hasControlFlow: boolean;
+  /** Each label as written, where it is written (1-based line and column). */
+  labels: Array<{ name: string; line: number; column: number }>;
 }
 
 /**
@@ -44,6 +46,7 @@ export function parseILBody(
   const instructions: ILElement[] = [];
   const errors: ILParseError[] = [];
   const lines = bodyText.split("\n");
+  const labels: ILParseResult["labels"] = [];
   let hasControlFlow = false;
   let inComment = false;
 
@@ -87,6 +90,10 @@ export function parseILBody(
     const labelMatch = line.match(/^(\w+)\s*:\s*/);
     if (labelMatch) {
       label = labelMatch[1]!;
+      const column = (lines[i] ?? "").search(
+        new RegExp(`(?<![A-Za-z0-9_])${label}\\s*:`),
+      );
+      labels.push({ name: label, line: sourceLine, column: column + 1 });
       line = line.substring(labelMatch[0].length).trim();
 
       if (label) hasControlFlow = true;
@@ -218,7 +225,7 @@ export function parseILBody(
     instructions.pop();
   }
 
-  return { instructions, errors, hasControlFlow };
+  return { instructions, errors, hasControlFlow, labels };
 }
 
 /**

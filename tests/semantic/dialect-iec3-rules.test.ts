@@ -325,8 +325,8 @@ i := 5;
 END_PROGRAM
 `,
       warnings: [
-        "4:3: IEC 61131-3 Ed. 3 does not allow the FOR control variable 'I' to be changed in the loop body; use a WHILE or REPEAT loop to step it yourself",
-        "6:19: IEC 61131-3 Ed. 3 does not allow the FOR control variable 'I' to be changed in the loop body; use a WHILE or REPEAT loop to step it yourself",
+        "4:3: IEC 61131-3 Ed. 3 does not allow the FOR control variable 'i' to be changed in the loop body; use a WHILE or REPEAT loop to step it yourself",
+        "6:19: IEC 61131-3 Ed. 3 does not allow the FOR control variable 'i' to be changed in the loop body; use a WHILE or REPEAT loop to step it yourself",
       ],
     },
     {
@@ -526,15 +526,15 @@ END_TEST
   it("refuses the names and warns under iec-3", () => {
     expect(testFileResult(SOURCE, TEST, IEC3)).toEqual({
       errors: [
-        `2:5: ${doubled("S__V")}`,
-        `6:5: ${trailing("N_")}`,
+        `2:5: ${doubled("s__v")}`,
+        `6:5: ${trailing("n_")}`,
         `6:49: ${trailing("A_")}`,
       ],
       warnings: [
         "3:9: Octal literal '8#7' is deprecated in IEC 61131-3 Ed. 3; write it in decimal or 16#7",
         "7:6: Real literal '1E2' has no decimal point, which IEC 61131-3 Ed. 3 requires before the exponent; write 1.0E2",
         "8:6: TRUNC with no result type is deprecated in IEC 61131-3 Ed. 3; write the typed form TRUNC_<type>, such as TRUNC_DINT",
-        "9:20: IEC 61131-3 Ed. 3 does not allow the FOR control variable 'I' to be changed in the loop body; use a WHILE or REPEAT loop to step it yourself",
+        "9:20: IEC 61131-3 Ed. 3 does not allow the FOR control variable 'i' to be changed in the loop body; use a WHILE or REPEAT loop to step it yourself",
       ],
     });
   });
@@ -696,5 +696,243 @@ END_TEST
     expect(testFileResult(SOURCE, TEST, { dialect: VENDOR }).errors).toEqual(
       [],
     );
+  });
+});
+
+describe("iec-3: FOR control variable changed in the loop", () => {
+  const msg = (name: string, how = ""): string =>
+    `IEC 61131-3 Ed. 3 does not allow the FOR control variable '${name}' to be changed in the loop body${how}; use a WHILE or REPEAT loop to step it yourself`;
+
+  it("warns at an output capture, a VAR_IN_OUT argument and a store through a reference", () => {
+    const src = `FUNCTION_BLOCK FbQ
+VAR_OUTPUT q : INT; END_VAR
+VAR_IN_OUT io : INT; END_VAR
+q := 5;
+END_FUNCTION_BLOCK
+FUNCTION Bump : INT
+VAR_INPUT d : INT; END_VAR
+VAR_IN_OUT v : INT; END_VAR
+v := v + d;
+Bump := v;
+END_FUNCTION
+PROGRAM Main
+VAR Idx : INT; f : FbQ; r : REF_TO INT; n : INT; END_VAR
+r := REF(Idx);
+FOR Idx := 0 TO 10 DO
+  f(q => Idx, io := n);
+  r^ := 3;
+  n := Bump(1, Idx);
+  n := Bump(v := Idx, d := Idx);
+  f(io := Idx);
+END_FOR;
+END_PROGRAM
+`;
+    expect(ed3WarningsOf(src, IEC3)).toEqual([
+      `16:10: ${msg("Idx", " (here by an output)")}`,
+      `17:3: ${msg("Idx", " (here through a reference to it)")}`,
+      `18:16: ${msg("Idx", " (here as a VAR_IN_OUT argument)")}`,
+      `19:18: ${msg("Idx", " (here as a VAR_IN_OUT argument)")}`,
+      `20:11: ${msg("Idx", " (here as a VAR_IN_OUT argument)")}`,
+    ]);
+    expect(ed3WarningsOf(src, {})).toEqual([]);
+  });
+
+  it("does not warn at a read, an input argument or a reference to another variable", () => {
+    const src = `FUNCTION Twice : INT
+VAR_INPUT v : INT; END_VAR
+Twice := v * 2;
+END_FUNCTION
+PROGRAM Main
+VAR i, k, n : INT; r : REF_TO INT; END_VAR
+r := REF(k);
+FOR i := 0 TO 10 DO
+  n := Twice(i);
+  r^ := i;
+END_FOR;
+END_PROGRAM
+`;
+    expect(ed3WarningsOf(src, IEC3)).toEqual([]);
+  });
+
+  it("maps positional arguments across VAR_INPUT, VAR_OUTPUT and VAR_IN_OUT", () => {
+    const src = `FUNCTION F : INT
+VAR_INPUT a : INT; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+VAR_IN_OUT v : INT; END_VAR
+o := a; v := v + 1; F := 0;
+END_FUNCTION
+PROGRAM Main
+VAR i, k, n : INT; END_VAR
+FOR i := 0 TO 3 DO
+  n := F(1, k, i);
+END_FOR;
+FOR k := 0 TO 3 DO
+  n := F(1, k, i);
+END_FOR;
+FOR n := 0 TO 3 DO
+  i := F(n, k, k);
+END_FOR;
+END_PROGRAM
+`;
+    expect(ed3WarningsOf(src, IEC3)).toEqual([
+      `10:16: ${msg("i", " (here as a VAR_IN_OUT argument)")}`,
+      `13:13: ${msg("k", " (here by an output)")}`,
+    ]);
+  });
+
+  it("names the variable as the FOR statement spells it", () => {
+    const src = `PROGRAM Main
+VAR LoopIdx : INT; END_VAR
+FOR LoopIdx := 0 TO 3 DO
+  loopidx := 2;
+END_FOR;
+END_PROGRAM
+`;
+    expect(ed3WarningsOf(src, IEC3)).toEqual([`4:3: ${msg("LoopIdx")}`]);
+  });
+});
+
+describe("iec-3: TRUNC that names a user block", () => {
+  it("does not warn at an FB instance named TRUNC", () => {
+    const src = `FUNCTION_BLOCK FbT
+VAR_INPUT a : REAL; END_VAR
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR TRUNC : FbT; END_VAR
+TRUNC(a := 1.5);
+END_PROGRAM
+PROGRAM Other
+VAR d : DINT; END_VAR
+d := TRUNC(2.5);
+END_PROGRAM
+`;
+    expect(ed3WarningsOf(src, IEC3)).toEqual([
+      "10:6: TRUNC with no result type is deprecated in IEC 61131-3 Ed. 3; write the typed form TRUNC_<type>, such as TRUNC_DINT",
+    ]);
+  });
+
+  it("does not warn where TRUNC is a METHOD inherited from a library FB", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `FUNCTION_BLOCK LibBase
+METHOD TRUNC : DINT
+VAR_INPUT v : LREAL; END_VAR
+TRUNC := 1;
+END_METHOD
+END_FUNCTION_BLOCK
+`,
+          fileName: "lib.st",
+        },
+      ],
+      { name: "lib", version: "1.0.0", namespace: "lib" },
+    );
+    expect(lib.success).toBe(true);
+    const src = `FUNCTION_BLOCK FbD EXTENDS LibBase
+VAR d : DINT; END_VAR
+d := TRUNC(1.5);
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FbU
+VAR d : DINT; END_VAR
+d := TRUNC(1.5);
+END_FUNCTION_BLOCK
+`;
+    expect(
+      ed3WarningsOf(src, { dialect: "iec-3", libraries: [lib.archive] }),
+    ).toEqual([
+      "7:6: TRUNC with no result type is deprecated in IEC 61131-3 Ed. 3; write the typed form TRUNC_<type>, such as TRUNC_DINT",
+    ]);
+  });
+
+  it("does not warn in a test file that declares an FB instance TRUNC", () => {
+    const SOURCE = `FUNCTION_BLOCK FbT
+VAR_INPUT a : REAL; END_VAR
+END_FUNCTION_BLOCK
+`;
+    const TEST = `TEST 't'
+VAR TRUNC : FbT; END_VAR
+TRUNC(a := 1.5);
+END_TEST
+`;
+    expect(testFileResult(SOURCE, TEST, IEC3).warnings).toEqual([]);
+  });
+});
+
+describe("iec-3: identifiers (C5) in IL, comments and test files", () => {
+  it("refuses an IL label at the label, and later phases still run", () => {
+    const src = `FUNCTION F1 : INT
+VAR_INPUT a : BOOL; END_VAR
+  LD a
+  JMPC lab__1
+  LD 2
+  ST F1
+lab__1:
+  LD 1
+  ST F1
+END_FUNCTION
+FUNCTION_BLOCK Fb_
+VAR x : INT; END_VAR
+END_FUNCTION_BLOCK
+`;
+    expect(errorsOf(src, IEC3)).toEqual([
+      `7:1: ${doubled("lab__1")}`,
+      `11:16: ${trailing("Fb_")}`,
+    ]);
+    expect(errorsOf(src, {})).toEqual([]);
+  });
+
+  it("locates a name past a comment that holds it", () => {
+    const src = `FUNCTION (* was F_ *) F_ : INT
+VAR_INPUT x : INT; END_VAR
+F_ := x;
+END_FUNCTION
+`;
+    expect(errorsOf(src, IEC3)).toEqual([`1:23: ${trailing("F_")}`]);
+  });
+
+  it("spells a test file's names as written", () => {
+    const SOURCE = `PROGRAM Main
+VAR x : INT; END_VAR
+x := 1;
+END_PROGRAM
+`;
+    const TEST = `TEST 'u'
+VAR My__T : INT; End_ : INT; END_VAR
+ASSERT_EQ(My__T + End_, 0);
+END_TEST
+`;
+    expect(testFileResult(SOURCE, TEST, IEC3).errors).toEqual([
+      `2:5: ${doubled("My__T")}`,
+      `2:18: ${trailing("End_")}`,
+    ]);
+  });
+});
+
+describe("analyzeTestFile without a dialect", () => {
+  it("applies the dialect the test file was parsed under", () => {
+    const src = compile(
+      `PROGRAM Main
+VAR x : INT; END_VAR
+x := 1;
+END_PROGRAM
+`,
+      IEC3,
+    );
+    expect(src.errors).toEqual([]);
+    const parsed = parseTestFile(
+      `TEST 'u'
+VAR n_ : INT; END_VAR
+ASSERT_EQ(n_, 0);
+END_TEST
+`,
+      "t.st",
+      IEC3,
+    );
+    const result = analyzeTestFile(
+      parsed.testFile!,
+      src.symbolTables!,
+      src.ast,
+    );
+    expect(result.errors.map(at)).toEqual([`2:5: ${trailing("n_")}`]);
   });
 });

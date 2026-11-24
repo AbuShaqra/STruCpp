@@ -141,6 +141,7 @@ import { implicitParameterHint } from "./implicit-parameters.js";
 import {
   iec3VarBlockIdentifierErrors,
   iec3Warnings,
+  sourceNameLocator,
   literalUnderscoreMessage,
   literalUnderscoreRefused,
   userTruncCalls,
@@ -556,6 +557,8 @@ export class SemanticAnalyzer {
       strict?: boolean;
       features?: ReadonlySet<string>;
       dialect?: ResolvedDialect;
+      /** The source texts by file: a warning spells a name as written there. */
+      sources?: ReadonlyMap<string, string>;
     } = {},
   ) {
     this.features =
@@ -670,6 +673,10 @@ export class SemanticAnalyzer {
     // Pass 2: Type checking. Its struct_compare refusals are located and gate nothing.
     let typeRefusals = 0;
     if (this.errors.length - typeReferenceErrors === 0) {
+      this.typeChecker.nameLocator =
+        this.options.sources !== undefined
+          ? sourceNameLocator(this.options.sources)
+          : undefined;
       const typeResult = this.typeChecker.check(ast);
       this.errors.push(...typeResult.errors);
       this.warnings.push(...typeResult.warnings);
@@ -684,6 +691,7 @@ export class SemanticAnalyzer {
       this.prepareLiteralFallback(ast);
       this.validateLiteralRanges(ast);
       this.literalsReported.clear();
+      this.reportEnumDotRefusals(ast);
     }
 
     this.displayGlobalListNames(this.errors);
@@ -932,31 +940,14 @@ export class SemanticAnalyzer {
     for (const span of actionSpans) {
       this.requireFeature("st_actions", "ACTION", span);
     }
-    // A type default `:= E.M`, which the name checks do not reach.
+    // A type's default `:= E.M`, also inside an ARRAY or STRUCT literal, and
+    // a STRUCT field's, which the name checks reach only through a variable.
     for (const typeDecl of ast.types) {
-      const value = typeDecl.defaultValue;
-      if (
-        value?.kind !== "VariableExpression" ||
-        value.typedLiteral === true ||
-        value.fieldAccess.length !== 1
-      ) {
-        continue;
-      }
-      const sym = this.symbolTables.globalScope.lookup(value.name);
-      if (
-        sym?.kind !== "type" ||
-        sym.resolvedType?.typeKind !== "enum" ||
-        (sym.declaration as TypeDeclaration | undefined)?.inline
-      ) {
-        continue;
-      }
-      const member = value.fieldAccess[0]!;
-      this.requireFeature(
-        "enum_dot_qualify",
-        `${value.name}.${member}`,
-        value.sourceSpan,
-        `; write ${value.name}#${member}`,
-      );
+      walkAST(typeDecl, (node) => {
+        if (node.kind === "VariableExpression") {
+          this.requireEnumDotFeature(node as VariableExpression);
+        }
+      });
     }
     // A CONFIGURATION global's initial value, which the name checks do not reach either.
     for (const config of ast.configurations) {
@@ -995,7 +986,70 @@ export class SemanticAnalyzer {
       ...ast.actions,
       ...[...ast.programs, ...ast.functionBlocks].flatMap((o) => o.actions),
     ].flatMap((a) => a.body);
-    this.warnings.push(...iec3Warnings([ast, ...actions], userTruncCalls(ast)));
+    this.warnings.push(
+      ...iec3Warnings(
+        [ast, ...actions],
+        userTruncCalls(ast, (base) => this.libraryFbMayDeclareTrunc(base)),
+        this.options.sources !== undefined
+          ? sourceNameLocator(this.options.sources)
+          : undefined,
+      ),
+    );
+  }
+
+  /**
+   * A base FUNCTION_BLOCK not in the unit may declare a member TRUNC: a
+   * library block that lists one, or lists not all of its members, or a base
+   * that does not resolve.
+   */
+  private libraryFbMayDeclareTrunc(base: string): boolean {
+    const seen = new Set<string>();
+    let name: string | undefined = base;
+    while (name !== undefined && !seen.has(name.toUpperCase())) {
+      seen.add(name.toUpperCase());
+      const fb = this.symbolTables.lookupFunctionBlock(name);
+      if (fb === undefined || fb.libraryMethodNames === undefined) return true;
+      const isTrunc = (n: { name: string }): boolean =>
+        n.name.toUpperCase() === "TRUNC";
+      if (
+        fb.libraryMethodNames.some((m) => m.toUpperCase() === "TRUNC") ||
+        [...fb.inputs, ...fb.outputs, ...fb.inouts, ...fb.locals].some(
+          isTrunc,
+        ) ||
+        fb.declaration.methods.some(isTrunc) ||
+        fb.declaration.properties.some(isTrunc)
+      ) {
+        return true;
+      }
+      name = fb.declaration.extends;
+    }
+    return false;
+  }
+
+  /**
+   * When an error stops pass 3: its `E.M` refusals (feature enum_dot_qualify),
+   * so a type error hides none. Pass 3's name walk runs with its other
+   * diagnostics dropped; a walk that throws on the unchecked tree reports none.
+   */
+  private reportEnumDotRefusals(ast: CompilationUnit): void {
+    if (this.features.has("enum_dot_qualify")) return;
+    const errorCount = this.errors.length;
+    const warningCount = this.warnings.length;
+    let found: CompileError[] = [];
+    try {
+      this.reachedMemberNodes = new Set();
+      this.validateUndeclaredVariables(ast);
+      found = this.errors
+        .slice(errorCount)
+        .filter((e) =>
+          e.message.includes(" needs the feature enum_dot_qualify"),
+        );
+    } catch {
+      found = [];
+    }
+    this.errors.length = errorCount;
+    this.warnings.length = warningCount;
+    this.errors.push(...found);
   }
 
   /** `E.M` of a global enumeration type E needs the feature enum_dot_qualify. */
@@ -2571,12 +2625,138 @@ export class SemanticAnalyzer {
       if (def?.kind === "ArrayDefinition") return def.elementType;
       return def?.kind === "TypeReference" ? elementOf(def) : undefined;
     };
+    const findFb = (name: string): FunctionBlockDeclaration | undefined =>
+      ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name.toUpperCase(),
+      );
+    /**
+     * The variable blocks `fb` inherits through EXTENDS, root ancestor first;
+     * undefined when an ancestor is not in this unit or the chain loops.
+     */
+    const inheritedBlocks = (
+      fb: FunctionBlockDeclaration,
+    ): VarBlock[] | undefined => {
+      const chain: FunctionBlockDeclaration[] = [];
+      let parentName = fb.extends;
+      while (parentName !== undefined) {
+        const parent = findFb(parentName);
+        if (parent === undefined || parent === fb || chain.includes(parent))
+          return undefined;
+        chain.unshift(parent);
+        parentName = parent.extends;
+      }
+      return chain.flatMap((p) => p.varBlocks);
+    };
+    /** A FUNCTION_BLOCK's own and inherited variables, when its EXTENDS chain is known. */
+    const fbVars = (
+      fb: FunctionBlockDeclaration,
+    ): VarDeclaration[] | undefined => {
+      const inherited = inheritedBlocks(fb);
+      return inherited === undefined
+        ? undefined
+        : [...inherited, ...fb.varBlocks].flatMap((b) => b.declarations);
+    };
+    // A STRUCT's fields, or a FUNCTION_BLOCK's variables (an instance initialiser)
     const fieldsOf = (type: TypeReference): VarDeclaration[] | undefined => {
+      if (
+        type.arrayDimensions === undefined &&
+        (type.referenceKind ?? "none") === "none"
+      ) {
+        const fb = findFb(type.name);
+        if (fb !== undefined) return fbVars(fb);
+      }
       const def = typeDef(type.name);
       if (def?.kind === "StructDefinition") return def.fields;
       return def?.kind === "TypeReference" && def.arrayDimensions === undefined
         ? fieldsOf(def)
         : undefined;
+    };
+    const memberType = (
+      type: TypeReference,
+      name: string,
+    ): TypeReference | undefined => {
+      const upper = name.toUpperCase();
+      const field = fieldsOf(type)?.find((f) =>
+        f.names.some((n) => n.toUpperCase() === upper),
+      )?.type;
+      if (field !== undefined) return field;
+      // A PROPERTY of an FB or of a base in the unit
+      let fb =
+        type.arrayDimensions === undefined &&
+        (type.referenceKind ?? "none") === "none"
+          ? findFb(type.name)
+          : undefined;
+      const seen = new Set<FunctionBlockDeclaration>();
+      while (fb !== undefined && !seen.has(fb)) {
+        seen.add(fb);
+        const prop = fb.properties.find((p) => p.name.toUpperCase() === upper);
+        if (prop !== undefined) return prop.type;
+        fb = fb.extends === undefined ? undefined : findFb(fb.extends);
+      }
+      return undefined;
+    };
+    // `type` without its reference level
+    const plainOf = (type: TypeReference): TypeReference => {
+      const plain: TypeReference = { ...type, referenceKind: "none" };
+      delete plain.referenceChain;
+      return plain;
+    };
+    // `type` read through one REF_TO / POINTER TO; undefined for anything else
+    const derefOf = (type: TypeReference): TypeReference | undefined => {
+      const chain = type.referenceChain ?? [type.referenceKind ?? "none"];
+      if (chain.length !== 1 || chain[0] === "none") return undefined;
+      if (chain[0] === "reference_to") return undefined;
+      return plainOf(type);
+    };
+    // A REFERENCE TO is written through: its target's type
+    const throughReference = (
+      type: TypeReference | undefined,
+    ): TypeReference | undefined =>
+      type !== undefined &&
+      type.referenceKind === "reference_to" &&
+      (type.referenceChain?.length ?? 1) === 1
+        ? plainOf(type)
+        : type;
+    /** The declared type a variable access reaches, or undefined when unsure. */
+    const pathType = (
+      expr: Expression,
+      scope: Map<string, TypeReference>,
+    ): TypeReference | undefined => {
+      if (expr.kind !== "VariableExpression") return undefined;
+      let type = scope.get(expr.name.toUpperCase());
+      let steps = expr.accessChain;
+      if (steps === undefined) {
+        // Without the ordered chain only one kind of selector is certain
+        const kinds =
+          (expr.subscripts.length > 0 ? 1 : 0) +
+          (expr.fieldAccess.length > 0 ? 1 : 0) +
+          (expr.isDereference ? 1 : 0);
+        if (kinds > 1) return undefined;
+        steps = expr.isDereference
+          ? [{ kind: "dereference" }]
+          : expr.subscripts.length > 0
+            ? [{ kind: "subscript", indices: expr.subscripts }]
+            : expr.fieldAccess.map((name) => ({ kind: "field", name }));
+      }
+      for (const step of steps) {
+        if (type === undefined) return undefined;
+        if (step.kind === "dereference") {
+          type = derefOf(type);
+        } else if (step.kind === "subscript") {
+          const array = throughReference(type)!;
+          const def = typeDef(array.name);
+          const rank =
+            array.arrayDimensions?.length ??
+            (def?.kind === "ArrayDefinition"
+              ? def.dimensions.length
+              : undefined);
+          // One index per dimension, or the element is not reached
+          type = rank === step.indices.length ? elementOf(array) : undefined;
+        } else {
+          type = memberType(throughReference(type)!, step.name);
+        }
+      }
+      return throughReference(type);
     };
     const warned = new Set<string>();
     const check = (
@@ -2681,43 +2861,82 @@ export class SemanticAnalyzer {
         check(field.initialValue, field.type);
       }
     }
-    const findFb = (name: string): FunctionBlockDeclaration | undefined =>
-      ast.functionBlocks.find(
-        (f) => f.name.toUpperCase() === name.toUpperCase(),
-      );
-    /**
-     * The variable blocks `fb` inherits through EXTENDS, root ancestor first;
-     * undefined when an ancestor is not in this unit or the chain loops.
-     */
-    const inheritedBlocks = (
-      fb: FunctionBlockDeclaration,
-    ): VarBlock[] | undefined => {
-      const chain: FunctionBlockDeclaration[] = [];
-      let parentName = fb.extends;
-      while (parentName !== undefined) {
-        const parent = findFb(parentName);
-        if (parent === undefined || parent === fb || chain.includes(parent))
-          return undefined;
-        chain.unshift(parent);
-        parentName = parent.extends;
+    /** The inputs of FUNCTION_BLOCK type `type` of the unit, when its chain is known. */
+    const fbInputs = (
+      type: TypeReference | undefined,
+    ): ReturnType<typeof inputsOf> | undefined => {
+      if (
+        type === undefined ||
+        type.arrayDimensions !== undefined ||
+        (type.referenceKind ?? "none") !== "none"
+      ) {
+        return undefined;
       }
-      return chain.flatMap((p) => p.varBlocks);
+      const fb = findFb(type.name);
+      const inherited = fb === undefined ? undefined : inheritedBlocks(fb);
+      if (fb === undefined || inherited === undefined) return undefined;
+      const inputs = inputsOf([...inherited, ...fb.varBlocks]);
+      // Positional order across an EXTENDS chain is not checked
+      if (inherited.length > 0) inputs.positional = false;
+      return inputs;
+    };
+    /** METHOD `name` of `fb` or of a FUNCTION_BLOCK it extends in the unit. */
+    const methodOf = (
+      fb: FunctionBlockDeclaration | undefined,
+      name: string,
+    ): MethodDeclaration | undefined => {
+      const upper = name.toUpperCase();
+      const seen = new Set<FunctionBlockDeclaration>();
+      while (fb !== undefined && !seen.has(fb)) {
+        seen.add(fb);
+        const m = fb.methods.find((x) => x.name.toUpperCase() === upper);
+        if (m !== undefined) return m;
+        fb = fb.extends === undefined ? undefined : findFb(fb.extends);
+      }
+      return undefined;
+    };
+    /** The inputs of `owner.name(...)`: a METHOD of an FB, or an FB instance member. */
+    const memberCallInputs = (
+      owner: TypeReference | undefined,
+      name: string,
+    ): ReturnType<typeof inputsOf> | undefined => {
+      if (owner === undefined) return undefined;
+      const fb =
+        owner.arrayDimensions === undefined &&
+        (owner.referenceKind ?? "none") === "none"
+          ? findFb(owner.name)
+          : undefined;
+      const method = methodOf(fb, name);
+      if (method !== undefined) return inputsOf(method.varBlocks);
+      return fbInputs(memberType(owner, name));
     };
     const callInputs = (
       call: FunctionCallExpression,
       scope: Map<string, TypeReference>,
+      ownMethod?: (name: string) => MethodDeclaration | undefined,
     ): ReturnType<typeof inputsOf> | undefined => {
-      const upper = call.functionName.toUpperCase();
-      const local = scope.get(upper);
-      if (local !== undefined) {
-        const fb = findFb(local.name);
-        const inherited = fb === undefined ? undefined : inheritedBlocks(fb);
-        if (fb === undefined || inherited === undefined) return undefined;
-        const inputs = inputsOf([...inherited, ...fb.varBlocks]);
-        // Positional order across an EXTENDS chain is not checked
-        if (inherited.length > 0) inputs.positional = false;
-        return inputs;
+      // An FB instance reached by an expression, `arr[0](...)`
+      if (call.instance !== undefined) {
+        return fbInputs(pathType(call.instance, scope));
       }
+      const parts = call.functionName.toUpperCase().split(".");
+      if (parts.length > 1) {
+        // `f.M(...)`, `s.f(...)`: the owner is reached through the members
+        let owner = throughReference(scope.get(parts[0]!));
+        for (const part of parts.slice(1, -1)) {
+          owner =
+            owner === undefined
+              ? undefined
+              : throughReference(memberType(owner, part));
+        }
+        return memberCallInputs(owner, parts[parts.length - 1]!);
+      }
+      const upper = parts[0]!;
+      const local = scope.get(upper);
+      if (local !== undefined) return fbInputs(local);
+      // The POU's own METHOD before a FUNCTION of the same name
+      const method = ownMethod?.(upper);
+      if (method !== undefined) return inputsOf(method.varBlocks);
       const fn = ast.functions.find((f) => f.name.toUpperCase() === upper);
       return fn === undefined ? undefined : inputsOf(fn.varBlocks);
     };
@@ -2725,7 +2944,8 @@ export class SemanticAnalyzer {
      * Check `own`'s initial values and `body`, with `outer` (inherited and
      * owning-POU variables, outermost first) and `result` (a FUNCTION or
      * METHOD's own name) in scope but not checked again. Without `withGlobals`
-     * (an EXTENDS chain not fully known) no global is in scope.
+     * (an EXTENDS chain not fully known) no global is in scope. `ownMethod`
+     * finds a METHOD of the owning POU called by its bare name.
      */
     const checkPou = (
       own: readonly VarBlock[],
@@ -2733,6 +2953,7 @@ export class SemanticAnalyzer {
       outer: readonly VarBlock[] = [],
       result?: { name: string; type: TypeReference | undefined },
       withGlobals = true,
+      ownMethod?: (name: string) => MethodDeclaration | undefined,
     ): void => {
       const scope = new Map(withGlobals ? globals : []);
       for (const block of outer) {
@@ -2745,45 +2966,84 @@ export class SemanticAnalyzer {
         scope.set(result.name.toUpperCase(), result.type);
       }
       addDecls(own, scope);
+      const checkArgs = (
+        args: Argument[],
+        inputs: ReturnType<typeof inputsOf> | undefined,
+      ): void => {
+        if (inputs === undefined) return;
+        stripEnEno(args).forEach((arg, i) => {
+          if (arg.isOutput) return;
+          const type =
+            arg.name === undefined
+              ? inputs.positional === false
+                ? undefined
+                : inputs[i]
+              : inputs[inputs.names!.indexOf(arg.name.toUpperCase())];
+          check(arg.value, type);
+        });
+      };
       for (const stmt of body) {
         walkAST(stmt as ASTNode, (node) => {
           if (node.kind === "AssignmentStatement") {
             const a = node as AssignmentStatement;
-            if (
-              a.target.kind === "VariableExpression" &&
-              a.target.fieldAccess.length === 0 &&
-              a.target.subscripts.length === 0 &&
-              !a.target.isDereference
-            ) {
-              check(a.value, scope.get(a.target.name.toUpperCase()));
-            }
+            check(a.value, pathType(a.target, scope));
+            return;
+          }
+          if (node.kind === "MethodCallExpression") {
+            const call = node as MethodCallExpression;
+            checkArgs(
+              call.arguments,
+              memberCallInputs(pathType(call.object, scope), call.methodName),
+            );
             return;
           }
           if (node.kind !== "FunctionCallExpression") return;
           const call = node as FunctionCallExpression;
-          if (call.instance !== undefined) return;
-          const inputs = callInputs(call, scope);
-          if (inputs === undefined) return;
-          stripEnEno(call.arguments).forEach((arg, i) => {
-            if (arg.isOutput) return;
-            const type =
-              arg.name === undefined
-                ? inputs.positional === false
-                  ? undefined
-                  : inputs[i]
-                : inputs[inputs.names!.indexOf(arg.name.toUpperCase())];
-            check(arg.value, type);
-          });
+          checkArgs(call.arguments, callInputs(call, scope, ownMethod));
         });
       }
     };
+    /** A METHOD of `pou` (and, for an FB, of its bases) by upper-cased name. */
+    const ownMethodsOf =
+      (pou: ProgramDeclaration | FunctionBlockDeclaration) =>
+      (name: string): MethodDeclaration | undefined =>
+        pou.kind === "FunctionBlockDeclaration"
+          ? methodOf(pou, name)
+          : pou.methods.find((m) => m.name.toUpperCase() === name);
+    /** The GET and SET bodies of `pou`'s properties, the property's name its value. */
+    const checkProperties = (
+      pou: FunctionBlockDeclaration,
+      outer: readonly VarBlock[],
+      withGlobals: boolean,
+    ): void => {
+      for (const prop of pou.properties) {
+        for (const [blocks, body] of [
+          [prop.getterVarBlocks ?? [], prop.getter ?? []],
+          [prop.setterVarBlocks ?? [], prop.setter ?? []],
+        ] as const) {
+          checkPou(
+            blocks,
+            body,
+            outer,
+            { name: prop.name, type: prop.type },
+            withGlobals,
+            ownMethodsOf(pou),
+          );
+        }
+      }
+    };
     for (const prog of ast.programs) {
-      checkPou(prog.varBlocks, prog.body);
+      const methods = ownMethodsOf(prog);
+      checkPou(prog.varBlocks, prog.body, [], undefined, true, methods);
       for (const m of prog.methods) {
-        checkPou(m.varBlocks, m.body, prog.varBlocks, {
-          name: m.name,
-          type: m.returnType,
-        });
+        checkPou(
+          m.varBlocks,
+          m.body,
+          prog.varBlocks,
+          { name: m.name, type: m.returnType },
+          true,
+          methods,
+        );
       }
     }
     for (const func of ast.functions) {
@@ -2795,7 +3055,8 @@ export class SemanticAnalyzer {
     for (const fb of ast.functionBlocks) {
       const inherited = inheritedBlocks(fb);
       const known = inherited !== undefined;
-      checkPou(fb.varBlocks, fb.body, inherited, undefined, known);
+      const methods = ownMethodsOf(fb);
+      checkPou(fb.varBlocks, fb.body, inherited, undefined, known, methods);
       for (const m of fb.methods) {
         checkPou(
           m.varBlocks,
@@ -2803,8 +3064,10 @@ export class SemanticAnalyzer {
           [...(inherited ?? []), ...fb.varBlocks],
           { name: m.name, type: m.returnType },
           known,
+          methods,
         );
       }
+      checkProperties(fb, [...(inherited ?? []), ...fb.varBlocks], known);
     }
   }
 
@@ -7772,6 +8035,19 @@ export class SemanticAnalyzer {
     }
     // Under iec-3 itself: Ed. 3 identifier spelling and deprecation warnings
     if (this.iec3Rules) {
+      const testLocator =
+        testFile.source !== undefined
+          ? sourceNameLocator(new Map([[testFile.fileName, testFile.source]]))
+          : undefined;
+      // A test VAR TRUNC (an FB instance) makes `TRUNC(...)` its call
+      const testDeclaresTruncVar = [
+        ...(testFile.setup?.varBlocks ?? []),
+        ...testFile.testCases.flatMap((tc) => tc.varBlocks),
+      ].some((b) =>
+        b.declarations.some((d) =>
+          d.names.some((n) => n.toUpperCase() === "TRUNC"),
+        ),
+      );
       this.errors.push(
         ...iec3VarBlockIdentifierErrors(
           [
@@ -7779,12 +8055,16 @@ export class SemanticAnalyzer {
             ...testFile.testCases.flatMap((tc) => tc.varBlocks),
           ],
           testFile.inlineTypes,
+          testLocator,
         ),
       );
       this.warnings.push(
         ...iec3Warnings(
           testRoots,
-          () => sourceAst !== undefined && declaresTrunc(sourceAst),
+          () =>
+            testDeclaresTruncVar ||
+            (sourceAst !== undefined && declaresTrunc(sourceAst)),
+          testLocator,
         ),
       );
     }
@@ -8442,18 +8722,29 @@ export function analyzeTestFile(
   testFile: TestFile,
   sourceSymbolTables: SymbolTables,
   sourceAst?: CompilationUnit,
-  /** The run's dialect: its features apply in the test file too. */
+  /** The run's dialect: its features apply in the test file too. Default: the one the test file was parsed under. */
   dialect?: ResolvedDialect,
 ): { errors: CompileError[]; warnings: CompileError[] } {
+  const effective = dialect ?? testFile.dialect;
   const analyzer = new SemanticAnalyzer(
-    dialect !== undefined ? { dialect } : {},
+    effective !== undefined ? { dialect: effective } : {},
   );
   return analyzer.analyzeTestFile(testFile, sourceSymbolTables, sourceAst);
 }
 
-/** The unit declares its own FUNCTION TRUNC, which a `TRUNC(x)` call then names. */
+/** The unit declares its own FUNCTION or global TRUNC, which a `TRUNC(x)` call then names. */
 function declaresTrunc(ast: CompilationUnit): boolean {
-  return ast.functions.some((f) => f.name.toUpperCase() === "TRUNC");
+  return (
+    ast.functions.some((f) => f.name.toUpperCase() === "TRUNC") ||
+    [
+      ...ast.globalVarBlocks,
+      ...ast.configurations.flatMap((c) => c.varBlocks),
+    ].some((b) =>
+      b.declarations.some((d) =>
+        d.names.some((n) => n.toUpperCase() === "TRUNC"),
+      ),
+    )
+  );
 }
 
 /** The index expressions of the subscripts on a call result. */
