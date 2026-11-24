@@ -11,6 +11,7 @@ import type {
   LibraryManifest,
   LibraryTypeEntry,
   LibraryFunctionEntry,
+  LibraryFBEntry,
   LibraryVarType,
   StlibArchive,
 } from "./library-manifest.js";
@@ -21,6 +22,7 @@ import type {
 } from "../semantic/symbol-table.js";
 import { DuplicateSymbolError } from "../semantic/symbol-table.js";
 import type {
+  MethodDeclaration,
   ElementaryType,
   IECType,
   ReferenceKind,
@@ -33,6 +35,7 @@ import { createDefaultSourceSpan } from "../frontend/ast.js";
 import { isPragmaDefineName } from "../frontend/conditional-pragmas.js";
 import { ELEMENTARY_TYPES } from "../semantic/type-utils.js";
 import { lowerDefaultStringLength } from "../semantic/string-default-length.js";
+import { libraryMethodDeclarations } from "./library-methods.js";
 
 /**
  * Error thrown when a library manifest fails validation.
@@ -396,8 +399,21 @@ export function loadLibraryManifest(json: unknown): LibraryManifest {
     result.stringDefaultLength = n;
   }
   if (obj.parameterShapes === true) result.parameterShapes = true;
+  if (obj.stringLengthsRecorded === true) result.stringLengthsRecorded = true;
 
   return result;
+}
+
+/** `fb`'s methods as declarations, parsed once, on first use. */
+function lazyLibraryMethods(
+  fb: LibraryFBEntry,
+  stringDefaultLength: number | undefined,
+): () => MethodDeclaration[] | undefined {
+  let parsed: { methods: MethodDeclaration[] | undefined } | undefined;
+  return () => {
+    parsed ??= { methods: libraryMethodDeclarations(fb, stringDefaultLength) };
+    return parsed.methods;
+  };
 }
 
 /**
@@ -489,6 +505,7 @@ export function registerLibrarySymbols(
       }),
     };
     if (manifest.parameterShapes) symbol.parameterShapes = true;
+    if (manifest.stringLengthsRecorded) symbol.stringLengthsRecorded = true;
     symbolTables.addLibraryFunction(symbol);
     try {
       symbolTables.globalScope.defineFromLibrary(symbol);
@@ -619,6 +636,10 @@ export function registerLibrarySymbols(
           : {}),
         ...(fb.properties !== undefined && fb.methods !== undefined
           ? { libraryMethodNames: fb.methods.map((m) => m.name) }
+          : {}),
+        libraryMethods: lazyLibraryMethods(fb, manifest.stringDefaultLength),
+        ...(manifest.stringLengthsRecorded
+          ? { stringLengthsRecorded: true as const }
           : {}),
         libraryName: manifest.name,
       });

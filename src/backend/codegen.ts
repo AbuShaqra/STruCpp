@@ -9449,10 +9449,13 @@ export class CodeGenerator {
         this.ast.programs.find((p) => p.name.toUpperCase() === current) ??
         this.ast.interfaces.find((i) => i.name.toUpperCase() === current);
       if (!owner) {
-        // A library FB from an archive that lists its methods
-        return this.libraryMethods
+        // A library FB from an archive that lists its methods, or its library base's
+        const own = this.libraryMethods
           .get(current)
           ?.find((m) => m.name.toUpperCase() === methodUpper);
+        if (own) return own;
+        current = this.libraryFBExtends.get(current);
+        continue;
       }
       const found = owner.methods.find(
         (m) => m.name.toUpperCase() === methodUpper,

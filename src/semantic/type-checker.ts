@@ -10,6 +10,7 @@
  * Sub-Phase C: Validates type rules (assignment compatibility, conditions, FOR vars, function args).
  */
 
+import { IEC_DEFAULT_STRING_LENGTH } from "./string-default-length.js";
 import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import type {
   ASTNode,
@@ -315,6 +316,8 @@ interface CallInput {
   position?: number;
   /** From a library manifest, which omits a REF_TO STRING / WSTRING target's length. */
   lengthUnrecorded?: boolean;
+  /** Declared by a library, whose archive may not record a STRING's length. */
+  fromLibrary?: boolean;
 }
 
 /** The VAR_INPUT and VAR_IN_OUT of one POU's blocks, each with its positional place. */
@@ -3822,7 +3825,7 @@ export class TypeChecker {
     this.validateEnumArguments(inputs, expr.arguments);
     this.validateReferenceToArguments(inputs, expr.arguments, scope);
     this.validateInOutArguments(
-      inputs ?? this.libraryAliasInOutInputs(expr, scope),
+      inputs ?? this.stringInOutInputs(expr, scope),
       expr.arguments,
       scope,
       this.isFBInstanceCall(expr, scope),
@@ -4108,7 +4111,21 @@ export class TypeChecker {
     this.validateEnumArguments(methodInputs, expr.arguments);
     this.validateReferenceToArguments(methodInputs, expr.arguments, scope);
     this.validateInOutArguments(
-      methodInputs,
+      methodInputs ??
+        (objType?.typeKind === "elementary"
+          ? this.onlyStringInOuts(
+              this.interfaceMethodInputs(
+                (objType as ElementaryType).name,
+                expr.methodName,
+              ) ??
+                this.recordedOnly(
+                  this.libraryMethodInputs(
+                    (objType as ElementaryType).name,
+                    expr.methodName,
+                  ),
+                ),
+            )
+          : undefined),
       expr.arguments,
       scope,
       false,
@@ -7682,7 +7699,14 @@ export class TypeChecker {
       arg.inOutCopy = true;
       return;
     }
-    const mismatch = this.inOutTypeMismatch(input.type, argType);
+    const mismatch = this.inOutTypeMismatch(
+      input.type,
+      argType,
+      input.fromLibrary === true,
+      // A member or a library global may be a library's unrecorded STRING(n).
+      this.hasMemberAccess(value) ||
+        this.symbolTables.globalScope.definedByLibrary(value.name),
+    );
     if (mismatch === undefined) return;
     // STRING and STRING of two default lengths (80 and 254): copied, unremarked
     if (defaultStringsOnly(input.type, argType)) {
@@ -7706,6 +7730,8 @@ export class TypeChecker {
   private inOutTypeMismatch(
     param: AccessType,
     arg: AccessType,
+    libraryParam = false,
+    libraryArg = false,
   ): { param: string; arg: string } | undefined {
     if (
       param.arrayDimensions !== undefined ||
@@ -7731,14 +7757,39 @@ export class TypeChecker {
     if (this.isSameStructuredAccess(param, arg)) return undefined;
     const describe = (t: AccessType): string => {
       const levels = referenceShapeOf(t)?.chain ?? [];
-      const length = (t as { maxLength?: number | string }).maxLength;
+      const length = t.maxLength;
       const base =
         length !== undefined ? `${t.name}(${String(length)})` : t.name;
       return describeReferenceShape({ chain: levels, base });
     };
-    const key = (t: AccessType): string =>
-      describe({ ...t, name: canonicalElementaryName(t.name.toUpperCase()) });
-    if (key(param) === key(arg)) return undefined;
+    // A STRING / WSTRING a variable of this compile declares without a length
+    // is one of 254 (the feature string_default_80 gives every plain one its
+    // length before this); a library's or a member's may be an unrecorded STRING(n).
+    const constants = this.symbolTables.globalConstants;
+    // A length naming a supplied constant compares by its value.
+    const resolved = (t: AccessType): AccessType => {
+      const length = t.maxLength;
+      if (typeof length !== "string") return t;
+      const known = Object.entries(constants).find(
+        ([k]) => k.toUpperCase() === length.toUpperCase(),
+      );
+      return known === undefined ? t : { ...t, maxLength: known[1] };
+    };
+    const key = (written: AccessType, library: boolean): string => {
+      const t = resolved(written);
+      const name = canonicalElementaryName(t.name.toUpperCase());
+      const plainString =
+        !library &&
+        (name === "STRING" || name === "WSTRING") &&
+        t.maxLength === undefined;
+      return describe({
+        ...t,
+        name,
+        ...(plainString ? { maxLength: IEC_DEFAULT_STRING_LENGTH } : {}),
+      });
+    };
+    if (key(param, true) === key(arg, true)) return undefined;
+    if (key(param, libraryParam) === key(arg, libraryArg)) return undefined;
     return {
       param: describe(param).toUpperCase(),
       arg: describe(arg).toUpperCase(),
@@ -9317,6 +9368,7 @@ export class TypeChecker {
       name: m.name,
       type: m.declaration.type,
       inOut,
+      fromLibrary: libraryFb.stringLengthsRecorded !== true,
     }));
   }
 
@@ -9349,7 +9401,15 @@ export class TypeChecker {
     return params.flatMap((p) => {
       const type = (p.declaration as VarDeclaration | undefined)?.type;
       return type
-        ? [{ name: p.name, type, inOut: p.isInOut, lengthUnrecorded: true }]
+        ? [
+            {
+              name: p.name,
+              type,
+              inOut: p.isInOut,
+              lengthUnrecorded: true,
+              fromLibrary: fn.stringLengthsRecorded !== true,
+            },
+          ]
         : [];
     });
   }
@@ -9376,29 +9436,118 @@ export class TypeChecker {
       .flatMap((p) => {
         const type = (p.declaration as VarDeclaration | undefined)?.type;
         return type
-          ? [{ name: p.name, type, inOut: p.isInOut, lengthUnrecorded: true }]
+          ? [
+              {
+                name: p.name,
+                type,
+                inOut: p.isInOut,
+                lengthUnrecorded: true,
+                fromLibrary: fn.stringLengthsRecorded !== true,
+              },
+            ]
           : [];
       });
   }
 
   /**
-   * The inputs of a library FUNCTION with a VAR_IN_OUT of a library alias type,
-   * only those in-outs marked as such: bound to another type, they are copied
-   * as for a local alias. Undefined for any other callee.
+   * The inputs of a call the other resolvers leave out, with only its STRING,
+   * WSTRING and library alias in-outs marked as in-outs: a library FUNCTION,
+   * a library block's METHOD (`inst.M`) or an interface's (`itf.M`). Those
+   * in-outs are then checked, warned about and copied as a local POU's are.
    */
-  private libraryAliasInOutInputs(
+  private stringInOutInputs(
     expr: FunctionCallExpression,
     scope: Scope,
   ): CallInput[] | undefined {
-    const inputs = this.libraryShapedFunctionInputs(expr, scope);
-    const isAlias = (input: CallInput): boolean =>
-      input.inOut &&
-      (input.type.referenceKind ?? "none") === "none" &&
-      input.type.arrayDimensions === undefined &&
-      this.libraryAliasDefinition(input.type.name.toUpperCase()) !== undefined;
-    if (inputs?.some(isAlias) !== true) return undefined;
+    const parts = expr.functionName.split(".");
+    const sym =
+      parts.length === 2 && expr.instance === undefined
+        ? scope.lookup(parts[0]!)
+        : undefined;
+    const typeName =
+      sym?.kind === "variable"
+        ? (sym.declaration as VarDeclaration | undefined)?.type.name
+        : undefined;
+    const library =
+      this.libraryShapedFunctionInputs(expr, scope) ??
+      (typeName !== undefined
+        ? this.libraryMethodInputs(typeName, parts[1]!)
+        : undefined);
+    if (library !== undefined) {
+      return this.onlyStringInOuts(this.recordedOnly(library));
+    }
+    return this.onlyStringInOuts(
+      typeName !== undefined
+        ? this.interfaceMethodInputs(typeName, parts[1]!)
+        : undefined,
+    );
+  }
+
+  /** `inputs`, unless an archive that does not record every length declares them (left unchecked, as before). */
+  private recordedOnly(
+    inputs: CallInput[] | undefined,
+  ): CallInput[] | undefined {
+    return inputs?.some((input) => input.fromLibrary === true) === true
+      ? undefined
+      : inputs;
+  }
+
+  /** The inputs of METHOD `methodName` of library block `typeName` (or a base of it). */
+  private libraryMethodInputs(
+    typeName: string,
+    methodName: string,
+  ): CallInput[] | undefined {
+    const upper = methodName.toUpperCase();
+    const seen = new Set<string>();
+    let method: MethodDeclaration | undefined;
+    let recorded = false;
+    let current: string | undefined = typeName;
+    while (method === undefined && current !== undefined) {
+      if (seen.has(current.toUpperCase())) break;
+      seen.add(current.toUpperCase());
+      const name: string = current.toUpperCase();
+      // A block of this compile that does not declare it: its base's.
+      const own: FunctionBlockDeclaration | undefined =
+        this.ast?.functionBlocks.find((f) => f.name.toUpperCase() === name);
+      if (own !== undefined) {
+        if (own.methods.some((m) => m.name.toUpperCase() === upper)) {
+          return undefined;
+        }
+        current = own.extends;
+        continue;
+      }
+      const fb = this.symbolTables.lookupFunctionBlock(current);
+      if (fb?.libraryName === undefined) return undefined;
+      method = fb
+        .libraryMethods?.()
+        ?.find((m) => m.name.toUpperCase() === upper);
+      recorded = fb.stringLengthsRecorded === true;
+      current = fb.declaration.extends;
+    }
+    return method === undefined
+      ? undefined
+      : callInputsOfBlocks(method.varBlocks).map((input) => ({
+          ...input,
+          fromLibrary: !recorded,
+        }));
+  }
+
+  /** `inputs` with only its STRING, WSTRING and library alias in-outs marked; undefined without one. */
+  private onlyStringInOuts(
+    inputs: CallInput[] | undefined,
+  ): CallInput[] | undefined {
+    const checked = (input: CallInput): boolean => {
+      if (!input.inOut) return false;
+      if ((input.type.referenceKind ?? "none") !== "none") return false;
+      if (input.type.arrayDimensions !== undefined) return false;
+      const upper = input.type.name.toUpperCase();
+      return (
+        isStringBase(upper) || this.libraryAliasDefinition(upper) !== undefined
+      );
+    };
+    if (inputs?.some(checked) !== true) return undefined;
     return inputs.map((input) =>
-      isAlias(input) ? input : { ...input, inOut: false },
+      checked(input) ? input : { ...input, inOut: false },
     );
   }
 
