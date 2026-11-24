@@ -73,7 +73,7 @@ describe("bit selected by a named constant", () => {
         w.G5 := TRUE;
       END_PROGRAM`);
     expect(b).toContain(
-      "B = ((static_cast<uint64_t>(W) >> static_cast<uint64_t>(C3)) & 1);",
+      "B = static_cast<bool>((static_cast<uint64_t>(W) >> static_cast<uint64_t>(C3)) & 1);",
     );
     expect(b).toContain("(1ULL << static_cast<uint64_t>(G5))");
     expect(b).not.toContain("W.C3");

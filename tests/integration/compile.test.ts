@@ -581,7 +581,7 @@ describe('Error Handling Tests', () => {
       // Bit write: read-modify-write happens inside one lock (atomic).
       expect(result.cppCode).toMatch(/C->with_lock\(\[&\]\(auto\* __glk\)\{ \(\*__glk\)\.CW = \(\(\*__glk\)\.CW & ~\(1ULL << 3\)\)/);
       // Bit read: extracted inside the lock.
-      expect(result.cppCode).toMatch(/C->with_lock\(\[&\]\(auto\* __glk\)\{ return \(\(static_cast<uint64_t>\(\(\*__glk\)\.CW\) >> 5\) & 1\)/);
+      expect(result.cppCode).toMatch(/C->with_lock\(\[&\]\(auto\* __glk\)\{ return static_cast<bool>\(\(static_cast<uint64_t>\(\(\*__glk\)\.CW\) >> 5\) & 1\)/);
     });
 
     it('locks element access on an array-of-scalar and array-of-struct global', () => {

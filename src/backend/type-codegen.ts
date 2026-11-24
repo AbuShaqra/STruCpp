@@ -29,6 +29,7 @@ import {
   temporalLiteralCpp,
   formatArrayType,
   formatIntegerLiteral,
+  isBoolLogic,
   isComparison,
   isComparisonExpr,
   stringComparisonCpp,
@@ -384,6 +385,19 @@ export class TypeCodeGenerator {
       const next = this.aliasTargets.get(upper);
       if (next === undefined) return upper;
       upper = next.toUpperCase();
+    }
+    return upper;
+  }
+
+  /** The elementary type `expr` resolved to, through the unit's aliases, upper case. */
+  private elementaryBase(expr: Expression): string | undefined {
+    const t = expr.resolvedType;
+    if (t?.typeKind !== "elementary") return undefined;
+    let upper = (t as ElementaryType).name.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const next = this.aliasTargets.get(upper);
+      if (next === undefined) return upper;
+      upper = next;
     }
     return upper;
   }
@@ -1106,6 +1120,10 @@ export class TypeCodeGenerator {
       if (expr.computeAs !== undefined) {
         const t = `${expr.computeAs}_t`;
         return `static_cast<${t}>(${left}) ${cppOp} static_cast<${t}>(${right})`;
+      }
+      // BOOL operands: C++ gives `bool & bool` an int, which NOT() rejects
+      if (isBoolLogic(expr, (e) => this.elementaryBase(e))) {
+        return `static_cast<bool>((${left}) ${cppOp} (${right}))`;
       }
       return `(${left}) ${cppOp} (${right})`;
     }
