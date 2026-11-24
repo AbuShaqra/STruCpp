@@ -78,13 +78,17 @@ END_TEST
     expect(
       parsed.errors.map((e) => `${e.line}:${e.column}: ${e.message}`),
     ).toEqual(["2:18: POINTER TO needs the feature pointer_to"]);
-    // ADR is refused by the analysis, which knows a source FUNCTION named ADR.
+    // ADR is refused by the analysis, which knows a source FUNCTION named ADR;
+    // it runs under the dialect the file was parsed under, as a --test run does.
     const src = compile("PROGRAM P\nEND_PROGRAM\n", { dialect: "iec-3" });
     expect(
       analyzeTestFile(parsed.testFile!, src.symbolTables!, src.ast)
         .errors.map((e) => `${e.line}:${e.column}: ${e.message}`)
         .filter((e) => e.includes("pointer_to")),
-    ).toEqual(["3:8: ADR needs the feature pointer_to"]);
+    ).toEqual([
+      "3:8: ADR needs the feature pointer_to",
+      "2:18: POINTER TO needs the feature pointer_to",
+    ]);
   });
   it("are accepted with it", () => {
     expect(parseTestFile(TESTS, "t.st").errors).toEqual([]);

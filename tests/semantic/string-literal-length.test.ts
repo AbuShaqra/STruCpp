@@ -149,3 +149,86 @@ END_PROGRAM
     ]);
   });
 });
+
+describe("string literal longer than its target: calls and stores reached through members", () => {
+  const warned = (source: string): string[] => {
+    const r = compile(source);
+    expect(r.errors).toEqual([]);
+    return r.warnings
+      .filter((w) => w.message.includes("is cut to"))
+      .map((w) => `${w.line}:${w.column}`);
+  };
+
+  it("warns at METHOD calls, FB calls through an element or member, initialisers, member stores and PROPERTY bodies", () => {
+    const src = `TYPE S : STRUCT t : STRING(3); f : FB1; END_STRUCT; END_TYPE
+FUNCTION_BLOCK FB1
+VAR_INPUT s : STRING(3); END_VAR
+METHOD M : INT
+VAR_INPUT t : STRING(3); END_VAR
+M := 1;
+END_METHOD
+METHOD Own : INT
+Own := M(t := 'own-long');
+END_METHOD
+PROPERTY P : STRING(3)
+GET P := 'propget'; END_GET
+SET s := 'setlong'; END_SET
+END_PROPERTY
+END_FUNCTION_BLOCK
+PROGRAM Prg
+VAR
+  f : FB1;
+  g : FB1 := (s := 'initlong');
+  arr : ARRAY[0..1] OF FB1;
+  st : S;
+  sa : ARRAY[0..2] OF STRING(3);
+  rs : REF_TO STRING(3);
+  n : INT;
+END_VAR
+n := f.M(t := 'methodlong');
+arr[0](s := 'elemlong');
+st.f(s := 'memberlong');
+st.t := 'fieldlong';
+sa[1] := 'elementlong';
+rs := REF(sa[0]);
+rs^ := 'dereflong';
+f.P := 'proplong';
+n := f.M('poslong');
+END_PROGRAM
+`;
+    expect(warned(src).sort()).toEqual(
+      [
+        "9:15",
+        "12:10",
+        "13:10",
+        "19:20",
+        "26:15",
+        "27:13",
+        "28:11",
+        "29:9",
+        "30:10",
+        "32:8",
+        "33:8",
+        "34:10",
+      ].sort(),
+    );
+  });
+
+  it("stays silent where the target is not known for certain", () => {
+    const src = `FUNCTION_BLOCK FB1
+VAR_INPUT s : STRING(3); END_VAR
+END_FUNCTION_BLOCK
+PROGRAM Prg
+VAR
+  m : ARRAY[0..1, 0..1] OF STRING(3);
+  w : STRING(20);
+  f : FB1;
+END_VAR
+w := 'a long enough text';
+m[0, 1] := 'abc';
+f(s := 'abc');
+END_PROGRAM
+`;
+    expect(warned(src)).toEqual([]);
+  });
+});

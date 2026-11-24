@@ -2,7 +2,7 @@
  * A RETURN nested in a TEST body (in an IF or a loop) ends the TEST, which
  * passes, as a top-level RETURN does, with and without SETUP/TEARDOWN (g++).
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
 import { mkdirSync, writeFileSync, existsSync, rmSync } from "fs";
 import { resolve, join } from "path";
@@ -107,4 +107,8 @@ END_TEST
     expect(r.out).toContain("3 tests, 3 passed, 0 failed");
     expect(r.status).toBe(0);
   });
+});
+
+afterAll(() => {
+  rmSync(DIR, { recursive: true, force: true });
 });

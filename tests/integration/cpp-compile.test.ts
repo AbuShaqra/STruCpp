@@ -153,7 +153,7 @@ describeIfGpp('C++ Compilation Tests', () => {
       }
       expect(ok, `g++ ${threaded ? 'threaded' : 'non-threaded'} failed:\n${diag}`).toBe(true);
     }
-  });
+  }, 60000); // two full g++ builds: past the 10 s default under load
 
   it('a function block VAR_EXTERNAL touches the SHARED global, not a local copy (threaded + non-threaded)', () => {
     // Regression: an FB's VAR_EXTERNAL used to compile to a plain member (a
@@ -211,7 +211,7 @@ describeIfGpp('C++ Compilation Tests', () => {
       }
       expect(ok, `g++/run ${threaded ? 'threaded' : 'non-threaded'} failed:\n${diag}`).toBe(true);
     }
-  });
+  }, 60000); // two full g++ builds and runs
 
   it('compiles `=>` FB-output capture into a scalar shared global (SoftMotion bridge pattern)', () => {
     // Regression: capturing an FB output via `=>` into a VAR_EXTERNAL scalar used

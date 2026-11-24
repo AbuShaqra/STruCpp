@@ -15,6 +15,7 @@ import type {
   StlibArchive,
 } from "./library-manifest.js";
 import { compile } from "../index.js";
+import type { CompileError } from "../types.js";
 import { resolveDialect } from "../dialect.js";
 import { defaultStringLength } from "../semantic/string-default-length.js";
 import { buildChunks } from "./library-chunks.js";
@@ -791,6 +792,7 @@ export function compileLibrary(
     compileOpts.globalConstants = options.globalConstants;
   }
   const result = compile(primarySource.source, compileOpts);
+  const warnings = result.warnings.map(toLibraryError);
   // A STRUCT with BIT members (feature bit_type) is not exported yet.
   if (result.success) {
     for (const t of result.ast?.types ?? []) {
@@ -827,17 +829,8 @@ export function compileLibrary(
       },
       headerCode: "",
       cppCode: "",
-      errors: result.errors.map((e) => {
-        const entry: LibraryCompileError = {
-          message: e.message,
-          line: e.line,
-          column: e.column,
-        };
-        if (e.file !== undefined) {
-          entry.file = e.file;
-        }
-        return entry;
-      }),
+      errors: result.errors.map(toLibraryError),
+      warnings,
     };
   }
 
@@ -1015,6 +1008,7 @@ export function compileLibrary(
       headerCode: "",
       cppCode: "",
       errors: duplicates.map((message) => ({ message })),
+      warnings,
     };
   }
 
@@ -1025,7 +1019,19 @@ export function compileLibrary(
     cppCode: cleanCpp,
     chunks,
     errors: [],
+    warnings,
   };
+}
+
+/** A compile diagnostic as a library diagnostic: message and location. */
+function toLibraryError(e: CompileError): LibraryCompileError {
+  const entry: LibraryCompileError = {
+    message: e.message,
+    line: e.line,
+    column: e.column,
+  };
+  if (e.file !== undefined) entry.file = e.file;
+  return entry;
 }
 
 /**
@@ -1075,6 +1081,9 @@ export function compileStlib(
         dependencies: [],
       },
       errors: libResult.errors,
+      ...(libResult.warnings !== undefined
+        ? { warnings: libResult.warnings }
+        : {}),
     };
   }
 
@@ -1149,5 +1158,8 @@ export function compileStlib(
     success: true,
     archive,
     errors: [],
+    ...(libResult.warnings !== undefined
+      ? { warnings: libResult.warnings }
+      : {}),
   };
 }

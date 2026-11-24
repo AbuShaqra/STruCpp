@@ -7272,7 +7272,32 @@ export class TypeChecker {
           controlSym?.kind === "constant"
         ) {
           const ctrlType = controlSym.type;
-          if (ctrlType && !_isTypeInCategory(ctrlType, "ANY_INT")) {
+          // A REF_TO or REFERENCE TO cannot step (g++ refuses the loop); a
+          // POINTER TO steps an address: warned unless its end is one too
+          const level = controlDeclared?.referenceKind ?? "none";
+          if (ctrlType && (level === "ref_to" || level === "reference_to")) {
+            this.addError(
+              `FOR control variable '${stmt.controlVariable}' must be an integer type, got ${level === "ref_to" ? "REF_TO" : "REFERENCE TO"} ${typeNameUtil(ctrlType)}`,
+              stmt.sourceSpan.startLine,
+              stmt.sourceSpan.startCol,
+              stmt.sourceSpan.file,
+            );
+          } else if (
+            ctrlType &&
+            level === "pointer_to" &&
+            !this.isAddressBound(stmt.end, scope)
+          ) {
+            this.addWarning(
+              `FOR control variable '${stmt.controlVariable}' is a POINTER TO ${typeNameUtil(ctrlType)}, not an integer, and its end value is not an address`,
+              stmt.sourceSpan.startLine,
+              stmt.sourceSpan.startCol,
+              stmt.sourceSpan.file,
+            );
+          } else if (
+            level === "none" &&
+            ctrlType &&
+            !_isTypeInCategory(ctrlType, "ANY_INT")
+          ) {
             this.addError(
               `FOR control variable '${stmt.controlVariable}' must be an integer type, got ${typeNameUtil(ctrlType)}`,
               stmt.sourceSpan.startLine,
@@ -7961,6 +7986,34 @@ export class TypeChecker {
       }
       current = def.name;
     }
+  }
+
+  /**
+   * True when `expr` may be an address a POINTER TO control variable is
+   * compared with: a literal 0, or an expression holding ADR, REF or a
+   * pointer or reference variable.
+   */
+  private isAddressBound(expr: Expression, scope: Scope): boolean {
+    const bare = unparenthesized(expr);
+    if (bare.kind === "LiteralExpression" && bare.value === 0) return true;
+    let found = false;
+    walkAST(bare, (node) => {
+      if (found) return false;
+      if (node.kind === "RefExpression") found = true;
+      else if (node.kind === "FunctionCallExpression") {
+        const fn = (node as FunctionCallExpression).functionName.toUpperCase();
+        if (fn === "ADR" || fn === "REF") found = true;
+      } else if (node.kind === "VariableExpression") {
+        const sym = scope.lookup((node as VariableExpression).name);
+        const declared =
+          sym?.kind === "variable"
+            ? (sym.declaration as VarDeclaration | undefined)?.type
+            : undefined;
+        if ((declared?.referenceKind ?? "none") !== "none") found = true;
+      }
+      return undefined;
+    });
+    return found;
   }
 
   /** `=` or `<>` of two STRUCT values (compared field by field) needs the feature struct_compare. */

@@ -120,7 +120,7 @@ STruC++ implements the Structured Text (ST) language from IEC 61131-3. This docu
 | Structure | Status | Notes |
 |-----------|--------|-------|
 | IF / ELSIF / ELSE / END_IF | Supported | |
-| FOR / TO / BY / DO / END_FOR | Supported | With optional BY (step). An assignment to the control variable in the loop body, which Ed. 3 does not allow, gets a warning under `--dialect iec-3`, see [DIALECTS.md](DIALECTS.md#rules-of-the-iec-3-profile-itself) |
+| FOR / TO / BY / DO / END_FOR | Supported | With optional BY (step). A control variable that is a REF_TO or REFERENCE TO is refused (it is not an integer); a POINTER TO steps an address, with a warning unless its end value is an address too (`TO ADR(x)`). An assignment to the control variable in the loop body, which Ed. 3 does not allow, gets a warning under `--dialect iec-3`, see [DIALECTS.md](DIALECTS.md#rules-of-the-iec-3-profile-itself) |
 | WHILE / DO / END_WHILE | Supported | |
 | REPEAT / UNTIL / END_REPEAT | Supported | |
 | CASE / OF / END_CASE | Supported | Integer, bit, and enum selectors, also of an alias of an integer or bit type (`TYPE MYINT : INT`) or of a subrange (`TYPE SR : INT (0..10)`) |

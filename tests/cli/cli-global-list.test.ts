@@ -2,11 +2,11 @@
  * `--global-list <file>=<name>` on the CLI: names the global variable list of
  * an input file (default: the file stem), in compile and --check mode.
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "fs";
 import { resolve, join } from "path";
-import { mkdtempSync } from "fs";
+import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 
 const CLI_PATH = resolve(__dirname, "../../dist/node/cli.js");
@@ -31,6 +31,10 @@ function run(
 }
 
 let dir: string;
+
+afterAll(() => {
+  if (dir) rmSync(dir, { recursive: true, force: true });
+});
 
 beforeAll(() => {
   if (!existsSync(CLI_PATH)) {

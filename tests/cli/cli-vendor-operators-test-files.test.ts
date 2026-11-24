@@ -2,7 +2,7 @@
  * __POSITION, __POUNAME and BITADR in a --test file: __POSITION follows the
  * dialect flags of the run, the other two have no value in a test file (g++).
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "child_process";
 import { mkdirSync, writeFileSync, existsSync, rmSync } from "fs";
 import { resolve, join } from "path";
@@ -142,4 +142,8 @@ END_TEST
       );
     });
   });
+});
+
+afterAll(() => {
+  rmSync(DIR, { recursive: true, force: true });
 });

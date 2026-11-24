@@ -159,6 +159,8 @@ export interface ILTranspileResult {
   stSource: string;
   /** Where each IL body starts in the original source, with its POU's name. */
   ilBodies?: Array<{ pou: string; line: number; column: number }>;
+  /** Each label an IL body declares, as written, where it is written in the original source. */
+  ilLabels?: Array<{ name: string; line: number; column: number }>;
   /** Transpilation errors */
   errors: Array<{
     message: string;

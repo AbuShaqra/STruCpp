@@ -1102,6 +1102,8 @@ export interface TestFile {
   inlineTypes?: TypeDeclaration[];
   /** The dialect the file was parsed under: its profiles name a refused feature's. */
   dialect?: ResolvedDialect;
+  /** The text parsed (conditional pragmas resolved): locates and spells a declared name. */
+  source?: string;
 }
 
 /**
