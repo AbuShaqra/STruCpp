@@ -273,6 +273,9 @@ export interface LibraryTypeEntry {
   /** Base type (for alias/enum). Recorded for an alias of a named or
    *  elementary type, not of an ARRAY, POINTER TO or REF_TO; absent in older archives. */
   baseType?: string;
+  /** The target of an alias of a single-level POINTER TO (`TYPE PINT : POINTER
+   *  TO INT`); absent in older archives. */
+  pointerTarget?: string;
   /** Length of an alias of STRING(n) / WSTRING(n) (`baseType` STRING / WSTRING). */
   maxLength?: number | string;
   /** Struct member fields (name + declared type), so a consuming compilation

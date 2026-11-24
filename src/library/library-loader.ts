@@ -180,6 +180,17 @@ function buildLibraryTypeDefinition(
       }),
     };
   }
+  if (t.kind === "alias" && typeof t.pointerTarget === "string") {
+    const pointer: TypeReference = {
+      kind: "TypeReference",
+      sourceSpan: createDefaultSourceSpan(),
+      name: t.pointerTarget,
+      isReference: false,
+      referenceKind: "pointer_to",
+    };
+    if (t.maxLength !== undefined) pointer.maxLength = t.maxLength;
+    return pointer;
+  }
   const alias: TypeReference = {
     kind: "TypeReference",
     sourceSpan: createDefaultSourceSpan(),

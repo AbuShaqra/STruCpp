@@ -519,11 +519,11 @@ END_FUNCTION_BLOCK
     }
   });
 
-  it("lowers only the literal 0 into a POINTER TO alias to NULL; another integer is kept as before", () => {
+  it("lowers only the literal 0 into a POINTER TO alias to NULL; another integer assigned is kept as before", () => {
     const r = compile(
       `${LIB2}\nFUNCTION FA : INT\nVAR_INPUT p : PINT; END_VAR\nFA := 1;\nEND_FUNCTION\n${prog(
         "p : PINT; q : POINTER TO INT;",
-        "p := 0; q := 0; n := FA(0) + FA(p := 0); p := 5; q := 5; n := FA(5);",
+        "p := 0; q := 0; n := FA(0) + FA(p := 0); p := 5; q := 5;",
       )}`,
     );
     expect(r.errors).toEqual([]);
@@ -532,7 +532,6 @@ END_FUNCTION_BLOCK
     expect(r.cppCode).toContain("FA(IEC_NULL)");
     expect(r.cppCode).toContain("P = 5;");
     expect(r.cppCode).toContain("Q = 5;");
-    expect(r.cppCode).not.toContain("FA(IEC_NULL) + FA(5)");
   });
 
   it("lowers 0 into a POINTER TO alias and declares its IEC_ wrapper as the alias", () => {
@@ -541,5 +540,106 @@ END_FUNCTION_BLOCK
     );
     expect(r.errors).toEqual([]);
     expect(r.headerCode).toContain("using IEC_PINT = PINT;");
+  });
+});
+
+describe("recheck: integers into POINTER TO inputs, library pointer aliases", () => {
+  const LIB3 = `TYPE PINT : POINTER TO INT; END_TYPE
+FUNCTION FZ : PINT
+VAR_INPUT p : PINT; END_VAR
+FZ := p;
+END_FUNCTION
+FUNCTION FP : INT
+VAR_INPUT p : POINTER TO INT; END_VAR
+FP := 1;
+END_FUNCTION
+FUNCTION FA : DINT
+VAR_IN_OUT a : ARRAY[0..1] OF PINT; END_VAR
+FA := 1;
+END_FUNCTION
+FUNCTION_BLOCK FB
+VAR_INPUT p : PINT; END_VAR
+METHOD M : INT
+VAR_INPUT q : PINT; END_VAR
+M := 1;
+END_METHOD
+END_FUNCTION_BLOCK
+`;
+  const archive = (): StlibArchive => {
+    const lib = compileStlib([{ source: LIB3, fileName: "l3.st" }], {
+      name: "l3",
+      version: "1.0.0",
+      namespace: "l3",
+    });
+    expect(lib.errors).toEqual([]);
+    return JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
+  };
+  const prog = (vars: string, body: string): string =>
+    `PROGRAM Main\nVAR n : DINT; p : PINT; x : INT; lw : LWORD; fb : FB; fa : ARRAY[0..1] OF FB; ${vars} END_VAR\n${body}\nEND_PROGRAM\n`;
+  const both = (vars: string, body: string, old = false): string[][] => {
+    const raw = archive();
+    if (old) for (const t of raw.manifest.types) delete t.pointerTarget;
+    return [
+      compile(`${LIB3}\n${prog(vars, body)}`).errors.map((e) => e.message),
+      compile(prog(vars, body), {
+        libraries: [loadStlibArchive(raw)],
+      }).errors.map((e) => e.message),
+    ];
+  };
+  const refusal = (name: string): string =>
+    `An integer cannot be passed to the POINTER TO input '${name}'; pass an address (ADR) or 0`;
+
+  it("refuses an integer bound to a POINTER TO input, positional or named, alias or not", () => {
+    for (const [body, name] of [
+      ["p := FZ(5);", "P"],
+      ["p := FZ(p := 5);", "P"],
+      ["p := FZ(lw);", "P"],
+      ["p := FZ(lw + 8);", "P"],
+      ["n := FP(5);", "P"],
+      ["n := FP(p := lw);", "P"],
+      ["fb(p := 5);", "P"],
+      ["n := fb.M(5);", "Q"],
+      ["n := fa[1].M(lw);", "Q"],
+    ]) {
+      expect(both("", body!), body).toEqual([
+        [refusal(name!)],
+        [refusal(name!)],
+      ]);
+    }
+  });
+
+  it("refuses an integer initial value of a POINTER TO alias", () => {
+    const message =
+      "An integer cannot initialise the POINTER TO 'PZ'; use 0 or ADR(...), or assign it in the body";
+    expect(both("pz : PINT := 5;", "n := 1;")).toEqual([[message], [message]]);
+  });
+
+  it("keeps 0 and addresses: NULL into the alias, by value, name, initial value and member", () => {
+    const body =
+      "p := FZ(0); p := FZ(p := 0); n := FP(0) + fb.M(0); fb(p := 0); q := ADR(x); p := FZ(q); n := FP(q);";
+    expect(both("pz : PINT := 0; q : POINTER TO INT;", body)).toEqual([[], []]);
+    const r = compile(prog("pz : PINT := 0;", "p := FZ(0);"), {
+      libraries: [loadStlibArchive(archive())],
+    });
+    expect(r.cppCode).toContain("FZ(IEC_NULL)");
+    expect(r.cppCode).not.toMatch(/IEC_PINT>\(0\)/);
+  });
+
+  it("records a library POINTER TO alias's target, so its arrays compare as the target's", () => {
+    expect(
+      archive().manifest.types.find((t) => t.name === "PINT"),
+    ).toMatchObject({ kind: "alias", pointerTarget: "INT" });
+    expect(
+      both("arr : ARRAY[0..1] OF POINTER TO INT;", "n := FA(arr);"),
+    ).toEqual([[], []]);
+    const message =
+      "VAR_IN_OUT 'A' of type ARRAY[0..1] OF POINTER TO INT cannot be bound to a variable of type ARRAY[0..1] OF POINTER TO DINT";
+    expect(
+      both("arr : ARRAY[0..1] OF POINTER TO DINT;", "n := FA(arr);"),
+    ).toEqual([[message], [message]]);
+    // An older archive without the target: refused rather than left to g++.
+    expect(
+      both("arr : ARRAY[0..1] OF POINTER TO DINT;", "n := FA(arr);", true)[1],
+    ).toHaveLength(1);
   });
 });

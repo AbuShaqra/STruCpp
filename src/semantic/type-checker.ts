@@ -4262,7 +4262,10 @@ export class TypeChecker {
       expr.arguments,
     );
     this.validateInterfaceArguments(inputs, expr.arguments);
-    this.markPointerZeroArguments(inputs, expr.arguments);
+    const pointerInputs =
+      inputs ?? this.pointerInputsOfLibraryCall(expr, scope);
+    this.markPointerZeroArguments(pointerInputs, expr.arguments);
+    this.refuseIntegerPointerArguments(pointerInputs, expr.arguments, scope);
     this.validateStructArguments(inputs, expr.arguments);
     this.validateEnumArguments(inputs, expr.arguments);
     this.validateReferenceToArguments(inputs, expr.arguments, scope);
@@ -6043,6 +6046,20 @@ export class TypeChecker {
           );
           continue;
         }
+        // `pz : PINT := 5`: no integer initialises a POINTER TO alias; 0 is NULL.
+        if (this.isPointerAlias(decl.type)) {
+          if (isUntypedZero(decl.initialValue)) {
+            decl.initialValue.asNull = true;
+          } else if (this.isIntegerValue(decl.initialValue, scope)) {
+            this.addError(
+              `An integer cannot initialise the POINTER TO '${(decl.names[0] ?? "").toUpperCase()}'; use 0 or ADR(...), or assign it in the body`,
+              decl.initialValue.sourceSpan.startLine,
+              decl.initialValue.sourceSpan.startCol,
+              decl.initialValue.sourceSpan.file,
+            );
+            continue;
+          }
+        }
         // An address stored in an integer, also in an array literal or
         // structure initializer at any depth.
         if ((outerKind ?? "none") === "none") {
@@ -6789,6 +6806,17 @@ export class TypeChecker {
         ? this.methodParameters(library.method)
         : undefined);
     if (params === undefined) return;
+    this.refuseIntegerPointerArguments(
+      params
+        .filter((p) => !p.output)
+        .map((p) => ({
+          name: p.name,
+          type: p.type,
+          inOut: "inOut" in p && p.inOut === true,
+        })),
+      expr.arguments,
+      scope,
+    );
     this.capturePointerOutputs(
       stripEnEno([...expr.arguments]),
       params,
@@ -9382,13 +9410,9 @@ export class TypeChecker {
             : "other";
       // Where the scalar binding of the pair is an error, so is the array's.
       const modeRefuses = this.strict || (inOut && this.inOutErrors);
-      // A library alias of a POINTER TO or ARRAY records no target: unknown.
-      const known =
-        this.knownElementBase(actual.base) &&
-        this.knownElementBase(expected.base);
       refused =
         !dims ||
-        (elements === "other" && known) ||
+        elements === "other" ||
         (elements === "storage" && modeRefuses);
     }
     if (!refused) return;
@@ -9472,21 +9496,6 @@ export class TypeChecker {
         ...(t.maxLength !== undefined ? { length: t.maxLength } : {}),
       }),
     };
-  }
-
-  /** An element base whose type this unit can tell: elementary, a TYPE of this unit, or a library STRUCT, UNION, enum or block. */
-  private knownElementBase(base: string): boolean {
-    if (ELEMENTARY_TYPES[base] !== undefined) return true;
-    if (this.ast?.types.some((td) => td.name.toUpperCase() === base) === true) {
-      return true;
-    }
-    if (this.symbolTables.lookupFunctionBlock(base) !== undefined) return true;
-    const def = this.symbolTables.lookupType(base)?.declaration?.definition;
-    return (
-      def !== undefined &&
-      def.kind !== "TypeReference" &&
-      def.kind !== "ArrayDefinition"
-    );
   }
 
   /**
@@ -9983,6 +9992,109 @@ export class TypeChecker {
     return outer === "pointer_to" || outer === "ref_to";
   }
 
+  /**
+   * An integer (a literal other than 0, or an integer variable, member or
+   * arithmetic of them) bound to a POINTER TO input, its alias's included:
+   * refused, as no integer converts to a pointer argument.
+   */
+  private refuseIntegerPointerArguments(
+    inputs: CallInput[] | undefined,
+    args: readonly Argument[],
+    scope: Scope,
+  ): void {
+    if (!inputs) return;
+    stripEnEno([...args]).forEach((arg, i) => {
+      if (arg.isOutput) return;
+      const argName = arg.name?.toUpperCase();
+      const input =
+        argName === undefined
+          ? inputs[i]
+          : inputs.find((p) => p.name.toUpperCase() === argName);
+      if (!input || input.inOut) return;
+      if (
+        referenceShapeOf(input.type)?.chain[0] !== "pointer_to" &&
+        !this.isPointerAlias(input.type)
+      ) {
+        return;
+      }
+      if (isUntypedZero(arg.value) || !this.isIntegerValue(arg.value, scope)) {
+        return;
+      }
+      this.addError(
+        `An integer cannot be passed to the POINTER TO input '${input.name.toUpperCase()}'; pass an address (ADR) or 0`,
+        arg.value.sourceSpan.startLine,
+        arg.value.sourceSpan.startCol,
+        arg.value.sourceSpan.file,
+      );
+    });
+  }
+
+  /**
+   * An integer value that is not a pointer: an integer literal, an integer or
+   * bit-string variable or member (not a POINTER TO or its alias), or `-`, `+`,
+   * `-`, `*`, `/`, MOD, AND, OR, XOR of those.
+   */
+  private isIntegerValue(expr: Expression, scope: Scope): boolean {
+    switch (expr.kind) {
+      case "ParenthesizedExpression":
+        return this.isIntegerValue(expr.expression, scope);
+      case "UnaryExpression":
+        return (
+          expr.operator === "-" && this.isIntegerValue(expr.operand, scope)
+        );
+      case "LiteralExpression":
+        return expr.literalType === "INT";
+      case "BinaryExpression":
+        return (
+          ["+", "-", "*", "/", "MOD", "AND", "OR", "XOR"].includes(
+            expr.operator,
+          ) &&
+          this.isIntegerValue(expr.left, scope) &&
+          this.isIntegerValue(expr.right, scope)
+        );
+      case "VariableExpression": {
+        if (expr.isDereference) return false;
+        if (
+          expr.accessChain?.some((st) => st.kind === "dereference") === true
+        ) {
+          return false;
+        }
+        const sym = scope.lookup(expr.name);
+        if (sym?.kind !== "variable" && sym?.kind !== "constant") return false;
+        const declared = sym.declaration as VarDeclaration | undefined;
+        if (!declared) return false;
+        const type = this.hasMemberAccess(expr)
+          ? resolveAccessType(declared.type, expr, this.accessLookup)
+          : declared.type;
+        if (type === undefined || type.arrayDimensions !== undefined) {
+          return false;
+        }
+        if ((type.referenceKind ?? "none") !== "none") return false;
+        if (this.isPointerAlias(type)) return false;
+        const base = canonicalElementaryName(this.aliasBase(type.name));
+        return (
+          INTEGER_STORAGE[base] !== undefined ||
+          ["__XWORD", "XWORD", "__UXINT", "__XINT"].includes(base)
+        );
+      }
+      default:
+        return false;
+    }
+  }
+
+  /** The inputs of a library FUNCTION (shaped archive) or of a library block's METHOD (`inst.M`). */
+  private pointerInputsOfLibraryCall(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): CallInput[] | undefined {
+    const shaped = this.libraryShapedFunctionInputs(expr, scope);
+    if (shaped !== undefined) return shaped;
+    const method = this.libraryMethodParameters(expr, scope);
+    return method
+      ?.filter((p) => !p.output)
+      .map((p) => ({ name: p.name, type: p.type, inOut: p.inOut }));
+  }
+
   /** Mark an untyped `0` bound to a POINTER TO input as NULL. */
   private markPointerZeroArguments(
     inputs: CallInput[] | undefined,
@@ -10039,14 +10151,18 @@ export class TypeChecker {
     return type !== undefined && this.isPointerAlias(type);
   }
 
-  /** A type declared by name as a single-level POINTER TO alias of this unit. */
+  /** A type declared by name as a single-level POINTER TO alias (of this unit or a library). */
   private isPointerAlias(type: AccessType): boolean {
     if ((type.referenceKind ?? "none") !== "none") return false;
     if (type.arrayDimensions !== undefined) return false;
     const upper = type.name.toUpperCase();
-    const def = this.ast?.types.find(
-      (td) => td.name.toUpperCase() === upper,
-    )?.definition;
+    // This unit's TYPE, else a library's (archives with `pointerTarget`).
+    const def =
+      this.ast?.types.find((td) => td.name.toUpperCase() === upper)
+        ?.definition ??
+      (this.symbolTables.globalScope.definedByLibrary(upper)
+        ? this.symbolTables.lookupType(upper)?.declaration?.definition
+        : undefined);
     return (
       def?.kind === "TypeReference" &&
       def.arrayDimensions === undefined &&

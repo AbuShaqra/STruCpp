@@ -365,3 +365,67 @@ int main() {
     });
   },
 );
+
+describe.skipIf(!hasGpp)(
+  "a library ARRAY[*] OF a POINTER TO alias the program never names — g++ e2e",
+  () => {
+    let tempDir: string;
+    let pchPath: string;
+    beforeAll(() => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-libcalls3-"));
+      pchPath = createPCH(tempDir);
+    });
+    afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+    it("builds the alias the prototype names and runs", () => {
+      const lib = compileStlib(
+        [
+          {
+            source: `TYPE PINT : POINTER TO INT; END_TYPE
+FUNCTION FV : DINT
+VAR_IN_OUT a : ARRAY[*] OF PINT; END_VAR
+FV := a[0]^;
+END_FUNCTION
+`,
+            fileName: "v.st",
+          },
+        ],
+        { name: "v", version: "1.0.0", namespace: "v" },
+      );
+      expect(lib.errors).toEqual([]);
+      const result = compile(
+        `PROGRAM Main
+VAR n : DINT; x : INT := 7; arr : ARRAY[0..1] OF POINTER TO INT; END_VAR
+arr[0] := ADR(x);
+n := FV(arr);
+END_PROGRAM
+`,
+        {
+          headerFileName: "generated.hpp",
+          libraries: [
+            loadStlibArchive(JSON.parse(JSON.stringify(lib.archive))),
+          ],
+        },
+      );
+      expect(result.errors).toEqual([]);
+      expect(
+        compileAndRunStandalone({
+          tempDir,
+          pchPath,
+          headerCode: result.headerCode,
+          cppCode: result.cppCode,
+          testName: "libcalls3_vla",
+          mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.N << std::endl;
+    return 0;
+}
+`,
+        }),
+      ).toBe("7");
+    });
+  },
+);

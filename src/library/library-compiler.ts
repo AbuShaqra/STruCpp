@@ -234,10 +234,18 @@ function byReferenceStringLength(
  */
 function aliasBase(
   def: TypeDeclaration["definition"],
-): Pick<LibraryTypeEntry, "baseType" | "maxLength"> {
+): Pick<LibraryTypeEntry, "baseType" | "maxLength" | "pointerTarget"> {
   if (def.kind !== "TypeReference") return {};
   if (def.arrayDimensions !== undefined || def.referenceChain !== undefined) {
     return {};
+  }
+  if (def.referenceKind === "pointer_to") {
+    // A single-level POINTER TO alias: its target, so a consumer knows it.
+    const { maxLength } = writtenStringLengths(def);
+    return {
+      pointerTarget: def.name,
+      ...(maxLength !== undefined ? { maxLength } : {}),
+    };
   }
   if (def.referenceKind !== "none") return {};
   const { maxLength } = writtenStringLengths(def);
