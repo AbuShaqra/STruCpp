@@ -145,7 +145,7 @@ describe("Phase 3.5: __DELETE Statement", () => {
     const result = compileST(`
       PROGRAM TestDelete
         VAR
-          pInt : INT;
+          pInt : POINTER TO INT;
         END_VAR
         pInt := __NEW(INT);
         __DELETE(pInt);
@@ -165,7 +165,7 @@ describe("Phase 3.5: __DELETE Statement", () => {
       END_TYPE
       PROGRAM TestDeleteStruct
         VAR
-          pData : INT;
+          pData : POINTER TO Data;
         END_VAR
         pData := __NEW(Data);
         __DELETE(pData);
@@ -186,7 +186,7 @@ describe("Phase 3.5: Combined __NEW/__DELETE Usage", () => {
     const result = compileST(`
       PROGRAM TestAllocUseFree
         VAR
-          pArr : INT;
+          pArr : POINTER TO INT;
           i : INT;
         END_VAR
         pArr := __NEW(INT, 10);
@@ -203,8 +203,8 @@ describe("Phase 3.5: Combined __NEW/__DELETE Usage", () => {
     const result = compileST(`
       PROGRAM TestMultiAlloc
         VAR
-          p1 : INT;
-          p2 : INT;
+          p1 : POINTER TO INT;
+          p2 : POINTER TO INT;
         END_VAR
         p1 := __NEW(INT);
         p2 := __NEW(INT);
@@ -262,7 +262,7 @@ describe("Phase 3.5: Case Insensitivity", () => {
     const result = compileST(`
       PROGRAM TestLowerDel
         VAR
-          p : INT;
+          p : POINTER TO INT;
         END_VAR
         p := __NEW(INT);
         __delete(p);
