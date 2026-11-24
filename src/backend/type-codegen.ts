@@ -22,7 +22,7 @@ import type {
   FunctionCallExpression,
   ElementaryType,
 } from "../frontend/ast.js";
-import { charLiteralUnits } from "../literal-utils.js";
+import { charLiteralUnits, stringBodyBeforeNul } from "../literal-utils.js";
 import { TypeRegistry, isElementaryType } from "../semantic/type-registry.js";
 import {
   temporalArithmeticCpp,
@@ -1010,7 +1010,7 @@ export class TypeCodeGenerator {
         // HTML-entity tables, for one) would otherwise terminate the C++ string
         // early and fail to compile.
         const inner = expr.rawValue.replace(/^'|'$/g, "");
-        return `"${translateIECString(inner)}"`;
+        return `"${translateIECString(stringBodyBeforeNul(inner).body)}"`;
       }
       case "WSTRING": {
         // IEC WSTRING literals are double-quoted; strip either form
@@ -1018,7 +1018,7 @@ export class TypeCodeGenerator {
         // (wchar_t) is 32-bit on Linux/AVR and wouldn't bind to
         // IECWStringVar's char16_t* ctor.
         const inner = expr.rawValue.replace(/^["']|["']$/g, "");
-        return `u"${translateIECString(inner, true)}"`;
+        return `u"${translateIECString(stringBodyBeforeNul(inner, true).body, true)}"`;
       }
       case "REAL": {
         // A decimal point keeps `3.0 / 2.0` a REAL division, as in a body.

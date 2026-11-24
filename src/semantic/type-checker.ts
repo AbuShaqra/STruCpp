@@ -9318,10 +9318,9 @@ export class TypeChecker {
 
   /**
    * LOWER_BOUND / UPPER_BOUND (ARR, DIM), named or positional: ARR must be an
-   * array (a dereferenced pointer or reference is), and a constant DIM below 1
-   * is refused, as is a literal DIM above the rank of a two- or
-   * three-dimensional array declared as one or of its ARRAY type. A
-   * one-dimensional array answers any positive DIM. A DIM of a known
+   * array (a dereferenced pointer or reference is), and a constant DIM
+   * outside 1..rank is refused when the array's rank is known (a variable DIM
+   * outside it faults at run time). A DIM of a known
    * enumeration is refused; with `checkDimType` (the call is not typed
    * otherwise) so is any other known type that is no integer. The argument
    * count is the analyzer's.
@@ -9372,20 +9371,11 @@ export class TypeChecker {
     if (operand !== undefined && "refused" in operand) return;
     const rank = operand?.rank;
     const value = this.constantIntegerValue(dim);
-    // A DIM above the rank is checked on a direct 2- or 3-D array only
-    const shapeRank = operand?.direct === true ? rank : undefined;
-    const literal =
-      dim.kind === "LiteralExpression" && typeof dim.value === "number"
-        ? dim.value
-        : undefined;
-    const outOfShape =
-      shapeRank !== undefined &&
-      shapeRank >= 2 &&
-      shapeRank <= 3 &&
-      literal !== undefined &&
-      !(Number.isInteger(literal) && literal >= 1 && literal <= shapeRank);
-    if (!outOfShape && (value === undefined || value >= 1n)) return;
-    const shown = value !== undefined ? String(value) : String(literal);
+    if (value === undefined) return;
+    // A constant DIM outside 1..rank of an array of a known rank
+    const outOfShape = rank !== undefined && value > BigInt(rank);
+    if (!outOfShape && value >= 1n) return;
+    const shown = String(value);
     this.addError(
       rank !== undefined
         ? `${upper} has no dimension ${shown}: the array has ${rank}`
@@ -9454,7 +9444,7 @@ export class TypeChecker {
   private boundOperand(
     arr: Expression,
     scope: Scope,
-  ): { rank: number; direct: boolean } | { refused: string } | undefined {
+  ): { rank: number } | { refused: string } | undefined {
     let e = arr;
     while (e.kind === "ParenthesizedExpression") e = e.expression;
     if (
@@ -9477,11 +9467,10 @@ export class TypeChecker {
 
   /**
    * The rank of an array type through aliases, or what the type is instead.
-   * `direct` when the type is the array or names its ARRAY type.
    */
   private arrayShapeOf(
     type: AccessType,
-  ): { rank: number; direct: boolean } | { refused: string } | undefined {
+  ): { rank: number } | { refused: string } | undefined {
     let current: AccessType = type;
     for (let depth = 0; depth < 32; depth++) {
       const kind = current.referenceKind ?? "none";
@@ -9491,11 +9480,11 @@ export class TypeChecker {
       }
       if (kind !== "none") return undefined;
       if (current.arrayDimensions !== undefined) {
-        return { rank: current.arrayDimensions.length, direct: depth === 0 };
+        return { rank: current.arrayDimensions.length };
       }
       const upper = current.name.toUpperCase();
       const vla = /^__VLA_(\d+)D_/.exec(upper);
-      if (vla) return { rank: Number(vla[1]), direct: false };
+      if (vla) return { rank: Number(vla[1]) };
       const def = this.ast?.types.find(
         (t) => t.name.toUpperCase() === upper,
       )?.definition;
@@ -9504,7 +9493,7 @@ export class TypeChecker {
         return elementary ? { refused: elementary.name } : undefined;
       }
       if (def.kind === "ArrayDefinition") {
-        return { rank: def.dimensions.length, direct: depth === 0 };
+        return { rank: def.dimensions.length };
       }
       if (def.kind !== "TypeReference") return { refused: current.name };
       current = def;

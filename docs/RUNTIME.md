@@ -268,7 +268,8 @@ Fixed-capacity strings laid out as on a PLC: `STRING(N)` is `N + 1` bytes and
 length: the length is the position of the first NUL, at most `N` (`memchr` for
 STRING). Characters and a 0 written through a `POINTER TO ARRAY OF BYTE` over a
 string therefore change what `LEN` reports, and a string ends at an embedded
-`$00`. A constructed string is zero past its terminator. Comparisons and
+`$00`. A literal is the text before its `$00` everywhere (`'a' = 'a$00b'` is
+TRUE, `LEN('a$00b')` is 1); the check warns when text follows it. A constructed string is zero past its terminator. Comparisons and
 searches are bounded by the lengths, and every runtime operation that writes a
 string re-terminates it. `N` defaults to 254 but can be parameterized via
 `STRING(100)` declarations. String functions (LEFT, RIGHT, MID, CONCAT, FIND,
