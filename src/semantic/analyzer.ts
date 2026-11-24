@@ -114,6 +114,7 @@ import {
 } from "../ast-utils.js";
 import {
   charLiteralUnits,
+  stringBodyBeforeNul,
   exactIntegerLiteralValue,
   exactIntegerValue,
   IEC_INTEGER_MAX,
@@ -2480,11 +2481,46 @@ export class SemanticAnalyzer {
   }
 
   private validateLiteralRanges(ast: CompilationUnit): void {
+    this.validateStringLiteralNul(ast);
     this.validateStringLiteralLengths(ast);
     this.validateIntegerLiteralRange(ast);
     this.validateStringLiteralCharset(ast);
     this.validateLtimeLiteralRange(ast);
     this.validateRealLiteralRange(ast);
+  }
+
+  /**
+   * A stored STRING / WSTRING ends at its first NUL, so a literal is the text
+   * before `$00` everywhere: warn when characters follow it, in every mode.
+   */
+  private validateStringLiteralNul(
+    roots: CompilationUnit | readonly ASTNode[],
+  ): void {
+    const visit = (node: ASTNode): void => {
+      if (node.kind !== "LiteralExpression") return;
+      const literal = node as LiteralExpression;
+      const wide = literal.literalType === "WSTRING";
+      if (!wide && literal.literalType !== "STRING") return;
+      const raw = literal.rawValue;
+      const open = raw.search(/['"]/);
+      if (open < 0) return;
+      const inner = raw.slice(open + 1, raw.lastIndexOf(raw[open]!));
+      const { body, dropped } = stringBodyBeforeNul(inner, wide);
+      if (!dropped) return;
+      const span = literal.sourceSpan;
+      const nul = open + 1 + body.length;
+      const before = raw.substring(0, nul);
+      const breaks = before.split("\n").length - 1;
+      this.addWarning(
+        `${wide ? "$0000" : "$00"} ends the ${wide ? "WSTRING" : "STRING"}; the rest of the literal is dropped`,
+        span.startLine + breaks,
+        breaks === 0 ? span.startCol + nul : nul - before.lastIndexOf("\n"),
+        span.file,
+      );
+    };
+    for (const root of Array.isArray(roots) ? roots : [roots]) {
+      walkAST(root as ASTNode, (n) => visit(n));
+    }
   }
 
   /**
@@ -2574,8 +2610,14 @@ export class SemanticAnalyzer {
       // From the opening quote, so a `#` inside the text is not a type prefix
       const raw = value.rawValue;
       const quoted = raw.slice(Math.max(0, raw.search(/['"]/)));
+      // What is stored: the text before a $00
+      const q = quoted[0] ?? "'";
+      const body = stringBodyBeforeNul(
+        quoted.slice(1, quoted.lastIndexOf(q)),
+        wide,
+      ).body;
       const length = charLiteralUnits(
-        `${wide ? "WSTRING" : "STRING"}#${quoted}`,
+        `${wide ? "WSTRING" : "STRING"}#${q}${body}${q}`,
       ).units.length;
       if (length <= max) return;
       // A repeated array element, `[3('abc')]`, is one literal: warn once
@@ -7675,6 +7717,7 @@ export class SemanticAnalyzer {
     ] as ASTNode[];
     // STRING literals (assertion messages included) hold Windows-1252 characters
     this.validateStringLiteralCharset(testRoots);
+    this.validateStringLiteralNul(testRoots);
     // EN/ENO in SETUP, TEARDOWN and TEST bodies as in the sources
     this.validateEnEnoPlacement(testRoots);
     // The dialect's refusals of `__NEW`, `__DELETE` and the caret forms

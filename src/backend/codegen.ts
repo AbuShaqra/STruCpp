@@ -45,6 +45,7 @@ import type {
 } from "../frontend/ast.js";
 import {
   charLiteralUnits,
+  stringBodyBeforeNul,
   exactIntegerLiteralValue,
   exactIntegerValue,
 } from "../literal-utils.js";
@@ -149,6 +150,7 @@ import { pointerReadTarget } from "../semantic/address-store.js";
 import { untypedNotCpp, untypedNotTarget } from "../semantic/untyped-not.js";
 import { bitPlaceOf, bitRunMemberName } from "./bit-runs.js";
 import type { StructDefinition } from "../frontend/ast.js";
+import { typeDefaultOf } from "../frontend/type-defaults.js";
 
 // =============================================================================
 // Located Variable Support
@@ -866,10 +868,6 @@ export class CodeGenerator {
 
   /** Parent class name of current FB (for SUPER resolution) */
   private currentFBExtends: string | undefined;
-
-  /** When generating a method that returns an interface type, assignments to the
-   *  result variable should be converted to return statements */
-  private interfaceReturnMethod = false;
 
   /** Map of UPPER(typeName).UPPER(methodName) → declared method name for case normalization */
   protected methodNameMap: Map<string, string> = new Map();
@@ -2829,13 +2827,8 @@ export class CodeGenerator {
 
   /** An inline override of `method` that calls the one `owner` declares. */
   private forwardingMethod(method: MethodDeclaration, owner: string): string {
-    const isIfaceReturn =
-      method.returnType !== undefined &&
-      this.isInterfaceType(method.returnType.name);
     const returnType = method.returnType
-      ? isIfaceReturn
-        ? `${this.inOutParamType(method.returnType)}&`
-        : this.mapTypeRefToCpp(method.returnType)
+      ? this.mapTypeRefToCpp(method.returnType)
       : "void";
     const args = method.varBlocks
       .filter(
@@ -3020,12 +3013,8 @@ export class CodeGenerator {
     this.recordHeaderLineMapping(iface.sourceSpan.startLine, classLine);
 
     for (const method of iface.methods) {
-      const isIfaceReturn =
-        method.returnType && this.isInterfaceType(method.returnType.name);
       const returnType = method.returnType
-        ? isIfaceReturn
-          ? `${this.inOutParamType(method.returnType)}&`
-          : this.mapTypeRefToCpp(method.returnType)
+        ? this.mapTypeRefToCpp(method.returnType)
         : "void";
       const params = this.generateMethodParamList(method);
       if (method.sourceSpan) {
@@ -3310,12 +3299,8 @@ export class CodeGenerator {
       }
 
       for (const method of visMethods) {
-        const isIfaceReturn =
-          method.returnType && this.isInterfaceType(method.returnType.name);
         const returnType = method.returnType
-          ? isIfaceReturn
-            ? `${this.inOutParamType(method.returnType)}&`
-            : this.mapTypeRefToCpp(method.returnType)
+          ? this.mapTypeRefToCpp(method.returnType)
           : "void";
         const params = this.generateMethodParamList(method);
 
@@ -3428,12 +3413,9 @@ export class CodeGenerator {
     method: MethodDeclaration,
     className: string,
   ): void {
-    const isIfaceReturn =
-      method.returnType && this.isInterfaceType(method.returnType.name);
+    // An INTERFACE result is a nullable IEC_ITF, NULL until assigned
     const returnType = method.returnType
-      ? isIfaceReturn
-        ? `${this.inOutParamType(method.returnType)}&`
-        : this.mapTypeRefToCpp(method.returnType)
+      ? this.mapTypeRefToCpp(method.returnType)
       : "void";
     const params = this.generateMethodParamList(method);
 
@@ -3443,14 +3425,10 @@ export class CodeGenerator {
 
     // Declare return variable if method has return type
     if (method.returnType) {
-      if (isIfaceReturn) {
-        // Interface return: assignments to result become return statements
-        this.interfaceReturnMethod = true;
-      } else {
-        this.emit(
-          `    ${this.mapTypeRefToCpp(method.returnType)} ${method.name}_result;`,
-        );
-      }
+      const resultType = this.mapTypeRefToCpp(method.returnType);
+      this.emit(
+        `    ${resultType} ${method.name}_result${this.resultInit(method.returnType, resultType)};`,
+      );
       this.currentFunctionName = method.name;
       this.currentFunctionResultType = method.returnType?.name;
     }
@@ -3500,11 +3478,8 @@ export class CodeGenerator {
 
     // Return if method has return type
     if (method.returnType) {
-      if (!isIfaceReturn) {
-        this.emit(`    return ${method.name}_result;`);
-      }
+      this.emit(`    return ${method.name}_result;`);
       this.currentFunctionName = undefined;
-      this.interfaceReturnMethod = false;
     }
 
     // Clean up
@@ -3543,7 +3518,9 @@ export class CodeGenerator {
       this.emitLineDirective(prop.sourceSpan.startLine);
       const getterLine = this.currentLine;
       this.emit(`${type} ${className}::get_${prop.name}() const {`);
-      this.emit(`    ${type} ${prop.name}_result;`);
+      this.emit(
+        `    ${type} ${prop.name}_result${this.resultInit(prop.type, type)};`,
+      );
       this.currentFunctionName = prop.name;
       this.currentFunctionResultType = prop.type.name;
       if (prop.getterMethod !== undefined) {
@@ -3969,7 +3946,9 @@ export class CodeGenerator {
 
     // Helper to emit local variable declarations (VAR/VAR_TEMP) and body
     const emitFunctionBody = (funcName: string) => {
-      this.emit(`    ${retType} ${funcName}_result;`);
+      this.emit(
+        `    ${retType} ${funcName}_result${this.resultInit(func.returnType, retType)};`,
+      );
       this.currentFunctionName = func.name;
       this.currentFunctionResultType = func.returnType.name;
       this.enterScope(func.varBlocks, func.varBlocks);
@@ -5216,15 +5195,7 @@ export class CodeGenerator {
         ...stmt,
         value: { ...stmt.value, arguments: filteredArgs },
       };
-      // An interface-returning method's result store is a `return`: ENO first
-      const storeReturns =
-        this.interfaceReturnMethod &&
-        this.currentFunctionName !== undefined &&
-        this.generateLvalue(stmt.target) ===
-          `${this.currentFunctionName}_result`;
       this.emitEnEnoWrapper(indent, enExpr, enoVar, (bi) => {
-        if (storeReturns && enoVar !== null)
-          this.emit(`${bi}${enoVar} = true;`);
         this.generateAssignmentStatement(stripped, bi);
       });
       return;
@@ -5261,27 +5232,8 @@ export class CodeGenerator {
         ? this.lastFieldBitIndex(stmt.target)
         : undefined;
     if (stmt.target.kind === "VariableExpression" && bitIdx !== undefined) {
-      // Build the base variable (without the bit index)
-      const baseVar: VariableExpression = {
-        ...stmt.target,
-        fieldAccess: stmt.target.fieldAccess.slice(0, -1),
-      };
-      // Also trim the accessChain if present
-      if (stmt.target.accessChain) {
-        const trimmed = this.trimLastFieldFromAccessChain(
-          stmt.target.accessChain,
-        );
-        if (trimmed) {
-          baseVar.accessChain = trimmed;
-        } else {
-          delete baseVar.accessChain;
-        }
-      }
-      const baseCode = this.generateLvalue(baseVar);
       const value = this.generateExpression(stmt.value);
-      this.emit(
-        `${indent}${baseCode} = (${baseCode} & ~(1ULL << ${bitIdx})) | ((${value} ? 1ULL : 0ULL) << ${bitIdx});`,
-      );
+      this.emit(`${indent}${this.bitStore(stmt.target, value)!}`);
       return;
     }
 
@@ -5306,16 +5258,6 @@ export class CodeGenerator {
       stmt.value,
       this.generateExpression(stmt.value),
     );
-
-    // For interface-returning methods, convert assignment to result var into return statement
-    if (
-      this.interfaceReturnMethod &&
-      this.currentFunctionName &&
-      target === `${this.currentFunctionName}_result`
-    ) {
-      this.emit(`${indent}return ${value};`);
-      return;
-    }
 
     const checked = this.subrangeStore(stmt.target, value, stmt.value);
     this.emit(`${indent}${target} = ${checked ?? value};`);
@@ -5651,8 +5593,20 @@ export class CodeGenerator {
       if (trimmed) baseVar.accessChain = trimmed;
       else delete baseVar.accessChain;
     }
+    const bit = (base: string): string =>
+      `(${base} & ~(1ULL << ${bitIdx})) | ((${value} ? 1ULL : 0ULL) << ${bitIdx})`;
+    // A bit of a scalar VAR_EXTERNAL: read and written through its pointer
+    if (
+      baseVar.fieldAccess.length === 0 &&
+      !baseVar.isDereference &&
+      this.programExternals.has(target.name.toUpperCase()) &&
+      !this.compositeExternals.has(target.name.toUpperCase())
+    ) {
+      const read = `${target.name}->read()`;
+      return `${target.name}->write(static_cast<decltype(${read})>(${bit(read)}));`;
+    }
     const baseCode = this.generateLvalue(baseVar);
-    return `${baseCode} = (${baseCode} & ~(1ULL << ${bitIdx})) | ((${value} ? 1ULL : 0ULL) << ${bitIdx});`;
+    return `${baseCode} = ${bit(baseCode)};`;
   }
 
   /** Write the queued copy-outs of the current statement. */
@@ -5915,6 +5869,13 @@ export class CodeGenerator {
         (isCompositeGlobal(value) || isUnionMember(value))
       ) {
         result.push({ value });
+      } else if (
+        (arg.isOutput || param.blockType === "VAR_OUTPUT") &&
+        rendersBound(value) &&
+        this.programExternals.has(value.name.toUpperCase())
+      ) {
+        // A scalar VAR_EXTERNAL (or a bit of one) is read and written through its pointer
+        result.push({ value, cppType: this.inOutParamType(param.type) });
       }
     }
     return result;
@@ -6598,14 +6559,7 @@ export class CodeGenerator {
       this.emit(`${indent}return ${this.returnValueOverride};`);
       return;
     }
-    if (this.interfaceReturnMethod) {
-      // Interface-returning methods: the assignment-based return path (methodName := expr)
-      // directly emits `return expr;`. A bare `RETURN;` has no value to return, so we
-      // default to `return *this;` which is correct for the common pattern where the
-      // method returns its own FB as the interface implementor. Edge case: if the method
-      // should return a different object, the user must use the assignment form instead.
-      this.emit(`${indent}return *this;`);
-    } else if (this.currentFunctionName) {
+    if (this.currentFunctionName) {
       this.emit(`${indent}return ${this.currentFunctionName}_result;`);
     } else {
       this.emit(`${indent}return;`);
@@ -6795,7 +6749,8 @@ export class CodeGenerator {
       case "STRING": {
         // rawValue includes surrounding single quotes: 'hello' → strip them
         const inner = expr.rawValue.replace(/^'|'$/g, "");
-        const escaped = translateIECString(inner);
+        // A stored STRING ends at $00: the literal is the text before it
+        const escaped = translateIECString(stringBodyBeforeNul(inner).body);
         return `"${escaped}"`;
       }
       case "WSTRING": {
@@ -6804,7 +6759,10 @@ export class CodeGenerator {
         // (wchar_t — wchar_t is 32-bit on Linux/AVR, so L"…" wouldn't
         // bind to IECWStringVar's char16_t* constructor).
         const wInner = expr.rawValue.replace(/^["']|["']$/g, "");
-        const wEscaped = translateIECString(wInner, true);
+        const wEscaped = translateIECString(
+          stringBodyBeforeNul(wInner, true).body,
+          true,
+        );
         return `u"${wEscaped}"`;
       }
       case "CHAR":
@@ -8960,7 +8918,7 @@ export class CodeGenerator {
         return `REF(${args[0] ?? ""})`;
       }
 
-      // 0b. LOWER_BOUND/UPPER_BOUND(arr, dim) → arr.lower_bound(dim) / arr.upper_bound(dim)
+      // 0b. LOWER_BOUND/UPPER_BOUND(arr, dim) → arr.lower_bound(dim), or the checked iec_lower_bound
       if (nameUpper === "LOWER_BOUND" || nameUpper === "UPPER_BOUND") {
         const method =
           nameUpper === "LOWER_BOUND" ? "lower_bound" : "upper_bound";
@@ -8984,7 +8942,11 @@ export class CodeGenerator {
         }
         const arrExpr = this.generateExpression(arr);
         const dimExpr = this.generateExpression(dim);
-        return `${arrExpr}.${method}(${dimExpr})`;
+        // A literal DIM is checked against the rank; any other faults out of range
+        if (dim.kind === "LiteralExpression" && dim.literalType === "INT") {
+          return `${arrExpr}.${method}(${dimExpr})`;
+        }
+        return `strucpp::iec_${method}(${arrExpr}, ${dimExpr}, ${this.faultSite(dim)})`;
       }
 
       // 1. Check for *_TO_* conversion pattern (e.g., INT_TO_REAL -> TO_REAL)
@@ -10128,6 +10090,22 @@ export class CodeGenerator {
   }
 
   /**
+   * The initialiser of a FUNCTION / METHOD / property result: the type's own
+   * default, else what a local of the type gets, so every path returns it.
+   */
+  private resultInit(type: TypeReference, cppType: string): string {
+    const typeDefault =
+      this.ast !== undefined &&
+      (type.referenceKind ?? "none") === "none" &&
+      type.arrayDimensions === undefined
+        ? typeDefaultOf(this.ast, type.name)
+        : undefined;
+    return typeDefault !== undefined
+      ? ` = ${this.generateInitializer(typeDefault, cppType, type.name)}`
+      : this.scalarTypeInit(type);
+  }
+
+  /**
    * `{}` (or `{lower bound}` for a subrange) for a variable of a TYPE that is
    * an alias of an elementary or enumeration type, or a subrange. Its C++
    * type is the raw value type, which a member or local declared without an
@@ -10618,11 +10596,11 @@ export class CodeGenerator {
    */
   private extractEnEno(args: Argument[]): {
     enExpr: string | null;
-    enoVar: string | null;
+    enoVar: Expression | null;
     filteredArgs: Argument[];
   } {
     let enExpr: string | null = null;
-    let enoVar: string | null = null;
+    let enoVar: Expression | null = null;
     const filteredArgs: Argument[] = [];
 
     for (const arg of args) {
@@ -10630,7 +10608,7 @@ export class CodeGenerator {
       if (nameUpper === "EN" && !arg.isOutput) {
         enExpr = this.generateExpression(arg.value);
       } else if (nameUpper === "ENO" && arg.isOutput) {
-        enoVar = this.generateExpression(arg.value);
+        enoVar = arg.value;
       } else {
         filteredArgs.push(arg);
       }
@@ -10653,7 +10631,7 @@ export class CodeGenerator {
    * Emit an EN/ENO wrapper around a body-emitting callback.
    *
    * Two ENO sinks are reflected uniformly:
-   *   - `enoVar`              — the caller's `ENO => var` binding, if any.
+   *   - `enoVar`              — the caller's `ENO => var` target, if any.
    *   - `instanceEnoTarget`   — the FB instance's implicit ENO member
    *                             (e.g. `inst.ENO`), passed for FB calls so
    *                             `IF inst.ENO THEN ...` reads the right
@@ -10668,7 +10646,7 @@ export class CodeGenerator {
   private emitEnEnoWrapper(
     indent: string,
     enExpr: string | null,
-    enoVar: string | null,
+    enoVar: Expression | null,
     emitBody: (bodyIndent: string) => void,
     instanceEnoTarget: string | null = null,
     instanceEnoDeclared = false,
@@ -10677,7 +10655,7 @@ export class CodeGenerator {
     // caller's ENO => target then reads it.
     if (instanceEnoDeclared && instanceEnoTarget !== null) {
       const copyOut = (atIndent: string, value: string): void => {
-        if (enoVar !== null) this.emit(`${atIndent}${enoVar} = ${value};`);
+        if (enoVar !== null) this.emitCaptureToLvalue(enoVar, value, atIndent);
       };
       const run = (atIndent: string): void => {
         this.emit(`${atIndent}${instanceEnoTarget} = true;`);
@@ -10697,12 +10675,13 @@ export class CodeGenerator {
       this.emit(`${indent}}`);
       return;
     }
-    const targets = [enoVar, instanceEnoTarget].filter(
-      (t): t is string => t !== null,
-    );
+    // The caller's ENO => target is a store (a VAR_EXTERNAL writes through)
     const writeTargets = (atIndent: string, value: boolean): void => {
-      for (const t of targets) {
-        this.emit(`${atIndent}${t} = ${value};`);
+      if (enoVar !== null) {
+        this.emitCaptureToLvalue(enoVar, String(value), atIndent);
+      }
+      if (instanceEnoTarget !== null) {
+        this.emit(`${atIndent}${instanceEnoTarget} = ${value};`);
       }
     };
 
@@ -11121,15 +11100,16 @@ export class CodeGenerator {
       !target.isDereference &&
       this.compositeExternals.has(target.name.toUpperCase())
     ) {
-      const ptr = this.resolveVariableBaseName(target.name);
-      const lv = this.renderAccessTail(
-        "(*__glk)",
-        target,
-        target.name.toUpperCase(),
-      );
-      this.emit(
-        `${indent}${ptr}->with_lock([&](auto* __glk){ ${lv} = ${source}; });`,
-      );
+      this.emit(`${indent}${this.compositeGlobalStore(target, source)}`);
+      return;
+    }
+    // A bit (`w.3`): the word with that bit set, a VAR_EXTERNAL's through its pointer
+    const bitStore =
+      target.kind === "VariableExpression"
+        ? this.bitStore(target, source)
+        : undefined;
+    if (bitStore !== undefined) {
+      this.emit(`${indent}${bitStore}`);
       return;
     }
     // Scalar VAR_EXTERNAL capture → the shared global is a pointer, so its value

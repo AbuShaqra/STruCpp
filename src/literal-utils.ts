@@ -140,6 +140,43 @@ export function charLiteralUnits(raw: string): {
   return { wide, units };
 }
 
+/**
+ * A STRING / WSTRING literal body (between the quotes, escapes still written)
+ * cut before its first NUL (`$00`, `$0000` in a WSTRING): a stored string ends
+ * there. `dropped` is set when characters follow the NUL.
+ */
+export function stringBodyBeforeNul(
+  inner: string,
+  wide = false,
+): { body: string; dropped: boolean } {
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i]!;
+    if (ch === "\0") {
+      return { body: inner.slice(0, i), dropped: i + 1 < inner.length };
+    }
+    if (ch !== "$" || i + 1 >= inner.length) continue;
+    // Same escape rule as translateIECString: $XXXX (WSTRING), then $XX
+    const digits =
+      wide && /^[0-9A-Fa-f]{4}$/.test(inner.substring(i + 1, i + 5))
+        ? 4
+        : /^[0-9A-Fa-f]{2}$/.test(inner.substring(i + 1, i + 3))
+          ? 2
+          : 0;
+    if (digits === 0) {
+      i++;
+      continue;
+    }
+    if (parseInt(inner.substring(i + 1, i + 1 + digits), 16) === 0) {
+      return {
+        body: inner.slice(0, i),
+        dropped: i + 1 + digits < inner.length,
+      };
+    }
+    i += digits;
+  }
+  return { body: inner, dropped: false };
+}
+
 /** An integer constant written as a literal (typed, signed or in parentheses): its exact value. */
 export function exactIntegerValue(expr: Expression): bigint | undefined {
   if (expr.kind === "ParenthesizedExpression") {

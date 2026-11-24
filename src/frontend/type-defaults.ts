@@ -82,6 +82,26 @@ export function applyTypeDefaults(unit: CompilationUnit): void {
 }
 
 /**
+ * The TYPE-level default of `typeName` (through aliases) in `unit`, for a
+ * storage no declaration carries, such as a FUNCTION or METHOD result.
+ */
+export function typeDefaultOf(
+  unit: CompilationUnit,
+  typeName: string,
+): Expression | undefined {
+  const defaults = new Map<string, Expression>();
+  const aliasTargets = new Map<string, string>();
+  for (const td of unit.types) {
+    const key = td.name.toUpperCase();
+    if (td.defaultValue) defaults.set(key, td.defaultValue);
+    if (td.definition.kind === "TypeReference") {
+      aliasTargets.set(key, td.definition.name.toUpperCase());
+    }
+  }
+  return resolveDefault(typeName, defaults, aliasTargets);
+}
+
+/**
  * Find the default for `typeName`, following alias chains until one is found.
  */
 function resolveDefault(
