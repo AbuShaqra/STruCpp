@@ -1111,4 +1111,13 @@ test file); without the feature it is 254.
   library's length too.
 - The debugger shows strings of 254 characters only: a plain STRING or WSTRING (80) is left out of the
   debug table with a build warning (`Declare it as STRING(254) to expose it`); an ARRAY of them is left
-  out whole, with one warning (`Declare them as STRING(254) to expose them`).
+  out whole, with one warning (`Declare them as STRING(254) to expose them`). A string member of the elements of an ARRAY
+  of STRUCT or FUNCTION_BLOCK gets one warning for all elements, its indices written `[*]`
+  (`I.ARR[*].NAME`). A string a library declares cannot be redeclared by the program, so its warning
+  names the library type instead (`It is declared in the library type FB_X, so it cannot be exposed
+  here`).
+- A STRING or WSTRING `VAR_IN_OUT` written without a length has the default length (80 with the feature,
+  254 without): a variable of that length binds to it by reference; one of another length, `STRING(254)`
+  under the feature or `STRING(80)` without it, is passed by copy-in / copy-out with a warning, the copy
+  back cut at the variable's length. This holds for a program's own FUNCTION, FUNCTION_BLOCK and METHOD
+  as for a library's.

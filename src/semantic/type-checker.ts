@@ -10,6 +10,7 @@
  * Sub-Phase C: Validates type rules (assignment compatibility, conditions, FOR vars, function args).
  */
 
+import { IEC_DEFAULT_STRING_LENGTH } from "./string-default-length.js";
 import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import type {
   ASTNode,
@@ -7734,8 +7735,19 @@ export class TypeChecker {
         length !== undefined ? `${t.name}(${String(length)})` : t.name;
       return describeReferenceShape({ chain: levels, base });
     };
-    const key = (t: AccessType): string =>
-      describe({ ...t, name: canonicalElementaryName(t.name.toUpperCase()) });
+    // A STRING / WSTRING without a length here is one of 254 (the feature
+    // string_default_80 gives every plain one its length before this).
+    const key = (t: AccessType): string => {
+      const name = canonicalElementaryName(t.name.toUpperCase());
+      const plainString =
+        (name === "STRING" || name === "WSTRING") &&
+        (t as { maxLength?: number | string }).maxLength === undefined;
+      return describe({
+        ...t,
+        name,
+        ...(plainString ? { maxLength: IEC_DEFAULT_STRING_LENGTH } : {}),
+      });
+    };
     if (key(param) === key(arg)) return undefined;
     return {
       param: describe(param).toUpperCase(),

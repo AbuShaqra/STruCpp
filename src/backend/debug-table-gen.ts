@@ -612,11 +612,37 @@ export function generateDebugTable(
     return undefined;
   };
 
+  /** The library type whose members the walk is in, if any: their declarations cannot change here. */
+  let libraryOwner: string | undefined;
+  /** Run `walk` with `owner` as the library type, unless the walk is already inside one. */
+  const inLibraryType = (owner: string, walk: () => void): void => {
+    const outer = libraryOwner;
+    libraryOwner ??= owner;
+    try {
+      walk();
+    } finally {
+      libraryOwner = outer;
+    }
+  };
+
   /** What to declare a skipped string as so the debugger can show it. */
   const stringAdvice = (name: string): string =>
     stringDefault === DISPATCH_STRING_CAPACITY
       ? `a plain ${name}`
       : `${name}(${DISPATCH_STRING_CAPACITY})`;
+
+  /** How the user can expose a skipped string, or why a library's cannot be. */
+  const stringRemedy = (name: string, plural: boolean): string =>
+    libraryOwner !== undefined
+      ? `${plural ? "They are" : "It is"} declared in the library type ` +
+        `${libraryOwner}, so ${plural ? "they" : "it"} cannot be exposed here.`
+      : plural
+        ? `Declare them as ${stringAdvice(name)} to expose them.`
+        : `Declare it as ${stringAdvice(name)} to expose it.`;
+
+  /** Where a default STRING length comes from: this compilation or a library's. */
+  const defaultLengthPlace = (): string =>
+    libraryOwner !== undefined ? "in its library" : "here";
 
   /**
    * Why an array whose elements are STRING / WSTRING of another length than
@@ -652,12 +678,11 @@ export function generateDebugTable(
     if (max === undefined || max === DISPATCH_STRING_CAPACITY) return undefined;
     const declared =
       length.defaultLength === true
-        ? `its elements are ${name} without a length, which holds ${max} characters here`
+        ? `its elements are ${name} without a length, which holds ${max} characters ${defaultLengthPlace()}`
         : `its elements are declared ${name}(${max})`;
     return (
       `${declared}, but the debug dispatch addresses strings as ` +
-      `${name}(${DISPATCH_STRING_CAPACITY}). Declare them as ` +
-      `${stringAdvice(name)} to expose them.`
+      `${name}(${DISPATCH_STRING_CAPACITY}). ${stringRemedy(name, true)}`
     );
   };
 
@@ -756,14 +781,14 @@ export function generateDebugTable(
       ) {
         const declared =
           typeRef.defaultLength === true
-            ? `${name} without a length holds ${typeRef.maxLength} characters here`
+            ? `${name} without a length holds ${typeRef.maxLength} characters ${defaultLengthPlace()}`
             : `declared ${name}(${typeRef.maxLength})`;
         skipped.push({
           path,
           reason:
             `${declared}, but the debug dispatch ` +
             `addresses strings as ${name}(${DISPATCH_STRING_CAPACITY}). ` +
-            `Declare it as ${stringAdvice(name)} to expose it.`,
+            stringRemedy(name, false),
         });
         return;
       }
@@ -809,7 +834,13 @@ export function generateDebugTable(
           });
           return;
         }
-        visitStructFields(path, cppExpr, def, flags);
+        if (symbolTables.globalScope.definedByLibrary(name)) {
+          inLibraryType(name, () =>
+            visitStructFields(path, cppExpr, def, flags),
+          );
+        } else {
+          visitStructFields(path, cppExpr, def, flags);
+        }
         return;
       }
       if (def.kind === "ArrayDefinition") {
@@ -938,59 +969,61 @@ export function generateDebugTable(
       // `name` is the FB type declaring these members, so it is the owner for
       // both mangling collisions.
       if (interfaceVars.length > 0) {
-        // A VAR_IN_OUT refers to the caller's variable (bound per call), so
-        // it has no address of its own to list.
-        for (const v of [...fbSym.inputs, ...fbSym.outputs]) {
-          visitTypeRef(
-            `${path}.${v.name.toUpperCase()}`,
-            `${cppExpr}.${libraryMemberCppName(v, name)}`,
-            v.declaration.type,
-            flags,
-          );
-        }
-
-        // The block's own VAR members, from the manifest's `locals`.
-        //
-        // Only when the instance is RETAINed. The debugger keeps its
-        // black-box view of a library block everywhere else — the
-        // long-standing contract, and what stops a project instantiating a few
-        // hundred OSCAT blocks from paying for internals nobody addresses.
-        // Retain overrides it because a block restored from half its state
-        // comes back in a configuration it could never have run into: a TON
-        // with Q and ET but no STATE restarts its wait on the next scan.
-        // Two reasons to descend into a library block's own VAR members:
-        // the instance is RETAINed, or the library itself declared one of them
-        // `VAR RETAIN` — which retains it in every instance, exactly as it
-        // does for a user-defined block.
-        const instanceRetained = (flags & LEAF_FLAG_RETAIN) !== 0;
-        const localsToWalk = instanceRetained
-          ? fbSym.locals
-          : fbSym.locals.filter((v) => v.isRetain);
-        if (localsToWalk.length > 0 || instanceRetained) {
-          if (instanceRetained && fbSym.locals.length === 0) {
-            // An archive whose manifest does not export locals. Retain still
-            // covers the visible surface — refusing the build would strand
-            // anyone using a third-party .stlib they cannot rebuild — but it
-            // is a partial retain, so it is said out loud rather than left to
-            // be discovered after a power cycle.
-            incomplete.push({
-              path,
-              reason:
-                `RETAIN on ${typeRef.name}: this library does not export the ` +
-                `block's internal variables, so only its inputs and outputs ` +
-                `are retained. Rebuild the library with a current STruC++ to ` +
-                `retain the rest.`,
-            });
-          }
-          for (const v of localsToWalk) {
+        inLibraryType(name, () => {
+          // A VAR_IN_OUT refers to the caller's variable (bound per call), so
+          // it has no address of its own to list.
+          for (const v of [...fbSym.inputs, ...fbSym.outputs]) {
             visitTypeRef(
               `${path}.${v.name.toUpperCase()}`,
               `${cppExpr}.${libraryMemberCppName(v, name)}`,
               v.declaration.type,
-              v.isRetain ? flags | LEAF_FLAG_RETAIN : flags,
+              flags,
             );
           }
-        }
+
+          // The block's own VAR members, from the manifest's `locals`.
+          //
+          // Only when the instance is RETAINed. The debugger keeps its
+          // black-box view of a library block everywhere else — the
+          // long-standing contract, and what stops a project instantiating a few
+          // hundred OSCAT blocks from paying for internals nobody addresses.
+          // Retain overrides it because a block restored from half its state
+          // comes back in a configuration it could never have run into: a TON
+          // with Q and ET but no STATE restarts its wait on the next scan.
+          // Two reasons to descend into a library block's own VAR members:
+          // the instance is RETAINed, or the library itself declared one of them
+          // `VAR RETAIN` — which retains it in every instance, exactly as it
+          // does for a user-defined block.
+          const instanceRetained = (flags & LEAF_FLAG_RETAIN) !== 0;
+          const localsToWalk = instanceRetained
+            ? fbSym.locals
+            : fbSym.locals.filter((v) => v.isRetain);
+          if (localsToWalk.length > 0 || instanceRetained) {
+            if (instanceRetained && fbSym.locals.length === 0) {
+              // An archive whose manifest does not export locals. Retain still
+              // covers the visible surface — refusing the build would strand
+              // anyone using a third-party .stlib they cannot rebuild — but it
+              // is a partial retain, so it is said out loud rather than left to
+              // be discovered after a power cycle.
+              incomplete.push({
+                path,
+                reason:
+                  `RETAIN on ${typeRef.name}: this library does not export the ` +
+                  `block's internal variables, so only its inputs and outputs ` +
+                  `are retained. Rebuild the library with a current STruC++ to ` +
+                  `retain the rest.`,
+              });
+            }
+            for (const v of localsToWalk) {
+              visitTypeRef(
+                `${path}.${v.name.toUpperCase()}`,
+                `${cppExpr}.${libraryMemberCppName(v, name)}`,
+                v.declaration.type,
+                v.isRetain ? flags | LEAF_FLAG_RETAIN : flags,
+              );
+            }
+          }
+        });
       } else {
         for (const block of fbSym.declaration.varBlocks) {
           if (
@@ -1312,7 +1345,37 @@ export function generateDebugTable(
       : {}),
   };
 
-  return { debugTableCpp, debugMap, skipped, incomplete };
+  return {
+    debugTableCpp,
+    debugMap,
+    skipped: collapseElementSkips(skipped),
+    incomplete,
+  };
+}
+
+/**
+ * One entry for the same member of every element of an array left out for
+ * the same reason, its indices written `[*]` (`I.ARR[*].S`); any other entry
+ * as it is, in the order first seen.
+ */
+export function collapseElementSkips(
+  skipped: ReadonlyArray<{ path: string; reason: string }>,
+): Array<{ path: string; reason: string }> {
+  const groups = new Map<string, Array<{ path: string; reason: string }>>();
+  for (const item of skipped) {
+    const key = `${item.path.replace(/\[[^\]]*\]/g, "[*]")}\u0000${item.reason}`;
+    const group = groups.get(key);
+    if (group) group.push(item);
+    else groups.set(key, [item]);
+  }
+  return [...groups.values()].map((group) =>
+    group.length === 1
+      ? group[0]!
+      : {
+          path: group[0]!.path.replace(/\[[^\]]*\]/g, "[*]"),
+          reason: group[0]!.reason,
+        },
+  );
 }
 
 // ---------------------------------------------------------------------------
