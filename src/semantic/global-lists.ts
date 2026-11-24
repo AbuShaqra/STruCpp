@@ -221,6 +221,9 @@ export interface GlobalListScope {
 
 /** Rewrites qualified global list access in statements, reporting what it refuses. */
 export class GlobalListResolver {
+  /** Accesses, calls and FOR loops left unresolved by an error reported here. */
+  readonly refused = new WeakSet<object>();
+
   constructor(
     private readonly lists: GlobalLists,
     private readonly enabled: boolean,
@@ -262,9 +265,11 @@ export class GlobalListResolver {
     name: string,
     span: SourceSpan,
     scope: GlobalListScope,
+    node?: object,
   ): void {
     const owners = this.lists.ambiguous.get(name.toUpperCase());
     if (!owners || scope.resolvesOtherwise(name)) return;
+    if (node !== undefined) this.refused.add(node);
     this.report({
       message: `'${name}' is declared in lists ${owners.join(" and ")}; qualify it as ${owners.map((o) => `${o}.${name}`).join(" or ")}`,
       span,
@@ -308,7 +313,12 @@ export class GlobalListResolver {
         stmt.pointer = ex(stmt.pointer);
         break;
       case "ForStatement":
-        this.checkUnqualified(stmt.controlVariable, stmt.sourceSpan, scope);
+        this.checkUnqualified(
+          stmt.controlVariable,
+          stmt.sourceSpan,
+          scope,
+          stmt,
+        );
         stmt.start = ex(stmt.start);
         stmt.end = ex(stmt.end);
         if (stmt.step) stmt.step = ex(stmt.step);
@@ -519,11 +529,14 @@ export class GlobalListResolver {
     const list =
       member === undefined ? undefined : this.listFor(expr.name, scope);
     if (member === undefined || !list) {
-      this.checkUnqualified(expr.name, expr.sourceSpan, scope);
+      this.checkUnqualified(expr.name, expr.sourceSpan, scope, expr);
       return;
     }
     const name = this.target(list, member, expr.sourceSpan, scope);
-    if (name === undefined) return;
+    if (name === undefined) {
+      this.refused.add(expr);
+      return;
+    }
     expr.globalList = list.name;
     expr.name = name;
     expr.fieldAccess = expr.fieldAccess.slice(1);
@@ -544,11 +557,14 @@ export class GlobalListResolver {
     const member = parts[1];
     const list = member === undefined ? undefined : this.listFor(head, scope);
     if (member === undefined || !list) {
-      this.checkUnqualified(head, expr.sourceSpan, scope);
+      this.checkUnqualified(head, expr.sourceSpan, scope, expr);
       return;
     }
     const name = this.target(list, member, expr.sourceSpan, scope);
-    if (name === undefined) return;
+    if (name === undefined) {
+      this.refused.add(expr);
+      return;
+    }
     expr.globalList = list.name;
     expr.functionName = [name, ...parts.slice(2)].join(".");
   }

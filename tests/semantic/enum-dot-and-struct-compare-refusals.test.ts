@@ -85,17 +85,20 @@ END_PROGRAM
     ).toBe(true);
   });
 
-  it("reports no other pass-3 error then", () => {
+  it("reports the other pass-3 errors too", () => {
     const src = `PROGRAM P
 VAR n : INT; END_VAR
 n := TRUE + 'x';
 undeclared := 1;
 END_PROGRAM
 `;
-    // The undeclared name is pass 3's: still hidden behind the type error
+    // The undeclared name is pass 3's: reported with the type error
     expect(
-      compile(src, IEC3).errors.map((e) => `${e.line}:${e.column}`),
-    ).toEqual(["3:6"]);
+      compile(src, IEC3).errors.map((e) => `${e.line}:${e.column} ${e.message}`),
+    ).toEqual([
+      expect.stringMatching(/^3:6 /),
+      "4:1 Undeclared variable 'UNDECLARED'",
+    ]);
   });
 });
 

@@ -339,7 +339,7 @@ METHOD M : INT
 M := xs;
 END_METHOD
 END_FUNCTION_BLOCK
-VAR_GLOBAL xs : INT := fs.M(); fs : FB_S; END_VAR
+VAR_GLOBAL xs : INT := fs.M(); fs : FB_S; gy : INT; END_VAR
 PROGRAM Main END_PROGRAM
 `),
       ),

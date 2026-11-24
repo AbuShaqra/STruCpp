@@ -372,7 +372,7 @@ END_PROGRAM
     ).toHaveLength(1);
   });
 
-  it("keeps the later passes gated by a real type error", () => {
+  it("runs the later passes after a real type error", () => {
     const src = `TYPE S : STRUCT a : INT; END_STRUCT; END_TYPE
 PROGRAM Main
 VAR s1, s2 : S; t : ARRAY[0..1] OF TON; i : INT; x : INT; END_VAR
@@ -385,7 +385,7 @@ END_PROGRAM
     expect(found.some((m) => m.includes("Cannot assign STRING to INT"))).toBe(
       true,
     );
-    expect(found.some((m) => m.includes("UNDEFINEDVAR"))).toBe(false);
+    expect(found.some((m) => m.includes("UNDEFINEDVAR"))).toBe(true);
   });
 });
 

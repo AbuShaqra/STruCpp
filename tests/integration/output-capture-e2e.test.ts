@@ -122,6 +122,8 @@ int main() {
         ...(strict
           ? ["Implicit conversion from DINT to SINT is not allowed; use DINT_TO_SINT"]
           : []),
+        // Reported with the type errors, not only once they are fixed
+        ...(label === "iec-3" ? ["ADR needs the feature pointer_to"] : []),
       ]);
       if (!strict) {
         expect(r.warnings.map((w) => w.message)).toContain(

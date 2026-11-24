@@ -5251,6 +5251,11 @@ export class TypeChecker {
   private boundStdFunctionCalls = new WeakSet<FunctionCallExpression>();
   /** Standard function calls whose named arguments could not be bound. */
   private unboundStdFunctionCalls = new WeakSet<FunctionCallExpression>();
+
+  /** True when the arguments of standard function call `expr` were refused (repeated, missing or unknown). */
+  isUnboundStdCall(expr: FunctionCallExpression): boolean {
+    return this.unboundStdFunctionCalls.has(expr);
+  }
   /** Calls whose enumeration ordering arguments were checked, and whether one was refused. */
   private enumOrderingChecked = new WeakMap<FunctionCallExpression, boolean>();
 
@@ -5310,6 +5315,13 @@ export class TypeChecker {
 
   /** Function calls whose argument names were already checked. */
   private checkedFunctionCallNames = new WeakSet<FunctionCallExpression>();
+  /** Function calls with an argument naming no parameter (reported here). */
+  private misnamedArgumentCalls = new WeakSet<FunctionCallExpression>();
+
+  /** True when a named argument of `expr` names no parameter of the function it calls. */
+  hasMisnamedArguments(expr: FunctionCallExpression): boolean {
+    return this.misnamedArgumentCalls.has(expr);
+  }
 
   /**
    * `F(name := v)` of a user or library FUNCTION: each named argument must
@@ -5360,6 +5372,7 @@ export class TypeChecker {
     const known = new Set(params.map((p) => p.toUpperCase()));
     for (const arg of stripEnEno([...expr.arguments])) {
       if (arg.name === undefined || known.has(arg.name.toUpperCase())) continue;
+      this.misnamedArgumentCalls.add(expr);
       this.addError(
         `Function '${declaredName}' has no parameter named '${arg.name}'`,
         arg.sourceSpan.startLine,

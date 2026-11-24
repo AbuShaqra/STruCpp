@@ -1510,6 +1510,8 @@ function checkMode(options: CLIOptions): never {
     const analyzeOptions: Partial<CompileOptions> = {
       strict: options.strict,
       ...dialectOptions,
+      // A threaded build makes a shared global's in-out use racy (a warning)
+      ...(definesThreaded(options.cxxFlags) ? { threaded: true } : {}),
       fileName: sources[0]!.fileName,
       ...withGlobalListName(options, files[0]!, {}, true),
     };

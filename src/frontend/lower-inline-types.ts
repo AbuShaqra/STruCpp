@@ -74,7 +74,11 @@ function lowerDeclaration(
   });
   decl.type.name = name;
   delete decl.type.inlineDefinition;
+  hoistedFor.set(hoisted[hoisted.length - 1]!, decl.type);
 }
+
+/** The type reference each hoisted type was made for, renamed with it on a collision. */
+const hoistedFor = new WeakMap<TypeDeclaration, VarDeclaration["type"]>();
 
 function lowerBlocks(
   blocks: readonly VarBlock[],
@@ -112,7 +116,11 @@ function error(
   };
 }
 
-/** Drop hoisted types whose name is taken, with an error for each. */
+/**
+ * Report each hoisted type whose name is taken. It is kept under a free
+ * name, so the analysis after it sees the type its variable was declared
+ * with (no code is generated after the error).
+ */
 function rejectNameCollisions(
   hoisted: readonly TypeDeclaration[],
   declared: readonly TypeDeclaration[],
@@ -138,6 +146,13 @@ function rejectNameCollisions(
         type.sourceSpan,
       ),
     );
+    let n = 2;
+    while (taken.has(`${type.name}__${n}`)) n++;
+    type.name = `${type.name}__${n}`;
+    const ref = hoistedFor.get(type);
+    if (ref !== undefined) ref.name = type.name;
+    taken.set(type.name, type);
+    kept.push(type);
   }
   return kept;
 }
