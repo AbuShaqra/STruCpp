@@ -38,6 +38,7 @@ import type {
   MethodCallExpression,
   MethodDeclaration,
   PropertyDeclaration,
+  RefAssignStatement,
   RefExpression,
   StructDefinition,
   TypeReference,
@@ -46,21 +47,19 @@ import type {
   VariableExpression,
 } from "../frontend/ast.js";
 import { walkAST } from "../ast-utils.js";
+import { PointerFlow } from "./pointer-flow.js";
 
 /** What a global's creation reads. */
 export interface CallReads {
   /** The globals read, as `owner` maps them (upper-case). */
   globals: Set<string>;
-  /** The globals whose address the code it runs takes, and does not read. */
-  addresses: Set<string>;
   /** The first call met whose code cannot be known, and why. */
   unresolved?: { node: ASTNode; reason: string };
 }
 
-/** One body: what it reads and addresses itself, and which bodies it runs. */
+/** One body: what it reads itself, and which bodies it runs. */
 interface Unit {
   reads: Set<string>;
-  addresses: Set<string>;
   runs: Set<string>;
   unresolved?: { node: ASTNode; reason: string };
 }
@@ -75,6 +74,8 @@ interface Context {
   blocks: readonly VarBlock[];
   /** The method, function or accessor name, which holds its result. */
   result?: string;
+  /** The body's key for its locals' pointer cells (pointer-flow.ts). */
+  pou?: string;
   /** Accesses written to (assignment targets, output captures). */
   writes: ReadonlySet<ASTNode>;
 }
@@ -120,6 +121,8 @@ export class CallReadTracer {
   private readonly closures = new Map<string, CallReads>();
   /** How each unit key is built, registered when first named. */
   private readonly builders = new Map<string, () => Unit>();
+  /** What each pointer may point to. */
+  private readonly flow: PointerFlow;
 
   constructor(
     ast: CompilationUnit,
@@ -128,6 +131,7 @@ export class CallReadTracer {
     /** Each global's declaration (upper-case keys). */
     private readonly globals: ReadonlyMap<string, VarDeclaration>,
   ) {
+    this.flow = new PointerFlow(ast, owner, globals);
     for (const fb of ast.functionBlocks) {
       this.fbs.set(fb.name.toUpperCase(), fb);
     }
@@ -170,34 +174,30 @@ export class CallReadTracer {
     });
     this.units.delete(start);
     const unit = this.unit(start);
-    const out: CallReads = { globals: new Set(), addresses: new Set() };
-    // The value naming itself is not a read through code; an address in the
-    // initial value itself orders as a read does
-    for (const g of [...unit.reads, ...unit.addresses]) {
+    const out: CallReads = { globals: new Set() };
+    // The value naming itself is not a read through code
+    for (const g of unit.reads) {
       if (g !== self) out.globals.add(g);
     }
     if (unit.unresolved) out.unresolved = unit.unresolved;
     for (const key of unit.runs) {
       const reached = this.closure(key);
       for (const g of reached.globals) out.globals.add(g);
-      for (const g of reached.addresses) out.addresses.add(g);
       if (reached.unresolved) out.unresolved ??= reached.unresolved;
     }
-    for (const g of out.globals) out.addresses.delete(g);
     return out;
   }
 
-  /** What every unit reachable from `key` reads and addresses (cached whole). */
+  /** What every unit reachable from `key` reads (cached whole). */
   private closure(key: string): CallReads {
     const known = this.closures.get(key);
     if (known) return known;
-    const out: CallReads = { globals: new Set(), addresses: new Set() };
+    const out: CallReads = { globals: new Set() };
     const seen = new Set<string>([key]);
     const queue = [key];
     for (let i = 0; i < queue.length; i++) {
       const unit = this.unit(queue[i]!);
       for (const g of unit.reads) out.globals.add(g);
-      for (const g of unit.addresses) out.addresses.add(g);
       if (unit.unresolved) out.unresolved ??= unit.unresolved;
       for (const next of unit.runs) {
         if (!seen.has(next)) {
@@ -211,7 +211,7 @@ export class CallReadTracer {
   }
 
   private newUnit(): Unit {
-    return { reads: new Set(), addresses: new Set(), runs: new Set() };
+    return { reads: new Set(), runs: new Set() };
   }
 
   private unit(key: string): Unit {
@@ -267,13 +267,18 @@ export class CallReadTracer {
         self,
         blocks: method.varBlocks,
         result: method.name,
+        pou: `${fb.name}.${method.name}`,
       }),
     );
   }
 
   private runFunction(unit: Unit, f: FunctionDeclaration): void {
     this.run(unit, `fn:${f.name}`, () =>
-      this.bodyUnit(f.body, { blocks: f.varBlocks, result: f.name }),
+      this.bodyUnit(f.body, {
+        blocks: f.varBlocks,
+        result: f.name,
+        pou: `FN:${f.name}`,
+      }),
     );
   }
 
@@ -308,7 +313,14 @@ export class CallReadTracer {
       this.run(
         unit,
         `${write ? "set" : "get"}:${fb.name}.${prop.name}@${self.name}`,
-        () => this.bodyUnit(body, { fb, self, blocks, result: prop.name }),
+        () =>
+          this.bodyUnit(body, {
+            fb,
+            self,
+            blocks,
+            pou: `${write ? "set" : "get"}:${fb.name}.${prop.name}`,
+            ...(write ? {} : { result: prop.name }),
+          }),
       );
     }
   }
@@ -408,8 +420,9 @@ export class CallReadTracer {
   }
 
   /**
-   * `ADR(g)` / `REF(g)`: the address of g, not a read of it. Its indices are
-   * read, and a dereference in it reads the pointer.
+   * `ADR(g)` / `REF(g)`: the address of g, not a read of it (a dereference
+   * of it reads g, pointer-flow.ts). Its indices are read, and a dereference
+   * in it reads the pointer.
    */
   private address(operand: Expression, ctx: Context, unit: Unit): false {
     if (operand.kind !== "VariableExpression") {
@@ -417,12 +430,10 @@ export class CallReadTracer {
       return false;
     }
     const v = operand;
-    const steps = stepsOf(v);
-    if (steps.some((s) => s.kind === "dereference")) {
-      this.receiverOf(v, ctx, unit);
-    } else {
+    // ADR(p^) reads the pointer p, not what it points to
+    if (stepsOf(v).some((s) => s.kind === "dereference")) {
       const resolved = this.resolve(v.name.toUpperCase(), ctx);
-      if (resolved?.global !== undefined) unit.addresses.add(resolved.global);
+      if (resolved?.global !== undefined) unit.reads.add(resolved.global);
     }
     for (const step of v.accessChain ?? []) {
       if (step.kind === "subscript") {
@@ -461,8 +472,22 @@ export class CallReadTracer {
       const resolved = this.resolve(upper, ctx);
       if (resolved?.global !== undefined) unit.reads.add(resolved.global);
       if (resolved !== undefined) {
+        // `p^...` reads what p points to; so does any use of a REFERENCE TO
+        // other than rebinding or writing it whole
+        const ty = this.tyOf(resolved.type);
+        const reference =
+          ty !== undefined &&
+          ty !== UNKNOWN &&
+          !("array" in ty) &&
+          this.isReference(ty);
+        if (
+          steps[0]?.kind === "dereference" ||
+          (reference && !(written && steps.length === 0))
+        ) {
+          this.readTargets(upper, ctx, unit);
+        }
         r = {
-          ty: this.tyOf(resolved.type),
+          ty: reference ? this.dereferenced(ty) : ty,
           dynamic: resolved.dynamic,
           ...(resolved.exact ? { exact: resolved.exact } : {}),
         };
@@ -476,6 +501,10 @@ export class CallReadTracer {
         this.runProperty(unit, self, upper, written && steps.length === 0);
         r = { ty: this.tyOf(prop.prop.type), dynamic: false };
       }
+    }
+    // A dereference further along reads what an unknown pointer may hold
+    if (steps.slice(1).some((s) => s.kind === "dereference")) {
+      for (const g of this.flow.everyAddressed()) unit.reads.add(g);
     }
     steps.forEach((step, i) => {
       if (r.ty === undefined || r.ty === UNKNOWN) return;
@@ -512,6 +541,54 @@ export class CallReadTracer {
       }
     });
     return r;
+  }
+
+  /** A dereference of the variable `upper`: it reads what it may point to. */
+  private readTargets(upper: string, ctx: Context, unit: Unit): void {
+    const cell = this.flow.cellOf(upper, {
+      blocks: ctx.blocks,
+      ...(ctx.fb ? { fb: ctx.fb } : {}),
+      ...(ctx.pou !== undefined ? { pou: ctx.pou } : {}),
+      ...(ctx.result !== undefined ? { result: ctx.result } : {}),
+    });
+    const targets =
+      cell === undefined
+        ? this.flow.everyAddressed()
+        : this.flow.pointsTo(cell);
+    for (const g of targets) unit.reads.add(g);
+  }
+
+  /** A called name's type; a REFERENCE TO is dereferenced, reading its targets. */
+  private headType(
+    upper: string,
+    type: TypeReference | undefined,
+    ctx: Context,
+    unit: Unit,
+  ): Typed {
+    const ty = this.tyOf(type);
+    if (ty === undefined || ty === UNKNOWN || "array" in ty) return ty;
+    if (!this.isReference(ty)) return ty;
+    this.readTargets(upper, ctx, unit);
+    return this.dereferenced(ty);
+  }
+
+  /** `ty` (a REFERENCE TO) with its reference taken off. */
+  private dereferenced(ty: Ty): Typed {
+    const base = this.deAlias(ty);
+    return base === undefined || base === UNKNOWN || "array" in base
+      ? base
+      : { name: base.name, refs: base.refs.slice(1) };
+  }
+
+  /** `ty` is a REFERENCE TO, through aliases. */
+  private isReference(ty: Ty): boolean {
+    const base = this.deAlias(ty);
+    return (
+      base !== undefined &&
+      base !== UNKNOWN &&
+      !("array" in base) &&
+      base.refs[0] === "reference_to"
+    );
   }
 
   private exactly(fb: FunctionBlockDeclaration): Receiver {
@@ -557,6 +634,9 @@ export class CallReadTracer {
     if (base.refs.some((k) => k !== "reference_to")) {
       return { ty: UNKNOWN, dynamic: false };
     }
+    if (base.refs.length > 0) {
+      for (const g of this.flow.everyAddressed()) unit.reads.add(g);
+    }
     const struct = this.structs.get(base.name);
     if (struct !== undefined) {
       const f = struct.fields.find((d) =>
@@ -592,6 +672,8 @@ export class CallReadTracer {
     let dynamic = r.dynamic;
     let refs = base.refs;
     if (refs[0] === "reference_to") {
+      // A REFERENCE TO reached through a member: what it holds is not known
+      for (const g of this.flow.everyAddressed()) unit.reads.add(g);
       refs = refs.slice(1);
       dynamic = true;
     }
@@ -661,7 +743,7 @@ export class CallReadTracer {
         if (resolved.global !== undefined) unit.reads.add(resolved.global);
         return this.callInstance(
           {
-            ty: this.tyOf(resolved.type),
+            ty: this.headType(name, resolved.type, ctx, unit),
             dynamic: resolved.dynamic,
             ...(resolved.exact ? { exact: resolved.exact } : {}),
           },
@@ -692,7 +774,7 @@ export class CallReadTracer {
       if (resolved === undefined) return; // a namespace or library call
       if (resolved.global !== undefined) unit.reads.add(resolved.global);
       r = {
-        ty: this.tyOf(resolved.type),
+        ty: this.headType(head, resolved.type, ctx, unit),
         dynamic: resolved.dynamic,
         ...(resolved.exact ? { exact: resolved.exact } : {}),
       };
@@ -947,6 +1029,8 @@ function writtenAccesses(roots: readonly ASTNode[]): Set<ASTNode> {
     walkAST(root, (node) => {
       if (node.kind === "AssignmentStatement") {
         out.add((node as AssignmentStatement).target);
+      } else if (node.kind === "RefAssignStatement") {
+        out.add((node as RefAssignStatement).target);
       } else if (node.kind === "Argument" && (node as Argument).isOutput) {
         out.add((node as Argument).value);
       }

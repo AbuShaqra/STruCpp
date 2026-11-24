@@ -274,6 +274,63 @@ PROGRAM Main END_PROGRAM
     );
   });
 
+  it("reads what a dereferenced pointer may point to: a real cycle is reported", () => {
+    expect(
+      compile(`FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := gp^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_A
+METHOD Addr : POINTER TO INT
+Addr := ADR(gb);
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  a : FB_A;
+  k : FB_K;
+  gb : INT := k.Get();
+  gp : POINTER TO INT := a.Addr();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL gb : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := gb;
+END_PROGRAM
+`).errors.map((e) => e.message),
+    ).toEqual([
+      "The initial value of global 'GB' reads 'GB' itself, through the code it calls",
+    ]);
+    expect(
+      compile(`FUNCTION_BLOCK FB_F
+METHOD M : INT
+VAR p : POINTER TO INT; END_VAR
+p := ADR(gb);
+M := p^ + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 42 + x * 0;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  f : FB_F;
+  k : FB_K;
+  x : INT := f.M();
+  gb : INT := k.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`).errors.map((e) => e.message),
+    ).toEqual([
+      "The initial values of the globals 'X' and 'GB' depend on each other (X -> GB -> X)",
+    ]);
+  });
+
   it("refuses a call that reads the global itself", () => {
     expect(
       located(
