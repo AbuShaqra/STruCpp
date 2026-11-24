@@ -6415,6 +6415,46 @@ export class TypeChecker {
   // Validation Helpers
   // ===========================================================================
 
+  /**
+   * Marks each integer `**` whose result is stored as an integer (through
+   * parentheses, unary +/- and integer arithmetic) with a non-negative-constant
+   * or variable integer exponent: it is computed as an exact integer power.
+   */
+  private markIntegerPowers(value: Expression): void {
+    switch (value.kind) {
+      case "ParenthesizedExpression":
+        this.markIntegerPowers(value.expression);
+        return;
+      case "UnaryExpression":
+        if (value.operator !== "NOT") this.markIntegerPowers(value.operand);
+        return;
+      case "BinaryExpression": {
+        const integer = (e: Expression): boolean =>
+          e.resolvedType !== undefined && this.isIntegerType(e.resolvedType);
+        if (!integer(value)) return;
+        if (value.operator === "**") {
+          const exponent = this.constantIntegerValue(value.right);
+          if (
+            integer(value.left) &&
+            integer(value.right) &&
+            (exponent === undefined || exponent >= 0n)
+          ) {
+            value.integerPower = true;
+            this.markIntegerPowers(value.left);
+          }
+          return;
+        }
+        if (["+", "-", "*", "/", "MOD"].includes(value.operator)) {
+          this.markIntegerPowers(value.left);
+          this.markIntegerPowers(value.right);
+        }
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
   private validateAssignment(
     targetType: IECType | undefined,
     valueType: IECType | undefined,
@@ -6429,6 +6469,9 @@ export class TypeChecker {
       valueType = value.resolvedType;
     }
     if (this.strict) this.warnConstantOverflow(targetType, value);
+    if (targetType !== undefined && this.isIntegerType(targetType)) {
+      this.markIntegerPowers(value);
+    }
     const targetInterface = this.interfaceTypeOf(targetType);
     if (targetInterface !== undefined) {
       this.checkInterfaceValue(targetInterface, valueType, value);
@@ -6519,6 +6562,17 @@ export class TypeChecker {
           );
           return;
         }
+      }
+
+      // `1 + 1`, `4294967295 + 1` into a UDINT: an untyped integer constant expression adapts as a literal does
+      if (
+        this.untypedConstantKind(value) === "INT" &&
+        targetType.typeKind === "elementary" &&
+        this.aliasBase((targetType as ElementaryType).name) !== "BOOL" &&
+        (_isTypeInCategory(targetType, "ANY_NUM") ||
+          _isTypeInCategory(targetType, "ANY_BIT"))
+      ) {
+        return;
       }
 
       this.addError(

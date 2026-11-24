@@ -29,6 +29,7 @@ import {
   temporalLiteralCpp,
   formatArrayType,
   formatIntegerLiteral,
+  pastDintConstantCpp,
   isBoolLogic,
   isComparison,
   isComparisonExpr,
@@ -929,9 +930,9 @@ export class TypeCodeGenerator {
       case "VariableExpression":
         return this.variableToCpp(expr);
       case "BinaryExpression":
-        return this.binaryExprToCpp(expr);
+        return pastDintConstantCpp(expr) ?? this.binaryExprToCpp(expr);
       case "UnaryExpression":
-        return this.unaryExprToCpp(expr);
+        return pastDintConstantCpp(expr) ?? this.unaryExprToCpp(expr);
       case "ParenthesizedExpression":
         return parenthesizedCpp(expr, this.expressionToCpp(expr.expression));
       case "FunctionCallExpression":

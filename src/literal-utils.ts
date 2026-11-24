@@ -167,3 +167,60 @@ export function exactIntegerValue(expr: Expression): bigint | undefined {
     return value;
   return value > range.max ? value - (1n << BigInt(bits)) : value;
 }
+
+/**
+ * The exact value of an untyped integer constant expression (untyped literals,
+ * parentheses, unary +/- and + - * /), and whether it or any part of it lies
+ * outside DINT. Undefined for anything else, or a division by 0.
+ */
+export function untypedIntegerConstant(
+  expr: Expression,
+): { value: bigint; pastDint: boolean } | undefined {
+  const outside = (v: bigint): boolean => v > 2147483647n || v < -2147483648n;
+  switch (expr.kind) {
+    case "LiteralExpression": {
+      if (expr.literalType !== "INT" || (expr.typePrefix ?? "") !== "") {
+        return undefined;
+      }
+      const value = exactIntegerLiteralValue(expr.rawValue);
+      return value === undefined
+        ? undefined
+        : { value, pastDint: outside(value) };
+    }
+    case "ParenthesizedExpression":
+      return untypedIntegerConstant(expr.expression);
+    case "UnaryExpression": {
+      if (expr.operator !== "-" && expr.operator !== "+") return undefined;
+      const inner = untypedIntegerConstant(expr.operand);
+      if (inner === undefined) return undefined;
+      const value = expr.operator === "-" ? -inner.value : inner.value;
+      return { value, pastDint: inner.pastDint || outside(value) };
+    }
+    case "BinaryExpression": {
+      const l = untypedIntegerConstant(expr.left);
+      const r = untypedIntegerConstant(expr.right);
+      if (l === undefined || r === undefined) return undefined;
+      let value: bigint;
+      switch (expr.operator) {
+        case "+":
+          value = l.value + r.value;
+          break;
+        case "-":
+          value = l.value - r.value;
+          break;
+        case "*":
+          value = l.value * r.value;
+          break;
+        case "/":
+          if (r.value === 0n) return undefined;
+          value = l.value / r.value;
+          break;
+        default:
+          return undefined;
+      }
+      return { value, pastDint: l.pastDint || r.pastDint || outside(value) };
+    }
+    default:
+      return undefined;
+  }
+}
