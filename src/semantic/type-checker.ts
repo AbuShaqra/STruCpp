@@ -7981,11 +7981,16 @@ export class TypeChecker {
     const range = integerTypeRange(target);
     if (range === undefined) return false;
     const scope = this.lastResolvedScope;
+    // A typed literal (`DINT#5`) keeps its type; an untyped constant or a
+    // named constant is judged by its value.
+    let bare = value;
+    while (bare.kind === "ParenthesizedExpression") bare = bare.expression;
     const v =
-      this.constantIntegerValue(value) ??
-      (scope !== undefined
-        ? this.foldIntegerConstant(value, scope, 0)
-        : undefined);
+      this.untypedConstantKind(value) === "INT"
+        ? this.constantIntegerValue(value)
+        : bare.kind === "VariableExpression" && scope !== undefined
+          ? this.foldIntegerConstant(bare, scope, 0)
+          : undefined;
     if (v !== undefined) return v >= range.min && v <= range.max;
     const adapted = this.adaptedIntegerType(value, range);
     return adapted !== undefined && !isNarrowingConversion(target, adapted);

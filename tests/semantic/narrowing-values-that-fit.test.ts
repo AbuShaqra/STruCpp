@@ -5,7 +5,8 @@
  * value known to fit the target: a negative literal (`-1` into a SINT), a
  * named constant whose value fits, and arithmetic of a value no wider than
  * the target with an untyped constant that takes its type (`s + 1` is a
- * SINT). A real narrowing keeps its warning (an error under --strict).
+ * SINT). A real narrowing, a typed literal (`INT#5`) included, keeps its
+ * warning (an error under --strict).
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
@@ -63,6 +64,7 @@ describe("narrowing of a value that fits", () => {
             "s := s + 200;",
             "n := F_SINT(i);",
             "n := F_SINT(CD2);",
+            "s := INT#5;",
           ].join("\n"),
           options,
         ),
@@ -74,6 +76,7 @@ describe("narrowing of a value that fits", () => {
         n(5, "INT"),
         n(6, "INT"),
         n(7, "DINT"),
+        n(8, "INT"),
       ]);
     });
   }
