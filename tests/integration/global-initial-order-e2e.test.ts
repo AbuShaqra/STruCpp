@@ -421,5 +421,180 @@ int main() {
       });
       expect(out).toBe("7 4 2");
     });
+
+    const run = (name: string, src: string, outputs: string[]): string => {
+      const r = compile(src, { headerFileName: "generated.hpp" });
+      expect(r.errors).toEqual([]);
+      return compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: r.headerCode,
+        cppCode: r.cppCode,
+        testName: name,
+        mainCode: `#include <iostream>
+int main() {
+  strucpp::Program_MAIN p;
+  p.run();
+  std::cout${outputs.map((o) => ` << (int)p.${o} << " "`).join("")} << std::endl;
+  return 0;
+}
+`,
+      }).trim();
+    };
+
+    it("follows a bare property, a property through a member and member initial values", () => {
+      expect(
+        run(
+          "global_reads_members",
+          `FUNCTION_BLOCK FB_P
+PROPERTY P : INT
+GET
+P := gp;
+END_GET
+END_PROPERTY
+METHOD M : INT
+M := P;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_O
+VAR_OUTPUT inner : FB_P; END_VAR
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_C
+VAR v : INT := gz; END_VAR
+METHOD M : INT
+M := v;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_H
+VAR c : FB_C; END_VAR
+METHOD M : INT
+M := c.M() + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_K
+VAR_INPUT v : INT; END_VAR
+METHOD Get : INT
+Get := v;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  y2 : INT := f.M();
+  y3 : INT := o.inner.P;
+  x : INT := c.M();
+  xh : INT := h.M();
+  f : FB_P;
+  o : FB_O;
+  h : FB_H;
+  c : FB_C;
+  k1 : FB_K := (v := 6);
+  k2 : FB_K := (v := 9);
+  gp : INT := k1.Get();
+  gz : INT := k2.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL y2, y3, x, xh : INT; END_VAR
+VAR o1, o2, o3, o4 : INT; END_VAR
+o1 := y2; o2 := y3; o3 := x; o4 := xh;
+END_PROGRAM
+`,
+          ["O1", "O2", "O3", "O4"],
+        ),
+      ).toBe("6 6 9 10");
+    });
+
+    it("follows a call through a pointer, an FB member and a STRUCT member", () => {
+      expect(
+        run(
+          "global_reads_receivers",
+          `INTERFACE I_X
+METHOD M : INT
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FB_X IMPLEMENTS I_X
+VAR_OUTPUT sub : FB_Y; END_VAR
+METHOD M : INT
+M := gq;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Y
+METHOD M : INT
+M := gw;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Q
+VAR_INPUT v : INT; END_VAR
+METHOD Get : INT
+Get := v;
+END_METHOD
+END_FUNCTION_BLOCK
+TYPE ST_S : STRUCT f : FB_Y; END_STRUCT END_TYPE
+VAR_GLOBAL
+  x1 : INT := px^.M();
+  x2 : INT := fx.sub.M();
+  x3 : INT := ss.f.M();
+  fx : FB_X;
+  px : POINTER TO FB_X := ADR(fx);
+  ss : ST_S;
+  k1 : FB_Q := (v := 3);
+  k2 : FB_Q := (v := 4);
+  gq : INT := k1.Get();
+  gw : INT := k2.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x1, x2, x3 : INT; END_VAR
+VAR o1, o2, o3 : INT; END_VAR
+o1 := x1; o2 := x2; o3 := x3;
+END_PROGRAM
+`,
+          ["O1", "O2", "O3"],
+        ),
+      ).toBe("3 4 4");
+      expect(
+        run(
+          "global_reads_receivers_const",
+          `INTERFACE I_X
+METHOD M : INT
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FB_X IMPLEMENTS I_X
+VAR_OUTPUT sub : FB_Y; END_VAR
+METHOD M : INT
+M := 3;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Y
+METHOD M : INT
+M := 4;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Q
+VAR_INPUT v : INT; END_VAR
+METHOD Get : INT
+Get := v;
+END_METHOD
+END_FUNCTION_BLOCK
+TYPE ST_S : STRUCT f : FB_Y; END_STRUCT END_TYPE
+VAR_GLOBAL
+  x1 : INT := px^.M();
+  x2 : INT := fx.sub.M();
+  x3 : INT := ss.f.M();
+  fx : FB_X;
+  px : POINTER TO FB_X := ADR(fx);
+  ss : ST_S;
+  k1 : FB_Q := (v := 3);
+  k2 : FB_Q := (v := 4);
+  gq : INT := k1.Get();
+  gw : INT := k2.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x1, x2, x3 : INT; END_VAR
+VAR o1, o2, o3 : INT; END_VAR
+o1 := x1; o2 := x2; o3 := x3;
+END_PROGRAM
+`,
+          ["O1", "O2", "O3"],
+        ),
+      ).toBe("3 4 4");
+    });
   },
 );

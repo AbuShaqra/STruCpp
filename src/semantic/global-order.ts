@@ -7,9 +7,10 @@
  * target of ADR() or as the instance of a method call (`f.M()`), wherever
  * that one is declared: later in the same file or in another global variable
  * list. A global is therefore created after the globals its initial value
- * names, and after those the methods, functions and getters it calls read
- * (call-reads.ts). Without such a dependency the declaration order is kept.
- * A cycle has no order and is reported.
+ * names, and after those the code its creation runs reads: the methods,
+ * functions and accessors it calls, and an FB instance's member initial
+ * values (call-reads.ts). Without such a dependency the declaration order is
+ * kept. A cycle has no order and is reported.
  */
 
 import type {
@@ -143,18 +144,11 @@ export function orderGlobalBlocks(
   for (const item of items) {
     const self = item.name.toUpperCase();
     const named = namedGlobals(item.decl, owner).filter((n) => n !== self);
-    const value = item.decl.initialValue;
-    if (tracer !== undefined && value !== undefined) {
-      // A call reading the global itself is a cycle
-      const reads = tracer.initialValueReads(value);
+    if (tracer !== undefined) {
+      // Code reading the global itself while creating it is a cycle
+      const reads = tracer.globalReads(item.decl, self);
       for (const g of reads.globals) {
-        if (g !== self && !named.includes(g)) named.push(g);
-      }
-      if (
-        reads.globals.has(self) &&
-        !namedGlobals(item.decl, owner).includes(self)
-      ) {
-        named.push(self);
+        if (!named.includes(g)) named.push(g);
       }
       if (reads.unresolved) unresolved.set(self, reads.unresolved);
     }

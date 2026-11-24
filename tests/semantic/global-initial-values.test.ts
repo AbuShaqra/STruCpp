@@ -191,9 +191,71 @@ PROGRAM Main END_PROGRAM
       ),
     ).toEqual([
       "17:14 The initial value of global 'Z' leads to a call through an interface (line 13), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign 'Z' in a program instead",
-      "18:14 The initial value of global 'W' leads to a call through a pointer or reference (line 18), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign 'W' in a program instead",
       "20:14 The initial value of global 'V' leads to a call through an interface (line 20), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign 'V' in a program instead",
     ]);
+  });
+
+  it("follows a call through a pointer to a known function block", () => {
+    const r =
+      compile(`${FBS}VAR_GLOBAL w : INT := pa^.M(); f : FB_A; pa : POINTER TO FB_A := ADR(f); gy : INT := 4; END_VAR
+PROGRAM Main END_PROGRAM
+`);
+    expect(r.errors).toEqual([]);
+    expect(r.headerCode.indexOf("IEC_INT W =")).toBeGreaterThan(
+      r.headerCode.indexOf("IEC_INT GY = 4"),
+    );
+  });
+
+  it("gives the same result in either order of mutually recursive methods", () => {
+    const src = (first: string, second: string): string => `FUNCTION_BLOCK FB_M
+METHOD M1 : INT
+VAR_INPUT n : INT; END_VAR
+IF n > 0 THEN M1 := M2(n - 1); ELSE M1 := gk + 1; END_IF
+END_METHOD
+METHOD M2 : INT
+VAR_INPUT n : INT; END_VAR
+M2 := M1(n);
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  o : FB_M;
+  ${first}
+  ${second}
+END_VAR
+PROGRAM Main END_PROGRAM
+`;
+    const a = "g0 : INT := o.M1(0);";
+    const b = "gk : INT := o.M2(0);";
+    const messages = (text: string): string[] =>
+      compile(text).errors.map((e) => e.message);
+    const expected = [
+      "The initial value of global 'GK' reads 'GK' itself, through the code it calls",
+    ];
+    expect(messages(src(a, b))).toEqual(expected);
+    expect(messages(src(b, a))).toEqual(expected);
+  });
+
+  it("follows a call chain a thousand functions deep", () => {
+    const functions = Array.from(
+      { length: 1000 },
+      (_, i) => `FUNCTION F${i} : DINT
+VAR_INPUT a : DINT; END_VAR
+F${i} := ${i < 999 ? `F${i + 1}(a) + ` : ""}a + g0;
+END_FUNCTION
+`,
+    ).join("");
+    const r = compile(`${functions}FUNCTION_BLOCK FB0
+METHOD M : DINT
+M := F0(1);
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL i0 : FB0; h0 : DINT := i0.M(); g0 : DINT := 1; END_VAR
+PROGRAM Main END_PROGRAM
+`);
+    expect(r.errors).toEqual([]);
+    expect(r.headerCode.indexOf("IEC_DINT H0 =")).toBeGreaterThan(
+      r.headerCode.indexOf("IEC_DINT G0 = 1"),
+    );
   });
 
   it("refuses a call that reads the global itself", () => {
