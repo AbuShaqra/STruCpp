@@ -110,6 +110,7 @@ import {
 import {
   exactIntegerLiteralValue,
   integerTypeRange,
+  untypedIntegerConstant,
 } from "../literal-utils.js";
 import {
   isUntypedIntegerConstant,
@@ -6614,6 +6615,62 @@ export class TypeChecker {
   // Validation Helpers
   // ===========================================================================
 
+  /**
+   * Marks each integer `**` whose result is stored in the integer `target`
+   * (through parentheses, unary +/- and integer arithmetic) with a non-negative
+   * constant or variable integer exponent: it is an exact integer power,
+   * computed in the wider of `target` and its own type (narrower than 32 bits
+   * in DINT), so it wraps only at the target's width.
+   */
+  private markIntegerPowers(value: Expression, target: string): void {
+    switch (value.kind) {
+      case "ParenthesizedExpression":
+        this.markIntegerPowers(value.expression, target);
+        return;
+      case "UnaryExpression":
+        if (value.operator !== "NOT") {
+          this.markIntegerPowers(value.operand, target);
+        }
+        return;
+      case "BinaryExpression": {
+        const integer = (e: Expression): boolean =>
+          e.resolvedType !== undefined && this.isIntegerType(e.resolvedType);
+        if (!integer(value)) return;
+        if (value.operator === "**") {
+          const exponent = this.constantIntegerValue(value.right);
+          if (
+            integer(value.left) &&
+            integer(value.right) &&
+            (exponent === undefined || exponent >= 0n)
+          ) {
+            value.integerPower = this.powerComputeType(
+              target,
+              this.aliasBase(
+                (value.resolvedType as ElementaryType).name,
+              ).toUpperCase(),
+            );
+            this.markIntegerPowers(value.left, target);
+          }
+          return;
+        }
+        if (["+", "-", "*", "/", "MOD"].includes(value.operator)) {
+          this.markIntegerPowers(value.left, target);
+          this.markIntegerPowers(value.right, target);
+        }
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /** The wider of the integer types `target` and `own` (`target` on a tie); DINT when both are narrower. */
+  private powerComputeType(target: string, own: string): string {
+    const bits = (n: string): number => ELEMENTARY_TYPES[n]?.sizeBits ?? 32;
+    const wider = bits(own) > bits(target) ? own : target;
+    return bits(wider) < 32 ? "DINT" : wider;
+  }
+
   private validateAssignment(
     targetType: IECType | undefined,
     valueType: IECType | undefined,
@@ -6628,6 +6685,12 @@ export class TypeChecker {
       valueType = value.resolvedType;
     }
     if (this.strict) this.warnConstantOverflow(targetType, value);
+    if (targetType !== undefined && this.isIntegerType(targetType)) {
+      this.markIntegerPowers(
+        value,
+        this.aliasBase((targetType as ElementaryType).name).toUpperCase(),
+      );
+    }
     const targetInterface = this.interfaceTypeOf(targetType);
     if (targetInterface !== undefined) {
       this.checkInterfaceValue(targetInterface, valueType, value);
@@ -6718,6 +6781,19 @@ export class TypeChecker {
           );
           return;
         }
+      }
+
+      // `1 + 1`, `4294967295 + 1` into a UDINT: a non-negative untyped integer constant expression adapts as a literal does
+      const constant = untypedIntegerConstant(value);
+      if (
+        constant !== undefined &&
+        constant.value >= 0n &&
+        targetType.typeKind === "elementary" &&
+        this.aliasBase((targetType as ElementaryType).name) !== "BOOL" &&
+        (_isTypeInCategory(targetType, "ANY_NUM") ||
+          _isTypeInCategory(targetType, "ANY_BIT"))
+      ) {
+        return;
       }
 
       this.addError(
