@@ -1390,6 +1390,9 @@ export function compile(
       {
         md5: pipeline.mergedOptions.md5 ?? "",
         stringDefaultLength: pipeline.stringDefaultLength,
+        ...(pipeline.mergedOptions.globalConstants !== undefined
+          ? { globalConstants: pipeline.mergedOptions.globalConstants }
+          : {}),
       },
     );
     debugTableCpp = dbg.debugTableCpp;

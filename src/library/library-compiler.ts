@@ -35,6 +35,7 @@ import type {
   LibraryManifest,
   LibraryMethodEntry,
   LibraryPropertyEntry,
+  LibraryTypeEntry,
   LibraryVarType,
 } from "./library-manifest.js";
 import type {
@@ -42,6 +43,7 @@ import type {
   FunctionBlockDeclaration,
   MethodDeclaration,
   PropertyDeclaration,
+  TypeDeclaration,
   TypeReference,
   VarBlock,
   VarBlockType,
@@ -113,17 +115,36 @@ function serializeVarType(
   if (typeRef.referenceChain) {
     entry.referenceChain = typeRef.referenceChain;
   }
-  return entry;
+  return { ...entry, ...writtenStringLengths(typeRef) };
 }
 
 /**
- * The POINTER TO / REF_TO levels and inline-array shape of a FUNCTION
- * parameter that is not a by-reference REFERENCE TO, for the manifest.
+ * The STRING / WSTRING lengths written in `typeRef`, its own and its array
+ * element's; a default length is left out (the manifest's `stringDefaultLength`
+ * carries it).
+ */
+function writtenStringLengths(typeRef: TypeReference): {
+  maxLength?: number | string;
+  elementMaxLength?: number | string;
+} {
+  return {
+    ...(typeRef.maxLength !== undefined && typeRef.defaultLength !== true
+      ? { maxLength: typeRef.maxLength }
+      : {}),
+    ...(typeRef.elementMaxLength !== undefined &&
+    typeRef.elementDefaultLength !== true
+      ? { elementMaxLength: typeRef.elementMaxLength }
+      : {}),
+  };
+}
+
+/**
+ * The reference levels and inline-array shape of a FUNCTION parameter that is
+ * not a plain by-reference REFERENCE TO, for the manifest.
  */
 function parameterShape(
   type: TypeReference,
 ): Partial<LibraryFunctionEntry["parameters"][number]> {
-  if (type.referenceKind === "reference_to") return {};
   const shape = serializeVarType("", type);
   return {
     ...(shape.referenceKind !== undefined
@@ -144,6 +165,54 @@ function parameterShape(
   };
 }
 
+/**
+ * The STRING / WSTRING lengths of a FUNCTION or METHOD parameter for the
+ * manifest: every written one, and a plain output's or in/out's default.
+ */
+function parameterStringLengths(
+  direction: "input" | "output" | "inout",
+  type: TypeReference,
+): { maxLength?: number | string; elementMaxLength?: number | string } {
+  const written = writtenStringLengths(type);
+  const byReference = byReferenceStringLength(direction, type);
+  return {
+    ...written,
+    ...(byReference !== undefined ? { maxLength: byReference } : {}),
+  };
+}
+
+/**
+ * The manifest entry of one FUNCTION parameter: a plain REFERENCE TO is
+ * recorded as `referenceKind` alone (the form every archive reads), every
+ * other reference or ARRAY shape in full, a REFERENCE TO one included.
+ */
+export function functionParameterEntry(
+  name: string,
+  direction: "input" | "output" | "inout",
+  decl: Pick<VarDeclaration, "type" | "initialValue">,
+): LibraryFunctionEntry["parameters"][number] {
+  const initialValue =
+    decl.initialValue !== undefined
+      ? serializeInitialValue(decl.initialValue)
+      : undefined;
+  const byReference =
+    decl.type.referenceKind === "reference_to" &&
+    (decl.type.referenceChain?.length ?? 1) === 1 &&
+    decl.type.arrayDimensions === undefined;
+  return {
+    name,
+    type: decl.type.name,
+    direction,
+    ...parameterStringLengths(direction, decl.type),
+    // Present ⇒ optional input (default supplied); absent ⇒
+    // mandatory. Preserved from user ST and CODESYS-imported ST.
+    ...(initialValue !== undefined ? { initialValue } : {}),
+    ...(byReference
+      ? { referenceKind: "reference_to" as const }
+      : parameterShape(decl.type)),
+  };
+}
+
 /** The declared length of a STRING / WSTRING output or in/out (passed by reference). */
 function byReferenceStringLength(
   direction: "input" | "output" | "inout",
@@ -157,6 +226,25 @@ function byReferenceStringLength(
     return undefined;
   }
   return type.maxLength;
+}
+
+/**
+ * The base type (and STRING length) of an alias of a named or elementary
+ * type; empty for any other definition, an ARRAY or a reference included.
+ */
+function aliasBase(
+  def: TypeDeclaration["definition"],
+): Pick<LibraryTypeEntry, "baseType" | "maxLength"> {
+  if (def.kind !== "TypeReference") return {};
+  if (def.arrayDimensions !== undefined || def.referenceChain !== undefined) {
+    return {};
+  }
+  if (def.referenceKind !== "none") return {};
+  const { maxLength } = writtenStringLengths(def);
+  return {
+    baseType: def.name,
+    ...(maxLength !== undefined ? { maxLength } : {}),
+  };
 }
 
 /** The parameter direction of a POU var block; undefined for a block of locals. */
@@ -209,12 +297,12 @@ function serializeMethod(method: MethodDeclaration): LibraryMethodEntry {
         direction === "input" && decl.initialValue !== undefined
           ? serializeInitialValue(decl.initialValue)
           : undefined;
-      const maxLength = byReferenceStringLength(direction, decl.type);
+      const lengths = parameterStringLengths(direction, decl.type);
       return decl.names.map((name) => ({
         ...serializeVarType(name, decl.type),
         direction,
         ...(initialValue !== undefined ? { initialValue } : {}),
-        ...(maxLength !== undefined ? { maxLength } : {}),
+        ...lengths,
       }));
     });
   });
@@ -809,29 +897,11 @@ export function compileLibrary(
               const direction = parameterDirection(block.blockType);
               // VAR / VAR_TEMP are the function's locals, not parameters.
               if (direction === undefined) return [];
-              return block.declarations.flatMap((decl) => {
-                const initialValue =
-                  decl.initialValue !== undefined
-                    ? serializeInitialValue(decl.initialValue)
-                    : undefined;
-                const byReference =
-                  decl.type.referenceKind === "reference_to" &&
-                  (decl.type.referenceChain?.length ?? 1) === 1 &&
-                  decl.type.arrayDimensions === undefined;
-                const maxLength = byReferenceStringLength(direction, decl.type);
-                return decl.names.map((name) => ({
-                  name,
-                  type: decl.type.name,
-                  direction,
-                  ...(maxLength !== undefined ? { maxLength } : {}),
-                  // Present ⇒ optional input (default supplied); absent ⇒
-                  // mandatory. Preserved from user ST and CODESYS-imported ST.
-                  ...(initialValue !== undefined ? { initialValue } : {}),
-                  ...(byReference
-                    ? { referenceKind: "reference_to" as const }
-                    : parameterShape(decl.type)),
-                }));
-              });
+              return block.declarations.flatMap((decl) =>
+                decl.names.map((name) =>
+                  functionParameterEntry(name, direction, decl),
+                ),
+              );
             }),
           },
           catByName,
@@ -885,36 +955,40 @@ export function compileLibrary(
           : t.definition.kind === "EnumDefinition"
             ? "enum"
             : "alias";
-      const entry: {
-        name: string;
-        kind: typeof kind;
-        fields?: Array<{ name: string; type: string }>;
-      } = { name: t.name, kind };
+      const entry: LibraryTypeEntry = { name: t.name, kind };
       // Export struct (and UNION) member fields so consumers can type
       // `x.field` access on a dependency struct.
       if (t.definition.kind === "StructDefinition") {
-        entry.fields = t.definition.fields.flatMap((decl) =>
-          decl.names.map((name) => ({ name, type: decl.type.name })),
-        );
+        entry.fields = t.definition.fields.flatMap((decl) => {
+          const { maxLength } = writtenStringLengths(decl.type);
+          return decl.names.map((name) => ({
+            name,
+            type: decl.type.name,
+            ...(maxLength !== undefined ? { maxLength } : {}),
+          }));
+        });
       }
+      Object.assign(entry, aliasBase(t.definition));
       return tagDocumentation(tagCategory(entry, catByName), docByName);
     }),
     // Exported VAR_GLOBAL variables — their storage is emitted as inlineGlobal
     // chunks; this list lets consumers' analyzers resolve the symbols. Every
     // importing program merges all libraries' globals into one global scope.
     globals: ast.globalVarBlocks.flatMap((block) =>
-      block.declarations.flatMap((decl) =>
-        decl.names.map((name) =>
+      block.declarations.flatMap((decl) => {
+        const { maxLength } = writtenStringLengths(decl.type);
+        return decl.names.map((name) =>
           tagCategory(
             {
               name,
               type: decl.type.name,
+              ...(maxLength !== undefined ? { maxLength } : {}),
               ...(block.isConstant ? { constant: true } : {}),
             },
             catByName,
           ),
-        ),
-      ),
+        );
+      }),
     ),
     headers: [headerFileName],
     isBuiltin: false,

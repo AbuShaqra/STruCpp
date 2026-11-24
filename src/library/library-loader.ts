@@ -70,8 +70,27 @@ function makeTypeRef(
   if (v.referenceChain) {
     ref.referenceChain = v.referenceChain.filter(isReferenceKind);
   }
+  applyStringLengths(ref, v);
   applyStringDefaultLength(ref, stringDefaultLength);
   return ref;
+}
+
+/** A STRING length as the library compiler writes it: a positive integer or a constant's name. */
+function isStringLength(length: unknown): length is number | string {
+  return typeof length === "number"
+    ? Number.isInteger(length) && length > 0
+    : typeof length === "string" && /^[A-Za-z_]\w*$/.test(length);
+}
+
+/** The STRING lengths a manifest entry records, onto `ref`. */
+function applyStringLengths(
+  ref: TypeReference,
+  entry: { maxLength?: unknown; elementMaxLength?: unknown },
+): void {
+  if (isStringLength(entry.maxLength)) ref.maxLength = entry.maxLength;
+  if (isStringLength(entry.elementMaxLength)) {
+    ref.elementMaxLength = entry.elementMaxLength;
+  }
 }
 
 /**
@@ -147,6 +166,7 @@ function buildLibraryTypeDefinition(
           isReference: false,
           referenceKind: "none" as const,
         };
+        applyStringLengths(type, f);
         applyStringDefaultLength(type, stringDefaultLength);
         return {
           kind: "VarDeclaration" as const,
@@ -157,13 +177,18 @@ function buildLibraryTypeDefinition(
       }),
     };
   }
-  return {
+  const alias: TypeReference = {
     kind: "TypeReference",
     sourceSpan: createDefaultSourceSpan(),
     name: t.baseType ?? t.name,
     isReference: false,
     referenceKind: "none",
   };
+  if (t.kind === "alias" && t.baseType !== undefined) {
+    applyStringLengths(alias, t);
+    applyStringDefaultLength(alias, stringDefaultLength);
+  }
+  return alias;
 }
 
 function makeVarSymbol(
@@ -426,6 +451,10 @@ export function registerLibrarySymbols(
             type: p.type,
             ...(p.referenceKind ? { referenceKind: p.referenceKind } : {}),
             ...(manifest.parameterShapes ? parameterShapeOf(p) : {}),
+            ...(p.maxLength !== undefined ? { maxLength: p.maxLength } : {}),
+            ...(p.elementMaxLength !== undefined
+              ? { elementMaxLength: p.elementMaxLength }
+              : {}),
           },
           p.direction,
           manifest.stringDefaultLength,
@@ -469,6 +498,10 @@ export function registerLibrarySymbols(
             ),
           } as StructType)
         : (ELEMENTARY_TYPES[t.name.toUpperCase()] ??
+          // An alias of an elementary type is that type (archives with `baseType`).
+          (t.kind === "alias" && typeof t.baseType === "string"
+            ? ELEMENTARY_TYPES[t.baseType.toUpperCase()]
+            : undefined) ??
           ({
             typeKind: "elementary",
             name: t.name,
@@ -533,7 +566,7 @@ export function registerLibrarySymbols(
             kind: "PropertyDeclaration" as const,
             sourceSpan: createDefaultSourceSpan(),
             name: p.name,
-            type: makeTypeRef(p.type),
+            type: makeTypeRef(p.type, manifest.stringDefaultLength),
             visibility: "PUBLIC" as const,
             ...(p.get === true ? { getter: [] } : {}),
             ...(p.set === true ? { setter: [] } : {}),
@@ -578,6 +611,15 @@ export function registerLibrarySymbols(
   // are skipped, first-wins), a program importing several libraries can see all
   // of their globals together at the same place — globals are additive.
   for (const g of manifest.globals ?? []) {
+    const globalType: TypeReference = {
+      kind: "TypeReference",
+      sourceSpan: createDefaultSourceSpan(),
+      name: g.type,
+      isReference: false,
+      referenceKind: "none",
+    };
+    applyStringLengths(globalType, g);
+    applyStringDefaultLength(globalType, manifest.stringDefaultLength);
     const varType: ElementaryType = ELEMENTARY_TYPES[g.type.toUpperCase()] ?? {
       typeKind: "elementary",
       name: g.type,
@@ -592,13 +634,7 @@ export function registerLibrarySymbols(
           kind: "VarDeclaration",
           sourceSpan: createDefaultSourceSpan(),
           names: [g.name],
-          type: {
-            kind: "TypeReference",
-            sourceSpan: createDefaultSourceSpan(),
-            name: g.type,
-            isReference: false,
-            referenceKind: "none",
-          },
+          type: globalType,
         },
         isInput: false,
         isOutput: false,

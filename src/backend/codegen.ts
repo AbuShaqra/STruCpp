@@ -9388,6 +9388,10 @@ export class CodeGenerator {
       ...(param.elementReferenceChain !== undefined
         ? { elementReferenceChain: param.elementReferenceChain }
         : {}),
+      ...(param.maxLength !== undefined ? { maxLength: param.maxLength } : {}),
+      ...(param.elementMaxLength !== undefined
+        ? { elementMaxLength: param.elementMaxLength }
+        : {}),
     };
   }
 

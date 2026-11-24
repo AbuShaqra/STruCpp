@@ -54,9 +54,13 @@ export interface LibraryFunctionEntry {
     elementTypeName?: string;
     /** Element reference levels of an inline array of pointers or references. */
     elementReferenceChain?: ReferenceKind[];
-    /** Length of a STRING / WSTRING output or in/out declared with one, which
-     *  its C++ reference carries. Absent otherwise and in older archives. */
+    /** Length of a STRING / WSTRING declared with one: the parameter's own,
+     *  or its POINTER TO / REF_TO target's. A plain output or in/out also
+     *  records a default length. Older archives record outputs and in/outs only. */
     maxLength?: number | string;
+    /** Length of a STRING / WSTRING array element declared with one, an
+     *  ARRAY[*] parameter's included. Absent in older archives. */
+    elementMaxLength?: number | string;
   }>;
   /** Variadic call shape. When set, `parameters` describes the leading
    *  required parameters and the function accepts any number of
@@ -100,6 +104,13 @@ export interface LibraryVarType {
   referenceKind?: ReferenceKind;
   /** Every reference level, outermost first, when there is more than one */
   referenceChain?: ReferenceKind[];
+  /** Length of a STRING / WSTRING declared with one (or of its POINTER TO /
+   *  REF_TO target); a constant's name when written so. Absent for a default
+   *  length and in older archives. */
+  maxLength?: number | string;
+  /** Length of a STRING / WSTRING array element declared with one, an
+   *  ARRAY[*] included. Absent for a default length and in older archives. */
+  elementMaxLength?: number | string;
   /**
    * The C++ member name, when it differs from `name`.
    *
@@ -136,8 +147,6 @@ export interface LibraryMethodEntry {
       direction: "input" | "output" | "inout";
       /** Initial value of an input as an ST expression, as in `LibraryFunctionEntry`. */
       initialValue?: string;
-      /** Length of a STRING / WSTRING output or in/out, as in `LibraryFunctionEntry`. */
-      maxLength?: number | string;
     }
   >;
   /** Declared visibility when not PUBLIC. */
@@ -252,12 +261,16 @@ export interface LibraryTypeEntry {
   name: string;
   /** Type kind (struct, union, enum, alias); `union` is a UNION (feature union). */
   kind: "struct" | "union" | "enum" | "alias";
-  /** Base type (for alias/enum) */
+  /** Base type (for alias/enum). Recorded for an alias of a named or
+   *  elementary type, not of an ARRAY, POINTER TO or REF_TO; absent in older archives. */
   baseType?: string;
+  /** Length of an alias of STRING(n) / WSTRING(n) (`baseType` STRING / WSTRING). */
+  maxLength?: number | string;
   /** Struct member fields (name + declared type), so a consuming compilation
    *  can type member access on a dependency struct (e.g. `MATH.PI`). Only set
-   *  for `kind: "struct"` and `kind: "union"`; optional for backward compatibility. */
-  fields?: Array<{ name: string; type: string }>;
+   *  for `kind: "struct"` and `kind: "union"`; optional for backward compatibility.
+   *  `maxLength` is a STRING(n) / WSTRING(n) field's length, absent in older archives. */
+  fields?: Array<{ name: string; type: string; maxLength?: number | string }>;
   /** Type-level help text — same lifecycle as `LibraryFBEntry.documentation`,
    *  populated automatically from the structured doc-block slot in CODESYS
    *  imports (typically the type's revision-history comment for OSCAT) and
@@ -282,6 +295,8 @@ export interface LibraryGlobalEntry {
   name: string;
   /** Declared type name (elementary or a library type, e.g. CONSTANTS_MATH). */
   type: string;
+  /** Length of a STRING(n) / WSTRING(n) global; absent in older archives. */
+  maxLength?: number | string;
   /** True for `VAR_GLOBAL CONSTANT` entries. */
   constant?: boolean;
   /** Folder path within the library — see `LibraryFunctionEntry.category`. */

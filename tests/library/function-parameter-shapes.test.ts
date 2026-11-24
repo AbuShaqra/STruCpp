@@ -4,7 +4,7 @@
  * A library FUNCTION's manifest records its parameters' POINTER TO, REF_TO
  * and ARRAY shapes (`parameterShapes`), so an address passed to a narrow
  * value input of it is refused; an archive written before, without the
- * marker, reads its parameters as before.
+ * marker, cannot tell a pointer from a value, so an address into it is not checked.
  */
 import { describe, it, expect } from "vitest";
 import { analyze, compileStlib } from "../../src/index.js";
@@ -49,9 +49,6 @@ VAR x : INT; dx : DINT; px : POINTER TO BYTE; arr : ARRAY[0..3] OF INT; ap : ARR
 n := F_Shapes(p := ADR(x), r := REF(dx), pp := ADR(px), a := arr, ap := ap, rr := x, d := ${d});
 END_PROGRAM
 `;
-
-const NARROW = (fn: string, type: string): string =>
-  `${fn} gives a 64-bit address, which ${type} cannot hold; use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT`;
 
 describe("library FUNCTION parameter shapes", () => {
   it("records POINTER TO, REF_TO and ARRAY parameters in the manifest", () => {
@@ -101,9 +98,10 @@ describe("library FUNCTION parameter shapes", () => {
     ]);
   });
 
-  // A pre-parameterShapes archive keeps REFERENCE TO, so its inputs are
-  // checked, by their bare names: P as INT, R as DINT, PP as BYTE.
-  it("reads an archive written without parameterShapes as before", () => {
+  // A pre-parameterShapes archive keeps REFERENCE TO only: P, R and PP are
+  // recorded as INT, DINT and BYTE, which may be pointers, so ADR and REF
+  // into them are accepted, as into a FUNCTION without a REFERENCE TO input.
+  it("accepts addresses into the bare-typed inputs of an archive written without parameterShapes", () => {
     const old = JSON.parse(JSON.stringify(library())) as StlibArchive;
     delete old.manifest.parameterShapes;
     for (const p of old.manifest.functions[0]!.parameters) {
@@ -118,16 +116,13 @@ describe("library FUNCTION parameter shapes", () => {
       archive.manifest.functions[0]!.parameters.find((p) => p.name === "RR")
         ?.referenceKind,
     ).toBe("reference_to");
+    const opts = { features: FEATURES, libraries: [archive] };
+    expect(analyze(CALL("0"), opts).errors).toEqual([]);
+    expect(analyze(CALL("ADR(x)"), opts).errors).toEqual([]);
+    // The REFERENCE TO input is still checked.
     expect(
-      analyze(CALL("0"), {
-        features: FEATURES,
-        libraries: [archive],
-      }).errors.map((e) => e.message),
-    ).toEqual([
-      NARROW("ADR", "INT"),
-      NARROW("REF", "DINT"),
-      NARROW("ADR", "BYTE"),
-    ]);
+      analyze(CALL("0").replace("rr := x", "rr := ADR(x)"), opts).errors.length,
+    ).toBeGreaterThan(0);
   });
 
   it("refuses REF of an INT into a REF_TO DINT input of a library FUNCTION", () => {

@@ -315,6 +315,11 @@ interface CallInput {
   position?: number;
   /** From a library manifest, which omits a REF_TO STRING / WSTRING target's length. */
   lengthUnrecorded?: boolean;
+  /**
+   * From an archive without `parameterShapes`: recorded by its bare type
+   * name, so it may be a POINTER TO, REF_TO or ARRAY and an address is not checked.
+   */
+  shapeUnrecorded?: boolean;
 }
 
 /** The VAR_INPUT and VAR_IN_OUT of one POU's blocks, each with its positional place. */
@@ -6226,6 +6231,9 @@ export class TypeChecker {
             : inputs.find((p) => p.name.toUpperCase() === argName);
         // A VAR_IN_OUT binds, it stores nothing (the binding check refuses an ADR).
         if (input === undefined || input.inOut) continue;
+        if ("shapeUnrecorded" in input && input.shapeUnrecorded === true) {
+          continue;
+        }
         this.refuseMisalignedPointerStore(input.type, arg.value, scope);
         if ((input.type.referenceKind ?? "none") !== "none") continue;
         this.checkAddressStore(input.type.name, arg.value);
@@ -9334,10 +9342,21 @@ export class TypeChecker {
     ) {
       return undefined;
     }
+    const shaped = fn.parameterShapes === true;
     return params.flatMap((p) => {
       const type = (p.declaration as VarDeclaration | undefined)?.type;
       return type
-        ? [{ name: p.name, type, inOut: p.isInOut, lengthUnrecorded: true }]
+        ? [
+            {
+              name: p.name,
+              type,
+              inOut: p.isInOut,
+              lengthUnrecorded: true,
+              ...(!shaped && type.referenceKind === "none"
+                ? { shapeUnrecorded: true }
+                : {}),
+            },
+          ]
         : [];
     });
   }

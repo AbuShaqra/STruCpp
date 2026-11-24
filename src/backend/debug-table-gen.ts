@@ -398,10 +398,12 @@ export interface DebugTableGenOptions {
   /** The length of a STRING or WSTRING declared without one (254, or 80 under
    *  string_default_80); it picks the advice for a skipped string leaf. */
   stringDefaultLength?: number;
+  /** The compilation's global constants, which a `STRING(NAME)` length names. */
+  globalConstants?: Readonly<Record<string, number>>;
 }
 
 const DEFAULTS: Required<
-  Omit<DebugTableGenOptions, "md5" | "stringDefaultLength">
+  Omit<DebugTableGenOptions, "md5" | "stringDefaultLength" | "globalConstants">
 > = {
   maxEntriesPerArray: 8000,
   configGlobalName: "g_config",
@@ -431,6 +433,15 @@ export function generateDebugTable(
   const configGlobal = opts.configGlobalName ?? DEFAULTS.configGlobalName;
   const md5 = opts.md5 ?? "";
   const stringDefault = opts.stringDefaultLength ?? DISPATCH_STRING_CAPACITY;
+  const constants = opts.globalConstants ?? {};
+  /** True when a STRING length, a constant's name resolved, is not the dispatch's. */
+  const otherThanDispatch = (length: number | string): boolean => {
+    if (typeof length === "number") return length !== DISPATCH_STRING_CAPACITY;
+    const key = Object.keys(constants).find(
+      (k) => k.toUpperCase() === length.toUpperCase(),
+    );
+    return key === undefined || constants[key] !== DISPATCH_STRING_CAPACITY;
+  };
 
   // Programs only live in the user AST (libraries don't ship PROGRAM blocks),
   // so we index them locally. Types and function blocks come from the symbol
@@ -649,7 +660,7 @@ export function generateDebugTable(
       };
     }
     const max = length.maxLength;
-    if (max === undefined || max === DISPATCH_STRING_CAPACITY) return undefined;
+    if (max === undefined || !otherThanDispatch(max)) return undefined;
     const declared =
       length.defaultLength === true
         ? `its elements are ${name} without a length, which holds ${max} characters here`
@@ -752,7 +763,7 @@ export function generateDebugTable(
       if (
         (name === "STRING" || name === "WSTRING") &&
         typeRef.maxLength !== undefined &&
-        typeRef.maxLength !== DISPATCH_STRING_CAPACITY
+        otherThanDispatch(typeRef.maxLength)
       ) {
         const declared =
           typeRef.defaultLength === true
