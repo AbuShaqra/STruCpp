@@ -1,7 +1,7 @@
 /**
  * LOWER_BOUND / UPPER_BOUND of a fixed two- or three-dimensional array with
  * a literal dimension it does not have is an error (the call failed g++ for
- * every dimension before); a one-dimensional array answers any dimension.
+ * every dimension before), as it is for a one-dimensional array.
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
@@ -28,10 +28,10 @@ END_PROGRAM
 describe("LOWER_BOUND / UPPER_BOUND dimensions", () => {
   for (const [label, options] of MODES) {
     describe(label, () => {
-      it("accepts the dimensions the array has, and any for 1D", () => {
+      it("accepts the dimensions the array has", () => {
         expect(
           errors(
-            "d := UPPER_BOUND(m2, 2) + LOWER_BOUND(m3, 3) + UPPER_BOUND(t2, 1) + UPPER_BOUND(a1, 2) + LOWER_BOUND(m2, d);",
+            "d := UPPER_BOUND(m2, 2) + LOWER_BOUND(m3, 3) + UPPER_BOUND(t2, 1) + UPPER_BOUND(a1, 1) + LOWER_BOUND(m2, d);",
             options,
           ),
         ).toEqual([]);
@@ -40,13 +40,30 @@ describe("LOWER_BOUND / UPPER_BOUND dimensions", () => {
       it("refuses a literal dimension the array does not have", () => {
         expect(
           errors(
-            "d := UPPER_BOUND(m2, 3) + LOWER_BOUND(m3, 0) + UPPER_BOUND(t2, 5);",
+            "d := UPPER_BOUND(m2, 3) + LOWER_BOUND(m3, 0) + UPPER_BOUND(t2, 5) + UPPER_BOUND(a1, 2) + LOWER_BOUND(m3, 2 + 2);",
             options,
           ),
         ).toEqual([
           "UPPER_BOUND has no dimension 3: the array has 2",
           "LOWER_BOUND has no dimension 0: the array has 3",
           "UPPER_BOUND has no dimension 5: the array has 2",
+          "UPPER_BOUND has no dimension 2: the array has 1",
+          "LOWER_BOUND has no dimension 4: the array has 3",
+        ]);
+      });
+
+      it("refuses a constant dimension an ARRAY[*] in-out does not have", () => {
+        const result = compile(
+          `FUNCTION F : DINT
+VAR_IN_OUT v : ARRAY[*] OF INT; w : ARRAY[*, *] OF INT; END_VAR
+F := UPPER_BOUND(v, 2) + LOWER_BOUND(w, 3) + UPPER_BOUND(v, 1) + LOWER_BOUND(w, 2);
+END_FUNCTION
+`,
+          options,
+        );
+        expect(result.errors.map((e) => e.message)).toEqual([
+          "UPPER_BOUND has no dimension 2: the array has 1",
+          "LOWER_BOUND has no dimension 3: the array has 2",
         ]);
       });
     });

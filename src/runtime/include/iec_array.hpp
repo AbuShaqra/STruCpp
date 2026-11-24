@@ -158,6 +158,7 @@ public:
     
     // Size information
     static constexpr size_t length() noexcept { return size; }
+    static constexpr int rank = 1;
     static constexpr int64_t lower_bound(int = 1) noexcept { return Bounds::lower; }
     static constexpr int64_t upper_bound(int = 1) noexcept { return Bounds::upper; }
     
@@ -285,6 +286,7 @@ public:
     static constexpr int64_t dim2_lower() noexcept { return Bounds2::lower; }
     static constexpr int64_t dim2_upper() noexcept { return Bounds2::upper; }
     // LOWER_BOUND / UPPER_BOUND (arr, dim), as the ARRAY[*] views answer them.
+    static constexpr int rank = 2;
     static constexpr int64_t lower_bound(int dim) noexcept {
         return dim == 1 ? Bounds1::lower : Bounds2::lower;
     }
@@ -439,6 +441,7 @@ public:
     static constexpr int64_t dim3_lower() noexcept { return Bounds3::lower; }
     static constexpr int64_t dim3_upper() noexcept { return Bounds3::upper; }
     // LOWER_BOUND / UPPER_BOUND (arr, dim), as the ARRAY[*] views answer them.
+    static constexpr int rank = 3;
     static constexpr int64_t lower_bound(int dim) noexcept {
         return dim == 1 ? Bounds1::lower
              : dim == 2 ? Bounds2::lower : Bounds3::lower;
@@ -562,6 +565,7 @@ public:
         return data_[index - lower_];
     }
 
+    static constexpr int rank = 1;
     int64_t lower_bound(int = 1) const noexcept { return lower_; }
     int64_t upper_bound(int = 1) const noexcept { return upper_; }
     int64_t length() const noexcept { return upper_ - lower_ + 1; }
@@ -624,6 +628,7 @@ public:
         return data_[(i - lower1_) * dim2_ + (j - lower2_)];
     }
 
+    static constexpr int rank = 2;
     int64_t lower_bound(int dim) const noexcept { return dim == 1 ? lower1_ : lower2_; }
     int64_t upper_bound(int dim) const noexcept { return dim == 1 ? upper1_ : upper2_; }
 };
@@ -659,6 +664,42 @@ auto for_each_element(T& x, F&& f, int) -> decltype(x.begin(), void()) {
 template<typename T, typename F>
 void for_each_element(T& x, F&& f) {
     for_each_element(x, f, 0);
+}
+
+namespace detail {
+
+/** LOWER_BOUND / UPPER_BOUND of `c` at a DIM in 1..rank; any other DIM is a fault at `site`. */
+template<typename C, typename D, typename Get>
+inline int64_t checked_bound(const C& c, const D& dim, const char* name, iec_site site, Get get) {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
+    constexpr int rank = std::decay_t<C>::rank;
+    if (beyond_int64(dim) || static_cast<long long>(+dim) < 1 ||
+        static_cast<long long>(+dim) > rank) {
+        fault_text text;
+        text.add(name).add(" has no dimension ").add_number(+dim);
+        text.add(": the array has ").add_unsigned(static_cast<unsigned>(rank));
+        iec_raise_fault(IecFault::ArrayBounds, text, site);
+    }
+#else
+    (void)name; (void)site;
+#endif
+    return get(c, static_cast<int>(+dim));
+}
+
+}  // namespace detail
+
+/** LOWER_BOUND(c, dim): a DIM outside 1..rank is a fault naming it, the POU, line and task. */
+template<typename C, typename D>
+inline int64_t iec_lower_bound(const C& c, const D& dim, iec_site site) {
+    return detail::checked_bound(c, dim, "LOWER_BOUND", site,
+        [](const C& a, int d) { return static_cast<int64_t>(a.lower_bound(d)); });
+}
+
+/** UPPER_BOUND(c, dim): a DIM outside 1..rank is a fault naming it, the POU, line and task. */
+template<typename C, typename D>
+inline int64_t iec_upper_bound(const C& c, const D& dim, iec_site site) {
+    return detail::checked_bound(c, dim, "UPPER_BOUND", site,
+        [](const C& a, int d) { return static_cast<int64_t>(a.upper_bound(d)); });
 }
 
 }  // namespace strucpp
