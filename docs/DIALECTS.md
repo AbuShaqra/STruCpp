@@ -234,8 +234,9 @@ occurrence:
 
 The FOR warning names the variable as the FOR statement spells it. Besides a plain assignment it is given,
 with `(here by an output)`, `(here as a VAR_IN_OUT argument)` or `(here through a reference to it)` added,
-at an output capture `f(q => i)`, at `i` passed to a VAR_IN_OUT of a FUNCTION or FUNCTION_BLOCK of the
-program, and at a store `r^ := v` (or `r := v` for a REFERENCE TO) through a variable the POU sets to
+at an output capture `f(q => i)`, at `i` passed to a VAR_IN_OUT or VAR_OUTPUT of a FUNCTION or
+FUNCTION_BLOCK of the program (by name, or by position across VAR_INPUT, VAR_OUTPUT and VAR_IN_OUT in
+declaration order), and at a store `r^ := v` (or `r := v` for a REFERENCE TO) through a variable the POU sets to
 `REF(i)`, `ADR(i)` or `REF= i`. A write through a reference made elsewhere is not detected.
 
 A user TRUNC is a FUNCTION, METHOD, ACTION or variable (an FB instance, `TRUNC(a := 1.5)`) named TRUNC in

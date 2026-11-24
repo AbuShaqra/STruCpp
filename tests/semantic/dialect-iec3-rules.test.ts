@@ -754,6 +754,32 @@ END_PROGRAM
     expect(ed3WarningsOf(src, IEC3)).toEqual([]);
   });
 
+  it("maps positional arguments across VAR_INPUT, VAR_OUTPUT and VAR_IN_OUT", () => {
+    const src = `FUNCTION F : INT
+VAR_INPUT a : INT; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+VAR_IN_OUT v : INT; END_VAR
+o := a; v := v + 1; F := 0;
+END_FUNCTION
+PROGRAM Main
+VAR i, k, n : INT; END_VAR
+FOR i := 0 TO 3 DO
+  n := F(1, k, i);
+END_FOR;
+FOR k := 0 TO 3 DO
+  n := F(1, k, i);
+END_FOR;
+FOR n := 0 TO 3 DO
+  i := F(n, k, k);
+END_FOR;
+END_PROGRAM
+`;
+    expect(ed3WarningsOf(src, IEC3)).toEqual([
+      `10:16: ${msg("i", " (here as a VAR_IN_OUT argument)")}`,
+      `13:13: ${msg("k", " (here by an output)")}`,
+    ]);
+  });
+
   it("names the variable as the FOR statement spells it", () => {
     const src = `PROGRAM Main
 VAR LoopIdx : INT; END_VAR

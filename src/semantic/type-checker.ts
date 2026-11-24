@@ -96,6 +96,7 @@ import { bindStdFunctionArguments } from "./std-function-args.js";
 import { STD_FUNCTIONS_LIBRARY } from "../library/library-manifest.js";
 import { libraryOverloadFor } from "./library-overload.js";
 import { charLiteralUnits } from "../literal-utils.js";
+import type { NameLocator } from "./iec3-rules.js";
 import {
   vendorOperatorArgumentError,
   vendorOperatorFeature,
@@ -707,6 +708,8 @@ export class TypeChecker {
   /** The struct_compare refusals added to `errors`, which gate no later pass. */
   private refusals = new Set<CompileError>();
   private ast: CompilationUnit | undefined;
+  /** Spells a name as the source writes it (the AST holds it upper-cased); set by the analyzer. */
+  nameLocator: NameLocator | undefined;
 
   constructor(
     private symbolTables: SymbolTables,
@@ -7272,12 +7275,21 @@ export class TypeChecker {
           controlSym?.kind === "constant"
         ) {
           const ctrlType = controlSym.type;
-          // A REF_TO or REFERENCE TO cannot step (g++ refuses the loop); a
-          // POINTER TO steps an address: warned unless its end is one too
+          // A REF_TO, or a REFERENCE TO without BY, cannot step (g++ refused
+          // the loop); a POINTER TO stepped up to an integer is warned
           const level = controlDeclared?.referenceKind ?? "none";
-          if (ctrlType && (level === "ref_to" || level === "reference_to")) {
+          const spelled =
+            this.nameLocator?.(stmt.controlVariable, stmt.sourceSpan)
+              .spelling ?? stmt.controlVariable;
+          if (
+            ctrlType &&
+            (level === "ref_to" ||
+              (level === "reference_to" && stmt.step === undefined))
+          ) {
             this.addError(
-              `FOR control variable '${stmt.controlVariable}' must be an integer type, got ${level === "ref_to" ? "REF_TO" : "REFERENCE TO"} ${typeNameUtil(ctrlType)}`,
+              level === "ref_to"
+                ? `FOR control variable '${spelled}' must be an integer type, got REF_TO ${typeNameUtil(ctrlType)}`
+                : `FOR control variable '${spelled}' is a REFERENCE TO ${typeNameUtil(ctrlType)}: it steps only with BY`,
               stmt.sourceSpan.startLine,
               stmt.sourceSpan.startCol,
               stmt.sourceSpan.file,
@@ -7285,10 +7297,10 @@ export class TypeChecker {
           } else if (
             ctrlType &&
             level === "pointer_to" &&
-            !this.isAddressBound(stmt.end, scope)
+            this.isIntegerEnd(stmt.end, scope)
           ) {
             this.addWarning(
-              `FOR control variable '${stmt.controlVariable}' is a POINTER TO ${typeNameUtil(ctrlType)}, not an integer, and its end value is not an address`,
+              `FOR control variable '${spelled}' is a POINTER TO ${typeNameUtil(ctrlType)}, not an integer, and its end value is not an address`,
               stmt.sourceSpan.startLine,
               stmt.sourceSpan.startCol,
               stmt.sourceSpan.file,
@@ -7989,31 +8001,26 @@ export class TypeChecker {
   }
 
   /**
-   * True when `expr` may be an address a POINTER TO control variable is
-   * compared with: a literal 0, or an expression holding ADR, REF or a
-   * pointer or reference variable.
+   * True when `expr` is certainly an integer, not an address: an integer
+   * value other than an untyped 0 (literal, variable, member or element, or
+   * arithmetic of them), or a call of a user FUNCTION with an integer result.
    */
-  private isAddressBound(expr: Expression, scope: Scope): boolean {
+  private isIntegerEnd(expr: Expression, scope: Scope): boolean {
     const bare = unparenthesized(expr);
-    if (bare.kind === "LiteralExpression" && bare.value === 0) return true;
-    let found = false;
-    walkAST(bare, (node) => {
-      if (found) return false;
-      if (node.kind === "RefExpression") found = true;
-      else if (node.kind === "FunctionCallExpression") {
-        const fn = (node as FunctionCallExpression).functionName.toUpperCase();
-        if (fn === "ADR" || fn === "REF") found = true;
-      } else if (node.kind === "VariableExpression") {
-        const sym = scope.lookup((node as VariableExpression).name);
-        const declared =
-          sym?.kind === "variable"
-            ? (sym.declaration as VarDeclaration | undefined)?.type
-            : undefined;
-        if ((declared?.referenceKind ?? "none") !== "none") found = true;
-      }
-      return undefined;
-    });
-    return found;
+    if (isUntypedZero(bare)) return false;
+    if (this.isIntegerValue(bare, scope)) return true;
+    if (bare.kind !== "FunctionCallExpression") return false;
+    const result = this.findUserFunction(bare.functionName)?.returnType;
+    if (
+      result === undefined ||
+      result.arrayDimensions !== undefined ||
+      (result.referenceKind ?? "none") !== "none" ||
+      this.isPointerAlias(result)
+    ) {
+      return false;
+    }
+    const base = canonicalElementaryName(this.aliasBase(result.name));
+    return INTEGER_STORAGE[base] !== undefined;
   }
 
   /** `=` or `<>` of two STRUCT values (compared field by field) needs the feature struct_compare. */

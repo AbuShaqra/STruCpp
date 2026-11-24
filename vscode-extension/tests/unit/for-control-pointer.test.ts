@@ -36,8 +36,8 @@ describe("FOR control variable of a pointer type", () => {
         .filter((d) => d.message.startsWith("FOR control variable"))
         .map((d) => `${d.severity}:${d.range.start.line}: ${d.message}`),
     ).toEqual([
-      `${DiagnosticSeverity.Error}:5: FOR control variable 'R' must be an integer type, got REF_TO INT`,
-      `${DiagnosticSeverity.Warning}:2: FOR control variable 'P' is a POINTER TO INT, not an integer, and its end value is not an address`,
+      `${DiagnosticSeverity.Error}:5: FOR control variable 'r' must be an integer type, got REF_TO INT`,
+      `${DiagnosticSeverity.Warning}:2: FOR control variable 'p' is a POINTER TO INT, not an integer, and its end value is not an address`,
     ]);
   });
 });

@@ -214,6 +214,28 @@ END_PROGRAM
     );
   });
 
+  it("resolves a bare call inside an FB to its own METHOD before a FUNCTION of that name", () => {
+    const src = `FUNCTION_BLOCK FbM
+METHOD Same : INT
+VAR_INPUT t : STRING(20); END_VAR
+Same := 1;
+END_METHOD
+METHOD Caller : INT
+Caller := Same(t := 'a long text');
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION Same : INT
+VAR_INPUT t : STRING(3); END_VAR
+Same := 0;
+END_FUNCTION
+PROGRAM Prg
+VAR n : INT; END_VAR
+n := Same(t := 'too long');
+END_PROGRAM
+`;
+    expect(warned(src)).toEqual(["16:16"]);
+  });
+
   it("stays silent where the target is not known for certain", () => {
     const src = `FUNCTION_BLOCK FB1
 VAR_INPUT s : STRING(3); END_VAR

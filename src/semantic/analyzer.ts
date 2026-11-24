@@ -673,6 +673,10 @@ export class SemanticAnalyzer {
     // Pass 2: Type checking. Its struct_compare refusals are located and gate nothing.
     let typeRefusals = 0;
     if (this.errors.length - typeReferenceErrors === 0) {
+      this.typeChecker.nameLocator =
+        this.options.sources !== undefined
+          ? sourceNameLocator(this.options.sources)
+          : undefined;
       const typeResult = this.typeChecker.check(ast);
       this.errors.push(...typeResult.errors);
       this.warnings.push(...typeResult.warnings);
@@ -2930,10 +2934,11 @@ export class SemanticAnalyzer {
       const upper = parts[0]!;
       const local = scope.get(upper);
       if (local !== undefined) return fbInputs(local);
-      const fn = ast.functions.find((f) => f.name.toUpperCase() === upper);
-      if (fn !== undefined) return inputsOf(fn.varBlocks);
+      // The POU's own METHOD before a FUNCTION of the same name
       const method = ownMethod?.(upper);
-      return method === undefined ? undefined : inputsOf(method.varBlocks);
+      if (method !== undefined) return inputsOf(method.varBlocks);
+      const fn = ast.functions.find((f) => f.name.toUpperCase() === upper);
+      return fn === undefined ? undefined : inputsOf(fn.varBlocks);
     };
     /**
      * Check `own`'s initial values and `body`, with `outer` (inherited and

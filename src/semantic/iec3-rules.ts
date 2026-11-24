@@ -523,15 +523,19 @@ function storesThrough(
   );
 }
 
+/** What a parameter of a call does with the variable it is bound to. */
+type ParamUse = "input" | "output" | "inout";
+
 /**
- * Which arguments of `call` bind a VAR_IN_OUT, when the callee is a FUNCTION
- * or a FUNCTION_BLOCK instance of the unit (no EXTENDS): by name, and by
- * position (VAR_INPUT and VAR_IN_OUT in declaration order).
+ * How the arguments of `call` bind, when the callee is a FUNCTION or a
+ * FUNCTION_BLOCK instance of the unit (no EXTENDS): the VAR_IN_OUT names, and
+ * each position's parameter (VAR_INPUT, VAR_OUTPUT and VAR_IN_OUT in
+ * declaration order, as codegen maps them).
  */
-function inOutSlots(
+function paramSlots(
   call: FunctionCallExpression,
   pou: PouContext,
-): { named: Set<string>; positional?: boolean[] } | undefined {
+): { inouts: Set<string>; positional?: ParamUse[] } | undefined {
   if (call.instance !== undefined) return undefined;
   const upper = call.functionName.toUpperCase();
   let blocks: readonly VarBlock[] | undefined;
@@ -548,22 +552,27 @@ function inOutSlots(
     )?.varBlocks;
   }
   if (blocks === undefined) return undefined;
-  const named = new Set<string>();
-  const positional: boolean[] = [];
+  const uses: Partial<Record<string, ParamUse>> = {
+    VAR_INPUT: "input",
+    VAR_OUTPUT: "output",
+    VAR_IN_OUT: "inout",
+  };
+  const inouts = new Set<string>();
+  const positional: ParamUse[] = [];
   for (const b of blocks) {
-    if (b.blockType !== "VAR_INPUT" && b.blockType !== "VAR_IN_OUT") continue;
+    const use = uses[b.blockType];
+    if (use === undefined) continue;
     for (const d of b.declarations) {
       for (const n of d.names) {
-        positional.push(b.blockType === "VAR_IN_OUT");
-        if (b.blockType === "VAR_IN_OUT") named.add(n.toUpperCase());
+        positional.push(use);
+        if (use === "inout") inouts.add(n.toUpperCase());
       }
     }
   }
-  // EN in the arguments shifts no position only when written by name
-  return call.arguments.some((a) => a.name === undefined) &&
-    call.arguments.some((a) => a.name !== undefined)
-    ? { named }
-    : { named, positional };
+  // Positions are certain only when no argument is named
+  return call.arguments.some((a) => a.name !== undefined)
+    ? { inouts }
+    : { inouts, positional };
 }
 
 /** The key of a call's position, which a copy of the call shares. */
@@ -745,22 +754,22 @@ export function iec3Warnings(
               return;
             }
             const call = inner as FunctionCallExpression | MethodCallExpression;
-            const inouts =
+            const slots =
               pou !== undefined && inner.kind === "FunctionCallExpression"
-                ? inOutSlots(inner as FunctionCallExpression, pou)
+                ? paramSlots(inner as FunctionCallExpression, pou)
                 : undefined;
             call.arguments.forEach((arg, i) => {
               if (plainName(arg.value)?.toUpperCase() !== control) return;
-              if (arg.isOutput) {
+              const use: ParamUse | undefined = arg.isOutput
+                ? "output"
+                : arg.name === undefined
+                  ? slots?.positional?.[i]
+                  : slots?.inouts.has(arg.name.toUpperCase()) === true
+                    ? "inout"
+                    : undefined;
+              if (use === "output") {
                 changed(arg.value.sourceSpan, " (here by an output)");
-                return;
-              }
-              if (inouts === undefined) return;
-              const inout =
-                arg.name === undefined
-                  ? inouts.positional?.[i] === true
-                  : inouts.named.has(arg.name.toUpperCase());
-              if (inout) {
+              } else if (use === "inout") {
                 changed(
                   arg.value.sourceSpan,
                   " (here as a VAR_IN_OUT argument)",
