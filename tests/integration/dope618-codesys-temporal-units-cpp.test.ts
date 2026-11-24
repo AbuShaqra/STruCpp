@@ -234,11 +234,10 @@ ${prints}
     expect(out).toBe("exact 15:36:55");
   });
 
-  it("wraps a pre-epoch DATE modulo 2^32, down to its day", () => {
-    // Review follow-up. C++ integer division truncates toward zero, so
-    // DATE_FROM_SECONDS(-1) landed on day 0 (1970-01-01) when the floor is
-    // day -1 (1969-12-31). DATE_OF_DT already spilled that borrow explicitly,
-    // so the runtime answered the same question two ways.
+  it("floors a pre-epoch DATE to its day, then wraps it modulo 2^32", () => {
+    // C++ integer division truncates toward zero, so a floor is needed for
+    // day -1 (1969-12-31). The seconds are floored before the wrap, so an
+    // integer gives a day before 1970 the value every other route gives.
     //
     // Reachable from user code: these helpers take arbitrary expressions via
     // DINT_TO_DATE(x), not just literals, so the input is not bounded by
@@ -255,28 +254,47 @@ ${prints}
       `    std::cout << (long long)p.N1.get() << " " << (long long)p.N2.get() << std::endl;`,
       "date_pre_epoch",
     );
-    // A DATE is 32-bit unsigned seconds: -1 wraps to 4294967295 s, the day
-    // of which starts at 4294944000 (-23296 as a DINT); -86400 wraps to
-    // 4294880896 s, whose day starts at 4294857600 (-109696).
-    expect(out).toBe("-23296 -109696");
+    // -1 s and -86400 s both fall on day -1, -86400 s: 4294880896 as a
+    // 32-bit DATE, -86400 as a DINT.
+    expect(out).toBe("-86400 -86400");
   });
 
-  it("agrees with DATE_OF_DT on where a pre-epoch instant falls", () => {
-    // The specific inconsistency the review found: two helpers, same
-    // question, different answers. Asserted against each other rather than
-    // against a hard-coded number, so they cannot drift apart again.
+  it("agrees with the date routes on where a pre-epoch instant falls", () => {
+    // An integer, a DATE minus a TIME and an LDATE give one value for
+    // 1969-12-31. Asserted against each other rather than against a
+    // hard-coded number, so they cannot drift apart again.
+    const out = run(
+      `    negSec : DINT := -1;
+    viaInt : DATE;
+    viaSub : DATE;
+    viaLong : DATE;
+    same : BOOL;`,
+      `  viaInt := DINT_TO_DATE(negSec);
+  viaSub := D#1970-01-01 - T#1d;
+  viaLong := LDATE_TO_DATE(LDATE#1969-12-31);
+  same := viaInt = viaSub AND viaSub = viaLong;`,
+      `    std::cout << (p.SAME.get() ? "agree" : "DISAGREE") << std::endl;`,
+      "date_route_agreement",
+    );
+    expect(out).toBe("agree");
+  });
+
+  it("pins how far DATE_OF_DT of the wrapped DT lies from the pre-epoch date", () => {
+    // DATE_OF_DT keeps the PLC's DT - DT MOD 86400 on the wrapped seconds, so
+    // for -1 s it lands on the 2106 day boundary, 63104 s (86400 - 2^32 MOD
+    // 86400) after the wrapped 1969-12-31 the integer route gives.
     const out = run(
       `    negSec : DINT := -1;
     viaInt : DATE;
     viaDT : DATE;
-    same : BOOL;`,
+    gap : LINT;`,
       `  viaInt := DINT_TO_DATE(negSec);
   viaDT := DATE_OF_DT(DWORD_TO_DT(negSec));
-  same := viaInt = viaDT;`,
-      `    std::cout << (p.SAME.get() ? "agree" : "DISAGREE") << std::endl;`,
-      "date_of_dt_agreement",
+  gap := DATE_TO_LINT(viaDT) - DATE_TO_LINT(viaInt);`,
+      `    std::cout << (long long)p.GAP.get() << std::endl;`,
+      "date_of_dt_divergence",
     );
-    expect(out).toBe("agree");
+    expect(out).toBe("63104");
   });
 
   it("still scales TIME to milliseconds after the runtime cast was neutered", () => {

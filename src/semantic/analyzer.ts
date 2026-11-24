@@ -472,13 +472,19 @@ function temporal32LiteralRefusal(
     }
     case "DATE": {
       const s = parseDateLiteralToDays(String(literal.value)) * 86400n;
-      return s < 0n || s > U32_MAX
+      if (s < 0n) {
+        return `DATE literal '${raw}': a DATE before 1970-01-01 is out of range for a 32-bit DATE (D#1970-01-01 to D#2106-02-07); use LDATE`;
+      }
+      return s > U32_MAX
         ? `DATE literal '${raw}' is outside the DATE range (D#1970-01-01 to D#2106-02-07)`
         : undefined;
     }
     case "DATE_AND_TIME": {
       const ns = parseDtLiteralToNs(String(literal.value));
-      return ns < 0n || ns / 1000000000n > U32_MAX
+      if (ns < 0n) {
+        return `DT literal '${raw}': a DT before 1970-01-01 is out of range for a 32-bit DT (DT#1970-01-01-00:00:00 to DT#2106-02-07-06:28:15); use LDT`;
+      }
+      return ns / 1000000000n > U32_MAX
         ? `DT literal '${raw}' is outside the DT range (DT#1970-01-01-00:00:00 to DT#2106-02-07-06:28:15)`
         : undefined;
     }
@@ -489,6 +495,31 @@ function temporal32LiteralRefusal(
     default:
       return undefined;
   }
+}
+
+/** Fraction digits each date and time literal type holds: TOD ms, DT s, LTOD and LDT ns. */
+const TEMPORAL_FRACTION_DIGITS: Readonly<
+  Record<string, [string, number, string]>
+> = {
+  TIME_OF_DAY: ["TOD", 3, "a millisecond"],
+  DATE_AND_TIME: ["DT", 0, "a second"],
+  LTIME_OF_DAY: ["LTOD", 9, "a nanosecond"],
+  LDATE_AND_TIME: ["LDT", 9, "a nanosecond"],
+};
+
+/**
+ * The start of the diagnostic for a TOD, DT, LTOD or LDT literal with a
+ * non-zero digit below its type's resolution (`TOD#12:00:00.1234`,
+ * `DT#2020-01-01-00:00:00.5`); undefined when it has none.
+ */
+function droppedFractionDigits(literal: LiteralExpression): string | undefined {
+  const unit = TEMPORAL_FRACTION_DIGITS[literal.literalType];
+  if (unit === undefined) return undefined;
+  const frac = /\.(\d+)$/.exec(literal.rawValue.replace(/_/g, ""))?.[1];
+  if (frac === undefined || !/[1-9]/.test(frac.slice(unit[1]))) {
+    return undefined;
+  }
+  return `${unit[0]} literal '${literal.rawValue}' has digits below ${unit[2]}, the ${unit[0]} resolution`;
 }
 
 export class SemanticAnalyzer {
@@ -3297,6 +3328,31 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * A TOD, DT, LTOD or LDT literal with digits below its resolution: an error
+   * under iec-3 and --strict, a warning otherwise (the digits are dropped).
+   */
+  private reportDroppedFractionDigits(literal: LiteralExpression): void {
+    const message = droppedFractionDigits(literal);
+    if (message === undefined) return;
+    const at = literal.sourceSpan;
+    if (this.iec3Rules || this.options.strict === true) {
+      this.addError(
+        `${message}, which it cannot hold`,
+        at.startLine,
+        at.startCol,
+        at.file,
+      );
+    } else {
+      this.addWarning(
+        `${message}; digits below the type's resolution are dropped`,
+        at.startLine,
+        at.startCol,
+        at.file,
+      );
+    }
+  }
+
+  /**
    * Reject an LTIME literal outside the signed 64-bit nanosecond range LTIME
    * holds (about 106751 days either way).
    */
@@ -3311,6 +3367,7 @@ export class SemanticAnalyzer {
         this.addError(refusal, at.startLine, at.startCol, at.file);
         return;
       }
+      this.reportDroppedFractionDigits(literal);
       if (literal.literalType !== "LTIME") return;
       const ns = exactTimeLiteralNanoseconds(literal.rawValue);
       if (ns >= -(2n ** 63n) && ns < 2n ** 63n) return;
@@ -7713,7 +7770,10 @@ export class SemanticAnalyzer {
       walkAST(root, (node) => {
         if (node.kind !== "LiteralExpression") return;
         const refusal = temporal32LiteralRefusal(node as LiteralExpression);
-        if (refusal === undefined) return;
+        if (refusal === undefined) {
+          this.reportDroppedFractionDigits(node as LiteralExpression);
+          return;
+        }
         const at = node.sourceSpan;
         this.addError(refusal, at.startLine, at.startCol, at.file);
       });
