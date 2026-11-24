@@ -179,4 +179,83 @@ END_PROGRAM
     // LEN_C = 254: one variable, so the write through s1 is the value.
     expect(runLibrary(254, "plainstr_lib_254")).toBe("4 3 4 1");
   });
+
+  const LF = `FUNCTION LF : INT
+VAR_IN_OUT s1 : STRING; s2 : STRING; END_VAR
+s1 := 'X';
+LF := LEN(s2);
+END_FUNCTION
+FUNCTION_BLOCK LFB
+VAR_IN_OUT f1 : STRING; f2 : STRING; END_VAR
+METHOD M : INT
+VAR_IN_OUT s1 : STRING; s2 : STRING; END_VAR
+s1 := 'X';
+M := LEN(s2);
+END_METHOD
+f1 := 'X';
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK LB
+METHOD MI : INT
+VAR_IN_OUT s : STRING(20); END_VAR
+s := CONCAT(s, 'z');
+MI := LEN(s);
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK LB2 EXTENDS LB
+END_FUNCTION_BLOCK
+`;
+  const runLf = (
+    type: string,
+    features: string[],
+    marked: boolean,
+    name: string,
+  ): string => {
+    const lib = compileStlib([{ source: LF, fileName: "lf.st" }], {
+      name: "lf",
+      version: "1.0.0",
+      namespace: "lf",
+      features,
+    });
+    expect(lib.errors).toEqual([]);
+    const raw = JSON.parse(JSON.stringify(lib.archive)) as typeof lib.archive;
+    if (!marked) delete raw.manifest.stringLengthsRecorded;
+    const result = compile(
+      `FUNCTION_BLOCK UB EXTENDS LB
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR a : ${type} := 'abcd'; b : ${type} := 'abcd'; c : ${type} := 'abcd';
+  t : STRING(30) := 'abc'; fb : LFB; l2 : LB2; u : UB; n1, n2, n3, n4 : DINT; END_VAR
+n1 := LF(s1 := a, s2 := a);
+n2 := fb.M(s1 := b, s2 := b);
+fb(f1 := c, f2 := c);
+n3 := LEN(c);
+n4 := l2.MI(t) * 10;
+n4 := n4 + u.MI(t);
+END_PROGRAM
+`,
+      {
+        headerFileName: "generated.hpp",
+        features,
+        libraries: [loadStlibArchive(raw)],
+      },
+    );
+    expect(result.errors).toEqual([]);
+    return compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: name,
+      mainCode: MAIN,
+    });
+  };
+
+  it("binds a library's plain STRING in/outs by reference to the library's default length, and copies into an inherited library METHOD", () => {
+    expect(runLf("STRING(254)", [], true, "plainstr_lf_254")).toBe("1 1 1 45");
+    expect(
+      runLf("STRING(80)", ["+string_default_80"], true, "plainstr_lf_80"),
+    ).toBe("1 1 1 45");
+    // Without the marker: FUNCTION and METHOD as before, the FB copied.
+    expect(runLf("STRING(254)", [], false, "plainstr_lf_old")).toBe("1 1 4 45");
+  });
 });

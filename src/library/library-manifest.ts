@@ -332,6 +332,10 @@ export interface LibraryManifest {
   /** Function parameters record their POINTER TO, REF_TO and ARRAY shapes,
    *  not only REFERENCE TO. Absent in archives written before. */
   parameterShapes?: true;
+  /** Every STRING / WSTRING length written in the library is recorded, so one
+   *  recorded without a length has `stringDefaultLength` (254 when absent).
+   *  Absent in archives written before. */
+  stringLengthsRecorded?: true;
   /** Human-readable description */
   description?: string;
   /** C++ namespace for the library */

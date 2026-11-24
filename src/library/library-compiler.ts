@@ -886,6 +886,7 @@ export function compileLibrary(
     name: options.name,
     version: options.version,
     parameterShapes: true,
+    stringLengthsRecorded: true,
     namespace: options.namespace,
     functions: ast.functions.map((fn) =>
       tagDocumentation(

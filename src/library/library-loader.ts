@@ -399,6 +399,7 @@ export function loadLibraryManifest(json: unknown): LibraryManifest {
     result.stringDefaultLength = n;
   }
   if (obj.parameterShapes === true) result.parameterShapes = true;
+  if (obj.stringLengthsRecorded === true) result.stringLengthsRecorded = true;
 
   return result;
 }
@@ -504,6 +505,7 @@ export function registerLibrarySymbols(
       }),
     };
     if (manifest.parameterShapes) symbol.parameterShapes = true;
+    if (manifest.stringLengthsRecorded) symbol.stringLengthsRecorded = true;
     symbolTables.addLibraryFunction(symbol);
     try {
       symbolTables.globalScope.defineFromLibrary(symbol);
@@ -636,6 +638,9 @@ export function registerLibrarySymbols(
           ? { libraryMethodNames: fb.methods.map((m) => m.name) }
           : {}),
         libraryMethods: lazyLibraryMethods(fb, manifest.stringDefaultLength),
+        ...(manifest.stringLengthsRecorded
+          ? { stringLengthsRecorded: true as const }
+          : {}),
         libraryName: manifest.name,
       });
     } catch (e) {

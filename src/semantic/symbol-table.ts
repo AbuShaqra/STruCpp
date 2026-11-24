@@ -105,6 +105,8 @@ export interface FunctionSymbol extends BaseSymbol {
   libraryName?: string;
   /** A library function whose parameters carry their POINTER TO, REF_TO and ARRAY shapes. */
   parameterShapes?: true;
+  /** A library function whose archive records every written STRING length. */
+  stringLengthsRecorded?: true;
 }
 
 /**
@@ -138,6 +140,8 @@ export interface FunctionBlockSymbol extends BaseSymbol {
   libraryMethodNames?: string[];
   /** A library FB's own METHODs as declarations without bodies, parsed on first call from archives that list them. */
   libraryMethods?: () => MethodDeclaration[] | undefined;
+  /** A library FB whose archive records every written STRING length. */
+  stringLengthsRecorded?: true;
 }
 
 /**

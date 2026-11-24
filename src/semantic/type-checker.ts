@@ -4118,9 +4118,11 @@ export class TypeChecker {
                 (objType as ElementaryType).name,
                 expr.methodName,
               ) ??
-                this.libraryMethodInputs(
-                  (objType as ElementaryType).name,
-                  expr.methodName,
+                this.recordedOnly(
+                  this.libraryMethodInputs(
+                    (objType as ElementaryType).name,
+                    expr.methodName,
+                  ),
                 ),
             )
           : undefined),
@@ -9366,7 +9368,7 @@ export class TypeChecker {
       name: m.name,
       type: m.declaration.type,
       inOut,
-      fromLibrary: true,
+      fromLibrary: libraryFb.stringLengthsRecorded !== true,
     }));
   }
 
@@ -9405,7 +9407,7 @@ export class TypeChecker {
               type,
               inOut: p.isInOut,
               lengthUnrecorded: true,
-              fromLibrary: true,
+              fromLibrary: fn.stringLengthsRecorded !== true,
             },
           ]
         : [];
@@ -9440,7 +9442,7 @@ export class TypeChecker {
                 type,
                 inOut: p.isInOut,
                 lengthUnrecorded: true,
-                fromLibrary: true,
+                fromLibrary: fn.stringLengthsRecorded !== true,
               },
             ]
           : [];
@@ -9466,15 +9468,28 @@ export class TypeChecker {
       sym?.kind === "variable"
         ? (sym.declaration as VarDeclaration | undefined)?.type.name
         : undefined;
-    const inputs =
+    const library =
       this.libraryShapedFunctionInputs(expr, scope) ??
       (typeName !== undefined
         ? this.libraryMethodInputs(typeName, parts[1]!)
-        : undefined) ??
-      (typeName !== undefined
-        ? this.interfaceMethodInputs(typeName, parts[1]!)
         : undefined);
-    return this.onlyStringInOuts(inputs);
+    if (library !== undefined) {
+      return this.onlyStringInOuts(this.recordedOnly(library));
+    }
+    return this.onlyStringInOuts(
+      typeName !== undefined
+        ? this.interfaceMethodInputs(typeName, parts[1]!)
+        : undefined,
+    );
+  }
+
+  /** `inputs`, unless an archive that does not record every length declares them (left unchecked, as before). */
+  private recordedOnly(
+    inputs: CallInput[] | undefined,
+  ): CallInput[] | undefined {
+    return inputs?.some((input) => input.fromLibrary === true) === true
+      ? undefined
+      : inputs;
   }
 
   /** The inputs of METHOD `methodName` of library block `typeName` (or a base of it). */
@@ -9485,22 +9500,35 @@ export class TypeChecker {
     const upper = methodName.toUpperCase();
     const seen = new Set<string>();
     let method: MethodDeclaration | undefined;
+    let recorded = false;
     let current: string | undefined = typeName;
     while (method === undefined && current !== undefined) {
       if (seen.has(current.toUpperCase())) break;
       seen.add(current.toUpperCase());
+      const name: string = current.toUpperCase();
+      // A block of this compile that does not declare it: its base's.
+      const own: FunctionBlockDeclaration | undefined =
+        this.ast?.functionBlocks.find((f) => f.name.toUpperCase() === name);
+      if (own !== undefined) {
+        if (own.methods.some((m) => m.name.toUpperCase() === upper)) {
+          return undefined;
+        }
+        current = own.extends;
+        continue;
+      }
       const fb = this.symbolTables.lookupFunctionBlock(current);
       if (fb?.libraryName === undefined) return undefined;
       method = fb
         .libraryMethods?.()
         ?.find((m) => m.name.toUpperCase() === upper);
+      recorded = fb.stringLengthsRecorded === true;
       current = fb.declaration.extends;
     }
     return method === undefined
       ? undefined
       : callInputsOfBlocks(method.varBlocks).map((input) => ({
           ...input,
-          fromLibrary: true,
+          fromLibrary: !recorded,
         }));
   }
 

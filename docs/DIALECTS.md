@@ -1125,5 +1125,6 @@ test file); without the feature it is 254.
   back cut at the variable's length. This holds for a program's own FUNCTION, FUNCTION_BLOCK, METHOD and
   interface METHOD as for a library's FUNCTION, FUNCTION_BLOCK and METHOD, with the same warning. A
   length written as a constant's name (`STRING(LEN_C)`) compares by the constant's value. A library
-  in/out written without a length in an archive that does not record lengths may be of any length, so
-  it is compared as written: a `STRING(254)` bound to it is copied with a warning.
+  in/out written without a length has the library's default length when its archive records every
+  length (`stringLengthsRecorded`); in an older archive it may be of any length, so a library FUNCTION's
+  or METHOD's is left unchecked and a FUNCTION_BLOCK's is compared as written, as before.

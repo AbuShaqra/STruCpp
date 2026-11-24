@@ -107,6 +107,7 @@ END_FUNCTION_BLOCK
     expect(lib.errors).toEqual([]);
     const raw = JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
     if (strip) {
+      delete raw.manifest.stringLengthsRecorded;
       for (const fb of raw.manifest.functionBlocks) {
         for (const v of fb.inouts) delete v.maxLength;
       }
@@ -182,5 +183,126 @@ END_PROGRAM
     expect(
       r.warnings.filter((w) => w.message.includes("copy-in / copy-out")),
     ).toHaveLength(1);
+  });
+});
+
+describe("a library's plain STRING VAR_IN_OUT and the archive's stringLengthsRecorded", () => {
+  const LIB = `FUNCTION LF : INT
+VAR_IN_OUT s1 : STRING; s2 : STRING; END_VAR
+LF := LEN(s2);
+END_FUNCTION
+FUNCTION_BLOCK LFB
+VAR_IN_OUT f1 : STRING; f2 : STRING; END_VAR
+METHOD M : INT
+VAR_IN_OUT s1 : STRING; s2 : STRING; END_VAR
+M := LEN(s2);
+END_METHOD
+END_FUNCTION_BLOCK
+`;
+  const archive = (features: string[], marked: boolean): StlibArchive => {
+    const lib = compileStlib([{ source: LIB, fileName: "l.st" }], {
+      name: "l",
+      version: "1.0.0",
+      namespace: "l",
+      features,
+    });
+    expect(lib.errors).toEqual([]);
+    expect(lib.archive.manifest.stringLengthsRecorded).toBe(true);
+    const raw = JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
+    if (!marked) delete raw.manifest.stringLengthsRecorded;
+    return loadStlibArchive(raw);
+  };
+  const warned = (
+    type: string,
+    features: string[],
+    lib: StlibArchive,
+  ): string[] => {
+    const r = compile(
+      `PROGRAM Main
+VAR a : ${type}; fb : LFB; n : INT; END_VAR
+n := LF(s1 := a, s2 := a);
+n := fb.M(s1 := a, s2 := a);
+fb(f1 := a, f2 := a);
+END_PROGRAM
+`,
+      { libraries: [lib], features },
+    );
+    expect(r.errors).toEqual([]);
+    return r.warnings
+      .map((w) => w.message)
+      .filter((m) => m.includes("copy-in / copy-out"))
+      .map((m) => m.slice(0, m.indexOf(" is bound")));
+  };
+
+  for (const [mode, features, same] of [
+    ["254", [], "STRING(254)"],
+    ["string_default_80", ["+string_default_80"], "STRING(80)"],
+  ] as const) {
+    it(`binds a variable of the library's default length by reference (${mode})`, () => {
+      expect(warned(same, [...features], archive([...features], true))).toEqual(
+        [],
+      );
+    });
+  }
+
+  it("copies one of another length with a warning, FUNCTION, METHOD and FB alike", () => {
+    expect(
+      warned(
+        "STRING(254)",
+        ["+string_default_80"],
+        archive(["+string_default_80"], true),
+      ),
+    ).toEqual([
+      "VAR_IN_OUT 'S1' of type STRING(80)",
+      "VAR_IN_OUT 'S2' of type STRING(80)",
+      "VAR_IN_OUT 'S1' of type STRING(80)",
+      "VAR_IN_OUT 'S2' of type STRING(80)",
+      "VAR_IN_OUT 'F1' of type STRING(80)",
+      "VAR_IN_OUT 'F2' of type STRING(80)",
+    ]);
+  });
+
+  it("keeps development's behaviour for an archive without the marker", () => {
+    // FUNCTION and METHOD in-outs unchecked; the FB's compared as written.
+    expect(warned("STRING(254)", [], archive([], false))).toEqual([
+      "VAR_IN_OUT 'F1' of type STRING",
+      "VAR_IN_OUT 'F2' of type STRING",
+    ]);
+  });
+
+  it("warns for a METHOD a block inherits from a library block", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `FUNCTION_BLOCK LB
+METHOD M : INT
+VAR_IN_OUT s : STRING(20); END_VAR
+M := LEN(s);
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK LB2 EXTENDS LB
+END_FUNCTION_BLOCK
+`,
+          fileName: "b.st",
+        },
+      ],
+      { name: "b", version: "1.0.0", namespace: "b" },
+    );
+    const r = compile(
+      `FUNCTION_BLOCK UB EXTENDS LB
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR a : STRING(30); l2 : LB2; u : UB; n : INT; END_VAR
+n := l2.M(a) + u.M(a);
+END_PROGRAM
+`,
+      {
+        libraries: [loadStlibArchive(JSON.parse(JSON.stringify(lib.archive)))],
+      },
+    );
+    expect(r.errors).toEqual([]);
+    expect(
+      r.warnings.filter((w) => w.message.includes("copy-in / copy-out")),
+    ).toHaveLength(2);
   });
 });
