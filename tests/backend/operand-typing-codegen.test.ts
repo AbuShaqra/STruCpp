@@ -104,4 +104,21 @@ END_PROGRAM
     expect(cpp).toContain("MAX(U, static_cast<IEC_LINT>(-1))");
     expect(cpp).toContain("MIN(W, static_cast<IEC_WORD>(5))");
   });
+
+  it("keeps the literal cast of a function with no mixed-type overload", () => {
+    const cpp = generate(`PROGRAM Main
+VAR ud : UDINT; w : WORD; i : INT; r : LINT; END_VAR
+r := ADD(ud, -1);
+r := XOR(w, -1);
+r := SUB(i, 40000);
+r := MAX(w, 70000, 5);
+END_PROGRAM
+`);
+    expect(cpp).toContain("ADD(UD, static_cast<IEC_UDINT>(-1))");
+    expect(cpp).toContain("XOR(W, static_cast<IEC_WORD>(-1))");
+    expect(cpp).toContain("SUB(I, static_cast<IEC_INT>(40000))");
+    expect(cpp).toContain(
+      "MAX(W, static_cast<IEC_WORD>(70000), static_cast<IEC_WORD>(5))",
+    );
+  });
 });

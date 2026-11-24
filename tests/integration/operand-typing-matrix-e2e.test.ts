@@ -333,4 +333,79 @@ int main() {
     });
     expect(stdout).toBe("65536 32768 70000 -40000");
   });
+
+  it("keeps the type-cut literal of a function with no mixed-type overload, as before", () => {
+    const result = compile(
+      `PROGRAM Main
+VAR ud : UDINT := 5; w : WORD := 16#00F0; si : SINT := 100; i : INT := 30000;
+  r1, r2, r3, r4, r5, r6, r7, r8, r9 : LINT; END_VAR
+r1 := ADD(ud, -1);
+r2 := XOR(w, -1);
+r3 := AND(w, -1);
+r4 := MUL(si, 1000);
+r5 := SUB(i, 40000);
+r6 := ADD(i, 32768, i);
+r7 := MAX(w, 70000, 5);
+r8 := MIN(i, -40000, 5);
+r9 := MAX(70000, w, 5);
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "optyping_plain_functions",
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.R1.get() << " " << p.R2.get() << " " << p.R3.get() << " " << p.R4.get() << " "
+              << p.R5.get() << " " << p.R6.get() << " " << p.R7.get() << " " << p.R8.get() << " "
+              << p.R9.get() << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("4 65295 240 -96 -10000 27232 4464 5 4464");
+  });
+
+  it("compares with an untyped literal outside the other argument's type by its value", () => {
+    const result = compile(
+      `PROGRAM Main
+VAR w : WORD := 16#FFFF; i : INT := 30000; u : UDINT := 4294967295;
+  b1, b2, b3, b4, b5 : BOOL; END_VAR
+b1 := GT(w, 70000);
+b2 := LT(i, 40000);
+b3 := EQ(u, -1);
+b4 := GE(i, -40000, -50000);
+b5 := NE(w, 131071);
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp" },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "optyping_compare_literals",
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.B1.get() << " " << p.B2.get() << " " << p.B3.get() << " " << p.B4.get() << " "
+              << p.B5.get() << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("0 1 0 1 1");
+  });
 });
