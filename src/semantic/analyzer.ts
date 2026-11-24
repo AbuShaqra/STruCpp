@@ -6308,11 +6308,16 @@ export class SemanticAnalyzer {
     }
     blocks(ast.globalVarBlocks, none, "");
     for (const config of ast.configurations) {
-      blocks(
-        config.varBlocks,
-        none,
-        `CONFIGURATION ${config.name.toUpperCase()}`,
-      );
+      const name = `CONFIGURATION ${config.name.toUpperCase()}`;
+      for (const block of config.varBlocks) {
+        blocks(
+          [block],
+          none,
+          block.resourceName === undefined
+            ? name
+            : `RESOURCE ${block.resourceName.toUpperCase()} of ${name}`,
+        );
+      }
     }
     for (const t of ast.types) {
       if (t.definition.kind !== "StructDefinition" || t.definition.isUnion) {

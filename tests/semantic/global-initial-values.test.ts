@@ -147,6 +147,73 @@ PROGRAM Main END_PROGRAM
   }
 });
 
+describe("a call in a global's initial value", () => {
+  const FBS = `INTERFACE I_A
+METHOD M : INT
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FB_A IMPLEMENTS I_A
+METHOD M : INT
+M := gy;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_I
+VAR it : I_A; END_VAR
+METHOD M : INT
+M := it.M();
+END_METHOD
+END_FUNCTION_BLOCK
+`;
+
+  it("creates the global after the globals the called method reads", () => {
+    const r =
+      compile(`${FBS}VAR_GLOBAL x : INT := f.M(); f : FB_A; gy : INT := 4; END_VAR
+PROGRAM Main END_PROGRAM
+`);
+    expect(r.errors).toEqual([]);
+    expect(r.headerCode.indexOf("IEC_INT X = F.M()")).toBeGreaterThan(
+      r.headerCode.indexOf("IEC_INT GY = 4"),
+    );
+  });
+
+  it("refuses a call whose reads cannot be followed", () => {
+    expect(
+      located(
+        compile(`${FBS}VAR_GLOBAL
+  z : INT := fi.M();
+  w : INT := pa^.M();
+  i : I_A := f;
+  v : INT := i.M();
+  f : FB_A; fi : FB_I; pa : POINTER TO FB_A := ADR(f); gy : INT := 4;
+END_VAR
+PROGRAM Main END_PROGRAM
+`),
+      ),
+    ).toEqual([
+      "17:14 The initial value of global 'Z' leads to a call through an interface (line 13), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign 'Z' in a program instead",
+      "18:14 The initial value of global 'W' leads to a call through a pointer or reference (line 18), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign 'W' in a program instead",
+      "20:14 The initial value of global 'V' leads to a call through an interface (line 20), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign 'V' in a program instead",
+    ]);
+  });
+
+  it("refuses a call that reads the global itself", () => {
+    expect(
+      located(
+        compile(`${FBS}FUNCTION_BLOCK FB_S
+METHOD M : INT
+M := xs;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL xs : INT := fs.M(); fs : FB_S; END_VAR
+PROGRAM Main END_PROGRAM
+`),
+      ),
+    ).toEqual([
+      "21:12 The initial value of global 'XS' reads 'XS' itself, through the code it calls",
+    ]);
+  });
+});
+
 describe("the type of a global's initial value", () => {
   const GLOBALS = `VAR_GLOBAL CONSTANT LC : LTIME := LTIME#2ms; END_VAR
 VAR_GLOBAL

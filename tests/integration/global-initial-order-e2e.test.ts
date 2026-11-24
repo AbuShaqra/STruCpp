@@ -350,5 +350,76 @@ int main() {
       });
       expect(out).toBe("7 7");
     });
+
+    it("creates it after the globals the called code reads, transitively", () => {
+      const r = compile(
+        `FUNCTION_BLOCK FB_A
+VAR inner : FB_C; END_VAR
+METHOD M : INT
+M := gy;
+END_METHOD
+METHOD N : INT
+inner();
+N := inner.q + Fn();
+END_METHOD
+PROPERTY P : INT
+GET
+P := gp;
+END_GET
+END_PROPERTY
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_B
+VAR v : INT := 7; END_VAR
+METHOD M : INT
+M := v;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_C
+VAR_OUTPUT q : INT; END_VAR
+q := gq;
+END_FUNCTION_BLOCK
+FUNCTION Fn : INT
+VAR_EXTERNAL gf : INT; END_VAR
+Fn := gf;
+END_FUNCTION
+VAR_GLOBAL
+  x : INT := f.M();
+  n : INT := f.N();
+  y : INT := f.P;
+  f : FB_A;
+  g2 : FB_B;
+  gy : INT := g2.M();
+  gq : INT := 1;
+  gp : INT := 2;
+  gf : INT := 3;
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x, n, y : INT; END_VAR
+VAR n1, n2, n3 : INT; END_VAR
+n1 := x;
+n2 := n;
+n3 := y;
+END_PROGRAM
+`,
+        { headerFileName: "generated.hpp" },
+      );
+      expect(r.errors).toEqual([]);
+      const out = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: r.headerCode,
+        cppCode: r.cppCode,
+        testName: "global_method_reads",
+        mainCode: `#include <iostream>
+int main() {
+  strucpp::Program_MAIN p;
+  p.run();
+  std::cout << (int)p.N1 << " " << (int)p.N2 << " " << (int)p.N3 << std::endl;
+  return 0;
+}
+`,
+      });
+      expect(out).toBe("7 4 2");
+    });
   },
 );

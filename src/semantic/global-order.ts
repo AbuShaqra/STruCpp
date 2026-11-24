@@ -6,12 +6,14 @@
  * A global's initial value may name another global, as a value, as the
  * target of ADR() or as the instance of a method call (`f.M()`), wherever
  * that one is declared: later in the same file or in another global variable
- * list. A global is therefore created after the
- * globals its initial value names. Without such a dependency the declaration
- * order is kept. A cycle has no order and is reported.
+ * list. A global is therefore created after the globals its initial value
+ * names, and after those the methods, functions and getters it calls read
+ * (call-reads.ts). Without such a dependency the declaration order is kept.
+ * A cycle has no order and is reported.
  */
 
 import type {
+  ASTNode,
   CompilationUnit,
   ConfigurationDeclaration,
   FunctionCallExpression,
@@ -20,6 +22,7 @@ import type {
   VariableExpression,
 } from "../frontend/ast.js";
 import { walkAST } from "../ast-utils.js";
+import { CallReadTracer } from "./call-reads.js";
 
 /** One declared global: a name of a declaration of a block. */
 export interface GlobalItem {
@@ -40,6 +43,11 @@ export interface GlobalOrder {
    * lists: an error of its own, and `order` keeps only the last of them.
    */
   duplicates: Set<string>;
+  /**
+   * Globals (upper-case) whose initial value calls code whose reads cannot
+   * be followed: the call and why. Their order is not known to be right.
+   */
+  unresolved: Map<string, { node: ASTNode; reason: string }>;
 }
 
 /** The upper-case names of the globals `decl`'s initial value names. */
@@ -69,7 +77,7 @@ function namedGlobals(
 }
 
 export function orderGlobals(ast: CompilationUnit): GlobalOrder {
-  return orderGlobalBlocks(ast.globalVarBlocks);
+  return orderGlobalBlocks(ast.globalVarBlocks, ast);
 }
 
 /**
@@ -85,7 +93,11 @@ export function orderConfigurationGlobals(
 }
 
 /** `blocks`' globals, each after the globals of `blocks` its initial value names. */
-export function orderGlobalBlocks(blocks: readonly VarBlock[]): GlobalOrder {
+export function orderGlobalBlocks(
+  blocks: readonly VarBlock[],
+  /** The unit whose POUs the initial values' calls are followed into. */
+  pous?: CompilationUnit,
+): GlobalOrder {
   const items: GlobalItem[] = [];
   // Every name a global is reached by (its own, its list aliases) → the global.
   const owner = new Map<string, string>();
@@ -118,13 +130,35 @@ export function orderGlobalBlocks(blocks: readonly VarBlock[]): GlobalOrder {
       duplicates.add(upper);
     }
   }
+  const tracer =
+    pous === undefined
+      ? undefined
+      : new CallReadTracer(
+          pous,
+          owner,
+          new Map(items.map((i) => [i.name.toUpperCase(), i.decl.type])),
+        );
   const dependencies = new Map<string, string[]>();
+  const unresolved = new Map<string, { node: ASTNode; reason: string }>();
   for (const item of items) {
     const self = item.name.toUpperCase();
-    dependencies.set(
-      self,
-      namedGlobals(item.decl, owner).filter((n) => n !== self),
-    );
+    const named = namedGlobals(item.decl, owner).filter((n) => n !== self);
+    const value = item.decl.initialValue;
+    if (tracer !== undefined && value !== undefined) {
+      // A call reading the global itself is a cycle
+      const reads = tracer.initialValueReads(value);
+      for (const g of reads.globals) {
+        if (g !== self && !named.includes(g)) named.push(g);
+      }
+      if (
+        reads.globals.has(self) &&
+        !namedGlobals(item.decl, owner).includes(self)
+      ) {
+        named.push(self);
+      }
+      if (reads.unresolved) unresolved.set(self, reads.unresolved);
+    }
+    dependencies.set(self, named);
   }
 
   const order: GlobalItem[] = [];
@@ -147,5 +181,5 @@ export function orderGlobalBlocks(blocks: readonly VarBlock[]): GlobalOrder {
     if (item) order.push(item);
   };
   for (const item of items) visit(item.name.toUpperCase());
-  return { order, dependencies, cycles, duplicates };
+  return { order, dependencies, cycles, duplicates, unresolved };
 }

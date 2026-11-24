@@ -16,6 +16,24 @@ const TAIL =
   ": it needs fixed bounds there; ARRAY[*] is only a FUNCTION or METHOD VAR_INPUT, VAR_OUTPUT or VAR_IN_OUT, or a FUNCTION_BLOCK VAR_IN_OUT";
 
 describe("ARRAY[*] outside a parameter", () => {
+  it("names the RESOURCE that declares a global", () => {
+    expect(
+      compile(`CONFIGURATION C1
+VAR_GLOBAL a : ARRAY[*] OF INT; END_VAR
+RESOURCE R1 ON PLC
+VAR_GLOBAL b : ARRAY[*] OF INT; END_VAR
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM I WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+PROGRAM Main END_PROGRAM
+`).errors.map((e) => e.message),
+    ).toEqual([
+      `'A' is a variable-length ARRAY[*] in a VAR_GLOBAL of CONFIGURATION C1${TAIL}`,
+      `'B' is a variable-length ARRAY[*] in a VAR_GLOBAL of RESOURCE R1 of CONFIGURATION C1${TAIL}`,
+    ]);
+  });
+
   for (const [label, options] of MODES) {
     it(`is refused in every storage declaration (${label})`, () => {
       const r = compile(

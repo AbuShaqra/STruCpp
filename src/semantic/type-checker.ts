@@ -5789,6 +5789,44 @@ export class TypeChecker {
       if (this.strict || this.inOutErrors) {
         this.refuseDependentGlobalInitials(ordered, outer);
       }
+      this.refuseUnorderedGlobalCalls(ordered);
+    }
+  }
+
+  /**
+   * A global's initial value calling code whose reads of other globals cannot
+   * be followed (global-order.ts): it is refused, as no creation order can be
+   * shown right. One already refused at the call is not reported again.
+   */
+  private refuseUnorderedGlobalCalls({ order, unresolved }: GlobalOrder): void {
+    for (const item of order) {
+      const found = unresolved.get(item.name.toUpperCase());
+      const value = item.decl.initialValue;
+      if (
+        found === undefined ||
+        value === undefined ||
+        item.decl.names[0] !== item.name
+      ) {
+        continue;
+      }
+      const span = value.sourceSpan;
+      const at = found.node.sourceSpan;
+      if (
+        this.errors.some(
+          (e) =>
+            e.line === span.startLine &&
+            e.column === span.startCol &&
+            e.file === span.file,
+        )
+      ) {
+        continue;
+      }
+      this.addError(
+        `The initial value of global '${item.name}' leads to ${found.reason} (line ${at.startLine}), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign '${item.name}' in a program instead`,
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
     }
   }
 
@@ -5955,7 +5993,9 @@ export class TypeChecker {
       const span = order.find((i) => i.name.toUpperCase() === cycle[0])?.decl
         .sourceSpan;
       this.addError(
-        `The initial values of the globals ${list} depend on each other (${[...cycle, cycle[0]!].join(" -> ")})`,
+        cycle.length === 1
+          ? `The initial value of global ${list} reads ${list} itself, through the code it calls`
+          : `The initial values of the globals ${list} depend on each other (${[...cycle, cycle[0]!].join(" -> ")})`,
         span?.startLine ?? 0,
         span?.startCol ?? 0,
         span?.file,
