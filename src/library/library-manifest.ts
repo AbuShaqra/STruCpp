@@ -461,6 +461,8 @@ export interface LibraryCompileResult {
   chunks?: LibraryChunk[];
   /** Compilation errors */
   errors: LibraryCompileError[];
+  /** Source warnings of the compile (absent when it did not run) */
+  warnings?: LibraryCompileError[];
 }
 
 /**
@@ -520,4 +522,6 @@ export interface StlibCompileResult {
   archive: StlibArchive;
   /** Compilation errors */
   errors: LibraryCompileError[];
+  /** Source warnings of the compile (absent when it did not run) */
+  warnings?: LibraryCompileError[];
 }
