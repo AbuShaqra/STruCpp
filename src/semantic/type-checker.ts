@@ -2558,6 +2558,26 @@ export class TypeChecker {
     this.requireStructCompare(expr, leftType, rightType, scope);
 
     if (leftType === undefined || rightType === undefined) {
+      // `p^ = 'b'`: a dereferenced CHAR or WCHAR takes a one-character literal
+      // as that character; a string operand is refused as for a CHAR variable
+      const [deref, other, otherType] =
+        leftType === undefined
+          ? [expr.left, expr.right, rightType]
+          : [expr.right, expr.left, leftType];
+      const accessed = this.accessedElementaryType(deref, scope);
+      const derefChar = this.charTypeOf(accessed);
+      if (
+        derefChar !== undefined &&
+        !this.adaptCharLiteral(other, derefChar) &&
+        otherType?.typeKind === "elementary" &&
+        isStringBase(this.aliasBase((otherType as ElementaryType).name))
+      ) {
+        this.inferCharBinaryType(
+          expr,
+          leftType ?? accessed!,
+          rightType ?? accessed!,
+        );
+      }
       // `p^ MOD i`: an operand with no expression type is judged by its reads
       if (expr.operator === "MOD") {
         this.refuseRealMod(expr, leftType, rightType, scope);
@@ -2575,6 +2595,10 @@ export class TypeChecker {
         leftType = expr.left.resolvedType!;
       }
       return this.inferCharBinaryType(expr, leftType, rightType);
+    }
+
+    if (this.refuseStringOperands(expr, leftType, rightType, scope)) {
+      return undefined;
     }
 
     if (
@@ -2695,7 +2719,10 @@ export class TypeChecker {
    * a one-character literal is that character, and every compared argument
    * is the same character type (no implicit conversion to a number).
    */
-  private checkCharStdArguments(expr: FunctionCallExpression): void {
+  private checkCharStdArguments(
+    expr: FunctionCallExpression,
+    scope?: Scope,
+  ): void {
     const name = expr.functionName.toUpperCase();
     const skip = CHAR_COMPARE_FUNCTIONS.get(name);
     if (skip === undefined || this.findUserFunction(name)) return;
@@ -2707,8 +2734,14 @@ export class TypeChecker {
       return;
     }
     const args = stripEnEno(expr.arguments).slice(skip);
+    // `EQ(p^, 'b')`: a dereference has no expression type; its declared one counts
     const charType = args
-      .map((a) => this.charTypeOf(a.value.resolvedType))
+      .map((a) =>
+        this.charTypeOf(
+          a.value.resolvedType ??
+            (scope && this.accessedElementaryType(a.value, scope)),
+        ),
+      )
       .find((t) => t !== undefined);
     if (charType === undefined) return;
     for (const arg of args) {
@@ -2907,6 +2940,40 @@ export class TypeChecker {
       return leftType;
     }
     return undefined;
+  }
+
+  /**
+   * A store into a CHAR or WCHAR reached through `^` (its target has no
+   * expression type): a one-character literal is that character, and a STRING,
+   * WSTRING or the other character type is refused, as for a CHAR variable.
+   */
+  private adaptDereferencedCharStore(
+    target: Expression,
+    value: Expression,
+    scope: Scope,
+  ): void {
+    const accessed = this.accessedElementaryType(target, scope);
+    const charType = this.charTypeOf(accessed);
+    if (charType === undefined || this.adaptCharLiteral(value, charType)) {
+      return;
+    }
+    const valueType = value.resolvedType;
+    const valueChar = this.charTypeOf(valueType);
+    if (
+      valueType?.typeKind !== "elementary" ||
+      (!isStringBase(this.aliasBase((valueType as ElementaryType).name)) &&
+        (valueChar === undefined || valueChar === charType)) ||
+      this.reportedCharValues.has(value)
+    ) {
+      return;
+    }
+    this.reportedCharValues.add(value);
+    this.addError(
+      `Cannot assign ${typeNameUtil(valueType)} to ${charType}`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
   }
 
   /**
@@ -3385,17 +3452,8 @@ export class TypeChecker {
     leftType: IECType,
     rightType: IECType,
   ): void {
-    const kind = (t: IECType): string | undefined => {
-      if (t.typeKind !== "elementary") return undefined;
-      const name = this.aliasBase((t as ElementaryType).name).toUpperCase();
-      return /^WSTRING\b/.test(name)
-        ? "WSTRING"
-        : /^STRING\b/.test(name)
-          ? "STRING"
-          : undefined;
-    };
-    const l = kind(leftType);
-    const r = kind(rightType);
+    const l = this.stringKindOf(leftType);
+    const r = this.stringKindOf(rightType);
     if (l === undefined || r === undefined || l === r) return;
     this.refusedMixedComparisons.add(expr);
     this.addError(
@@ -3404,6 +3462,138 @@ export class TypeChecker {
       expr.sourceSpan.startCol,
       expr.sourceSpan.file,
     );
+  }
+
+  /** True for a POINTER TO or REF_TO variable read as itself (not through `^`). */
+  private isReferenceValue(e: Expression, scope: Scope): boolean {
+    let v = e;
+    while (v.kind === "ParenthesizedExpression") v = v.expression;
+    if (v.kind !== "VariableExpression") return false;
+    const declared = this.declaredVariableType(v, scope);
+    if (declared === undefined) return false;
+    const kind = resolveAccessType(
+      declared,
+      v,
+      this.accessLookup,
+    )?.referenceKind;
+    return kind === "pointer_to" || kind === "ref_to";
+  }
+
+  /** STRING or WSTRING when the type is one of them (any length, through aliases). */
+  private stringKindOf(
+    t: IECType | undefined,
+  ): "STRING" | "WSTRING" | undefined {
+    if (t?.typeKind !== "elementary") return undefined;
+    const name = this.aliasBase((t as ElementaryType).name).toUpperCase();
+    return /^WSTRING\b/.test(name)
+      ? "WSTRING"
+      : /^STRING\b/.test(name)
+        ? "STRING"
+        : undefined;
+  }
+
+  /**
+   * A STRING or WSTRING operand: compared only with its own string type, and
+   * no arithmetic or logic (join strings with CONCAT). True when refused.
+   */
+  private refuseStringOperands(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+    scope: Scope,
+  ): boolean {
+    // A POINTER TO STRING read (`ps <> 0`) and an address are no strings here.
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    if (
+      [expr.left, expr.right].some(
+        (e) =>
+          this.isReferenceValue(e, scope) ||
+          addressSource(e, user, this.isPointerRead) !== undefined,
+      )
+    ) {
+      return false;
+    }
+    const l = this.stringKindOf(leftType);
+    const r = this.stringKindOf(rightType);
+    if (l === undefined && r === undefined) return false;
+    const fail = (message: string): true => {
+      this.addError(
+        message,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+      return true;
+    };
+    if (!COMPARISON_OPS.has(expr.operator)) {
+      return fail(
+        `Operator '${expr.operator}' does not apply to ${l ?? r}${expr.operator === "+" ? "; join strings with CONCAT" : ""}`,
+      );
+    }
+    // STRING against WSTRING has its own message (refuseMixedStringComparison).
+    if (l !== undefined && r !== undefined) return false;
+    const other = l === undefined ? leftType : rightType;
+    if (isGenericGroupType(other)) return false;
+    return fail(
+      `Cannot compare ${typeNameUtil(leftType)} with ${typeNameUtil(rightType)}`,
+    );
+  }
+
+  /**
+   * MAX, MIN, LIMIT, the comparison functions, SEL and MUX with a STRING or
+   * WSTRING argument: every compared or selected argument is that same string
+   * type (no implicit conversion), else the C++ build would fail.
+   */
+  private checkStringStdArguments(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    const name = expr.functionName.toUpperCase();
+    const skip = CHAR_COMPARE_FUNCTIONS.get(name);
+    if (
+      skip === undefined ||
+      expr.instance !== undefined ||
+      !this.isStdCharFunction(name)
+    ) {
+      return;
+    }
+    const args = stripEnEno(expr.arguments)
+      .slice(skip)
+      .filter((a) => !a.isOutput);
+    // A POINTER TO STRING read is typed as its target: left unchecked.
+    const types = args.map((a) =>
+      this.isReferenceValue(a.value, scope)
+        ? undefined
+        : (a.value.resolvedType ?? this.accessedElementaryType(a.value, scope)),
+    );
+    // CHAR among them: checkCharStdArguments reports the mismatch.
+    if (types.some((t) => this.charTypeOf(t) !== undefined)) return;
+    const kind = types
+      .map((t) => this.stringKindOf(t))
+      .find((k) => k !== undefined);
+    if (kind === undefined) return;
+    args.forEach((arg, i) => {
+      const t = types[i];
+      if (
+        t === undefined ||
+        isGenericGroupType(t) ||
+        this.stringKindOf(t) === kind ||
+        // MAX, MIN and LIMIT refuse an enumeration on their own.
+        (t.typeKind === "enum" &&
+          CHAR_SELECTION_FUNCTIONS.has(name) &&
+          name !== "SEL" &&
+          name !== "MUX")
+      ) {
+        return;
+      }
+      this.addError(
+        `Argument of '${name}' is ${typeNameUtil(t)} where the others are ${kind}; ${kind} does not convert implicitly`,
+        arg.value.sourceSpan.startLine,
+        arg.value.sourceSpan.startCol,
+        arg.value.sourceSpan.file,
+      );
+    });
   }
 
   /**
@@ -4033,7 +4223,8 @@ export class TypeChecker {
     }
     this.refuseNarrowAddressArguments(expr, scope);
     this.refuseBitMemberArguments(expr, scope);
-    this.checkCharStdArguments(expr);
+    this.checkCharStdArguments(expr, scope);
+    this.checkStringStdArguments(expr, scope);
     this.adaptCharConversionArgument(expr);
     this.validateReferenceArguments(expr, scope);
     this.checkOutputBindings(expr, scope);
@@ -6123,6 +6314,7 @@ export class TypeChecker {
   private checkAddressStore(
     typeName: string | undefined,
     value: Expression,
+    scope?: Scope,
   ): boolean {
     if (typeName === undefined) return false;
     const user = (name: string): boolean =>
@@ -6150,7 +6342,12 @@ export class TypeChecker {
     }
     if (chainError !== undefined) return true;
     const source = addressSource(value, user, this.isPointerRead);
-    if (source === undefined) return this.checkXwordStore(typeName, value);
+    if (source === undefined) {
+      return (
+        this.checkPointerValueStore(typeName, value, scope) ||
+        this.checkXwordStore(typeName, value)
+      );
+    }
     // A user FUNCTION named ADR is called, not the operator.
     if (source.op === "ADR" && this.userAddressFunction()) return false;
     const fit = addressFit(typeName, this.ast?.types ?? []);
@@ -6187,6 +6384,55 @@ export class TypeChecker {
       span.startCol,
       span.file,
     );
+    return true;
+  }
+
+  /**
+   * A POINTER TO or REF_TO variable passed to an input (`LEFT(s, p)`): refused
+   * as an ADR is when the input is an integer narrower than 64 bits or a
+   * non-integer; a 64-bit integer input takes it as its address. Only `scope`
+   * (inputs) enables it: bundled OSCAT stores a pointer into a DWORD.
+   */
+  private checkPointerValueStore(
+    typeName: string,
+    value: Expression,
+    scope: Scope | undefined,
+  ): boolean {
+    let v = value;
+    while (v.kind === "ParenthesizedExpression") v = v.expression;
+    if (scope === undefined || v.kind !== "VariableExpression") return false;
+    const declared = this.declaredVariableType(v, scope);
+    if (declared === undefined) return false;
+    const type = resolveAccessType(declared, v, this.accessLookup);
+    const kind = type?.referenceKind;
+    if (
+      type === undefined ||
+      type.arrayDimensions !== undefined ||
+      (kind !== "pointer_to" && kind !== "ref_to")
+    ) {
+      return false;
+    }
+    const fit = addressFit(typeName, this.ast?.types ?? []);
+    if (fit === undefined) return false;
+    if (fit === "wide") {
+      // An input takes it as its 64-bit integer.
+      value.addressInto ??= typeName;
+      return true;
+    }
+    const span = value.sourceSpan;
+    const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+    if (!this.addressStoresReported.has(key)) {
+      this.addressStoresReported.add(key);
+      this.addError(
+        narrowAddressMessage(
+          `A ${kind === "pointer_to" ? "POINTER TO" : "REF_TO"} value`,
+          fit.narrow,
+        ),
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+    }
     return true;
   }
 
@@ -6460,7 +6706,8 @@ export class TypeChecker {
       this.callInputs(expr, scope) ??
       this.dottedMethodInputs(expr.functionName, scope) ??
       methodParams?.filter((p) => !p.output) ??
-      this.libraryShapedFunctionInputs(expr, scope);
+      this.libraryShapedFunctionInputs(expr, scope) ??
+      this.stdSpecificInputs(expr, scope);
     if (inputs) {
       let positional = 0;
       for (const arg of args) {
@@ -6471,10 +6718,13 @@ export class TypeChecker {
             ? inputs[positional++]
             : inputs.find((p) => p.name.toUpperCase() === argName);
         // A VAR_IN_OUT binds, it stores nothing (the binding check refuses an ADR).
-        if (input === undefined || input.inOut) continue;
+        // A generic standard input (no type name) is not checked here.
+        if (input === undefined || input.inOut || input.type.name === "") {
+          continue;
+        }
         this.refuseMisalignedPointerStore(input.type, arg.value, scope);
         if ((input.type.referenceKind ?? "none") !== "none") continue;
-        this.checkAddressStore(input.type.name, arg.value);
+        this.checkAddressStore(input.type.name, arg.value, scope);
       }
     }
     if (!args.some((a) => a.isOutput) || !this.ast) return;
@@ -6632,6 +6882,10 @@ export class TypeChecker {
             ),
           );
         }
+        // `p^ := 'b'` into a CHAR or WCHAR: the literal is that character; a string is refused
+        if (targetType === undefined) {
+          this.adaptDereferencedCharStore(stmt.target, stmt.value, scope);
+        }
         // NOT of an untyped constant into a result or through `p^`
         if (targetType === undefined) {
           this.typeNotFromExpected(
@@ -6785,8 +7039,11 @@ export class TypeChecker {
         if (!this.refuseAddressSelector(stmt.selector) && selectorType) {
           this.validateCaseSelector(selectorType, stmt.selector);
         }
+        // `CASE p^ OF`: a dereference has no expression type; its declared one counts
+        const selectorChar = this.charTypeOf(
+          selectorType ?? this.accessedElementaryType(stmt.selector, scope),
+        );
         for (const c of stmt.cases) {
-          const selectorChar = this.charTypeOf(selectorType);
           for (const label of c.labels) {
             this.resolveExprType(label.start, scope);
             if (label.end) this.resolveExprType(label.end, scope);
@@ -9770,6 +10027,36 @@ export class TypeChecker {
           ]
         : [];
     });
+  }
+
+  /**
+   * The inputs of a standard function that take one elementary type (`L` and
+   * `P` of LEFT, MID, INSERT: INT), from the registry, as the standard
+   * library records no parameter shapes; generic inputs are left out.
+   */
+  private stdSpecificInputs(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): CallInput[] | undefined {
+    const name = expr.functionName;
+    if (!this.stdRegistry || expr.instance || name.includes(".")) {
+      return undefined;
+    }
+    if (this.calledInstance(name, scope) || this.ownMethod(name)) {
+      return undefined;
+    }
+    if (!this.isStdCharFunction(name.toUpperCase())) return undefined;
+    const desc = this.stdRegistry.lookup(name.toUpperCase());
+    if (!desc) return undefined;
+    // Each parameter keeps its place; a generic one has no type name.
+    return desc.params.map((p) => ({
+      name: p.name,
+      type: {
+        name: p.constraint === "specific" ? (p.specificType ?? "") : "",
+        referenceKind: "none",
+      },
+      inOut: false,
+    }));
   }
 
   /**

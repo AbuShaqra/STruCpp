@@ -593,9 +593,110 @@ inline const char16_t* LIMIT(const char16_t* mn, const char16_t* in, const char1
     return in;
 }
 
+namespace detail {
+template<typename...> struct iec_str_voider { using type = void; };
+
+/** The character type of a STRING (char) or WSTRING (char16_t) argument; none for others. */
+template<typename T, typename = void>
+struct iec_str_char {};
+template<typename T>
+struct iec_str_char<T, typename iec_str_voider<
+    decltype(iec_str_text_of(std::declval<const T&>()))>::type> {
+    using type = std::remove_const_t<std::remove_pointer_t<
+        decltype(iec_str_text_of(std::declval<const T&>()).data)>>;
+};
+
+template<typename T, typename = void>
+struct is_iec_str_arg : std::false_type { using char_type = void; };
+template<typename T>
+struct is_iec_str_arg<T, typename iec_str_voider<typename iec_str_char<T>::type>::type>
+    : std::true_type { using char_type = typename iec_str_char<T>::type; };
+
+/** True when every argument is a STRING, or every one a WSTRING, value, variable or literal. */
+template<typename A, typename... Rest>
+struct iec_same_str_args : std::integral_constant<bool, is_iec_str_arg<A>::value> {};
+template<typename A, typename B, typename... Rest>
+struct iec_same_str_args<A, B, Rest...> : std::integral_constant<bool,
+    is_iec_str_arg<A>::value && is_iec_str_arg<B>::value &&
+    std::is_same<typename is_iec_str_arg<A>::char_type,
+                 typename is_iec_str_arg<B>::char_type>::value &&
+    iec_same_str_args<B, Rest...>::value> {};
+
+/** The declared length of a string argument; a literal counts as STRING / WSTRING (254). */
+template<typename T, typename = void>
+struct iec_str_cap : std::integral_constant<size_t, 254> {};
+template<size_t N>
+struct iec_str_cap<IECString<N>, void> : std::integral_constant<size_t, N> {};
+template<size_t N>
+struct iec_str_cap<IECWString<N>, void> : std::integral_constant<size_t, N> {};
+template<typename T>
+struct iec_str_cap<T, typename iec_str_voider<decltype(std::declval<const T&>().get())>::type>
+    : iec_str_cap<std::decay_t<decltype(std::declval<const T&>().get())>> {};
+
+template<size_t A, size_t... Rest>
+struct iec_max_size : std::integral_constant<size_t, A> {};
+template<size_t A, size_t B, size_t... Rest>
+struct iec_max_size<A, B, Rest...>
+    : iec_max_size<(A > B ? A : B), Rest...> {};
+
+template<typename C, size_t N> struct iec_str_value_type;
+template<size_t N> struct iec_str_value_type<char, N> { using type = IECString<N>; };
+template<size_t N> struct iec_str_value_type<char16_t, N> { using type = IECWString<N>; };
+
+/** The STRING or WSTRING value type holding any of the arguments: the longest declared length. */
+template<typename A, typename... Rest>
+using iec_str_common_t = typename iec_str_value_type<typename iec_str_char<A>::type,
+    iec_max_size<iec_str_cap<std::decay_t<A>>::value,
+                 iec_str_cap<std::decay_t<Rest>>::value...>::value>::type;
+
+/** Some argument is not a raw literal (a literal-only call takes the pointer overloads). */
+template<typename... Ts>
+struct iec_any_str_object : std::false_type {};
+template<typename T, typename... Rest>
+struct iec_any_str_object<T, Rest...> : std::integral_constant<bool,
+    !std::is_pointer<std::decay_t<T>>::value || iec_any_str_object<Rest...>::value> {};
+
+/** The text of a string argument as the value type R. */
+template<typename R, typename T>
+inline R iec_str_as(const T& v) noexcept {
+    const auto t = iec_str_text_of(v);
+    return R(t.data, t.length);
+}
+}  // namespace detail
+
+/** Enables a STRING (or WSTRING) form of MAX, MIN, LIMIT, SEL or MUX: one string type, not all literals. */
+template<typename... Ts>
+using enable_if_str_selection = std::enable_if_t<
+    detail::iec_same_str_args<Ts...>::value && detail::iec_any_str_object<Ts...>::value, int>;
+
+/** Disables the numeric mixed-type forms for strings, which have their own. */
+template<typename... Ts>
+using enable_if_not_all_str = std::enable_if_t<!detail::iec_same_str_args<Ts...>::value, int>;
+
+// MAX, MIN and LIMIT of STRING or WSTRING variables, values and literals of
+// any declared lengths: compared by text, the result as long as the longest
+template<typename A, typename B, enable_if_str_selection<A, B> = 0>
+inline detail::iec_str_common_t<A, B> MAX(const A& a, const B& b) noexcept {
+    using R = detail::iec_str_common_t<A, B>;
+    return iec_str_cmp(a, b) >= 0 ? detail::iec_str_as<R>(a) : detail::iec_str_as<R>(b);
+}
+template<typename A, typename B, enable_if_str_selection<A, B> = 0>
+inline detail::iec_str_common_t<A, B> MIN(const A& a, const B& b) noexcept {
+    using R = detail::iec_str_common_t<A, B>;
+    return iec_str_cmp(a, b) <= 0 ? detail::iec_str_as<R>(a) : detail::iec_str_as<R>(b);
+}
+template<typename A, typename B, typename C, enable_if_str_selection<A, B, C> = 0>
+inline detail::iec_str_common_t<A, B, C> LIMIT(const A& mn, const B& in, const C& mx) noexcept {
+    using R = detail::iec_str_common_t<A, B, C>;
+    if (iec_str_cmp(in, mn) < 0) return detail::iec_str_as<R>(mn);
+    if (iec_str_cmp(in, mx) > 0) return detail::iec_str_as<R>(mx);
+    return detail::iec_str_as<R>(in);
+}
+
 // Mixed-type MIN/MAX/LIMIT/SEL overloads (OSCAT mixes e.g. INT with DINT)
 template<typename T, typename U,
-    std::enable_if_t<!std::is_same<std::decay_t<T>, std::decay_t<U>>::value, int> = 0>
+    std::enable_if_t<!std::is_same<std::decay_t<T>, std::decay_t<U>>::value, int> = 0,
+    enable_if_not_all_str<T, U> = 0>
 inline auto MAX(T a, U b) noexcept {
     using CT = std::common_type_t<decltype(iec_unwrap(a)), decltype(iec_unwrap(b))>;
     auto va = static_cast<CT>(iec_unwrap(a));
@@ -604,7 +705,8 @@ inline auto MAX(T a, U b) noexcept {
 }
 
 template<typename T, typename U,
-    std::enable_if_t<!std::is_same<std::decay_t<T>, std::decay_t<U>>::value, int> = 0>
+    std::enable_if_t<!std::is_same<std::decay_t<T>, std::decay_t<U>>::value, int> = 0,
+    enable_if_not_all_str<T, U> = 0>
 inline auto MIN(T a, U b) noexcept {
     using CT = std::common_type_t<decltype(iec_unwrap(a)), decltype(iec_unwrap(b))>;
     auto va = static_cast<CT>(iec_unwrap(a));
@@ -612,7 +714,7 @@ inline auto MIN(T a, U b) noexcept {
     return va < vb ? va : vb;
 }
 
-template<typename T1, typename T2, typename T3>
+template<typename T1, typename T2, typename T3, enable_if_not_all_str<T1, T2, T3> = 0>
 inline auto LIMIT(T1 mn, T2 in, T3 mx) noexcept
     -> std::enable_if_t<
         !(std::is_same<std::decay_t<T1>, std::decay_t<T2>>::value &&
@@ -628,10 +730,20 @@ inline auto LIMIT(T1 mn, T2 in, T3 mx) noexcept
 }
 
 template<typename T, typename U,
-    std::enable_if_t<!std::is_same<std::decay_t<T>, std::decay_t<U>>::value, int> = 0>
+    std::enable_if_t<!std::is_same<std::decay_t<T>, std::decay_t<U>>::value, int> = 0,
+    enable_if_not_all_str<T, U> = 0>
 inline auto SEL(IEC_BOOL g, T in0, U in1) noexcept {
     using CT = std::common_type_t<decltype(iec_unwrap(in0)), decltype(iec_unwrap(in1))>;
     return iec_unwrap(g) ? static_cast<CT>(iec_unwrap(in1)) : static_cast<CT>(iec_unwrap(in0));
+}
+
+// SEL of two strings of different declared lengths (or a string and a literal)
+template<typename T, typename U,
+    std::enable_if_t<!std::is_same<std::decay_t<T>, std::decay_t<U>>::value, int> = 0,
+    enable_if_str_selection<T, U> = 0>
+inline detail::iec_str_common_t<T, U> SEL(IEC_BOOL g, const T& in0, const U& in1) noexcept {
+    using R = detail::iec_str_common_t<T, U>;
+    return iec_unwrap(g) ? detail::iec_str_as<R>(in1) : detail::iec_str_as<R>(in0);
 }
 
 /**
@@ -662,12 +774,25 @@ inline T MUX(IEC_INT k, T in0, T in1, Args... rest) noexcept {
 // Inputs of different C++ types (an enumeration variable next to a literal
 // of its enumeration): selected as their common raw type.
 template<typename T, typename U, typename... Args,
-    std::enable_if_t<!std::is_same<std::decay_t<T>, std::decay_t<U>>::value, int> = 0>
+    std::enable_if_t<!std::is_same<std::decay_t<T>, std::decay_t<U>>::value, int> = 0,
+    enable_if_not_all_str<T, U, Args...> = 0>
 inline auto MUX(IEC_INT k, T in0, U in1, Args... rest) noexcept {
     using CT = std::common_type_t<decltype(iec_unwrap(in0)),
         decltype(iec_unwrap(in1)), decltype(iec_unwrap(rest))...>;
     return MUX(k, static_cast<CT>(iec_unwrap(in0)),
         static_cast<CT>(iec_unwrap(in1)), static_cast<CT>(iec_unwrap(rest))...);
+}
+
+// String inputs of different declared lengths (or with literals): selected as
+// the string value type holding the longest
+template<typename T, typename U, typename... Args,
+    std::enable_if_t<!std::is_same<std::decay_t<T>, std::decay_t<U>>::value, int> = 0,
+    enable_if_str_selection<T, U, Args...> = 0>
+inline detail::iec_str_common_t<T, U, Args...> MUX(
+    IEC_INT k, const T& in0, const U& in1, const Args&... rest) noexcept {
+    using R = detail::iec_str_common_t<T, U, Args...>;
+    return MUX(k, detail::iec_str_as<R>(in0), detail::iec_str_as<R>(in1),
+        detail::iec_str_as<R>(rest)...);
 }
 
 // =============================================================================
@@ -761,6 +886,23 @@ inline IEC_BOOL NE(A a, B b) noexcept {
     return IEC_BOOL(iec_unwrap(a) != iec_unwrap(b));
 }
 
+// GT, GE, EQ, LE, LT and NE of STRING or WSTRING arguments compare their text
+template<typename A, typename B>
+using enable_if_two_str = std::enable_if_t<detail::iec_same_str_args<A, B>::value, int>;
+
+template<typename A, typename B, enable_if_two_str<A, B> = 0>
+inline IEC_BOOL GT(const A& a, const B& b) noexcept { return IEC_BOOL(iec_str_cmp(a, b) > 0); }
+template<typename A, typename B, enable_if_two_str<A, B> = 0>
+inline IEC_BOOL GE(const A& a, const B& b) noexcept { return IEC_BOOL(iec_str_cmp(a, b) >= 0); }
+template<typename A, typename B, enable_if_two_str<A, B> = 0>
+inline IEC_BOOL EQ(const A& a, const B& b) noexcept { return IEC_BOOL(iec_str_cmp(a, b) == 0); }
+template<typename A, typename B, enable_if_two_str<A, B> = 0>
+inline IEC_BOOL LE(const A& a, const B& b) noexcept { return IEC_BOOL(iec_str_cmp(a, b) <= 0); }
+template<typename A, typename B, enable_if_two_str<A, B> = 0>
+inline IEC_BOOL LT(const A& a, const B& b) noexcept { return IEC_BOOL(iec_str_cmp(a, b) < 0); }
+template<typename A, typename B, enable_if_two_str<A, B> = 0>
+inline IEC_BOOL NE(const A& a, const B& b) noexcept { return IEC_BOOL(iec_str_cmp(a, b) != 0); }
+
 // ---------------------------------------------------------------------------
 // Variadic chain forms for GT / GE / EQ / LE / LT / NE
 // ---------------------------------------------------------------------------
@@ -813,6 +955,38 @@ template<typename A, typename B, typename C, typename... Rest,
          enable_if_two_elementary<A, B> = 0>
 inline IEC_BOOL NE(A a, B b, C c, Rest... rest) noexcept {
     if (!(iec_unwrap(a) != iec_unwrap(b))) return IEC_BOOL(false);
+    return NE(b, c, rest...);
+}
+
+// String chains: each adjacent pair compared by text
+template<typename A, typename B, typename C, typename... Rest, enable_if_two_str<A, B> = 0>
+inline IEC_BOOL GT(const A& a, const B& b, const C& c, const Rest&... rest) noexcept {
+    if (!(iec_str_cmp(a, b) > 0)) return IEC_BOOL(false);
+    return GT(b, c, rest...);
+}
+template<typename A, typename B, typename C, typename... Rest, enable_if_two_str<A, B> = 0>
+inline IEC_BOOL GE(const A& a, const B& b, const C& c, const Rest&... rest) noexcept {
+    if (!(iec_str_cmp(a, b) >= 0)) return IEC_BOOL(false);
+    return GE(b, c, rest...);
+}
+template<typename A, typename B, typename C, typename... Rest, enable_if_two_str<A, B> = 0>
+inline IEC_BOOL EQ(const A& a, const B& b, const C& c, const Rest&... rest) noexcept {
+    if (!(iec_str_cmp(a, b) == 0)) return IEC_BOOL(false);
+    return EQ(b, c, rest...);
+}
+template<typename A, typename B, typename C, typename... Rest, enable_if_two_str<A, B> = 0>
+inline IEC_BOOL LE(const A& a, const B& b, const C& c, const Rest&... rest) noexcept {
+    if (!(iec_str_cmp(a, b) <= 0)) return IEC_BOOL(false);
+    return LE(b, c, rest...);
+}
+template<typename A, typename B, typename C, typename... Rest, enable_if_two_str<A, B> = 0>
+inline IEC_BOOL LT(const A& a, const B& b, const C& c, const Rest&... rest) noexcept {
+    if (!(iec_str_cmp(a, b) < 0)) return IEC_BOOL(false);
+    return LT(b, c, rest...);
+}
+template<typename A, typename B, typename C, typename... Rest, enable_if_two_str<A, B> = 0>
+inline IEC_BOOL NE(const A& a, const B& b, const C& c, const Rest&... rest) noexcept {
+    if (!(iec_str_cmp(a, b) != 0)) return IEC_BOOL(false);
     return NE(b, c, rest...);
 }
 
@@ -2057,6 +2231,24 @@ inline auto MAX(T first, T second, U third, Args... rest) noexcept {
 template<typename T, typename U, typename... Args, enable_if_any_elementary<T> = 0>
 inline auto MIN(T first, T second, U third, Args... rest) noexcept {
     return MIN(MIN(first, second), third, rest...);
+}
+
+// Three or more STRING (or WSTRING) arguments, literals included: compared by
+// text, the result as long as the longest argument
+template<typename A, typename B, typename C, typename... Rest,
+    std::enable_if_t<detail::iec_same_str_args<A, B, C, Rest...>::value, int> = 0>
+inline detail::iec_str_common_t<A, B, C, Rest...> MAX(
+    const A& first, const B& second, const C& third, const Rest&... rest) noexcept {
+    using R = detail::iec_str_common_t<A, B, C, Rest...>;
+    return detail::iec_str_as<R>(MAX(detail::iec_str_as<R>(MAX(first, second)), third, rest...));
+}
+
+template<typename A, typename B, typename C, typename... Rest,
+    std::enable_if_t<detail::iec_same_str_args<A, B, C, Rest...>::value, int> = 0>
+inline detail::iec_str_common_t<A, B, C, Rest...> MIN(
+    const A& first, const B& second, const C& third, const Rest&... rest) noexcept {
+    using R = detail::iec_str_common_t<A, B, C, Rest...>;
+    return detail::iec_str_as<R>(MIN(detail::iec_str_as<R>(MIN(first, second)), third, rest...));
 }
 
 /**

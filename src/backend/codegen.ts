@@ -6758,8 +6758,13 @@ export class CodeGenerator {
    */
   private generateLiteralExpression(expr: LiteralExpression): string {
     if (expr.asNull === true) return "IEC_NULL";
-    // Handle typed literals: BYTE#255 → static_cast<IEC_BYTE>(255)
-    if (expr.typePrefix) {
+    // Handle typed literals: BYTE#255 → static_cast<IEC_BYTE>(255); a
+    // STRING#'abc' / WSTRING#"abc" lowers as its text, below
+    if (
+      expr.typePrefix &&
+      expr.literalType !== "STRING" &&
+      expr.literalType !== "WSTRING"
+    ) {
       const cppType = `IEC_${expr.typePrefix}`;
       const hashIdx = expr.rawValue.indexOf("#");
       const valuePart = expr.rawValue.substring(hashIdx + 1);

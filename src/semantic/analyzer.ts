@@ -3244,6 +3244,8 @@ export class SemanticAnalyzer {
     const visit = (node: ASTNode): void => {
       if (node.kind !== "LiteralExpression") return;
       const literal = node as LiteralExpression;
+      // Its quotes are wrong whatever else was reported at it (`s := WSTRING#'a'`).
+      if (this.refuseTypedStringQuotes(literal)) return;
       if (this.literalsReported.has(literal)) return;
       if (literal.literalType === "CHAR" || literal.literalType === "WCHAR") {
         this.validateCharLiteral(literal);
@@ -3277,6 +3279,31 @@ export class SemanticAnalyzer {
     }
   }
 
+  /** Typed string literals refused for their quotes, each once. */
+  private typedQuotesReported = new WeakSet<LiteralExpression>();
+
+  /**
+   * STRING#"abc" or WSTRING#'abc': a typed STRING literal is single-quoted and
+   * a WSTRING one double-quoted (Ed. 3 Table 6). True when refused.
+   */
+  private refuseTypedStringQuotes(literal: LiteralExpression): boolean {
+    const prefix = (literal.typePrefix ?? "").toUpperCase();
+    if (prefix !== "STRING" && prefix !== "WSTRING") return false;
+    const want = prefix === "STRING" ? "'" : '"';
+    if (literal.rawValue.startsWith(want)) return false;
+    if (this.typedQuotesReported.has(literal)) return true;
+    this.typedQuotesReported.add(literal);
+    const span = literal.sourceSpan;
+    this.literalsReported.add(literal);
+    this.addError(
+      `A ${prefix} literal is written in ${prefix === "STRING" ? "single" : "double"} quotes: ${prefix}#${want}...${want}`,
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
+    return true;
+  }
+
   /**
    * A CHAR or WCHAR literal holds exactly one character, and a CHAR one that
    * Windows-1252 has.
@@ -3287,6 +3314,11 @@ export class SemanticAnalyzer {
     const span = literal.sourceSpan;
     const fail = (message: string): void =>
       this.addError(message, span.startLine, span.startCol, span.file);
+    // CHAR#"A": a CHAR literal is single-quoted (WCHAR#'A' is Table 6's own form)
+    if (!wide && /#"/.test(literal.rawValue)) {
+      fail(`A CHAR literal is written in single quotes: CHAR#'...'`);
+      return;
+    }
     if (units.length !== 1) {
       fail(
         `A ${type} literal holds exactly one character; ${literal.rawValue} holds ${units.length}`,
