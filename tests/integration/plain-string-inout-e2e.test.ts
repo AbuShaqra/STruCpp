@@ -12,7 +12,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { compile } from "../../src/index.js";
+import { compile, compileStlib } from "../../src/index.js";
+import { loadStlibArchive } from "../../src/library/library-loader.js";
 import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 
 const ALIAS = `FUNCTION F2 : INT
@@ -115,5 +116,67 @@ describe.skipIf(!hasGpp)("plain STRING VAR_IN_OUT — g++ e2e", () => {
 
   it("copies a STRING(12) in and out of a FUNCTION, FUNCTION_BLOCK and METHOD, cut at its length", () => {
     expect(run(COPY, [], "plainstr_copy")).toBe("12 12 1205 125512");
+  });
+
+  const LIB = `FUNCTION FS : INT
+VAR_IN_OUT s : STRING(20); END_VAR
+s := CONCAT(s, 'z');
+FS := LEN(s);
+END_FUNCTION
+FUNCTION FW : INT
+VAR_IN_OUT s : WSTRING(20); END_VAR
+FW := LEN(s);
+END_FUNCTION
+FUNCTION_BLOCK LFB
+VAR_IN_OUT s1 : STRING(LEN_C); s2 : STRING(LEN_C); END_VAR
+s1 := 'X';
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_M
+METHOD M : INT
+VAR_IN_OUT s : STRING(20); END_VAR
+M := LEN(s);
+END_METHOD
+END_FUNCTION_BLOCK
+`;
+  const runLibrary = (lenC: number, name: string): string => {
+    const lib = compileStlib([{ source: LIB, fileName: "l.st" }], {
+      name: "l",
+      version: "1.0.0",
+      namespace: "l",
+      globalConstants: { LEN_C: lenC },
+    });
+    expect(lib.errors).toEqual([]);
+    const result = compile(
+      `PROGRAM Main
+VAR a : STRING(30) := 'abc'; w : WSTRING(30) := "abc"; b : STRING(254) := 'abcd';
+  fb : LFB; m : FB_M; n1, n2, n3, n4 : DINT; END_VAR
+n1 := FS(a);
+n2 := FW(w);
+n3 := m.M(a);
+fb(s1 := b, s2 := b);
+n4 := LEN(b);
+END_PROGRAM
+`,
+      {
+        headerFileName: "generated.hpp",
+        libraries: [loadStlibArchive(JSON.parse(JSON.stringify(lib.archive)))],
+      },
+    );
+    expect(result.errors).toEqual([]);
+    return compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: name,
+      mainCode: MAIN,
+    });
+  };
+
+  it("copies a library FUNCTION's, METHOD's and FB's in/outs of another length, and binds a STRING(NAME) of the same by reference", () => {
+    // LEN_C = 20: b is copied into both in-outs, the second copy back wins.
+    expect(runLibrary(20, "plainstr_lib_20")).toBe("4 3 4 4");
+    // LEN_C = 254: one variable, so the write through s1 is the value.
+    expect(runLibrary(254, "plainstr_lib_254")).toBe("4 3 4 1");
   });
 });

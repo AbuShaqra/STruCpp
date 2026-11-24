@@ -10,6 +10,7 @@
 import type {
   FunctionDeclaration,
   FunctionBlockDeclaration,
+  MethodDeclaration,
   ProgramDeclaration,
   TypeDeclaration,
   VarDeclaration,
@@ -135,6 +136,8 @@ export interface FunctionBlockSymbol extends BaseSymbol {
    * them, nor a variable or property, is then not a member.
    */
   libraryMethodNames?: string[];
+  /** A library FB's own METHODs as declarations without bodies, parsed on first call from archives that list them. */
+  libraryMethods?: () => MethodDeclaration[] | undefined;
 }
 
 /**
@@ -318,6 +321,9 @@ export class Scope {
 export class SymbolTables {
   /** Global scope containing types, functions, FBs, programs */
   public readonly globalScope: Scope;
+
+  /** The compilation's supplied global constants, which a `STRING(NAME)` length may name. */
+  public globalConstants: Readonly<Record<string, number>> = {};
 
   /** Map of function names to their local scopes */
   private functionScopes: Map<string, Scope> = new Map();

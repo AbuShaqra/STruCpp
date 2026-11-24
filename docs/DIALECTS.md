@@ -1122,5 +1122,8 @@ test file); without the feature it is 254.
 - A STRING or WSTRING `VAR_IN_OUT` written without a length has the default length (80 with the feature,
   254 without): a variable of that length binds to it by reference; one of another length, `STRING(254)`
   under the feature or `STRING(80)` without it, is passed by copy-in / copy-out with a warning, the copy
-  back cut at the variable's length. This holds for a program's own FUNCTION, FUNCTION_BLOCK and METHOD
-  as for a library's.
+  back cut at the variable's length. This holds for a program's own FUNCTION, FUNCTION_BLOCK, METHOD and
+  interface METHOD as for a library's FUNCTION, FUNCTION_BLOCK and METHOD, with the same warning. A
+  length written as a constant's name (`STRING(LEN_C)`) compares by the constant's value. A library
+  in/out written without a length in an archive that does not record lengths may be of any length, so
+  it is compared as written: a `STRING(254)` bound to it is copied with a warning.

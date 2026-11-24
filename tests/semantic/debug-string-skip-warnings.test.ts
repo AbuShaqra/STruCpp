@@ -110,3 +110,57 @@ END_PROGRAM
     ]);
   });
 });
+
+describe("debug table: a library's STRING members of a written length", () => {
+  for (const [mode, features] of [
+    ["254", []],
+    ["string_default_80", ["+string_default_80"]],
+  ] as const) {
+    it(`leaves a library FB output and STRUCT field STRING(20) out, as declared STRING(20) (${mode})`, () => {
+      const lib = compileStlib(
+        [
+          {
+            source: `TYPE ST_L : STRUCT s : STRING(20); END_STRUCT; END_TYPE
+FUNCTION_BLOCK FB_L
+VAR_OUTPUT o : STRING(20); e : STRING(254); END_VAR
+END_FUNCTION_BLOCK
+`,
+            fileName: "l.st",
+          },
+        ],
+        {
+          name: "l",
+          version: "1.0.0",
+          namespace: "l",
+          features: [...features],
+        },
+      );
+      expect(lib.errors).toEqual([]);
+      const r = compile(
+        `PROGRAM Main
+VAR fb : FB_L; rec : ST_L; END_VAR
+END_PROGRAM
+` + CONFIG,
+        {
+          headerFileName: "generated.hpp",
+          features: [...features],
+          libraries: [
+            loadStlibArchive(JSON.parse(JSON.stringify(lib.archive))),
+          ],
+        },
+      );
+      expect(r.errors).toEqual([]);
+      expect((r.debugMap?.leaves ?? []).map((l) => l.path)).toEqual(["I.FB.E"]);
+      const tail =
+        "but the debug dispatch addresses strings as STRING(254). It is declared in the library type";
+      expect(
+        r.warnings
+          .map((w) => w.message)
+          .filter((m) => m.includes("not debuggable")),
+      ).toEqual([
+        `I.FB.O is not debuggable: declared STRING(20), ${tail} FB_L, so it cannot be exposed here.`,
+        `I.REC.S is not debuggable: declared STRING(20), ${tail} ST_L, so it cannot be exposed here.`,
+      ]);
+    });
+  }
+});

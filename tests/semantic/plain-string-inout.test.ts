@@ -8,7 +8,9 @@
  * FUNCTION_BLOCK and METHOD alike.
  */
 import { describe, it, expect } from "vitest";
-import { compile } from "../../src/index.js";
+import { compile, compileStlib } from "../../src/index.js";
+import { loadStlibArchive } from "../../src/library/library-loader.js";
+import type { StlibArchive } from "../../src/library/library-manifest.js";
 
 const SOURCE = (type: "STRING" | "WSTRING", length: number): string => `
 FUNCTION F2 : INT
@@ -73,4 +75,112 @@ describe("a plain STRING / WSTRING VAR_IN_OUT", () => {
       });
     }
   }
+});
+
+describe("a library's STRING / WSTRING VAR_IN_OUT", () => {
+  const LIB = `FUNCTION FS : INT
+VAR_IN_OUT s : STRING(20); END_VAR
+FS := LEN(s);
+END_FUNCTION
+FUNCTION FW : INT
+VAR_IN_OUT s : WSTRING(20); END_VAR
+FW := LEN(s);
+END_FUNCTION
+FUNCTION_BLOCK FB_M
+VAR_IN_OUT s1 : STRING(LEN_C); s2 : STRING(LEN_C); END_VAR
+METHOD M : INT
+VAR_IN_OUT s : STRING(20); END_VAR
+M := LEN(s);
+END_METHOD
+END_FUNCTION_BLOCK
+`;
+  const archive = (
+    constants: Record<string, number>,
+    strip = false,
+  ): StlibArchive => {
+    const lib = compileStlib([{ source: LIB, fileName: "l.st" }], {
+      name: "l",
+      version: "1.0.0",
+      namespace: "l",
+      globalConstants: constants,
+    });
+    expect(lib.errors).toEqual([]);
+    const raw = JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
+    if (strip) {
+      for (const fb of raw.manifest.functionBlocks) {
+        for (const v of fb.inouts) delete v.maxLength;
+      }
+    }
+    return loadStlibArchive(raw);
+  };
+  const warnings = (body: string, lib: StlibArchive): string[] => {
+    const r = compile(
+      `PROGRAM Main
+VAR a : STRING(30); w : WSTRING(30); b : STRING(254); m : FB_M; n : INT; END_VAR
+${body}
+END_PROGRAM
+`,
+      { libraries: [lib] },
+    );
+    expect(r.errors).toEqual([]);
+    return r.warnings
+      .map((x) => x.message)
+      .filter((x) => x.includes("copy-in / copy-out"))
+      .map((x) => x.slice(0, x.indexOf(";")));
+  };
+
+  it("warns for a FUNCTION's, a WSTRING FUNCTION's and a METHOD's in/out of another length", () => {
+    expect(
+      warnings("n := FS(a) + FW(w) + m.M(a);", archive({ LEN_C: 20 })),
+    ).toEqual([
+      "VAR_IN_OUT 'S' of type STRING(20) is bound to a variable of type STRING(30)",
+      "VAR_IN_OUT 'S' of type WSTRING(20) is bound to a variable of type WSTRING(30)",
+      "VAR_IN_OUT 'S' of type STRING(20) is bound to a variable of type STRING(30)",
+    ]);
+  });
+
+  it("compares a STRING(NAME) in/out by the constant's value", () => {
+    expect(warnings("m(s1 := b, s2 := b);", archive({ LEN_C: 20 }))).toEqual([
+      "VAR_IN_OUT 'S1' of type STRING(LEN_C) is bound to a variable of type STRING(254)",
+      "VAR_IN_OUT 'S2' of type STRING(LEN_C) is bound to a variable of type STRING(254)",
+    ]);
+    expect(warnings("m(s1 := b, s2 := b);", archive({ LEN_C: 254 }))).toEqual(
+      [],
+    );
+  });
+
+  it("keeps an archive without recorded lengths as written: a plain in/out is not taken for 254", () => {
+    expect(
+      warnings("m(s1 := b, s2 := b);", archive({ LEN_C: 254 }, true)),
+    ).toEqual([
+      "VAR_IN_OUT 'S1' of type STRING is bound to a variable of type STRING(254)",
+      "VAR_IN_OUT 'S2' of type STRING is bound to a variable of type STRING(254)",
+    ]);
+  });
+
+  it("warns for an interface METHOD's in/out of another length", () => {
+    const r = compile(
+      `INTERFACE I_X
+METHOD MI : INT
+VAR_IN_OUT s : STRING(20); END_VAR
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FB_X IMPLEMENTS I_X
+METHOD MI : INT
+VAR_IN_OUT s : STRING(20); END_VAR
+MI := LEN(s);
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR x : FB_X; i : I_X; a : STRING(30); n : INT; END_VAR
+i := x;
+n := i.MI(a);
+END_PROGRAM
+`,
+    );
+    expect(r.errors).toEqual([]);
+    expect(
+      r.warnings.filter((w) => w.message.includes("copy-in / copy-out")),
+    ).toHaveLength(1);
+  });
 });

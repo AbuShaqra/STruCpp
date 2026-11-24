@@ -1130,6 +1130,7 @@ function runPipeline(
     if (!semanticSymbolTables) {
       semanticSymbolTables = new SymbolTables();
     }
+    semanticSymbolTables.globalConstants = mergedOptions.globalConstants;
     for (const name of Object.keys(mergedOptions.globalConstants)) {
       try {
         semanticSymbolTables.globalScope.define({
