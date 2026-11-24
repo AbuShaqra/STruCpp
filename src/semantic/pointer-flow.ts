@@ -23,7 +23,9 @@ import type {
   Expression,
   FunctionBlockDeclaration,
   FunctionCallExpression,
+  FunctionDeclaration,
   MethodCallExpression,
+  MethodDeclaration,
   RefAssignStatement,
   RefExpression,
   TypeReference,
@@ -58,12 +60,14 @@ export class PointerFlow {
   /** Cells each cell copies from. */
   private readonly copies = new Map<string, Set<string>>();
   private readonly unknown = new Set<string>();
-  /** Result cells by method, function or property name (upper-case). */
-  private readonly results = new Map<string, Set<string>>();
-  /** Names of every project VAR_IN_OUT parameter (upper-case). */
-  private readonly inOutNames = new Set<string>();
-  /** Positions of VAR_IN_OUT parameters among the inputs, by POU name. */
-  private readonly inOutPositions = new Map<string, Set<number>>();
+  private readonly functions = new Map<string, FunctionDeclaration>();
+  /** Each function block's project descendants (upper-case keys). */
+  private readonly descendants = new Map<string, FunctionBlockDeclaration[]>();
+  /**
+   * A pointer store or pointer address the analysis cannot map to a cell was
+   * met: every dereference may then reach any address taken.
+   */
+  private imprecise = false;
   private solved?: Map<string, Set<string> | typeof ANY>;
 
   constructor(
@@ -84,23 +88,18 @@ export class PointerFlow {
     const scopes: Array<[PointerScope, readonly ASTNode[]]> = [];
     for (const f of ast.functions) {
       const pou = `FN:${f.name}`;
-      this.result(f.name, pou);
+      this.functions.set(f.name.toUpperCase(), f);
       scopes.push([{ pou, blocks: f.varBlocks, result: f.name }, f.body]);
     }
     for (const fb of ast.functionBlocks) {
       scopes.push([{ fb, blocks: [] }, fb.body]);
       for (const m of fb.methods) {
         const pou = `${fb.name}.${m.name}`;
-        this.result(m.name, pou);
         scopes.push([{ pou, fb, blocks: m.varBlocks, result: m.name }, m.body]);
       }
       for (const p of fb.properties) {
-        if (p.getterMethod !== undefined) {
-          this.result(p.name, `${fb.name}.${p.getterMethod}`);
-        }
         if (p.getter !== undefined) {
           const pou = `get:${fb.name}.${p.name}`;
-          this.result(p.name, pou);
           scopes.push([
             { pou, fb, blocks: p.getterVarBlocks ?? [], result: p.name },
             p.getter,
@@ -118,31 +117,10 @@ export class PointerFlow {
         }
       }
     }
-    for (const pou of [
-      ...ast.functions,
-      ...ast.functionBlocks,
-      ...ast.functionBlocks.flatMap((fb) => fb.methods),
-    ]) {
-      let position = 0;
-      for (const block of pou.varBlocks) {
-        if (
-          block.blockType !== "VAR_INPUT" &&
-          block.blockType !== "VAR_IN_OUT"
-        ) {
-          continue;
-        }
-        for (const decl of block.declarations) {
-          for (const n of decl.names) {
-            if (block.blockType === "VAR_IN_OUT") {
-              this.inOutNames.add(n.toUpperCase());
-              const key = pou.name.toUpperCase();
-              const set = this.inOutPositions.get(key) ?? new Set<number>();
-              set.add(position);
-              this.inOutPositions.set(key, set);
-            }
-            position++;
-          }
-        }
+    for (const fb of ast.functionBlocks) {
+      for (const base of this.chain(fb).slice(1)) {
+        const key = base.name.toUpperCase();
+        this.descendants.set(key, [...(this.descendants.get(key) ?? []), fb]);
       }
     }
     // Initial values: globals', members', locals'
@@ -221,7 +199,9 @@ export class PointerFlow {
   /** The globals `cell` may point to. */
   pointsTo(cell: string): ReadonlySet<string> {
     const solved = this.solve().get(cell);
-    if (cell === ANY || solved === ANY) return this.addressed;
+    if (this.imprecise || cell === ANY || solved === ANY) {
+      return this.addressed;
+    }
     return solved ?? new Set();
   }
 
@@ -236,13 +216,6 @@ export class PointerFlow {
     return decl !== undefined && this.isPointer(decl.type)
       ? `G:${g}`
       : undefined;
-  }
-
-  private result(name: string, pou: string): void {
-    const upper = name.toUpperCase();
-    const set = this.results.get(upper) ?? new Set<string>();
-    set.add(`R:${pou.toUpperCase()}`);
-    this.results.set(upper, set);
   }
 
   private declare(decl: VarDeclaration, scope: PointerScope): void {
@@ -263,36 +236,108 @@ export class PointerFlow {
         const s = node as AssignmentStatement;
         const cell = this.targetCell(s.target, scope);
         if (cell !== undefined) this.assign(cell, s.value, scope);
+        else if (hasPath(s.target) && this.mayBePointer(s.value, scope)) {
+          this.imprecise = true;
+        }
       } else if (node.kind === "RefAssignStatement") {
         const s = node as RefAssignStatement;
         const cell = this.targetCell(s.target, scope);
         if (cell !== undefined) this.store(cell, s.source, scope);
+        else if (hasPath(s.target)) this.imprecise = true;
         this.address(s.source, scope);
       } else if (
         node.kind === "FunctionCallExpression" ||
         node.kind === "MethodCallExpression"
       ) {
-        // An output captured, or a pointer bound to an in/out, may change it
-        const call = node as FunctionCallExpression | MethodCallExpression;
-        const callee = (
-          call.kind === "MethodCallExpression"
-            ? call.methodName
-            : (call.functionName.split(".").pop() ?? "")
-        ).toUpperCase();
-        const positions = this.inOutPositions.get(callee);
-        let position = 0;
-        for (const arg of call.arguments) {
-          const bound = arg.isOutput
-            ? true
-            : arg.name !== undefined
-              ? this.inOutNames.has(arg.name.toUpperCase())
-              : positions?.has(position) === true;
-          if (!arg.isOutput && arg.name === undefined) position++;
-          const cell = bound ? this.targetCell(arg.value, scope) : undefined;
-          if (cell !== undefined) this.unknown.add(cell);
-        }
+        this.bindings(
+          node as FunctionCallExpression | MethodCallExpression,
+          scope,
+        );
       }
     });
+  }
+
+  /**
+   * A call's arguments that may be written: output captures and in/outs.
+   * When the callee's parameters are not known, every argument may be.
+   */
+  private bindings(
+    call: FunctionCallExpression | MethodCallExpression,
+    scope: PointerScope,
+  ): void {
+    const params = this.parameters(call, scope);
+    let position = 0;
+    for (const arg of call.arguments) {
+      let written: boolean;
+      if (arg.isOutput) {
+        written = true;
+      } else if (params === undefined) {
+        written = true;
+      } else if (arg.name !== undefined) {
+        const upper = arg.name.toUpperCase();
+        const p = params.find((q) => q.name === upper);
+        written = p === undefined || p.inOut;
+      } else {
+        written = params[position]?.inOut !== false;
+      }
+      if (!arg.isOutput && arg.name === undefined) position++;
+      if (!written || arg.value.kind !== "VariableExpression") continue;
+      const v = arg.value;
+      if (hasPath(v)) {
+        this.imprecise = true;
+        continue;
+      }
+      const cell = this.cellOf(v.name.toUpperCase(), scope);
+      if (cell !== undefined && cell !== ANY) this.unknown.add(cell);
+    }
+  }
+
+  /**
+   * The inputs and in/outs of a call's callee, in order, when it is known: a
+   * project FUNCTION, a method of the body's own function block, or an
+   * instance of a project function block named bare.
+   */
+  private parameters(
+    call: FunctionCallExpression | MethodCallExpression,
+    scope: PointerScope,
+  ): Array<{ name: string; inOut: boolean }> | undefined {
+    if (call.kind !== "FunctionCallExpression" || call.instance !== undefined) {
+      return undefined;
+    }
+    const name = call.functionName.toUpperCase();
+    if (name.includes(".")) return undefined;
+    const decl = this.declarationOf(name, scope);
+    let blocks: readonly VarBlock[] | undefined;
+    if (decl !== undefined) {
+      const fb = this.instanceType(decl.type);
+      blocks =
+        fb === undefined
+          ? undefined
+          : this.chain(fb)
+              .reverse()
+              .flatMap((f) => f.varBlocks);
+    } else if (scope.fb && this.methodsNamed(scope.fb, name).length > 0) {
+      const methods = this.methodsNamed(scope.fb, name);
+      blocks = methods.length === 1 ? methods[0]!.varBlocks : undefined;
+    } else {
+      blocks = this.functions.get(name)?.varBlocks;
+    }
+    if (blocks === undefined) return undefined;
+    const out: Array<{ name: string; inOut: boolean }> = [];
+    for (const block of blocks) {
+      if (block.blockType !== "VAR_INPUT" && block.blockType !== "VAR_IN_OUT") {
+        continue;
+      }
+      for (const d of block.declarations) {
+        for (const n of d.names) {
+          out.push({
+            name: n.toUpperCase(),
+            inOut: block.blockType === "VAR_IN_OUT",
+          });
+        }
+      }
+    }
+    return out;
   }
 
   /** The cell an assignment target is, when it is a pointer variable itself. */
@@ -300,13 +345,16 @@ export class PointerFlow {
     target: Expression,
     scope: PointerScope,
   ): string | undefined {
-    if (target.kind !== "VariableExpression") return undefined;
-    const v = target;
-    if (stepsOf(v).length > 0) return undefined;
-    return this.cellOf(v.name.toUpperCase(), scope);
+    if (target.kind !== "VariableExpression" || hasPath(target)) {
+      return undefined;
+    }
+    return this.cellOf(target.name.toUpperCase(), scope);
   }
 
-  /** `ADR(x)` / `REF(x)`: x's global is addressed; a pointer x may now change. */
+  /**
+   * `ADR(x)` / `REF(x)`: x's global is addressed. A pointer x may now change
+   * through that address; through an access path it may be any pointer.
+   */
   private address(operand: Expression, scope: PointerScope): void {
     if (operand.kind !== "VariableExpression") return;
     const v = operand;
@@ -315,10 +363,34 @@ export class PointerFlow {
     if (steps.length === 0) {
       const cell = this.cellOf(upper, scope);
       if (cell !== undefined && cell !== ANY) this.unknown.add(cell);
+    } else {
+      this.imprecise = true;
     }
     if (steps.some((s) => s.kind === "dereference")) return;
     const g = this.globalOf(upper, scope);
     if (g !== undefined) this.addressed.add(g);
+  }
+
+  /** Whether `value` may be a pointer: anything but numbers and non-pointer variables. */
+  private mayBePointer(value: Expression, scope: PointerScope): boolean {
+    let e = value;
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    if (e.kind === "LiteralExpression") return false;
+    if (e.kind === "VariableExpression" && !hasPath(e)) {
+      return (
+        this.declarationOf(e.name.toUpperCase(), scope) === undefined ||
+        this.cellOf(e.name.toUpperCase(), scope) !== undefined
+      );
+    }
+    if (e.kind === "BinaryExpression") {
+      return (
+        this.mayBePointer(e.left, scope) || this.mayBePointer(e.right, scope)
+      );
+    }
+    if (e.kind === "UnaryExpression") {
+      return this.mayBePointer(e.operand, scope);
+    }
+    return true;
   }
 
   /** The global a name of a body names, unless a local or member hides it. */
@@ -397,19 +469,10 @@ export class PointerFlow {
         this.edge(from, cell);
         return "pointer";
       }
-      const last = steps[steps.length - 1];
-      return last?.kind === "field" && this.fromResults(cell, last.name)
-        ? "pointer"
-        : "fail";
+      return "fail"; // a field or element: not followed
     }
     if (e.kind === "FunctionCallExpression") {
-      const parts = e.functionName.split(".");
-      return this.fromResults(cell, parts[parts.length - 1]!)
-        ? "pointer"
-        : "fail";
-    }
-    if (e.kind === "MethodCallExpression") {
-      return this.fromResults(cell, e.methodName) ? "pointer" : "fail";
+      return this.fromCall(cell, e, scope) ? "pointer" : "fail";
     }
     return "fail";
   }
@@ -442,12 +505,80 @@ export class PointerFlow {
     return true; // a local's or member's address points to no global
   }
 
-  /** A call's or property's result: every project result of that name. */
-  private fromResults(cell: string, name: string): boolean {
-    const results = this.results.get(name.toUpperCase());
-    if (results === undefined) return false;
-    for (const r of results) this.edge(r, cell);
+  /**
+   * A bare call's result: a project FUNCTION's, or a method of the body's own
+   * function block (any override of it). Any other call is not followed.
+   */
+  private fromCall(
+    cell: string,
+    call: FunctionCallExpression,
+    scope: PointerScope,
+  ): boolean {
+    const name = call.functionName.toUpperCase();
+    if (name.includes(".") || call.instance !== undefined) return false;
+    if (this.declarationOf(name, scope) !== undefined) return false;
+    if (scope.fb) {
+      const owners = [
+        ...this.chain(scope.fb),
+        ...(this.descendants.get(scope.fb.name.toUpperCase()) ?? []),
+      ];
+      const found = owners.flatMap((fb) =>
+        this.methodsNamed(fb, name).map((m) => `R:${fb.name}.${m.name}`),
+      );
+      if (found.length > 0) {
+        for (const r of found) this.edge(r.toUpperCase(), cell);
+        return true;
+      }
+    }
+    const f = this.functions.get(name);
+    if (f === undefined) return false;
+    this.edge(`R:FN:${f.name}`.toUpperCase(), cell);
     return true;
+  }
+
+  private methodsNamed(
+    fb: FunctionBlockDeclaration,
+    upper: string,
+  ): MethodDeclaration[] {
+    return fb.methods.filter((m) => m.name.toUpperCase() === upper);
+  }
+
+  /** The declaration a name of a body is (local, member, VAR_EXTERNAL or global). */
+  private declarationOf(
+    upper: string,
+    scope: PointerScope,
+  ): VarDeclaration | undefined {
+    for (const block of [
+      ...scope.blocks,
+      ...(scope.fb ? this.chain(scope.fb).flatMap((f) => f.varBlocks) : []),
+    ]) {
+      const decl = block.declarations.find((d) =>
+        d.names.some((n) => n.toUpperCase() === upper),
+      );
+      if (decl !== undefined) return decl;
+    }
+    const g = this.owner.get(upper);
+    return g === undefined ? undefined : this.globals.get(g);
+  }
+
+  /** The project function block a variable of `type` is an instance of. */
+  private instanceType(
+    type: TypeReference,
+  ): FunctionBlockDeclaration | undefined {
+    let current: TypeReference | undefined = type;
+    for (let i = 0; i < 64 && current !== undefined; i++) {
+      if (
+        current.arrayDimensions !== undefined ||
+        current.referenceChain !== undefined ||
+        (current.referenceKind ?? "none") !== "none"
+      ) {
+        return undefined;
+      }
+      const fb = this.fbs.get(current.name.toUpperCase());
+      if (fb !== undefined) return fb;
+      current = this.aliases.get(current.name.toUpperCase());
+    }
+    return undefined;
   }
 
   private edge(from: string, to: string): void {
@@ -554,6 +685,11 @@ function declares(block: VarBlock, upper: string): boolean {
   return block.declarations.some((d) =>
     d.names.some((n) => n.toUpperCase() === upper),
   );
+}
+
+/** An access with a path: a field, an element or a dereference. */
+function hasPath(e: Expression): boolean {
+  return e.kind === "VariableExpression" && stepsOf(e).length > 0;
 }
 
 /** A variable access's steps, in source order. */
