@@ -121,4 +121,23 @@ END_PROGRAM
       "MAX(W, static_cast<IEC_WORD>(70000), static_cast<IEC_WORD>(5))",
     );
   });
+
+  it("casts a computed argument of a function with no mixed-type overload to the deduced type", () => {
+    const cpp = generate(`PROGRAM Main
+VAR dw : DWORD; w : WORD; r : LINT; END_VAR
+r := AND(dw + 1, dw, 16#FF);
+r := ADD(w + 1, w, 1);
+r := LIMIT(0, w + 1, 100000);
+END_PROGRAM
+`);
+    expect(cpp).toContain(
+      "AND(static_cast<IEC_DWORD>(DW + 1), DW, static_cast<IEC_DWORD>(0xFF))",
+    );
+    expect(cpp).toContain(
+      "ADD(static_cast<IEC_WORD>(strucpp::iec_add<DINT_t>({W, 1})), W, static_cast<IEC_WORD>(1))",
+    );
+    expect(cpp).toContain(
+      "LIMIT(static_cast<IEC_WORD>(0), strucpp::iec_add<DINT_t>({W, 1}), static_cast<IEC_DINT>(100000))",
+    );
+  });
 });

@@ -408,4 +408,47 @@ int main() {
     });
     expect(stdout).toBe("0 1 0 1 1");
   });
+
+  it("passes a computed first argument of a many-argument function at the deduced type", () => {
+    const result = compile(
+      `FUNCTION_BLOCK Fb
+VAR x : DINT := 10; v : DINT := 5; END_VAR
+VAR_OUTPUT o1, o2 : DINT; END_VAR
+o1 := ADD(THIS^.x + 1, v, 1);
+o2 := MAX(THIS^.x + 1, v, 1);
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR dw : DWORD := 16#F0; lw : LWORD := 16#F0; d : DINT := 7; w : WORD := 16#FFFF; fb : Fb;
+  r1 : DWORD; r2 : LWORD; r3 : DINT; r4 : WORD; r5, r6 : DINT; END_VAR
+r1 := AND(dw + 1, dw, 16#FF);
+r2 := OR(lw + 1, lw, 1);
+r3 := ADD(d + 1, d, 1);
+r4 := ADD(w + 1, w, 1);
+fb();
+r5 := fb.o1;
+r6 := fb.o2;
+END_PROGRAM
+`,
+      { headerFileName: "generated.hpp", features: ["+self_caret"] },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "optyping_computed_args",
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.R1.get() << " " << p.R2.get() << " " << p.R3.get() << " " << p.R4.get() << " "
+              << p.R5.get() << " " << p.R6.get() << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("240 241 16 0 17 11");
+  });
 });

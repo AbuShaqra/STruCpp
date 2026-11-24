@@ -654,6 +654,16 @@ const INTEGER_RANGES: Readonly<Record<string, readonly [bigint, bigint]>> = {
   LWORD: [0n, 18446744073709551615n],
 };
 
+/** Argument expressions that are computed values, not variables. */
+const COMPUTED_ARGUMENT_KINDS: ReadonlySet<string> = new Set([
+  "BinaryExpression",
+  "UnaryExpression",
+  "ParenthesizedExpression",
+  "FunctionCallExpression",
+  "MethodCallExpression",
+  "CallResultAccessExpression",
+]);
+
 /** Standard functions whose runtime overloads take arguments of different types, at any count. */
 const MIXED_TYPE_STD_FUNCTIONS: ReadonlySet<string> = new Set([
   "LIMIT",
@@ -8722,6 +8732,15 @@ export class CodeGenerator {
       if (literalIndices.includes(i)) continue;
       const t = argTypes[i];
       if (t && t !== dominant && this.canImplicitWiden(t, dominant)) {
+        args[i] = `static_cast<IEC_${dominant}>(${args[i]})`;
+      } else if (
+        t === dominant &&
+        !mixedOverloads &&
+        INTEGER_RANGES[dominant] !== undefined &&
+        stripEnEno([...argExprs]).length > 1 &&
+        COMPUTED_ARGUMENT_KINDS.has(argExprs[i]!.value.kind)
+      ) {
+        // An integer computed value is a raw C++ number, not the IECVar<T> the template deduces
         args[i] = `static_cast<IEC_${dominant}>(${args[i]})`;
       }
     }
