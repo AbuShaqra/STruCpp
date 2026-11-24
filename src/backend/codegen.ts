@@ -8039,6 +8039,10 @@ export class CodeGenerator {
   }
 
   private comparedStructName(expr: Expression): string | undefined {
+    // `((a)) = (b)`: a parenthesized operand is its inner expression
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.comparedStructName(expr.expression);
+    }
     const rt = expr.resolvedType;
     if (rt !== undefined && "name" in rt && typeof rt.name === "string") {
       if (this.structFieldsOf(rt.name) !== undefined) return rt.name;
