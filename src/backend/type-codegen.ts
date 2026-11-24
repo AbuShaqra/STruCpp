@@ -513,7 +513,13 @@ export class TypeCodeGenerator {
    */
   private generateIecWrapperForAlias(name: string, def: TypeReference): void {
     const baseName = def.name.toUpperCase();
-    if (isElementaryType(baseName)) {
+    if (
+      (def.referenceKind ?? "none") !== "none" ||
+      (def.referenceChain?.length ?? 0) > 0
+    ) {
+      // A POINTER TO / REF_TO alias is already the wrapper a variable gets.
+      this.emit(`using IEC_${name} = ${name};`);
+    } else if (isElementaryType(baseName)) {
       // Alias to elementary type - use the existing IEC_ wrapper
       this.emit(`using IEC_${name} = IEC_${baseName};`);
     } else if (

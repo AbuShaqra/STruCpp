@@ -234,3 +234,134 @@ END_PROGRAM
     ).toBe("3 9 2 9 0 0");
   });
 });
+
+const LIB2 = `TYPE PINT : POINTER TO INT; END_TYPE
+FUNCTION FX : DINT
+VAR_IN_OUT a : ARRAY[0..1] OF UINT; END_VAR
+a[1] := a[1] + 1;
+FX := a[1];
+END_FUNCTION
+FUNCTION FV : DINT
+VAR_IN_OUT a : ARRAY[*] OF BYTE; END_VAR
+a[0] := 7;
+FV := 2;
+END_FUNCTION
+FUNCTION FO : DINT
+VAR_OUTPUT o : ARRAY[0..1] OF DWORD; END_VAR
+o[1] := 30;
+FO := 3;
+END_FUNCTION
+FUNCTION FP : DINT
+VAR_IN_OUT a : ARRAY[0..1] OF PINT; END_VAR
+FP := a[0]^;
+END_FUNCTION
+FUNCTION FZ : PINT
+VAR_INPUT p : PINT; END_VAR
+FZ := 0;
+IF p <> 0 THEN FZ := p; END_IF;
+END_FUNCTION
+FUNCTION_BLOCK FBO
+VAR_OUTPUT o : ARRAY[0..1] OF ULINT; END_VAR
+o[0] := 400;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FM
+METHOD MP : INT
+VAR_INPUT x : INT; END_VAR
+VAR_OUTPUT o : POINTER TO INT; i : INT; END_VAR
+o := 0;
+i := x * 2;
+MP := x;
+END_METHOD
+END_FUNCTION_BLOCK
+`;
+
+const PROGRAM2 = `PROGRAM Main
+VAR
+  w : ARRAY[0..1] OF WORD := [1, 2]; u : ARRAY[0..3] OF USINT;
+  d : ARRAY[0..1] OF UDINT; l : ARRAY[0..1] OF LWORD; fb : FBO;
+  x : INT := 9; pa : ARRAY[0..1] OF POINTER TO INT;
+  p : PINT; pz : PINT := 0; fa : ARRAY[0..1] OF FM; lw : LWORD; i : INT;
+  n1, n2, n3, n4, n5, n6 : DINT;
+END_VAR
+n1 := FX(w) * 100 + w[1];
+n2 := FV(u) + u[0] * 10;
+n2 := n2 + FO(o => d) * 100 + d[1] * 1000;
+fb(o => l);
+n3 := l[0];
+pa[0] := ADR(x);
+n4 := FP(pa);
+p := 0;
+IF p = 0 AND pz = 0 THEN n5 := 1; END_IF;
+p := FZ(0);
+IF p = 0 THEN n5 := n5 + 10; END_IF;
+p := FZ(ADR(x));
+IF p <> 0 THEN n5 := n5 + 100; END_IF;
+lw := 1;
+n6 := fa[1].MP(3, lw, i) + i * 10;
+IF lw = 0 THEN n6 := n6 + 1000; END_IF;
+END_PROGRAM
+`;
+
+describe.skipIf(!hasGpp)(
+  "array element names, pointer aliases and indexed METHOD outputs — g++ e2e",
+  () => {
+    let tempDir: string;
+    let pchPath: string;
+    beforeAll(() => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-libcalls2-"));
+      pchPath = createPCH(tempDir);
+    });
+    afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+    const MAIN2 = `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.N1 << " " << p.N2 << " " << p.N3 << " " << p.N4 << " "
+              << p.N5 << " " << p.N6 << std::endl;
+    return 0;
+}
+`;
+    const EXPECTED2 = "303 30372 400 9 111 1063";
+
+    const run = (
+      source: string,
+      libraries: StlibArchive[],
+      name: string,
+    ): string => {
+      const result = compile(source, {
+        headerFileName: "generated.hpp",
+        libraries,
+      });
+      expect(result.errors).toEqual([]);
+      return compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: name,
+        mainCode: MAIN2,
+      });
+    };
+
+    it("runs them declared in the program", () => {
+      expect(run(`${LIB2}\n${PROGRAM2}`, [], "libcalls2_local")).toBe(
+        EXPECTED2,
+      );
+    });
+
+    it("runs them from a library archive", () => {
+      const lib = compileStlib([{ source: LIB2, fileName: "l2.st" }], {
+        name: "l2",
+        version: "1.0.0",
+        namespace: "l2",
+      });
+      expect(lib.errors).toEqual([]);
+      const archive = JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
+      expect(run(PROGRAM2, [loadStlibArchive(archive)], "libcalls2_lib")).toBe(
+        EXPECTED2,
+      );
+    });
+  },
+);

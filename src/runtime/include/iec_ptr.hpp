@@ -76,6 +76,14 @@ public:
     explicit IEC_Ptr(std::uintptr_t addr) noexcept
         : ptr_(reinterpret_cast<void*>(addr)) {}
 
+    // An `int` address; the literal 0 (`p := 0`, `p : PINT := 0`) is NULL.
+    // Deduced, so only an int matches it: 0 is no longer ambiguous between
+    // nullptr_t and uintptr_t, and any other integer resolves as before.
+    template<typename I,
+             typename std::enable_if<std::is_same<I, int>::value, int>::type = 0>
+    explicit IEC_Ptr(I addr) noexcept
+        : ptr_(reinterpret_cast<void*>(static_cast<std::uintptr_t>(addr))) {}
+
     // Assignment from any raw pointer
     template<typename U>
     IEC_Ptr& operator=(U* p) noexcept {
@@ -100,6 +108,13 @@ public:
     // pointer; the source integer carries a pointer-width value.
     IEC_Ptr& operator=(std::uintptr_t addr) noexcept {
         ptr_ = reinterpret_cast<void*>(addr);
+        return *this;
+    }
+
+    template<typename I,
+             typename std::enable_if<std::is_same<I, int>::value, int>::type = 0>
+    IEC_Ptr& operator=(I addr) noexcept {
+        ptr_ = reinterpret_cast<void*>(static_cast<std::uintptr_t>(addr));
         return *this;
     }
 

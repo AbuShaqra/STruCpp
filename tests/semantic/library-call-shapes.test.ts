@@ -369,3 +369,177 @@ END_PROGRAM
     expect(warnings(old)).toHaveLength(2);
   });
 });
+
+describe("review: element types, pointer aliases and METHOD calls", () => {
+  const LIB2 = `TYPE PINT : POINTER TO INT; END_TYPE
+TYPE TA : ARRAY[0..2] OF INT; END_TYPE
+FUNCTION FX : DINT
+VAR_IN_OUT a : ARRAY[0..1] OF UINT; END_VAR
+FX := 1;
+END_FUNCTION
+FUNCTION FV : DINT
+VAR_IN_OUT a : ARRAY[*] OF BYTE; END_VAR
+FV := 2;
+END_FUNCTION
+FUNCTION FO : DINT
+VAR_OUTPUT o : ARRAY[0..1] OF DWORD; END_VAR
+FO := 3;
+END_FUNCTION
+FUNCTION FT : DINT
+VAR_IN_OUT a : TA; END_VAR
+FT := 4;
+END_FUNCTION
+FUNCTION FP : DINT
+VAR_IN_OUT a : ARRAY[0..1] OF PINT; END_VAR
+FP := 5;
+END_FUNCTION
+FUNCTION FQ : DINT
+VAR_IN_OUT a : ARRAY[0..1] OF POINTER TO INT; END_VAR
+FQ := 6;
+END_FUNCTION
+FUNCTION_BLOCK FBO
+VAR_OUTPUT o : ARRAY[0..1] OF ULINT; END_VAR
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FM
+METHOD M : DINT
+VAR_IN_OUT a : ARRAY[0..2] OF INT; END_VAR
+M := 1;
+END_METHOD
+METHOD MO : DINT
+VAR_OUTPUT a : ARRAY[0..2] OF INT; END_VAR
+MO := 1;
+END_METHOD
+METHOD MP : INT
+VAR_INPUT x : INT; END_VAR
+VAR_OUTPUT o : POINTER TO INT; i : INT; END_VAR
+MP := x;
+END_METHOD
+END_FUNCTION_BLOCK
+`;
+  const lib2 = (): StlibArchive => {
+    const lib = compileStlib([{ source: LIB2, fileName: "l2.st" }], {
+      name: "l2",
+      version: "1.0.0",
+      namespace: "l2",
+    });
+    expect(lib.errors).toEqual([]);
+    return JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
+  };
+  const prog = (vars: string, body: string): string =>
+    `PROGRAM Main\nVAR n : DINT; ${vars} END_VAR\n${body}\nEND_PROGRAM\n`;
+  const both = (
+    vars: string,
+    body: string,
+    options: Parameters<typeof compile>[1] = {},
+  ): string[][] => [
+    compile(`${LIB2}\n${prog(vars, body)}`, options).errors.map(
+      (e) => e.message,
+    ),
+    compile(prog(vars, body), {
+      ...options,
+      libraries: [loadStlibArchive(lib2())],
+    }).errors.map((e) => e.message),
+  ];
+
+  it("binds arrays of two names of one integer storage as the scalar rule allows", () => {
+    for (const [vars, body] of [
+      ["arr : ARRAY[0..1] OF WORD;", "n := FX(arr);"],
+      ["arr : ARRAY[0..3] OF USINT;", "n := FV(arr);"],
+      ["arr : ARRAY[0..1] OF UDINT;", "n := FO(o => arr);"],
+      ["fb : FBO; arr : ARRAY[0..1] OF LWORD;", "fb(o => arr);"],
+    ]) {
+      expect(both(vars!, body!), body).toEqual([[], []]);
+    }
+    // --strict refuses the scalar pair, and so the array's.
+    const [local, lib] = both("arr : ARRAY[0..1] OF WORD;", "n := FX(arr);", {
+      strict: true,
+    });
+    const message =
+      "VAR_IN_OUT 'A' of type ARRAY[0..1] OF UINT cannot be bound to a variable of type ARRAY[0..1] OF WORD";
+    expect(local).toContain(message);
+    expect(lib).toContain(message);
+    expect(
+      both("arr : ARRAY[0..1] OF UDINT;", "n := FO(o => arr);", {
+        strict: true,
+      })[1],
+    ).toContain(
+      "VAR_OUTPUT 'O' of type ARRAY[0..1] OF DWORD cannot be bound to a variable of type ARRAY[0..1] OF UDINT",
+    );
+    // Another storage is refused in every mode.
+    expect(both("arr : ARRAY[0..1] OF INT;", "n := FX(arr);")).toEqual([
+      [
+        "VAR_IN_OUT 'A' of type ARRAY[0..1] OF UINT cannot be bound to a variable of type ARRAY[0..1] OF INT",
+      ],
+      [
+        "VAR_IN_OUT 'A' of type ARRAY[0..1] OF UINT cannot be bound to a variable of type ARRAY[0..1] OF INT",
+      ],
+    ]);
+  });
+
+  it("binds ARRAY OF PINT and ARRAY OF POINTER TO INT both ways", () => {
+    expect(
+      both("arr : ARRAY[0..1] OF POINTER TO INT;", "n := FP(arr);"),
+    ).toEqual([[], []]);
+    expect(both("arr : ARRAY[0..1] OF PINT;", "n := FQ(arr);")).toEqual([
+      [],
+      [],
+    ]);
+  });
+
+  it("checks an in/out declared with an ARRAY type against an inline array", () => {
+    const [local] = both("arr : ARRAY[0..1] OF INT;", "n := FT(arr);");
+    expect(local).toEqual([
+      "VAR_IN_OUT 'A' of type ARRAY[0..2] OF INT cannot be bound to a variable of type ARRAY[0..1] OF INT",
+    ]);
+    expect(
+      both("arr : TA; b : ARRAY[0..2] OF INT;", "n := FT(arr) + FT(b);"),
+    ).toEqual([[], []]);
+  });
+
+  it("checks a library METHOD's ARRAY in/out and output", () => {
+    const [, lib] = both(
+      "f : FM; arr4 : ARRAY[0..3] OF INT;",
+      "n := f.M(arr4) + f.MO(a => arr4);",
+    );
+    expect(lib).toEqual([
+      "VAR_IN_OUT 'A' of type ARRAY[0..2] OF INT cannot be bound to a variable of type ARRAY[0..3] OF INT",
+      "VAR_OUTPUT 'A' of type ARRAY[0..2] OF INT cannot be bound to a variable of type ARRAY[0..3] OF INT",
+    ]);
+  });
+
+  it("captures a POINTER TO output of a METHOD of an indexed instance", () => {
+    for (const libraries of [[], [loadStlibArchive(lib2())]]) {
+      const source = `${libraries.length === 0 ? LIB2 : ""}\n${prog(
+        "fa : ARRAY[0..1] OF FM; lw : LWORD; i : INT;",
+        "n := fa[1].MP(3, lw, i) + fa[0].MP(x := 3, o => lw);",
+      )}`;
+      const r = compile(source, { libraries });
+      expect(r.errors).toEqual([]);
+      expect(r.cppCode).toContain("strucpp::address_bits(");
+    }
+  });
+
+  it("lowers only the literal 0 into a POINTER TO alias to NULL; another integer is kept as before", () => {
+    const r = compile(
+      `${LIB2}\nFUNCTION FA : INT\nVAR_INPUT p : PINT; END_VAR\nFA := 1;\nEND_FUNCTION\n${prog(
+        "p : PINT; q : POINTER TO INT;",
+        "p := 0; q := 0; n := FA(0) + FA(p := 0); p := 5; q := 5; n := FA(5);",
+      )}`,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.cppCode).toContain("P = IEC_NULL;");
+    expect(r.cppCode).toContain("Q = IEC_NULL;");
+    expect(r.cppCode).toContain("FA(IEC_NULL)");
+    expect(r.cppCode).toContain("P = 5;");
+    expect(r.cppCode).toContain("Q = 5;");
+    expect(r.cppCode).not.toContain("FA(IEC_NULL) + FA(5)");
+  });
+
+  it("lowers 0 into a POINTER TO alias and declares its IEC_ wrapper as the alias", () => {
+    const r = compile(
+      `${LIB2}\n${prog("p : PINT; pz : PINT := 0;", "p := 0;")}`,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.headerCode).toContain("using IEC_PINT = PINT;");
+  });
+});
