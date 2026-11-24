@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Autonomy®
 /**
- * E2E: a TIME, DATE, TOD or DT divided by 0 (`/` by a number or a TIME,
- * DIV_TIME, DIVTIME; an integer or a REAL divisor) is a run-time fault naming
+ * E2E: a TIME divided by 0 (`/` by a number or a TIME, DIV_TIME, DIVTIME;
+ * an integer or a REAL divisor; a TIME from a TOD, DT or DATE) is a run-time fault naming
  * the POU, line and task, as an integer division by zero is.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -20,9 +20,9 @@ CASE k OF
 1: r := t / z;
 2: r := DIV_TIME(t, z);
 3: r := t / rz;
-4: rt := tod / z;
-5: rd := dt / z;
-6: rdd := d / z;
+4: r := TOD_TO_TIME(tod) / z;
+5: r := (dt - dt) / z;
+6: r := (d - d) / z;
 7: r := t / two;
 8: n := DIVTIME(t, zt);
 9: n := DIVTIME(lt, lz);

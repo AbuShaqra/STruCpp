@@ -153,9 +153,10 @@ int main() {
 }
 `,
       });
-      // 1969-12-31 is -86400 s, modulo 2^32 then floored to a day: 2106-02-06
-      // (a Saturday); the DT 2 s before 1970 is 2^32 - 2 s, its ms dropped.
-      expect(out).toBe("4294857600 4294967294 2106-2-6 2106-2-7T6:28:14.0 6");
+      // 1969-12-31 is -86400 s modulo 2^32, as D#1970-01-01 - T#1d gives; it
+      // splits as 2106-02-06 (a Saturday); the DT 2 s before 1970 is 2^32 - 2 s,
+      // its ms dropped.
+      expect(out).toBe("4294880896 4294967294 2106-2-6 2106-2-7T6:28:14.0 6");
     });
 
     it("runs OSCAT's DAY_OF_WEEK when OSCAT is loaded", () => {

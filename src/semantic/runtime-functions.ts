@@ -51,6 +51,7 @@ export const RUNTIME_CALLABLE_NAMES: ReadonlySet<string> = new Set([
   "DATE_FROM_YMD",
   "DATE_OF_DAYS",
   "DATE_OF_DT",
+  "DATE_PLUS_DAYS",
   "DATE_TO_DAYS",
   "DATE_TO_NS",
   "DATE_TO_SECONDS",
