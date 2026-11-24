@@ -3,8 +3,8 @@
 /**
  * A CHAR or WCHAR reached through `^` (`p^`, `pa^[i]`, `pr^.c`, `r^`) takes a
  * one-character literal as that character, in a store, a comparison and the
- * standard comparison functions; a STRING or WSTRING there is refused, as it
- * is for a CHAR variable.
+ * standard comparison functions and as a CASE label; a STRING, WSTRING or the
+ * other character type there is refused, as it is for a CHAR variable.
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
@@ -61,6 +61,20 @@ describe("one-character literals through ^", () => {
         expect(withoutSites(r.cppCode)).not.toContain("iec_str_cmp");
       });
 
+      it("takes CHAR labels on a dereferenced CHAR selector", () => {
+        const r = result(
+          "CASE p^ OF 'a': x := TRUE; CHAR#'b': x := FALSE; END_CASE;",
+          options,
+        );
+        expect(r.errors).toEqual([]);
+        expect(withoutSites(r.cppCode)).not.toContain('case "a"');
+        expect(
+          errors("CASE p^ OF 'ab': x := TRUE; END_CASE;", options),
+        ).toEqual([
+          "CASE label of type STRING does not match the selector of type CHAR",
+        ]);
+      });
+
       it("refuses a STRING or WSTRING into or against a dereferenced CHAR", () => {
         expect(errors("p^ := 'bc';", options)).toEqual([
           "Cannot assign STRING to CHAR",
@@ -79,6 +93,12 @@ describe("one-character literals through ^", () => {
         ]);
         expect(errors("x := s <> p^;", options)).toEqual([
           "Cannot compare STRING with CHAR",
+        ]);
+        expect(errors("p^ := wc;", options)).toEqual([
+          "Cannot assign WCHAR to CHAR",
+        ]);
+        expect(errors("pw^ := c;", options)).toEqual([
+          "Cannot assign CHAR to WCHAR",
         ]);
         expect(errors("x := EQ(p^, s);", options)).toEqual([
           "Argument of 'EQ' is STRING where the others are CHAR; CHAR does not convert implicitly",

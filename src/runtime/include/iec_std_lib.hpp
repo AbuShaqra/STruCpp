@@ -2233,6 +2233,24 @@ inline auto MIN(T first, T second, U third, Args... rest) noexcept {
     return MIN(MIN(first, second), third, rest...);
 }
 
+// Three or more STRING (or WSTRING) arguments, literals included: compared by
+// text, the result as long as the longest argument
+template<typename A, typename B, typename C, typename... Rest,
+    std::enable_if_t<detail::iec_same_str_args<A, B, C, Rest...>::value, int> = 0>
+inline detail::iec_str_common_t<A, B, C, Rest...> MAX(
+    const A& first, const B& second, const C& third, const Rest&... rest) noexcept {
+    using R = detail::iec_str_common_t<A, B, C, Rest...>;
+    return detail::iec_str_as<R>(MAX(detail::iec_str_as<R>(MAX(first, second)), third, rest...));
+}
+
+template<typename A, typename B, typename C, typename... Rest,
+    std::enable_if_t<detail::iec_same_str_args<A, B, C, Rest...>::value, int> = 0>
+inline detail::iec_str_common_t<A, B, C, Rest...> MIN(
+    const A& first, const B& second, const C& third, const Rest&... rest) noexcept {
+    using R = detail::iec_str_common_t<A, B, C, Rest...>;
+    return detail::iec_str_as<R>(MIN(detail::iec_str_as<R>(MIN(first, second)), third, rest...));
+}
+
 /**
  * MOVE - Copy value (identity function)
  * Input: ANY, Output: ANY (same type)

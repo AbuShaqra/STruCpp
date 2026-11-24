@@ -3244,12 +3244,13 @@ export class SemanticAnalyzer {
     const visit = (node: ASTNode): void => {
       if (node.kind !== "LiteralExpression") return;
       const literal = node as LiteralExpression;
+      // Its quotes are wrong whatever else was reported at it (`s := WSTRING#'a'`).
+      if (this.refuseTypedStringQuotes(literal)) return;
       if (this.literalsReported.has(literal)) return;
       if (literal.literalType === "CHAR" || literal.literalType === "WCHAR") {
         this.validateCharLiteral(literal);
         return;
       }
-      if (this.refuseTypedStringQuotes(literal)) return;
       if (literal.literalType !== "STRING") return;
       const raw = literal.rawValue;
       for (let i = raw.indexOf("'") + 1; i < raw.length; i++) {
@@ -3278,10 +3279,9 @@ export class SemanticAnalyzer {
     }
   }
 
-  /**
-   * A CHAR or WCHAR literal holds exactly one character, and a CHAR one that
-   * Windows-1252 has.
-   */
+  /** Typed string literals refused for their quotes, each once. */
+  private typedQuotesReported = new WeakSet<LiteralExpression>();
+
   /**
    * STRING#"abc" or WSTRING#'abc': a typed STRING literal is single-quoted and
    * a WSTRING one double-quoted (Ed. 3 Table 6). True when refused.
@@ -3291,6 +3291,8 @@ export class SemanticAnalyzer {
     if (prefix !== "STRING" && prefix !== "WSTRING") return false;
     const want = prefix === "STRING" ? "'" : '"';
     if (literal.rawValue.startsWith(want)) return false;
+    if (this.typedQuotesReported.has(literal)) return true;
+    this.typedQuotesReported.add(literal);
     const span = literal.sourceSpan;
     this.literalsReported.add(literal);
     this.addError(
@@ -3302,6 +3304,10 @@ export class SemanticAnalyzer {
     return true;
   }
 
+  /**
+   * A CHAR or WCHAR literal holds exactly one character, and a CHAR one that
+   * Windows-1252 has.
+   */
   private validateCharLiteral(literal: LiteralExpression): void {
     const { wide, units } = charLiteralUnits(literal.rawValue);
     const type = wide ? "WCHAR" : "CHAR";

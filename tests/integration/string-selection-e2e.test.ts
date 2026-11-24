@@ -4,7 +4,8 @@
  * E2E: MAX, MIN, LIMIT, SEL, MUX and the comparison functions on STRING and
  * WSTRING variables, literals and values of different declared lengths; a
  * one-character literal stored into and compared with a CHAR or WCHAR reached
- * through `^`; and typed STRING#'...' / WSTRING#"..." literals, built and run
+ * through `^` (a CASE label on one included); a POINTER TO passed to an
+ * LWORD input; and typed STRING#'...' / WSTRING#"..." literals, built and run
  * under g++.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -28,6 +29,7 @@ VAR
   w1, w2, w3, w4 : WSTRING;
   g1, g2, g3, g4, g5, g6, g7, g8 : BOOL;
   n : INT;
+  v1, v2, v3, v4 : STRING; w5, w6 : WSTRING;
 END_VAR
 r1 := MAX(s, 'c');
 r2 := MIN(s, s10);
@@ -51,16 +53,23 @@ g5 := GE(ws, "b");
 g6 := LE(ws5, ws);
 g7 := GT(s10, s2, s);
 g8 := EQ(s, s2);
+v1 := MAX(s, s2, s);
+v2 := MIN(s2, s10, 'c');
+v3 := MAX('a', 'e', 'c');
+v4 := MIN(s10, 'q', s2, 'x');
+w5 := MAX(ws, ws5, ws);
+w6 := MIN(ws5, "c", ws);
 END_PROGRAM
 `;
 
 const DEREF = `TYPE R : STRUCT c : CHAR; END_STRUCT; END_TYPE
+FUNCTION H : LWORD VAR_INPUT a : LWORD; END_VAR H := a; END_FUNCTION
 PROGRAM Main
 VAR
   c : CHAR := 'a'; wc : WCHAR := "a"; arr : ARRAY[1..3] OF CHAR; rec : R;
   p : POINTER TO CHAR; pw : POINTER TO WCHAR; pa : POINTER TO ARRAY[1..3] OF CHAR;
   pr : POINTER TO R; rc : REF_TO CHAR;
-  b1, b2, b3, b4, b5, b6 : BOOL; m : CHAR;
+  b1, b2, b3, b4, b5, b6 : BOOL; m : CHAR; k : INT; lw : LWORD;
 END_VAR
 p := ADR(c); pw := ADR(wc); pa := ADR(arr); pr := ADR(rec); rc := REF(c);
 p^ := 'b';
@@ -75,6 +84,8 @@ b5 := EQ(p^, 'b');
 rc^ := 'f';
 b6 := rc^ = 'f';
 m := MAX(p^, 'c');
+CASE p^ OF 'a': k := 1; 'f': k := 2; ELSE k := 3; END_CASE;
+lw := H(p);
 END_PROGRAM
 `;
 
@@ -151,9 +162,12 @@ int main() {
               << int(p.W1.get().c_str()[0]) << " " << int(p.W2.get().c_str()[0]) << " "
               << int(p.W3.get().c_str()[0]) << " " << int(p.W4.get().c_str()[0]) << " "
               << p.G1.get() << p.G2.get() << p.G3.get() << p.G4.get()
-              << p.G5.get() << p.G6.get() << p.G7.get() << p.G8.get();`,
+              << p.G5.get() << p.G6.get() << p.G7.get() << p.G8.get() << " "
+              << p.V1.get().c_str() << p.V2.get().c_str() << p.V3.get().c_str()
+              << p.V4.get().c_str() << " " << int(p.W5.get().c_str()[0])
+              << " " << int(p.W6.get().c_str()[0]);`,
         );
-        expect(stdout).toBe("cbdczzbxcz! 1 99 98 99 100 11111010");
+        expect(stdout).toBe("cbdczzbxcz! 1 99 98 99 100 11111010 dced 100 98");
       });
 
       it(`takes a one-character literal as the CHAR or WCHAR reached through ^ (${label})`, () => {
@@ -163,10 +177,12 @@ int main() {
           `strderef_${tag}`,
           `std::cout << char(p.C.get()) << int(p.WC.get()) << char(p.ARR[2].get())
               << char(p.REC.C.get()) << " " << p.B1.get() << p.B2.get() << p.B3.get()
-              << p.B4.get() << p.B5.get() << p.B6.get() << " " << char(p.M.get());`,
+              << p.B4.get() << p.B5.get() << p.B6.get() << " " << char(p.M.get())
+              << " " << p.K.get() << " "
+              << (p.LW.get() == strucpp::address_bits(p.P));`,
         );
-        // c is 'f' after rc^ := 'f', so m is MAX('f', 'c')
-        expect(stdout).toBe("f99de 110111 f");
+        // c is 'f' after rc^ := 'f': m is MAX('f', 'c'), the CASE takes 'f'
+        expect(stdout).toBe("f99de 110111 f 2 1");
       });
 
       it(`parses and runs typed STRING# and WSTRING# literals (${label})`, () => {

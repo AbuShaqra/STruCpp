@@ -60,6 +60,10 @@ describe("typed string literals", () => {
         expect(errors("w := WSTRING#'abc';", options)).toEqual([
           'A WSTRING literal is written in double quotes: WSTRING#"..."',
         ]);
+        expect(errors("s := WSTRING#'abc';", options)).toEqual([
+          "Cannot assign WSTRING to STRING",
+          'A WSTRING literal is written in double quotes: WSTRING#"..."',
+        ]);
         expect(errors('c := CHAR#"a";', options)).toEqual([
           "A CHAR literal is written in single quotes: CHAR#'...'",
         ]);
