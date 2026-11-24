@@ -16,6 +16,8 @@ interface Case {
   /** Each refusal as `line:column: message`, in source order. */
   refusals: string[];
   source: string;
+  /** Other features the case needs under iec-3 (`__DELETE` takes a POINTER TO). */
+  with?: string[];
 }
 
 const CASES: Case[] = [
@@ -152,11 +154,12 @@ END_PROGRAM
       "4:1: __DELETE needs the feature dynamic_memory",
     ],
     source: `PROGRAM Main
-VAR p : REF_TO INT; END_VAR
+VAR p : POINTER TO INT; END_VAR
 p := __NEW(INT);
 __DELETE(p);
 END_PROGRAM
 `,
+    with: ["pointer_to"],
   },
   {
     name: "VAR_INST in a METHOD",
@@ -191,13 +194,18 @@ describe.each(CASES)("$name", (c) => {
   });
 
   it("is refused under iec-3 at the construct", () => {
-    expect(located({ dialect: "iec-3" }, c.source)).toEqual(c.refusals);
+    expect(
+      located(
+        { dialect: "iec-3", features: (c.with ?? []).map((f) => `+${f}`) },
+        c.source,
+      ),
+    ).toEqual(c.refusals);
   });
 
   it("is accepted under iec-3 with the feature turned on", () => {
     const result = compile(c.source, {
       dialect: "iec-3",
-      features: [`+${c.feature}`],
+      features: [c.feature, ...(c.with ?? [])].map((f) => `+${f}`),
     });
     expect(result.errors).toEqual([]);
   });
@@ -445,7 +453,12 @@ VAR x : INT; END_VAR
 x := 1;
 END_PROGRAM
 `;
-  const TESTS: Array<{ feature: string; test: string; refusals: string[] }> = [
+  const TESTS: Array<{
+    feature: string;
+    test: string;
+    refusals: string[];
+    with?: string[];
+  }> = [
     {
       feature: "enum_dot_qualify",
       test: `TEST 'enum'
@@ -487,7 +500,7 @@ END_TEST
     {
       feature: "dynamic_memory",
       test: `TEST 'dyn'
-VAR p : REF_TO INT; END_VAR
+VAR p : POINTER TO INT; END_VAR
 p := __NEW(INT);
 __DELETE(p);
 END_TEST
@@ -496,6 +509,7 @@ END_TEST
         "3:6: __NEW needs the feature dynamic_memory",
         "4:1: __DELETE needs the feature dynamic_memory",
       ],
+      with: ["pointer_to"],
     },
     {
       feature: "pointer_to",
@@ -510,9 +524,12 @@ END_TEST
 
   describe.each(TESTS)("$feature", (t) => {
     it("is refused in a test file under iec-3", () => {
-      expect(testFileErrors(TYPES, t.test, { dialect: "iec-3" })).toEqual(
-        t.refusals,
-      );
+      expect(
+        testFileErrors(TYPES, t.test, {
+          dialect: "iec-3",
+          features: (t.with ?? []).map((f) => `+${f}`),
+        }),
+      ).toEqual(t.refusals);
     });
 
     it("is accepted in a test file with no dialect flag", () => {
@@ -523,7 +540,7 @@ END_TEST
       expect(
         testFileErrors(TYPES, t.test, {
           dialect: "iec-3",
-          features: [`+${t.feature}`],
+          features: [t.feature, ...(t.with ?? [])].map((f) => `+${f}`),
         }),
       ).toEqual([]);
     });

@@ -4759,24 +4759,30 @@ export class SemanticAnalyzer {
   }
 
   /**
-   * Argument counts of the standard function calls in initial values, which
-   * the statement walk does not reach (`hi : DINT := UPPER_BOUND();` failed in
+   * Argument counts of the standard function calls in initial values (STRUCT
+   * field defaults included), which the statement walk does not reach (`hi : DINT := UPPER_BOUND();` failed in
    * codegen). Counts only: the other call checks stay with the bodies.
    */
   private validateInitialValueCallCounts(ast: CompilationUnit): void {
+    const visitValue = (
+      value: Expression | undefined,
+      varTypeMap: ReadonlyMap<string, string>,
+    ): void => {
+      if (value === undefined) return;
+      walkAST(value, (node) => {
+        if (node.kind !== "FunctionCallExpression") return;
+        const call = node as FunctionCallExpression;
+        if (call.functionName.includes(".")) return;
+        this.checkStdFunctionArgs(call, varTypeMap, true);
+      });
+    };
     const visit = (
       blocks: VarBlock[],
       varTypeMap: ReadonlyMap<string, string>,
     ): void => {
       for (const block of blocks) {
         for (const decl of block.declarations) {
-          if (decl.initialValue === undefined) continue;
-          walkAST(decl.initialValue, (node) => {
-            if (node.kind !== "FunctionCallExpression") return;
-            const call = node as FunctionCallExpression;
-            if (call.functionName.includes(".")) return;
-            this.checkStdFunctionArgs(call, varTypeMap, true);
-          });
+          visitValue(decl.initialValue, varTypeMap);
         }
       }
     };
@@ -4811,6 +4817,13 @@ export class SemanticAnalyzer {
       }
     }
     this.callOwner = {};
+    // A STRUCT field's default (a TYPE's own default is applied to its variables)
+    for (const type of ast.types) {
+      if (type.definition.kind !== "StructDefinition") continue;
+      for (const field of type.definition.fields) {
+        visitValue(field.initialValue, new Map());
+      }
+    }
   }
 
   /**
@@ -7816,7 +7829,13 @@ export class SemanticAnalyzer {
         testScope,
         sourceAst,
       );
+      this.checkTestStatementOperands(tc.body, testScope, sourceAst);
     }
+    this.checkTestStatementOperands(
+      [...(testFile.setup?.body ?? []), ...(testFile.teardown?.body ?? [])],
+      setupScope,
+      sourceAst,
+    );
     if (testFile.setup) {
       this.checkTestStructComparisons(
         [
@@ -7965,6 +7984,30 @@ export class SemanticAnalyzer {
         }
       }
     }
+  }
+
+  /**
+   * REAL MOD, `__DELETE` operands and `__NEW` into a REF_TO in test statements
+   * (VARs are typed), refused as in a POU.
+   */
+  private checkTestStatementOperands(
+    roots: readonly TestStatement[],
+    scope: Scope,
+    sourceAst: CompilationUnit | undefined,
+  ): void {
+    const checker = new TypeChecker(
+      this.symbolTables,
+      this.stdRegistry,
+      false,
+      this.features,
+    );
+    this.errors.push(
+      ...checker.checkTestStatementOperands(
+        roots as readonly ASTNode[],
+        scope,
+        sourceAst,
+      ),
+    );
   }
 
   /** `=` and `<>` of two STRUCTs in test bodies, where struct_compare is off. */
