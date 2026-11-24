@@ -3825,7 +3825,7 @@ export class TypeChecker {
     this.validateEnumArguments(inputs, expr.arguments);
     this.validateReferenceToArguments(inputs, expr.arguments, scope);
     this.validateInOutArguments(
-      inputs,
+      inputs ?? this.libraryAliasInOutInputs(expr, scope),
       expr.arguments,
       scope,
       this.isFBInstanceCall(expr, scope),
@@ -7728,9 +7728,11 @@ export class TypeChecker {
     const simple = (t: AccessType): boolean => {
       const upper = t.name.toUpperCase();
       if (ELEMENTARY_TYPES[canonicalElementaryName(upper)]) return true;
-      const def = this.ast?.types.find(
-        (td) => td.name.toUpperCase() === upper,
-      )?.definition;
+      // This compile's TYPE, else a library's.
+      const def =
+        this.ast?.types.find((td) => td.name.toUpperCase() === upper)
+          ?.definition ??
+        this.symbolTables.lookupType(upper)?.declaration?.definition;
       return (
         def?.kind === "EnumDefinition" ||
         (def?.kind === "TypeReference" && def.arrayDimensions === undefined) ||
@@ -8771,9 +8773,10 @@ export class TypeChecker {
     let upper = name.toUpperCase();
     for (let i = 0; i < 32; i++) {
       const current = upper;
-      const def = this.ast?.types.find(
-        (td) => td.name.toUpperCase() === current,
-      )?.definition;
+      // This compile's TYPE, else a library's alias (archives with `baseType`).
+      const def =
+        this.ast?.types.find((td) => td.name.toUpperCase() === current)
+          ?.definition ?? this.libraryAliasDefinition(current);
       if (
         def?.kind !== "TypeReference" ||
         def.arrayDimensions !== undefined ||
@@ -8784,6 +8787,15 @@ export class TypeChecker {
       upper = def.name.toUpperCase();
     }
     return upper;
+  }
+
+  /** A library type's alias definition, when it records its base; undefined otherwise. */
+  private libraryAliasDefinition(name: string): TypeReference | undefined {
+    if (!this.symbolTables.globalScope.definedByLibrary(name)) return undefined;
+    const def = this.symbolTables.lookupType(name)?.declaration?.definition;
+    return def?.kind === "TypeReference" && def.name.toUpperCase() !== name
+      ? def
+      : undefined;
   }
 
   /**
@@ -9412,6 +9424,27 @@ export class TypeChecker {
       });
   }
 
+  /**
+   * The inputs of a library FUNCTION with a VAR_IN_OUT of a library alias type,
+   * only those in-outs marked as such: bound to another type, they are copied
+   * as for a local alias. Undefined for any other callee.
+   */
+  private libraryAliasInOutInputs(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): CallInput[] | undefined {
+    const inputs = this.libraryShapedFunctionInputs(expr, scope);
+    const isAlias = (input: CallInput): boolean =>
+      input.inOut &&
+      (input.type.referenceKind ?? "none") === "none" &&
+      input.type.arrayDimensions === undefined &&
+      this.libraryAliasDefinition(input.type.name.toUpperCase()) !== undefined;
+    if (inputs?.some(isAlias) !== true) return undefined;
+    return inputs.map((input) =>
+      isAlias(input) ? input : { ...input, inOut: false },
+    );
+  }
+
   /** The REF_TO check for each argument passed to a REF_TO input. */
   private validateReferenceArguments(
     expr: FunctionCallExpression,
@@ -9462,9 +9495,16 @@ export class TypeChecker {
       ? resolveFieldDeclaration(typeName, fieldName, this.ast)
       : undefined;
     if (local) return local;
+    const upper = fieldName.toUpperCase();
+    // A library STRUCT, registered with its fields.
+    const def = this.symbolTables.lookupType(typeName)?.declaration?.definition;
+    if (def?.kind === "StructDefinition") {
+      return def.fields.find((f) =>
+        f.names.some((n) => n.toUpperCase() === upper),
+      );
+    }
     const fb = this.symbolTables.lookupFunctionBlock(typeName);
     if (!fb) return undefined;
-    const upper = fieldName.toUpperCase();
     return [...fb.inputs, ...fb.outputs, ...fb.inouts, ...fb.locals].find(
       (m) => m.name.toUpperCase() === upper,
     )?.declaration;

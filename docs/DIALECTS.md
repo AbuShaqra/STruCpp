@@ -1109,6 +1109,9 @@ test file); without the feature it is 254.
   FUNCTION; a copy back is cut at the variable's length.
 - A library's array elements, `ARRAY[*]` parameters and STRUCT fields written as a plain STRING keep the
   library's length too.
+- A length written in a library (`STRING(20)`, `STRING(254)`) is recorded in its manifest and kept by a
+  program that uses it, whatever either default; an archive built before that reads such a member as the
+  library's default length.
 - The debugger shows strings of 254 characters only: a plain STRING or WSTRING (80) is left out of the
   debug table with a build warning (`Declare it as STRING(254) to expose it`); an ARRAY of them is left
   out whole, with one warning (`Declare them as STRING(254) to expose them`). A string member of the elements of an ARRAY

@@ -70,8 +70,27 @@ function makeTypeRef(
   if (v.referenceChain) {
     ref.referenceChain = v.referenceChain.filter(isReferenceKind);
   }
+  applyStringLengths(ref, v);
   applyStringDefaultLength(ref, stringDefaultLength);
   return ref;
+}
+
+/** A STRING length as the library compiler writes it: a positive integer or a constant's name. */
+function isStringLength(length: unknown): length is number | string {
+  return typeof length === "number"
+    ? Number.isInteger(length) && length > 0
+    : typeof length === "string" && /^[A-Za-z_]\w*$/.test(length);
+}
+
+/** The STRING lengths a manifest entry records, onto `ref`. */
+function applyStringLengths(
+  ref: TypeReference,
+  entry: { maxLength?: unknown; elementMaxLength?: unknown },
+): void {
+  if (isStringLength(entry.maxLength)) ref.maxLength = entry.maxLength;
+  if (isStringLength(entry.elementMaxLength)) {
+    ref.elementMaxLength = entry.elementMaxLength;
+  }
 }
 
 /**
@@ -147,6 +166,7 @@ function buildLibraryTypeDefinition(
           isReference: false,
           referenceKind: "none" as const,
         };
+        applyStringLengths(type, f);
         applyStringDefaultLength(type, stringDefaultLength);
         return {
           kind: "VarDeclaration" as const,
@@ -157,13 +177,18 @@ function buildLibraryTypeDefinition(
       }),
     };
   }
-  return {
+  const alias: TypeReference = {
     kind: "TypeReference",
     sourceSpan: createDefaultSourceSpan(),
     name: t.baseType ?? t.name,
     isReference: false,
     referenceKind: "none",
   };
+  if (t.kind === "alias" && t.baseType !== undefined) {
+    applyStringLengths(alias, t);
+    applyStringDefaultLength(alias, stringDefaultLength);
+  }
+  return alias;
 }
 
 function makeVarSymbol(
@@ -376,6 +401,27 @@ export function loadLibraryManifest(json: unknown): LibraryManifest {
 }
 
 /**
+ * The elementary type `name` is, an alias of one followed through the
+ * library's own aliases (archives with `baseType`); undefined otherwise.
+ */
+function elementaryOf(
+  name: string,
+  manifest: LibraryManifest,
+): ElementaryType | undefined {
+  let upper = name.toUpperCase();
+  for (let depth = 0; depth < 32; depth++) {
+    const elementary = ELEMENTARY_TYPES[upper];
+    if (elementary !== undefined) return elementary;
+    const alias = manifest.types.find(
+      (t) => t.kind === "alias" && t.name.toUpperCase() === upper,
+    );
+    if (typeof alias?.baseType !== "string") return undefined;
+    upper = alias.baseType.toUpperCase();
+  }
+  return undefined;
+}
+
+/**
  * Register a library's symbols into the compiler's symbol tables.
  * This makes library functions, FBs, and types available for semantic analysis.
  */
@@ -385,9 +431,10 @@ export function registerLibrarySymbols(
 ): void {
   // Register functions
   for (const fn of manifest.functions) {
-    const returnType: ElementaryType = ELEMENTARY_TYPES[
-      fn.returnType.toUpperCase()
-    ] ?? {
+    const returnType: ElementaryType = elementaryOf(
+      fn.returnType,
+      manifest,
+    ) ?? {
       typeKind: "elementary",
       name: fn.returnType,
       sizeBits: 0,
@@ -425,7 +472,12 @@ export function registerLibrarySymbols(
             name: p.name,
             type: p.type,
             ...(p.referenceKind ? { referenceKind: p.referenceKind } : {}),
-            ...(manifest.parameterShapes ? parameterShapeOf(p) : {}),
+            // Older archives have none of these but a recovered `referenceChain`.
+            ...parameterShapeOf(p),
+            ...(p.maxLength !== undefined ? { maxLength: p.maxLength } : {}),
+            ...(p.elementMaxLength !== undefined
+              ? { elementMaxLength: p.elementMaxLength }
+              : {}),
           },
           p.direction,
           manifest.stringDefaultLength,
@@ -469,6 +521,8 @@ export function registerLibrarySymbols(
             ),
           } as StructType)
         : (ELEMENTARY_TYPES[t.name.toUpperCase()] ??
+          // An alias of an elementary type is that type (archives with `baseType`).
+          elementaryOf(t.name, manifest) ??
           ({
             typeKind: "elementary",
             name: t.name,
@@ -533,7 +587,7 @@ export function registerLibrarySymbols(
             kind: "PropertyDeclaration" as const,
             sourceSpan: createDefaultSourceSpan(),
             name: p.name,
-            type: makeTypeRef(p.type),
+            type: makeTypeRef(p.type, manifest.stringDefaultLength),
             visibility: "PUBLIC" as const,
             ...(p.get === true ? { getter: [] } : {}),
             ...(p.set === true ? { setter: [] } : {}),
@@ -578,6 +632,15 @@ export function registerLibrarySymbols(
   // are skipped, first-wins), a program importing several libraries can see all
   // of their globals together at the same place — globals are additive.
   for (const g of manifest.globals ?? []) {
+    const globalType: TypeReference = {
+      kind: "TypeReference",
+      sourceSpan: createDefaultSourceSpan(),
+      name: g.type,
+      isReference: false,
+      referenceKind: "none",
+    };
+    applyStringLengths(globalType, g);
+    applyStringDefaultLength(globalType, manifest.stringDefaultLength);
     const varType: ElementaryType = ELEMENTARY_TYPES[g.type.toUpperCase()] ?? {
       typeKind: "elementary",
       name: g.type,
@@ -592,13 +655,7 @@ export function registerLibrarySymbols(
           kind: "VarDeclaration",
           sourceSpan: createDefaultSourceSpan(),
           names: [g.name],
-          type: {
-            kind: "TypeReference",
-            sourceSpan: createDefaultSourceSpan(),
-            name: g.type,
-            isReference: false,
-            referenceKind: "none",
-          },
+          type: globalType,
         },
         isInput: false,
         isOutput: false,
@@ -609,6 +666,118 @@ export function registerLibrarySymbols(
       });
     } catch (e) {
       if (!(e instanceof DuplicateSymbolError)) throw e;
+    }
+  }
+}
+
+/** The C++ wrappers of a POINTER TO and a REF_TO level, as codegen spells a parameter's type. */
+const REFERENCE_WRAPPERS: ReadonlyArray<[string, ReferenceKind]> = [
+  ["IEC_Ptr<", "pointer_to"],
+  ["IEC_REF_TO<", "ref_to"],
+];
+
+/** `text` split at the commas outside any `<>`, `()` or `[]`; undefined when they do not balance. */
+function splitTopLevel(text: string): string[] | undefined {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of text) {
+    if (ch === "<" || ch === "(" || ch === "[") depth++;
+    if (ch === ">" || ch === ")" || ch === "]") depth--;
+    if (depth < 0) return undefined;
+    if (depth === 0 && ch === ",") {
+      parts.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (depth !== 0) return undefined;
+  if (current.trim() !== "") parts.push(current);
+  return parts;
+}
+
+/**
+ * The reference levels of each parameter of function `name` in the C++
+ * prototype `header` (`IEC_DINT F(IEC_Ptr<INT_t> P, IEC_INT I);`), by
+ * parameter name. Undefined unless the prototype is found exactly once and
+ * every parameter reads as `<type> <name>`.
+ */
+export function prototypeReferenceLevels(
+  header: string,
+  name: string,
+): Map<string, ReferenceKind[]> | undefined {
+  const call = new RegExp(`(?<![\\w:])${name}\\s*\\(`, "g");
+  const found = [...header.matchAll(call)];
+  if (found.length !== 1) return undefined;
+  const open = found[0]!.index + found[0]![0].length;
+  let depth = 1;
+  let close = open;
+  for (; close < header.length && depth > 0; close++) {
+    if (header[close] === "(") depth++;
+    if (header[close] === ")") depth--;
+  }
+  if (depth !== 0) return undefined;
+  const params = splitTopLevel(header.slice(open, close - 1));
+  if (params === undefined) return undefined;
+  const levels = new Map<string, ReferenceKind[]>();
+  for (const raw of params) {
+    // A default argument is not part of the declaration's name.
+    const param = raw
+      .replace(/=[^]*$/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const match = /^(.*?)[\s&*]*\b([A-Za-z_]\w*)$/.exec(param);
+    if (match === null || match[1]!.trim() === "") return undefined;
+    let type = match[1]!.trim();
+    const chain: ReferenceKind[] = [];
+    for (;;) {
+      const wrapper = REFERENCE_WRAPPERS.find(([w]) => type.startsWith(w));
+      if (wrapper === undefined) break;
+      chain.push(wrapper[1]);
+      type = type.slice(wrapper[0].length).trim();
+    }
+    const paramName = match[2]!.toUpperCase();
+    if (levels.has(paramName)) return undefined;
+    levels.set(paramName, chain);
+  }
+  return levels;
+}
+
+/**
+ * An archive written before `parameterShapes` records a FUNCTION's POINTER TO
+ * and REF_TO parameters by their target's name only. Their levels are read
+ * back from the function's C++ prototype in its chunk, so an address passed to
+ * one is accepted and one passed to a value parameter is still checked. A
+ * function whose prototype does not name exactly its manifest parameters is
+ * left as it is.
+ */
+function recoverPointerParameters(
+  manifest: LibraryManifest,
+  chunks: unknown[],
+): void {
+  for (const fn of manifest.functions) {
+    if (!Array.isArray(fn.parameters)) continue;
+    const upper = fn.name.toUpperCase();
+    const matching = chunks.filter(
+      (c): c is { header: string } =>
+        typeof c === "object" &&
+        c !== null &&
+        (c as { kind?: unknown }).kind === "function" &&
+        (c as { name?: unknown }).name === upper &&
+        typeof (c as { header?: unknown }).header === "string",
+    );
+    if (matching.length !== 1) continue;
+    const levels = prototypeReferenceLevels(matching[0]!.header, upper);
+    if (levels === undefined || levels.size !== fn.parameters.length) continue;
+    const names = fn.parameters.map((p) => String(p.name).toUpperCase());
+    if (!names.every((n) => levels.has(n))) continue;
+    for (const p of fn.parameters) {
+      if (p.referenceKind !== undefined) continue;
+      const chain = levels.get(String(p.name).toUpperCase()) ?? [];
+      if (chain.length === 0) continue;
+      p.referenceKind = chain[0]!;
+      if (chain.length > 1) p.referenceChain = chain;
     }
   }
 }
@@ -647,6 +816,9 @@ export function loadStlibArchive(json: unknown): StlibArchive {
     );
   }
   const manifest = loadLibraryManifest(obj.manifest);
+  if (manifest.parameterShapes !== true && Array.isArray(obj.chunks)) {
+    recoverPointerParameters(manifest, obj.chunks);
+  }
 
   // Validate chunks — every per-symbol slice of the library's emitted
   // C++ output, plus its dep edges. Empty array is valid (synthetic

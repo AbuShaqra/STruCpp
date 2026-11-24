@@ -398,10 +398,12 @@ export interface DebugTableGenOptions {
   /** The length of a STRING or WSTRING declared without one (254, or 80 under
    *  string_default_80); it picks the advice for a skipped string leaf. */
   stringDefaultLength?: number;
+  /** The compilation's global constants, which a `STRING(NAME)` length names. */
+  globalConstants?: Readonly<Record<string, number>>;
 }
 
 const DEFAULTS: Required<
-  Omit<DebugTableGenOptions, "md5" | "stringDefaultLength">
+  Omit<DebugTableGenOptions, "md5" | "stringDefaultLength" | "globalConstants">
 > = {
   maxEntriesPerArray: 8000,
   configGlobalName: "g_config",
@@ -431,6 +433,25 @@ export function generateDebugTable(
   const configGlobal = opts.configGlobalName ?? DEFAULTS.configGlobalName;
   const md5 = opts.md5 ?? "";
   const stringDefault = opts.stringDefaultLength ?? DISPATCH_STRING_CAPACITY;
+  const constants = opts.globalConstants ?? {};
+  /** The value of a STRING length, a constant's name resolved; undefined when unknown. */
+  const lengthValue = (length: number | string): number | undefined => {
+    if (typeof length === "number") return length;
+    const key = Object.keys(constants).find(
+      (k) => k.toUpperCase() === length.toUpperCase(),
+    );
+    return key === undefined ? undefined : constants[key];
+  };
+  /** True when a STRING length, a constant's name resolved, is not the dispatch's. */
+  const otherThanDispatch = (length: number | string): boolean =>
+    lengthValue(length) !== DISPATCH_STRING_CAPACITY;
+  /** A length as written, with a constant's value: `10`, `SL = 10`. */
+  const lengthText = (length: number | string): string => {
+    const value = lengthValue(length);
+    return typeof length === "string" && value !== undefined
+      ? `${length} = ${value}`
+      : String(length);
+  };
 
   // Programs only live in the user AST (libraries don't ship PROGRAM blocks),
   // so we index them locally. Types and function blocks come from the symbol
@@ -675,11 +696,11 @@ export function generateDebugTable(
       };
     }
     const max = length.maxLength;
-    if (max === undefined || max === DISPATCH_STRING_CAPACITY) return undefined;
+    if (max === undefined || !otherThanDispatch(max)) return undefined;
     const declared =
       length.defaultLength === true
         ? `its elements are ${name} without a length, which holds ${max} characters ${defaultLengthPlace()}`
-        : `its elements are declared ${name}(${max})`;
+        : `its elements are declared ${name}(${lengthText(max)})`;
     return (
       `${declared}, but the debug dispatch addresses strings as ` +
       `${name}(${DISPATCH_STRING_CAPACITY}). ${stringRemedy(name, true)}`
@@ -777,12 +798,12 @@ export function generateDebugTable(
       if (
         (name === "STRING" || name === "WSTRING") &&
         typeRef.maxLength !== undefined &&
-        typeRef.maxLength !== DISPATCH_STRING_CAPACITY
+        otherThanDispatch(typeRef.maxLength)
       ) {
         const declared =
           typeRef.defaultLength === true
             ? `${name} without a length holds ${typeRef.maxLength} characters ${defaultLengthPlace()}`
-            : `declared ${name}(${typeRef.maxLength})`;
+            : `declared ${name}(${lengthText(typeRef.maxLength)})`;
         skipped.push({
           path,
           reason:
