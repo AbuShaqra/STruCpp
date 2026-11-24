@@ -504,8 +504,13 @@ export function registerLibrarySymbols(
         return sym;
       }),
     };
-    if (manifest.parameterShapes) symbol.parameterShapes = true;
-    if (manifest.stringLengthsRecorded) symbol.stringLengthsRecorded = true;
+    // An older archive's function whose prototype gave every shape and length.
+    if (manifest.parameterShapes || fn.prototypeShapes) {
+      symbol.parameterShapes = true;
+    }
+    if (manifest.stringLengthsRecorded || fn.prototypeShapes) {
+      symbol.stringLengthsRecorded = true;
+    }
     symbolTables.addLibraryFunction(symbol);
     try {
       symbolTables.globalScope.defineFromLibrary(symbol);
@@ -641,6 +646,16 @@ export function registerLibrarySymbols(
         ...(manifest.stringLengthsRecorded
           ? { stringLengthsRecorded: true as const }
           : {}),
+        ...(fb.prototypeInOuts === true
+          ? { inOutLengthsRecovered: true as const }
+          : {}),
+        ...(fb.methods?.some((m) => m.prototypeShapes) === true
+          ? {
+              prototypeShapedMethods: fb.methods
+                .filter((m) => m.prototypeShapes)
+                .map((m) => m.name.toUpperCase()),
+            }
+          : {}),
         libraryName: manifest.name,
       });
     } catch (e) {
@@ -718,16 +733,23 @@ function splitTopLevel(text: string): string[] | undefined {
   return parts;
 }
 
+/** A parameter's type in a C++ prototype: its reference levels and the type inside them. */
+interface PrototypeParameter {
+  chain: ReferenceKind[];
+  /** The innermost type, without the reference wrappers or a trailing `&`. */
+  inner: string;
+}
+
 /**
- * The reference levels of each parameter of function `name` in the C++
- * prototype `header` (`IEC_DINT F(IEC_Ptr<INT_t> P, IEC_INT I);`), by
- * parameter name. Undefined unless the prototype is found exactly once and
- * every parameter reads as `<type> <name>`.
+ * Each parameter of function `name` in the C++ prototype `header`
+ * (`IEC_DINT F(IEC_Ptr<INT_t> P, IEC_INT I);`), by parameter name. Undefined
+ * unless the prototype is found exactly once and every parameter reads as
+ * `<type> <name>`.
  */
-export function prototypeReferenceLevels(
+function prototypeParameters(
   header: string,
   name: string,
-): Map<string, ReferenceKind[]> | undefined {
+): Map<string, PrototypeParameter> | undefined {
   const call = new RegExp(`(?<![\\w:])${name}\\s*\\(`, "g");
   const found = [...header.matchAll(call)];
   if (found.length !== 1) return undefined;
@@ -741,7 +763,7 @@ export function prototypeReferenceLevels(
   if (depth !== 0) return undefined;
   const params = splitTopLevel(header.slice(open, close - 1));
   if (params === undefined) return undefined;
-  const levels = new Map<string, ReferenceKind[]>();
+  const result = new Map<string, PrototypeParameter>();
   for (const raw of params) {
     // A default argument is not part of the declaration's name.
     const param = raw
@@ -754,51 +776,284 @@ export function prototypeReferenceLevels(
     const chain: ReferenceKind[] = [];
     for (;;) {
       const wrapper = REFERENCE_WRAPPERS.find(([w]) => type.startsWith(w));
-      if (wrapper === undefined) break;
+      if (wrapper === undefined || !type.endsWith(">")) break;
       chain.push(wrapper[1]);
-      type = type.slice(wrapper[0].length).trim();
+      type = type.slice(wrapper[0].length, -1).trim();
     }
     const paramName = match[2]!.toUpperCase();
-    if (levels.has(paramName)) return undefined;
-    levels.set(paramName, chain);
+    if (result.has(paramName)) return undefined;
+    result.set(paramName, { chain, inner: type });
   }
-  return levels;
+  return result;
+}
+
+/**
+ * The reference levels of each parameter of function `name` in the C++
+ * prototype `header` (`IEC_DINT F(IEC_Ptr<INT_t> P, IEC_INT I);`), by
+ * parameter name. Undefined unless the prototype is found exactly once and
+ * every parameter reads as `<type> <name>`.
+ */
+export function prototypeReferenceLevels(
+  header: string,
+  name: string,
+): Map<string, ReferenceKind[]> | undefined {
+  const params = prototypeParameters(header, name);
+  if (params === undefined) return undefined;
+  return new Map([...params].map(([n, p]) => [n, p.chain]));
+}
+
+/**
+ * The length a prototype's STRING / WSTRING type spells (`IEC_STRING` is 254,
+ * `IECStringVar<NAME>` a constant's name); undefined for any other type.
+ */
+function prototypeStringLength(inner: string): number | string | undefined {
+  if (/^IEC_W?STRING$/.test(inner)) return 254;
+  const match = /^IECW?String(?:Var)?<(\d+|[A-Za-z_]\w*)>$/.exec(inner);
+  if (match === null) return undefined;
+  return /^\d+$/.test(match[1]!) ? Number(match[1]) : match[1]!;
+}
+
+/**
+ * The inline array an `Array1D<E, s, e>` / `IEC_ARRAY_1D<E, ArrayBounds<s, e>>`
+ * prototype type spells: its bounds and element.
+ */
+function prototypeArray(
+  inner: string,
+):
+  | { dims: Array<{ start: number; end: number }>; element: PrototypeParameter }
+  | undefined {
+  const match = /^(?:Array|IEC_ARRAY_)([123])D<(.*)>$/.exec(inner);
+  if (match === null) return undefined;
+  const args = splitTopLevel(match[2]!)?.map((a) => a.trim());
+  if (args === undefined || args.length < 2) return undefined;
+  let bounds = args.slice(1);
+  const wrapped = /^ArrayBounds<(.*)>$/.exec(bounds.join(", "));
+  if (wrapped !== null) bounds = wrapped[1]!.split(",").map((b) => b.trim());
+  if (bounds.length !== Number(match[1]) * 2) return undefined;
+  if (!bounds.every((b) => /^-?\d+$/.test(b))) return undefined;
+  const dims: Array<{ start: number; end: number }> = [];
+  for (let i = 0; i < bounds.length; i += 2) {
+    dims.push({ start: Number(bounds[i]), end: Number(bounds[i + 1]) });
+  }
+  const element = prototypeParameters(`E(${args[0]!} e)`, "E")?.get("E");
+  return element === undefined ? undefined : { dims, element };
+}
+
+/** A manifest parameter, as recoverParameterShapes completes it. */
+type RecoverableParameter = {
+  name: string;
+  type: string;
+  referenceKind?: ReferenceKind;
+  referenceChain?: ReferenceKind[];
+  arrayDimensions?: Array<{ start: number; end: number }>;
+  elementTypeName?: string;
+  elementReferenceChain?: ReferenceKind[];
+  maxLength?: number | string;
+  elementMaxLength?: number | string;
+};
+
+/**
+ * Complete the parameters of an older archive from the C++ prototype in
+ * `header`: with `levels`, the POINTER TO / REF_TO levels and inline array
+ * shapes (archives before `parameterShapes`), and each STRING / WSTRING
+ * length (of the parameter, its pointer target or its elements) the archive
+ * leaves out. All or nothing: true, and the parameters completed, only when
+ * the prototype names exactly these parameters and gives every shape and
+ * length; otherwise only the levels are read (as before), when it names them.
+ */
+function recoverParameterShapes(
+  parameters: RecoverableParameter[],
+  header: string,
+  name: string,
+  levels: boolean,
+  defaultLength: number,
+): boolean {
+  const proto = prototypeParameters(header, name);
+  if (proto === undefined || proto.size !== parameters.length) return false;
+  const names = parameters.map((p) => String(p.name).toUpperCase());
+  if (!names.every((n) => proto.has(n))) return false;
+  const completed = parameters.map((p) => ({ ...p }));
+  if (fillParameterShapes(completed, proto, levels, defaultLength)) {
+    completed.forEach((p, i) => Object.assign(parameters[i]!, p));
+    return true;
+  }
+  if (!levels) return false;
+  for (const p of parameters) {
+    const chain = proto.get(String(p.name).toUpperCase())!.chain;
+    if (p.referenceKind !== undefined || chain.length === 0) continue;
+    p.referenceKind = chain[0]!;
+    if (chain.length > 1) p.referenceChain = chain;
+  }
+  return false;
+}
+
+/** recoverParameterShapes' work on copies of the parameters; true when complete. */
+function fillParameterShapes(
+  parameters: RecoverableParameter[],
+  proto: Map<string, PrototypeParameter>,
+  levels: boolean,
+  defaultLength: number,
+): boolean {
+  const isString = (t: string | undefined): boolean =>
+    /^W?STRING$/i.test(t ?? "");
+  // The length `inner` spells, kept when it is not the archive's default.
+  const lengthOf = (inner: string): number | string | null | undefined => {
+    const length = prototypeStringLength(inner);
+    if (length === undefined) return undefined;
+    return length === defaultLength ? null : length;
+  };
+  let complete = true;
+  for (const p of parameters) {
+    const found = proto.get(String(p.name).toUpperCase())!;
+    if (levels && p.referenceKind === undefined && found.chain.length > 0) {
+      p.referenceKind = found.chain[0]!;
+      if (found.chain.length > 1) p.referenceChain = found.chain;
+    }
+    if (isString(p.type)) {
+      const length = lengthOf(found.inner);
+      if (length === undefined) complete = false;
+      else if (length !== null && p.maxLength === undefined) {
+        p.maxLength = length;
+      }
+      continue;
+    }
+    const vla = /^__VLA_\d+D_(.+)$/i.exec(p.type);
+    if (vla !== null) {
+      if (!isString(vla[1])) continue;
+      const view = /^ArrayView\dD<(.*)>$/.exec(found.inner);
+      const length = view === null ? undefined : lengthOf(view[1]!.trim());
+      if (length === undefined) complete = false;
+      else if (length !== null && p.elementMaxLength === undefined) {
+        p.elementMaxLength = length;
+      }
+      continue;
+    }
+    if (!p.type.toUpperCase().startsWith("__INLINE_ARRAY_")) continue;
+    const array = prototypeArray(found.inner);
+    if (array === undefined) {
+      if (p.arrayDimensions === undefined || isString(p.elementTypeName)) {
+        complete = false;
+      }
+      continue;
+    }
+    if (levels && p.arrayDimensions === undefined) {
+      p.arrayDimensions = array.dims;
+      p.elementTypeName = p.type.slice("__INLINE_ARRAY_".length);
+      if (array.element.chain.length > 0) {
+        p.elementReferenceChain = array.element.chain;
+      }
+    }
+    if (isString(p.elementTypeName)) {
+      const length = lengthOf(array.element.inner);
+      if (length === undefined) complete = false;
+      else if (length !== null && p.elementMaxLength === undefined) {
+        p.elementMaxLength = length;
+      }
+    }
+  }
+  return complete;
+}
+
+/**
+ * The STRING / WSTRING lengths of a block's in/outs an older archive leaves
+ * out, read from their members in its C++ class (`IEC_INOUT<IECStringVar<n>>
+ * NAME;`). All or nothing: true when the block has such an in/out and every
+ * one is found exactly once with a length.
+ */
+function recoverInOutLengths(
+  fb: LibraryFBEntry,
+  header: string,
+  defaultLength: number,
+): boolean {
+  const strings = (fb.inouts ?? []).filter(
+    (p) => /^W?STRING$/i.test(p.type) && p.arrayDimensions === undefined,
+  );
+  if (strings.length === 0) return false;
+  const lengths: Array<number | string | undefined> = [];
+  for (const p of strings) {
+    const member = p.cppName ?? p.name;
+    if (!/^[A-Za-z_]\w*$/.test(member)) return false;
+    const found = [
+      ...header.matchAll(
+        new RegExp(`\\bIEC_INOUT<\\s*(.*?)\\s*>\\s+${member}\\s*;`, "g"),
+      ),
+    ];
+    if (found.length !== 1) return false;
+    const length = prototypeStringLength(found[0]![1]!);
+    if (length === undefined) return false;
+    lengths.push(length === defaultLength ? undefined : length);
+  }
+  strings.forEach((p, i) => {
+    if (p.maxLength === undefined && lengths[i] !== undefined) {
+      p.maxLength = lengths[i];
+    }
+  });
+  return true;
 }
 
 /**
  * An archive written before `parameterShapes` records a FUNCTION's POINTER TO
- * and REF_TO parameters by their target's name only. Their levels are read
- * back from the function's C++ prototype in its chunk, so an address passed to
- * one is accepted and one passed to a value parameter is still checked. A
- * function whose prototype does not name exactly its manifest parameters is
- * left as it is.
+ * and REF_TO parameters by their target's name only, and an inline array by
+ * its synthetic name; one before `stringLengthsRecorded` omits the length of a
+ * pointer target or array element. These are read back from the C++
+ * prototypes in its chunks (a function's, a block's methods'), so an address
+ * passed to a pointer is accepted, one passed to a value parameter is still
+ * checked, and a temporary or copy has the parameter's C++ type.
  */
-function recoverPointerParameters(
-  manifest: LibraryManifest,
-  chunks: unknown[],
-): void {
-  for (const fn of manifest.functions) {
-    if (!Array.isArray(fn.parameters)) continue;
-    const upper = fn.name.toUpperCase();
+function recoverParameters(manifest: LibraryManifest, chunks: unknown[]): void {
+  const levels = manifest.parameterShapes !== true;
+  const defaultLength = manifest.stringDefaultLength ?? 254;
+  const headerOf = (kind: string, name: string): string | undefined => {
     const matching = chunks.filter(
       (c): c is { header: string } =>
         typeof c === "object" &&
         c !== null &&
-        (c as { kind?: unknown }).kind === "function" &&
-        (c as { name?: unknown }).name === upper &&
+        (c as { kind?: unknown }).kind === kind &&
+        (c as { name?: unknown }).name === name &&
         typeof (c as { header?: unknown }).header === "string",
     );
-    if (matching.length !== 1) continue;
-    const levels = prototypeReferenceLevels(matching[0]!.header, upper);
-    if (levels === undefined || levels.size !== fn.parameters.length) continue;
-    const names = fn.parameters.map((p) => String(p.name).toUpperCase());
-    if (!names.every((n) => levels.has(n))) continue;
-    for (const p of fn.parameters) {
-      if (p.referenceKind !== undefined) continue;
-      const chain = levels.get(String(p.name).toUpperCase()) ?? [];
-      if (chain.length === 0) continue;
-      p.referenceKind = chain[0]!;
-      if (chain.length > 1) p.referenceChain = chain;
+    return matching.length === 1 ? matching[0]!.header : undefined;
+  };
+  for (const fn of manifest.functions) {
+    if (!Array.isArray(fn.parameters)) continue;
+    const upper = fn.name.toUpperCase();
+    const header = headerOf("function", upper);
+    if (
+      header !== undefined &&
+      recoverParameterShapes(
+        fn.parameters,
+        header,
+        upper,
+        levels,
+        defaultLength,
+      )
+    ) {
+      fn.prototypeShapes = true;
+    }
+  }
+  for (const fb of manifest.functionBlocks) {
+    const header = headerOf("functionBlock", fb.name.toUpperCase());
+    if (header === undefined) continue;
+    if (
+      manifest.stringLengthsRecorded !== true &&
+      recoverInOutLengths(fb, header, defaultLength)
+    ) {
+      fb.prototypeInOuts = true;
+    }
+    if (!Array.isArray(fb.methods)) continue;
+    for (const method of fb.methods) {
+      if (!Array.isArray(method.parameters)) continue;
+      if (
+        recoverParameterShapes(
+          method.parameters,
+          header,
+          method.name,
+          false,
+          defaultLength,
+        )
+      ) {
+        method.prototypeShapes = true;
+      }
     }
   }
 }
@@ -837,8 +1092,12 @@ export function loadStlibArchive(json: unknown): StlibArchive {
     );
   }
   const manifest = loadLibraryManifest(obj.manifest);
-  if (manifest.parameterShapes !== true && Array.isArray(obj.chunks)) {
-    recoverPointerParameters(manifest, obj.chunks);
+  if (
+    (manifest.parameterShapes !== true ||
+      manifest.stringLengthsRecorded !== true) &&
+    Array.isArray(obj.chunks)
+  ) {
+    recoverParameters(manifest, obj.chunks);
   }
 
   // Validate chunks — every per-symbol slice of the library's emitted

@@ -249,6 +249,9 @@ function resolveDateTimeArithmetic(
 // Type Checker
 // =============================================================================
 
+/** `__VLA_<rank>D_<ElementType>`, the AST builder's name for an `ARRAY [*]`. */
+const VLA_PARAM_NAME = /^__VLA_(\d+)D_(.+)$/i;
+
 const REFERENCE_LEVEL_TEXT: Record<string, string> = {
   ref_to: "REF_TO",
   reference_to: "REFERENCE TO",
@@ -3831,6 +3834,7 @@ export class TypeChecker {
       this.isFBInstanceCall(expr, scope),
       expr,
     );
+    if (inputs === undefined) this.refuseLibraryArrayInOuts(expr, scope);
     {
       this.checkStrictArguments(
         this.callInputs(expr, scope) ??
@@ -6248,28 +6252,52 @@ export class TypeChecker {
         this.checkAddressStore(input.type.name, arg.value);
       }
     }
-    if (!args.some((a) => a.isOutput) || !this.ast) return;
+    if (!this.ast) return;
     const fbType = this.calledFbType(expr, scope);
+    const params =
+      fbType !== undefined
+        ? undefined
+        : (this.calledFunctionParameters(expr.functionName) ??
+          methodParams ??
+          this.libraryMethodParameters(expr, scope));
+    // A FUNCTION's or METHOD's output bound positionally (`F(x, lw)`) is
+    // captured as `o => lw` is: the slots are bound as codegen binds them.
+    const positionalOutputs = new Map<Argument, string>();
+    if (params !== undefined && args.some((a) => a.name === undefined)) {
+      const claimed = new Set(
+        args.flatMap((a) =>
+          a.name === undefined ? [] : [a.name.toUpperCase()],
+        ),
+      );
+      const free = params.filter((p) => !claimed.has(p.name.toUpperCase()));
+      let index = 0;
+      for (const arg of args) {
+        if (arg.name !== undefined) continue;
+        const param = free[index++];
+        if (param?.output === true) positionalOutputs.set(arg, param.name);
+      }
+    }
+    if (!args.some((a) => a.isOutput) && positionalOutputs.size === 0) return;
     const outputs =
       fbType !== undefined
         ? this.fbOutputsOf(fbType).map((o) => ({
             name: o.name,
             kind: o.referenceKind ?? "none",
           }))
-        : (
-            this.calledFunctionParameters(expr.functionName) ??
-            methodParams ??
-            []
-          )
+        : (params ?? [])
             .filter((p) => p.output)
             .map((p) => ({
               name: p.name,
               kind: p.type.referenceKind ?? "none",
             }));
     for (const arg of args) {
-      if (!arg.isOutput || arg.name === undefined) continue;
+      const outName =
+        arg.isOutput && arg.name !== undefined
+          ? arg.name
+          : positionalOutputs.get(arg);
+      if (outName === undefined) continue;
       const out = outputs.find(
-        (o) => o.name.toUpperCase() === arg.name!.toUpperCase(),
+        (o) => o.name.toUpperCase() === outName.toUpperCase(),
       );
       if (
         out === undefined ||
@@ -7694,6 +7722,12 @@ export class TypeChecker {
       ? resolveAccessType(declared.type, value, this.accessLookup)
       : declared.type;
     if (!argType) return;
+    this.refuseArrayBinding(
+      `VAR_IN_OUT '${input.name}'`,
+      input.type,
+      value,
+      scope,
+    );
     if (this.stringElementLengthsDiffer(input.type, argType)) {
       // Another C++ element type: passed by copy, as before lengths were kept.
       arg.inOutCopy = true;
@@ -8504,8 +8538,129 @@ export class TypeChecker {
             );
       if (param?.output !== true) continue;
       if (arg.name !== undefined && !arg.isOutput) continue;
+      this.refuseArrayBinding(
+        `VAR_OUTPUT '${param.name.toUpperCase()}'`,
+        param.type,
+        arg.value,
+        scope,
+      );
       this.checkOutputBinding(param.type, arg, scope);
     }
+  }
+
+  /**
+   * The ARRAY in/outs of a library FUNCTION whose archive records parameter
+   * shapes, checked as refuseArrayBinding checks a local one's.
+   */
+  private refuseLibraryArrayInOuts(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (this.libraryShapedFunctionInputs(expr, scope) === undefined) return;
+    const fn = this.symbolTables.lookupFunction(expr.functionName);
+    if (fn === undefined) return;
+    const args = stripEnEno(expr.arguments);
+    const claimed = new Set(
+      args.flatMap((a) => (a.name === undefined ? [] : [a.name.toUpperCase()])),
+    );
+    const free = fn.parameters.filter(
+      (p) => !claimed.has(p.name.toUpperCase()),
+    );
+    let index = 0;
+    for (const arg of args) {
+      const argName = arg.name?.toUpperCase();
+      const param =
+        argName === undefined
+          ? free[index++]
+          : fn.parameters.find((p) => p.name.toUpperCase() === argName);
+      const type = param?.declaration?.type;
+      if (param?.isInOut !== true || type === undefined || arg.isOutput) {
+        continue;
+      }
+      this.refuseArrayBinding(
+        `VAR_IN_OUT '${param.name.toUpperCase()}'`,
+        type,
+        arg.value,
+        scope,
+      );
+    }
+  }
+
+  /**
+   * An inline ARRAY or ARRAY[*] output or in/out bound to a variable that
+   * cannot be one: an elementary scalar, or an inline array of other bounds
+   * or element type. It would bind a C++ reference of another type.
+   */
+  private refuseArrayBinding(
+    what: string,
+    param: AccessType,
+    value: Expression,
+    scope: Scope,
+  ): void {
+    const vla = VLA_PARAM_NAME.exec(param.name);
+    if (param.arrayDimensions === undefined && vla === null) return;
+    if ((param.referenceKind ?? "none") !== "none") return;
+    if (value.kind !== "VariableExpression" || value.isDereference) return;
+    if (value.accessChain?.some((st) => st.kind === "dereference") === true) {
+      return;
+    }
+    const sym = scope.lookup(value.name);
+    if (sym?.kind !== "variable") return;
+    const declared = sym.declaration as VarDeclaration | undefined;
+    if (!declared) return;
+    const arg = this.hasMemberAccess(value)
+      ? resolveAccessType(declared.type, value, this.accessLookup)
+      : declared.type;
+    if (arg === undefined) return;
+    const argLevels = arg.referenceChain ?? [arg.referenceKind ?? "none"];
+    if (argLevels.some((k) => k !== "none")) return;
+    const element = (t: AccessType, name: string | undefined): string =>
+      describeReferenceShape({
+        chain: t.elementReferenceChain ?? [],
+        base: canonicalElementaryName(this.aliasBase(name ?? "")),
+      });
+    const paramElement = element(param, vla?.[2] ?? param.elementTypeName);
+    const describeParam =
+      vla !== null
+        ? `ARRAY[${Array(Number(vla[1])).fill("*").join(", ")}] OF ${paramElement}`
+        : `ARRAY[${param.arrayDimensions!.map((d) => `${d.start}..${d.end}`).join(", ")}] OF ${paramElement}`;
+    let mismatch: string | undefined;
+    if (
+      arg.arrayDimensions !== undefined &&
+      arg.elementTypeName !== undefined
+    ) {
+      const argElement = element(arg, arg.elementTypeName);
+      const dims =
+        vla !== null
+          ? arg.arrayDimensions.length === Number(vla[1])
+          : arg.arrayDimensions.length === param.arrayDimensions!.length &&
+            arg.arrayDimensions.every(
+              (d, i) =>
+                d.start === param.arrayDimensions![i]!.start &&
+                d.end === param.arrayDimensions![i]!.end,
+            );
+      // Elements of one STRING type differing only in length are copied.
+      if (!dims || argElement !== paramElement) {
+        mismatch = `ARRAY[${arg.arrayDimensions.map((d) => `${d.start}..${d.end}`).join(", ")}] OF ${argElement}`;
+      }
+    } else if (
+      arg.arrayDimensions === undefined &&
+      ELEMENTARY_TYPES[canonicalElementaryName(this.aliasBase(arg.name))] !==
+        undefined
+    ) {
+      mismatch = describeReferenceShape({
+        chain: [],
+        base: arg.name,
+        ...(arg.maxLength !== undefined ? { length: arg.maxLength } : {}),
+      });
+    }
+    if (mismatch === undefined) return;
+    this.addError(
+      `${what} of type ${describeParam} cannot be bound to a variable of type ${mismatch}`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
   }
 
   /** VAR_INPUT, VAR_IN_OUT and VAR_OUTPUT of a user or library FUNCTION, in order. */
@@ -9205,6 +9360,14 @@ export class TypeChecker {
       const upper = arg.name.toUpperCase();
       if (upper === "ENO") continue;
       const out = outputs.find((o) => o.name.toUpperCase() === upper);
+      if (out !== undefined) {
+        this.refuseArrayBinding(
+          `VAR_OUTPUT '${out.name.toUpperCase()}'`,
+          out.type,
+          arg.value,
+          scope,
+        );
+      }
       if (
         out === undefined ||
         out.arrayDimensions !== undefined ||
@@ -9284,6 +9447,7 @@ export class TypeChecker {
     typeName: string;
     arrayDimensions?: unknown;
     referenceKind?: string;
+    type: AccessType;
   }> {
     const upper = this.aliasBase(fbTypeName).toUpperCase();
     const out: Array<{
@@ -9291,6 +9455,7 @@ export class TypeChecker {
       typeName: string;
       arrayDimensions?: unknown;
       referenceKind?: string;
+      type: AccessType;
     }> = [];
     let current: string | undefined = upper;
     for (let depth = 0; current !== undefined && depth < 32; depth++) {
@@ -9307,6 +9472,7 @@ export class TypeChecker {
             typeName: t.name,
             arrayDimensions: t.arrayDimensions,
             referenceKind: t.referenceKind,
+            type: t,
           });
         }
         break;
@@ -9320,6 +9486,7 @@ export class TypeChecker {
               typeName: d.type.name,
               arrayDimensions: d.type.arrayDimensions,
               referenceKind: d.type.referenceKind,
+              type: d.type,
             });
           }
         }
@@ -9368,7 +9535,9 @@ export class TypeChecker {
       name: m.name,
       type: m.declaration.type,
       inOut,
-      fromLibrary: libraryFb.stringLengthsRecorded !== true,
+      fromLibrary:
+        libraryFb.stringLengthsRecorded !== true &&
+        libraryFb.inOutLengthsRecovered !== true,
     }));
   }
 
@@ -9497,6 +9666,45 @@ export class TypeChecker {
     typeName: string,
     methodName: string,
   ): CallInput[] | undefined {
+    const found = this.libraryMethodOf(typeName, methodName);
+    return found === undefined
+      ? undefined
+      : callInputsOfBlocks(found.method.varBlocks).map((input) => ({
+          ...input,
+          fromLibrary: !found.recorded,
+        }));
+  }
+
+  /** The parameters of `inst.M(...)` where `inst` is an instance of a library block. */
+  private libraryMethodParameters(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ):
+    | Array<{ name: string; type: AccessType; output: boolean; inOut: boolean }>
+    | undefined {
+    const parts = expr.functionName.split(".");
+    if (parts.length !== 2 || expr.instance !== undefined) return undefined;
+    const sym = scope.lookup(parts[0]!);
+    if (sym?.kind !== "variable") return undefined;
+    const type = (sym.declaration as VarDeclaration | undefined)?.type;
+    if (type === undefined || (type.referenceKind ?? "none") !== "none") {
+      return undefined;
+    }
+    const found = this.libraryMethodOf(type.name, parts[1]!);
+    return found === undefined
+      ? undefined
+      : this.methodParameters(found.method);
+  }
+
+  /**
+   * METHOD `methodName` of library block `typeName` (or a base of it), with
+   * whether its archive records every STRING length; undefined when a block
+   * of this compile declares it or it is not found.
+   */
+  private libraryMethodOf(
+    typeName: string,
+    methodName: string,
+  ): { method: MethodDeclaration; recorded: boolean } | undefined {
     const upper = methodName.toUpperCase();
     const seen = new Set<string>();
     let method: MethodDeclaration | undefined;
@@ -9521,15 +9729,12 @@ export class TypeChecker {
       method = fb
         .libraryMethods?.()
         ?.find((m) => m.name.toUpperCase() === upper);
-      recorded = fb.stringLengthsRecorded === true;
+      recorded =
+        fb.stringLengthsRecorded === true ||
+        fb.prototypeShapedMethods?.includes(upper) === true;
       current = fb.declaration.extends;
     }
-    return method === undefined
-      ? undefined
-      : callInputsOfBlocks(method.varBlocks).map((input) => ({
-          ...input,
-          fromLibrary: !recorded,
-        }));
+    return method === undefined ? undefined : { method, recorded };
   }
 
   /** `inputs` with only its STRING, WSTRING and library alias in-outs marked; undefined without one. */

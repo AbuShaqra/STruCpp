@@ -142,6 +142,10 @@ export interface FunctionBlockSymbol extends BaseSymbol {
   libraryMethods?: () => MethodDeclaration[] | undefined;
   /** A library FB whose archive records every written STRING length. */
   stringLengthsRecorded?: true;
+  /** An older archive's block whose C++ class gave every STRING in/out's length. */
+  inOutLengthsRecovered?: true;
+  /** An older archive's METHODs (upper case) whose C++ prototypes gave every STRING length. */
+  prototypeShapedMethods?: string[];
 }
 
 /**

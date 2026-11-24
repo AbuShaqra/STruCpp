@@ -825,9 +825,16 @@ export class TypeCodeGenerator {
       cppType = this.mapTypeRefToCpp(def);
     }
     const rawType = def.arrayDimensions ? cppType : this.mapTypeRefToCpp(def);
-    cppType = isReferenceField(def)
-      ? wrapReferenceChain(def.referenceChain ?? [def.referenceKind], rawType)
-      : rawPointerType(def, cppType, rawType);
+    // One POINTER TO level is the wrapper a variable declared so gets
+    // (`IEC_Ptr<INT_t>`): ADR(x) converts to it and its arithmetic is in bytes.
+    const onePointer =
+      !def.arrayDimensions &&
+      def.referenceKind === "pointer_to" &&
+      (def.referenceChain?.length ?? 1) === 1;
+    cppType =
+      isReferenceField(def) || onePointer
+        ? wrapReferenceChain(def.referenceChain ?? [def.referenceKind], rawType)
+        : rawPointerType(def, cppType, rawType);
     this.emit(`using ${name} = ${cppType};`);
     this.emit("");
   }
