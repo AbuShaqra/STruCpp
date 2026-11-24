@@ -3,9 +3,10 @@
 /**
  * The order in which the file-level VAR_GLOBALs are created.
  *
- * A global's initial value may name another global, as a value or as the
- * target of ADR(), wherever that one is declared: later in the same file or
- * in another global variable list. A global is therefore created after the
+ * A global's initial value may name another global, as a value, as the
+ * target of ADR() or as the instance of a method call (`f.M()`), wherever
+ * that one is declared: later in the same file or in another global variable
+ * list. A global is therefore created after the
  * globals its initial value names. Without such a dependency the declaration
  * order is kept. A cycle has no order and is reported.
  */
@@ -13,6 +14,7 @@
 import type {
   CompilationUnit,
   ConfigurationDeclaration,
+  FunctionCallExpression,
   VarBlock,
   VarDeclaration,
   VariableExpression,
@@ -33,6 +35,11 @@ export interface GlobalOrder {
   dependencies: Map<string, string[]>;
   /** Each dependency cycle, as the upper-case names along it (first not repeated). */
   cycles: string[][];
+  /**
+   * Upper-case names declared more than once outside distinct global variable
+   * lists: an error of its own, and `order` keeps only the last of them.
+   */
+  duplicates: Set<string>;
 }
 
 /** The upper-case names of the globals `decl`'s initial value names. */
@@ -43,8 +50,19 @@ function namedGlobals(
   const names: string[] = [];
   if (!decl.initialValue) return names;
   walkAST(decl.initialValue, (node) => {
-    if (node.kind !== "VariableExpression") return;
-    const target = owner.get((node as VariableExpression).name.toUpperCase());
+    // `f.M()` calls a method of the global f
+    const callee =
+      node.kind === "FunctionCallExpression"
+        ? (node as FunctionCallExpression).functionName.split(".")
+        : [];
+    const name =
+      node.kind === "VariableExpression"
+        ? (node as VariableExpression).name
+        : callee.length > 1
+          ? callee[0]!
+          : undefined;
+    if (name === undefined) return;
+    const target = owner.get(name.toUpperCase());
     if (target !== undefined && !names.includes(target)) names.push(target);
   });
   return names;
@@ -85,6 +103,21 @@ export function orderGlobalBlocks(blocks: readonly VarBlock[]): GlobalOrder {
     }
   }
   const byName = new Map(items.map((i) => [i.name.toUpperCase(), i]));
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const item of items) {
+    const upper = item.name.toUpperCase();
+    if (seen.has(upper) && item.block.globalListName === undefined) {
+      duplicates.add(upper);
+    }
+    seen.add(upper);
+  }
+  for (const item of items) {
+    const upper = item.name.toUpperCase();
+    if (item.block.globalListName === undefined && byName.get(upper) !== item) {
+      duplicates.add(upper);
+    }
+  }
   const dependencies = new Map<string, string[]>();
   for (const item of items) {
     const self = item.name.toUpperCase();
@@ -114,5 +147,5 @@ export function orderGlobalBlocks(blocks: readonly VarBlock[]): GlobalOrder {
     if (item) order.push(item);
   };
   for (const item of items) visit(item.name.toUpperCase());
-  return { order, dependencies, cycles };
+  return { order, dependencies, cycles, duplicates };
 }

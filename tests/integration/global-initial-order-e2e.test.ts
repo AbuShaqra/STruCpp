@@ -297,3 +297,58 @@ int main() {
     expect(out).toBe("7 106 22 4 23 42");
   });
 });
+
+describe.skipIf(!hasGpp)(
+  "a method call on an FB global and VAR_EXTERNAL CONSTANT, run",
+  () => {
+    let tempDir: string;
+    let pchPath: string;
+    beforeAll(() => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "strucpp-gmethod-"));
+      pchPath = createPCH(tempDir);
+    });
+    afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+    it("creates the global after the FB whose method it calls", () => {
+      const r = compile(
+        `FUNCTION_BLOCK FB_A
+VAR v : INT := 3; END_VAR
+METHOD M : INT
+M := v * 2;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL CONSTANT K : INT := 7; END_VAR
+VAR_GLOBAL
+  x : INT := f.M() + 1;
+  f : FB_A;
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR_EXTERNAL CONSTANT K : INT; END_VAR
+VAR n1, n2 : INT; END_VAR
+n1 := x;
+n2 := K;
+END_PROGRAM
+`,
+        { headerFileName: "generated.hpp" },
+      );
+      expect(r.errors).toEqual([]);
+      const out = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: r.headerCode,
+        cppCode: r.cppCode,
+        testName: "global_method_call",
+        mainCode: `#include <iostream>
+int main() {
+  strucpp::Program_MAIN p;
+  p.run();
+  std::cout << (int)p.N1 << " " << (int)p.N2 << std::endl;
+  return 0;
+}
+`,
+      });
+      expect(out).toBe("7 7");
+    });
+  },
+);

@@ -627,6 +627,7 @@ export class SemanticAnalyzer {
     // an undefined type — and excluded from them, so the reverse cannot happen either.
     const errorsBeforeTypeReferences = this.errors.length;
     this.validateTypeReferences(ast);
+    this.refuseVariableLengthStorage(ast);
     // Before type checking, so every later pass sees the unqualified form.
     const globalListErrors = this.resolveGlobalListAccess(ast);
     // A feature refusal is located and does not gate the passes below either,
@@ -3867,8 +3868,9 @@ export class SemanticAnalyzer {
 
     // ---- CONSTANT ---------------------------------------------------------
     if (block.isConstant) {
-      // CONSTANT requires initializer (except VAR_INPUT — caller provides value)
-      if (blockType !== "VAR_INPUT") {
+      // CONSTANT requires initializer, except VAR_INPUT (the caller provides
+      // the value) and VAR_EXTERNAL (it names a global, which has the value)
+      if (blockType !== "VAR_INPUT" && blockType !== "VAR_EXTERNAL") {
         for (const decl of block.declarations) {
           if (!decl.initialValue) {
             const names = decl.names.join(", ");
@@ -6216,6 +6218,109 @@ export class SemanticAnalyzer {
     // Type definitions (struct fields, array element types, subrange base types, etc.)
     for (const typeDecl of ast.types) {
       this.validateTypeDefinitionReferences(typeDecl.name, typeDecl.definition);
+    }
+  }
+
+  /**
+   * An ARRAY[*] has no size of its own, so it is only a parameter bound to
+   * the caller's array (Ed. 3 6.5.3): a FUNCTION or METHOD VAR_INPUT,
+   * VAR_OUTPUT or VAR_IN_OUT, or a FUNCTION_BLOCK VAR_IN_OUT. Anywhere else
+   * (a global, a local, an FB or PROGRAM member, a STRUCT field) it is
+   * refused. A UNION member is refused by union.ts; a VAR_EXTERNAL names a
+   * global, which is refused.
+   */
+  private refuseVariableLengthStorage(ast: CompilationUnit): void {
+    const types = new Map(ast.types.map((t) => [t.name.toUpperCase(), t]));
+    const isVariableLength = (type: TypeReference): boolean => {
+      if (
+        (type.referenceKind ?? "none") !== "none" ||
+        type.referenceChain !== undefined
+      ) {
+        return false;
+      }
+      let name = type.name.toUpperCase();
+      const seen = new Set<string>();
+      for (;;) {
+        if (name.startsWith("__VLA_")) return true;
+        const decl = types.get(name);
+        if (decl === undefined || seen.has(name)) return false;
+        seen.add(name);
+        const def = decl.definition;
+        if (def.kind === "ArrayDefinition") {
+          return def.dimensions.some((d) => d.isVariableLength);
+        }
+        if (
+          def.kind !== "TypeReference" ||
+          (def.referenceKind ?? "none") !== "none" ||
+          def.referenceChain !== undefined
+        ) {
+          return false;
+        }
+        name = def.name.toUpperCase();
+      }
+    };
+    const refuse = (decl: VarDeclaration, where: string): void => {
+      if (!isVariableLength(decl.type)) return;
+      this.addError(
+        `'${decl.names.join(", ").toUpperCase()}' is a variable-length ARRAY[*] ${where}: it needs fixed bounds there; ARRAY[*] is only a FUNCTION or METHOD VAR_INPUT, VAR_OUTPUT or VAR_IN_OUT, or a FUNCTION_BLOCK VAR_IN_OUT`,
+        decl.type.sourceSpan?.startLine ?? decl.sourceSpan.startLine,
+        decl.type.sourceSpan?.startCol ?? decl.sourceSpan.startCol,
+        decl.type.sourceSpan?.file ?? decl.sourceSpan.file,
+      );
+    };
+    const blocks = (
+      varBlocks: readonly VarBlock[],
+      allowed: ReadonlySet<string>,
+      where: string,
+    ): void => {
+      for (const block of varBlocks) {
+        if (
+          allowed.has(block.blockType) ||
+          block.blockType === "VAR_EXTERNAL"
+        ) {
+          continue;
+        }
+        for (const decl of block.declarations) {
+          refuse(
+            decl,
+            `in a ${block.blockType}${where === "" ? "" : ` of ${where}`}`,
+          );
+        }
+      }
+    };
+    const parameters = new Set(["VAR_INPUT", "VAR_OUTPUT", "VAR_IN_OUT"]);
+    const inOut = new Set(["VAR_IN_OUT"]);
+    const none = new Set<string>();
+    for (const prog of ast.programs) {
+      blocks(prog.varBlocks, none, `PROGRAM ${prog.name.toUpperCase()}`);
+      for (const m of prog.methods) {
+        blocks(m.varBlocks, parameters, `METHOD ${m.name.toUpperCase()}`);
+      }
+    }
+    for (const func of ast.functions) {
+      blocks(func.varBlocks, parameters, `FUNCTION ${func.name.toUpperCase()}`);
+    }
+    for (const fb of ast.functionBlocks) {
+      blocks(fb.varBlocks, inOut, `FUNCTION_BLOCK ${fb.name.toUpperCase()}`);
+      for (const m of fb.methods) {
+        blocks(m.varBlocks, parameters, `METHOD ${m.name.toUpperCase()}`);
+      }
+    }
+    blocks(ast.globalVarBlocks, none, "");
+    for (const config of ast.configurations) {
+      blocks(
+        config.varBlocks,
+        none,
+        `CONFIGURATION ${config.name.toUpperCase()}`,
+      );
+    }
+    for (const t of ast.types) {
+      if (t.definition.kind !== "StructDefinition" || t.definition.isUnion) {
+        continue;
+      }
+      for (const field of ownFields(t.definition)) {
+        refuse(field, `in STRUCT ${t.name.toUpperCase()}`);
+      }
     }
   }
 
