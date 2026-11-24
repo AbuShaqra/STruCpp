@@ -93,11 +93,23 @@ template<typename L_, std::enable_if_t<std::is_same<L_, int64_t>::value, int> = 
 inline int64_t DATE_TO_SECONDS(const IECVar<L_>& d) noexcept { return iec_unwrap(d) * DATE_SECONDS_PER_DAY; }
 
 /**
- * Seconds since 1970 as a DATE: down to its day, then modulo 2^32, so a day
- * before 1970 wraps as CONCAT_DATE, STRING_TO_DATE and DATE - TIME wrap it.
+ * Seconds since 1970 as a DATE. From 0 up: modulo 2^32, then down to its day.
+ * Below 0: down to its day, then modulo 2^32, so a day before 1970 wraps as
+ * CONCAT_DATE, STRING_TO_DATE and DATE - TIME wrap it.
  */
-inline IEC_DATE DATE_FROM_SECONDS(int64_t s) noexcept {
-    return IEC_DATE(DATE_OF_DAYS(iec_floor_div(s, DATE_SECONDS_PER_DAY)));
+template<typename V>
+inline IEC_DATE DATE_FROM_SECONDS(const V& v) noexcept {
+    const auto x = iec_unwrap(v);
+    using X = std::decay_t<decltype(x)>;
+    // An unsigned count (ULINT included) is never below 0.
+    const bool below0 = !std::is_unsigned<X>::value && static_cast<int64_t>(x) < 0;
+    if (below0) {
+        return IEC_DATE(DATE_OF_DAYS(iec_floor_div(static_cast<int64_t>(x), DATE_SECONDS_PER_DAY)));
+    }
+    const uint32_t raw = static_cast<uint32_t>(
+        std::is_unsigned<X>::value ? static_cast<uint64_t>(x)
+                                   : static_cast<uint64_t>(static_cast<int64_t>(x)));
+    return IEC_DATE(DATE_t(raw - raw % static_cast<uint32_t>(DATE_SECONDS_PER_DAY)));
 }
 
 /** A DATE moved by a whole number of days, in unsigned 32-bit seconds as on the PLC. */

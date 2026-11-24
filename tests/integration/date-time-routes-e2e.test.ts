@@ -26,7 +26,8 @@ VAR
   d : ARRAY[1..12] OF DATE; dt : ARRAY[1..8] OF DT; r : ARRAY[1..24] OF LINT;
   tm : ARRAY[1..6] OF TIME; tod : TOD;
   oneDay : TIME := T#1d; s : STRING := '1969-12-31'; ld : LDATE; ld2 : LDATE;
-  ldt : LDT; lt : LTIME; ok : BOOL;
+  ldt : LDT; lt : LTIME; ok : BOOL; n : DINT := 2; big : LINT := 4294967296;
+  um : ULINT := ULINT#18446744073709551615;
   y : UINT; mo : USINT; dd : USINT; h : USINT; mi : USINT; se : USINT; ms : UINT;
 END_VAR
 (* 1969-12-31 as a DATE, by every route *)
@@ -84,6 +85,17 @@ ld2 := LDATE#1969-12-31 - T#36h;
 r[12] := LDATE_TO_LINT(ld2);
 r[13] := LDT_TO_LINT(LDT#1970-01-01-00:00:00 - LTIME#1d);
 r[14] := LDT_TO_LINT(DATE_TO_LDT(D#1970-01-01) - LTIME#1s);
+(* a number times a TIME, in either order, is a TIME *)
+r[15] := TIME_TO_LINT(T#5s - n * T#1s);
+r[16] := TIME_TO_LINT(n * T#1s + T#1s);
+r[17] := TIME_TO_LINT(T#1s + n * T#1s);
+(* integer to DATE: from 0 up modulo 2^32 then down to the day, below 0 down to the day then wrapped *)
+r[18] := DATE_TO_LINT(LINT_TO_DATE(big));
+r[19] := DATE_TO_LINT(LINT_TO_DATE(big + 86400 * 5 + 7));
+r[20] := DATE_TO_LINT(LINT_TO_DATE(86400 * 5 + 7));
+r[21] := DATE_TO_LINT(ULINT_TO_DATE(um));
+r[22] := DATE_TO_LINT(LINT_TO_DATE(-1));
+r[23] := DATE_TO_LINT(LINT_TO_DATE(-86401));
 END_PROGRAM
 `;
 
@@ -98,7 +110,7 @@ int main() {
     std::cout << "|";
     for (int i = 1; i <= 6; ++i) std::cout << p.TM[i].get().raw << " ";
     std::cout << p.TOD.get().raw << "|";
-    for (int i = 1; i <= 14; ++i) std::cout << p.R[i].get() << " ";
+    for (int i = 1; i <= 23; ++i) std::cout << p.R[i].get() << " ";
     std::cout << std::endl;
     return 0;
 }
@@ -183,6 +195,15 @@ describe.skipIf(!hasGpp || !libsAvailable)(
           String(-3n * NS_PER_DAY),
           String(-NS_PER_DAY),
           "-1000000000",
+          "3000",
+          "3000",
+          "3000",
+          "0",
+          String(5 * 86400),
+          String(5 * 86400),
+          String(2 ** 32 - 23296),
+          String(2 ** 32 - 86400),
+          String(2 ** 32 - 2 * 86400),
         ]);
       });
     }

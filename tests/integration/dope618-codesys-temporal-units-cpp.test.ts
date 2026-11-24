@@ -279,6 +279,24 @@ ${prints}
     expect(out).toBe("agree");
   });
 
+  it("pins how far DATE_OF_DT of the wrapped DT lies from the pre-epoch date", () => {
+    // DATE_OF_DT keeps the PLC's DT - DT MOD 86400 on the wrapped seconds, so
+    // for -1 s it lands on the 2106 day boundary, 63104 s (86400 - 2^32 MOD
+    // 86400) after the wrapped 1969-12-31 the integer route gives.
+    const out = run(
+      `    negSec : DINT := -1;
+    viaInt : DATE;
+    viaDT : DATE;
+    gap : LINT;`,
+      `  viaInt := DINT_TO_DATE(negSec);
+  viaDT := DATE_OF_DT(DWORD_TO_DT(negSec));
+  gap := DATE_TO_LINT(viaDT) - DATE_TO_LINT(viaInt);`,
+      `    std::cout << (long long)p.GAP.get() << std::endl;`,
+      "date_of_dt_divergence",
+    );
+    expect(out).toBe("63104");
+  });
+
   it("still scales TIME to milliseconds after the runtime cast was neutered", () => {
     // The runtime `TO_TIME(numeric)` used to multiply by 1e6 itself. That
     // moved into codegen, so this checks the forward and reverse TIME paths

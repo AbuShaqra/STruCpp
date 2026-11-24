@@ -4,9 +4,10 @@
  * Date and time arithmetic follows IEC 61131-3 Table 30: TIME +/- TIME, an
  * instant +/- a TIME, TIME + an instant, the difference of two instants of
  * one kind, TIME * or / a number, TIME / TIME and TIME, TOD or DT MOD a TIME.
- * Any other form with a DATE, TOD or DT operand is refused in every mode; a
- * number +/- a date or time and TOD or DT MOD a number only under iec-3 and
- * --strict.
+ * Any other form with a DATE, TOD or DT operand, and a number +/- a TIME,
+ * DATE, TOD or DT, is refused in every mode; a number +/- an L form and TOD
+ * or DT MOD a number only under iec-3 and --strict. A number times a TIME is
+ * a TIME in either order.
  */
 import { describe, it, expect } from "vitest";
 import { compile, type CompileOptions } from "../../src/index.js";
@@ -101,21 +102,52 @@ t := t + SEL(b, T#1s, T#2s);`,
     });
   }
 
-  const NUMBER_FORMS =
-    "t := t + 100;\ndt := dt + 1;\nd := d - n;\ntod := tod MOD 300;";
+  it("types a number times a TIME as a TIME, in either order", () => {
+    for (const [, opts] of MODES) {
+      expect(
+        errors(
+          "t := T#5s - n * T#1s;\nt := n * T#1s;\nt := t + n * T#1s;\nt := n * T#1s + T#1s;\nlt := n * lt;\nt := r * t;",
+          opts,
+        ),
+      ).toEqual([]);
+    }
+  });
 
-  it("accepts a number +/- a date or time and TOD MOD a number by default", () => {
-    expect(errors(NUMBER_FORMS)).toEqual([]);
-    expect(errors(NUMBER_FORMS, { dialect: TWINCAT3 })).toEqual([]);
+  for (const [label, opts] of MODES) {
+    it(`refuses a number +/- a TIME, DATE, TOD or DT (${label})`, () => {
+      expect(
+        errors(
+          "t := t + 100;\nt := t - n;\nt := n + t;\nt := 5 - t;\nd := d + 1;\ndt := dt - 1;\ntod := tod + n;",
+          opts,
+        ),
+      ).toEqual([
+        `7:6: Operator '+' does not apply to TIME and INT; ${FORMS}`,
+        `8:6: Operator '-' does not apply to TIME and DINT; ${FORMS}`,
+        `9:6: Operator '+' does not apply to DINT and TIME; ${FORMS}`,
+        `10:6: Operator '-' does not apply to INT and TIME; ${FORMS}`,
+        `11:6: Operator '+' does not apply to DATE and INT; ${FORMS}`,
+        `12:7: Operator '-' does not apply to DT and INT; ${FORMS}`,
+        `13:8: Operator '+' does not apply to TOD and DINT; ${FORMS}`,
+      ]);
+    });
+  }
+
+  const LONG_NUMBER_FORMS =
+    "ld := ld + 1;\nlt := lt - n;\nltod := ltod + 1;\nldt := ldt - 1;\ntod := tod MOD 300;";
+
+  it("accepts a number +/- an L form and TOD MOD a number by default", () => {
+    expect(errors(LONG_NUMBER_FORMS)).toEqual([]);
+    expect(errors(LONG_NUMBER_FORMS, { dialect: TWINCAT3 })).toEqual([]);
   });
 
   for (const [label, opts] of MODES.slice(2)) {
-    it(`refuses a number +/- a date or time and TOD MOD a number (${label})`, () => {
-      expect(errors(NUMBER_FORMS, opts)).toEqual([
-        `7:6: Operator '+' does not apply to TIME and INT; ${FORMS}`,
-        `8:7: Operator '+' does not apply to DT and INT; ${FORMS}`,
-        `9:6: Operator '-' does not apply to DATE and DINT; ${FORMS}`,
-        `10:8: Operator 'MOD' does not apply to TOD and INT; ${FORMS}`,
+    it(`refuses a number +/- an L form and TOD MOD a number (${label})`, () => {
+      expect(errors(LONG_NUMBER_FORMS, opts)).toEqual([
+        `7:7: Operator '+' does not apply to LDATE and INT; ${FORMS}`,
+        `8:7: Operator '-' does not apply to LTIME and DINT; ${FORMS}`,
+        `9:9: Operator '+' does not apply to LTOD and INT; ${FORMS}`,
+        `10:8: Operator '-' does not apply to LDT and INT; ${FORMS}`,
+        `11:8: Operator 'MOD' does not apply to TOD and INT; ${FORMS}`,
       ]);
     });
   }

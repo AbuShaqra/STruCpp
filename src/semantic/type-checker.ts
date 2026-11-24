@@ -2548,6 +2548,13 @@ export class TypeChecker {
     else if (expr.operator === "MOD" && this.temporalPeriodMod(expr, scope)) {
       type = leftType;
     }
+    // A TIME or LTIME times a number, in either order, is the duration (Table 30)
+    else if (
+      expr.operator === "*" &&
+      this.durationTimesNumber(leftType, rightType) !== undefined
+    ) {
+      type = this.durationTimesNumber(leftType, rightType);
+    }
     // Arithmetic operators return the "wider" type
     else if (["+", "-", "*", "/", "MOD", "**"].includes(expr.operator)) {
       type = getCommonType(leftType, rightType) ?? leftType;
@@ -3434,6 +3441,22 @@ export class TypeChecker {
     );
   }
 
+  /** The TIME or LTIME operand of a duration and a number (`n * T#1s`), else undefined. */
+  private durationTimesNumber(
+    left: IECType,
+    right: IECType,
+  ): IECType | undefined {
+    const name = (t: IECType): string =>
+      t.typeKind === "elementary"
+        ? canonicalElementaryName(this.aliasBase((t as ElementaryType).name))
+        : "";
+    const duration = (t: IECType): boolean =>
+      name(t) === "TIME" || name(t) === "LTIME";
+    if (duration(left) && TABLE30_NUMBERS.has(name(right))) return left;
+    if (duration(right) && TABLE30_NUMBERS.has(name(left))) return right;
+    return undefined;
+  }
+
   /** Binary expressions refused by refuseTemporalOperands. */
   private refusedTemporalOperands = new WeakSet<BinaryExpression>();
 
@@ -3490,11 +3513,11 @@ export class TypeChecker {
   /**
    * Date and time arithmetic outside IEC 61131-3 Table 30, in every mode:
    * `+` and `-` other than TIME +/- TIME, an instant +/- a TIME, a TIME + an
-   * instant and the difference of two instants of one kind; an instant in
-   * `*`, `/` or `**`, or in MOD other than TOD or DT MOD a TIME. A number
-   * +/- a date or time and TOD or DT MOD a number are refused under iec-3 and
-   * --strict only. Long forms
-   * count as their short kind. True when refused.
+   * instant and the difference of two instants of one kind, so also a number
+   * +/- a TIME, DATE, TOD or DT; an instant in `*`, `/` or `**`, or in MOD
+   * other than TOD or DT MOD a TIME. A number +/- an LTIME, LDATE, LTOD or
+   * LDT and TOD or DT MOD a number build, and are refused under iec-3 and
+   * --strict only. Long forms count as their short kind. True when refused.
    */
   private refuseTable30Operands(expr: BinaryExpression, scope: Scope): boolean {
     const op = expr.operator;
@@ -3546,10 +3569,13 @@ export class TypeChecker {
         allowed = false;
     }
     if (allowed) return false;
-    // A number +/- a date or time, and TOD or DT MOD a number, build (in the
-    // type's unit): refused under iec-3 and --strict only
+    // A number +/- an L form, and TOD or DT MOD a number, build (in the
+    // type's unit): refused under iec-3 and --strict only. A number +/- a
+    // 32-bit TIME, DATE, TOD or DT has no C++ operator: refused in every mode.
     const withNumber =
-      ((op === "+" || op === "-") && (lk === undefined || rk === undefined)) ||
+      ((op === "+" || op === "-") &&
+        (lk === undefined || rk === undefined) &&
+        !TEMPORAL32_NAMES.has(lk === undefined ? r : l)) ||
       (op === "MOD" && (lk === "TOD" || lk === "DT") && rk === undefined);
     if (withNumber && !this.strict && !this.inOutErrors) return false;
     this.refusedTemporalOperands.add(expr);
