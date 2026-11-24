@@ -434,13 +434,23 @@ export function generateDebugTable(
   const md5 = opts.md5 ?? "";
   const stringDefault = opts.stringDefaultLength ?? DISPATCH_STRING_CAPACITY;
   const constants = opts.globalConstants ?? {};
-  /** True when a STRING length, a constant's name resolved, is not the dispatch's. */
-  const otherThanDispatch = (length: number | string): boolean => {
-    if (typeof length === "number") return length !== DISPATCH_STRING_CAPACITY;
+  /** The value of a STRING length, a constant's name resolved; undefined when unknown. */
+  const lengthValue = (length: number | string): number | undefined => {
+    if (typeof length === "number") return length;
     const key = Object.keys(constants).find(
       (k) => k.toUpperCase() === length.toUpperCase(),
     );
-    return key === undefined || constants[key] !== DISPATCH_STRING_CAPACITY;
+    return key === undefined ? undefined : constants[key];
+  };
+  /** True when a STRING length, a constant's name resolved, is not the dispatch's. */
+  const otherThanDispatch = (length: number | string): boolean =>
+    lengthValue(length) !== DISPATCH_STRING_CAPACITY;
+  /** A length as written, with a constant's value: `10`, `SL = 10`. */
+  const lengthText = (length: number | string): string => {
+    const value = lengthValue(length);
+    return typeof length === "string" && value !== undefined
+      ? `${length} = ${value}`
+      : String(length);
   };
 
   // Programs only live in the user AST (libraries don't ship PROGRAM blocks),
@@ -664,7 +674,7 @@ export function generateDebugTable(
     const declared =
       length.defaultLength === true
         ? `its elements are ${name} without a length, which holds ${max} characters here`
-        : `its elements are declared ${name}(${max})`;
+        : `its elements are declared ${name}(${lengthText(max)})`;
     return (
       `${declared}, but the debug dispatch addresses strings as ` +
       `${name}(${DISPATCH_STRING_CAPACITY}). Declare them as ` +
@@ -768,7 +778,7 @@ export function generateDebugTable(
         const declared =
           typeRef.defaultLength === true
             ? `${name} without a length holds ${typeRef.maxLength} characters here`
-            : `declared ${name}(${typeRef.maxLength})`;
+            : `declared ${name}(${lengthText(typeRef.maxLength)})`;
         skipped.push({
           path,
           reason:

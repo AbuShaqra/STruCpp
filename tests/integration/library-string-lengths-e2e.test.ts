@@ -175,4 +175,75 @@ END_PROGRAM
     );
     expect(stdout).toBe("420");
   });
+
+  it("runs library aliases, alias in/outs and library members of other lengths as declared locally", () => {
+    const aliases = `TYPE TS : STRING(20); END_TYPE
+TYPE TSA : TS; END_TYPE
+TYPE IA : INT; END_TYPE
+TYPE IAA : IA; END_TYPE
+TYPE ST_O : STRUCT c : STRING(6); END_STRUCT END_TYPE
+FUNCTION FT : TS
+VAR_INPUT a : STRING; END_VAR
+FT := a;
+END_FUNCTION
+FUNCTION FX : INT
+VAR_IN_OUT x : TS; END_VAR
+x := CONCAT(x, 'z');
+FX := LEN(x);
+END_FUNCTION
+FUNCTION_BLOCK FB_D
+VAR_OUTPUT os : STRING(5); END_VAR
+os := '12345';
+END_FUNCTION_BLOCK
+`;
+    const lib = compileStlib([{ source: aliases, fileName: "a.st" }], {
+      name: "al",
+      version: "1.0.0",
+      namespace: "al",
+    });
+    expect(lib.errors).toEqual([]);
+    const program = `FUNCTION GD : INT
+VAR_IN_OUT x : STRING; END_VAR
+GD := LEN(x);
+END_FUNCTION
+PROGRAM Main
+VAR tsa : TSA; iaa : IAA := -3; t : TS := 'qq'; s20 : STRING(20) := 'ab';
+  d : FB_D; o : ST_O; n1, n2, n3, n4, n5, n6, n7 : DINT; END_VAR
+tsa := 'hello';
+n1 := LEN(tsa);
+n2 := ABS(iaa);
+n3 := LEN(FT('abc'));
+n4 := FX(s20);
+n5 := GD(t);
+d();
+o.c := 'xyz';
+n6 := GD(d.os);
+n7 := GD(o.c);
+END_PROGRAM
+`;
+    const print =
+      'p.N1 << " " << p.N2 << " " << p.N3 << " " << p.N4 << " " << p.N5 << " " << p.N6 << " " << p.N7';
+    const fromLibrary = run(
+      JSON.parse(JSON.stringify(lib.archive)) as StlibArchive,
+      program,
+      [],
+      print,
+      "liblens_aliases",
+    );
+    const local = compile(aliases + program, {
+      headerFileName: "generated.hpp",
+    });
+    expect(local.errors).toEqual([]);
+    expect(fromLibrary).toBe(
+      compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: local.headerCode,
+        cppCode: local.cppCode,
+        testName: "liblens_aliases_local",
+        mainCode: MAIN(print),
+      }),
+    );
+    expect(fromLibrary).toBe("5 3 3 3 2 5 3");
+  });
 });

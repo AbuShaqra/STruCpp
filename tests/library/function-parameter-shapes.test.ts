@@ -4,7 +4,8 @@
  * A library FUNCTION's manifest records its parameters' POINTER TO, REF_TO
  * and ARRAY shapes (`parameterShapes`), so an address passed to a narrow
  * value input of it is refused; an archive written before, without the
- * marker, cannot tell a pointer from a value, so an address into it is not checked.
+ * marker, has its POINTER TO and REF_TO levels read back from its functions'
+ * C++ prototypes, so it is checked the same way.
  */
 import { describe, it, expect } from "vitest";
 import { analyze, compileStlib } from "../../src/index.js";
@@ -98,10 +99,9 @@ describe("library FUNCTION parameter shapes", () => {
     ]);
   });
 
-  // A pre-parameterShapes archive keeps REFERENCE TO only: P, R and PP are
-  // recorded as INT, DINT and BYTE, which may be pointers, so ADR and REF
-  // into them are accepted, as into a FUNCTION without a REFERENCE TO input.
-  it("accepts addresses into the bare-typed inputs of an archive written without parameterShapes", () => {
+  // A pre-parameterShapes archive records P, R and PP as INT, DINT and BYTE;
+  // their levels come back from the chunk's prototype.
+  it("reads an archive written without parameterShapes by its C++ prototypes", () => {
     const old = JSON.parse(JSON.stringify(library())) as StlibArchive;
     delete old.manifest.parameterShapes;
     for (const p of old.manifest.functions[0]!.parameters) {
@@ -112,17 +112,21 @@ describe("library FUNCTION parameter shapes", () => {
       delete p.elementReferenceChain;
     }
     const archive = loadStlibArchive(old);
-    expect(
-      archive.manifest.functions[0]!.parameters.find((p) => p.name === "RR")
-        ?.referenceKind,
-    ).toBe("reference_to");
+    const byName = (n: string) =>
+      archive.manifest.functions[0]!.parameters.find((p) => p.name === n);
+    expect(byName("RR")?.referenceKind).toBe("reference_to");
+    expect(byName("P")?.referenceKind).toBe("pointer_to");
+    expect(byName("R")?.referenceKind).toBe("ref_to");
+    expect(byName("PP")).toMatchObject({
+      referenceKind: "pointer_to",
+      referenceChain: ["pointer_to", "pointer_to"],
+    });
+    expect(byName("D")?.referenceKind).toBeUndefined();
     const opts = { features: FEATURES, libraries: [archive] };
     expect(analyze(CALL("0"), opts).errors).toEqual([]);
-    expect(analyze(CALL("ADR(x)"), opts).errors).toEqual([]);
-    // The REFERENCE TO input is still checked.
-    expect(
-      analyze(CALL("0").replace("rr := x", "rr := ADR(x)"), opts).errors.length,
-    ).toBeGreaterThan(0);
+    expect(analyze(CALL("ADR(x)"), opts).errors.map((e) => e.message)).toEqual([
+      "ADR gives a 64-bit address, which DWORD cannot hold; use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT",
+    ]);
   });
 
   it("refuses REF of an INT into a REF_TO DINT input of a library FUNCTION", () => {
