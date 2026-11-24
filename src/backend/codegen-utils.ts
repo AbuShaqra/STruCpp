@@ -38,9 +38,29 @@ export function isComparisonExpr(expr: Expression): boolean {
 }
 
 /**
- * True when `expr` yields a BOOL: a comparison, a BOOL literal, NOT of a BOOL,
- * AND/OR/XOR of two BOOLs, or anything `baseType` names BOOL. Parentheses are
- * looked through. Used where the C++ form must stay a `bool`.
+ * True when `expr` ends in a bit selection (`w.3`, `p^.3`, `s.w.C_BIT`),
+ * whether or not the type checker typed it.
+ */
+export function isBitRead(expr: Expression): boolean {
+  if (expr.kind !== "VariableExpression") return false;
+  const chain = expr.accessChain;
+  const last =
+    chain !== undefined && chain.length > 0
+      ? chain[chain.length - 1]!
+      : expr.fieldAccess.length > 0
+        ? {
+            kind: "field" as const,
+            name: expr.fieldAccess[expr.fieldAccess.length - 1]!,
+          }
+        : undefined;
+  if (last?.kind !== "field") return false;
+  return /^\d+$/.test(last.name) || expr.namedBitIndex === true;
+}
+
+/**
+ * True when `expr` yields a BOOL: a comparison, a BOOL literal, a bit read,
+ * NOT of a BOOL, AND/OR/XOR of two BOOLs, or anything `baseType` names BOOL.
+ * Parentheses are looked through. Used where the C++ form must stay a `bool`.
  */
 export function isBoolValued(
   expr: Expression,
@@ -58,6 +78,9 @@ export function isBoolValued(
     case "BinaryExpression":
       if (isComparison(expr.operator)) return true;
       if (isBoolLogic(expr, baseType)) return true;
+      break;
+    case "VariableExpression":
+      if (isBitRead(expr)) return true;
       break;
   }
   return baseType(expr) === "BOOL";

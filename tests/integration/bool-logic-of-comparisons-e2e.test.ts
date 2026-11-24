@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (c) 2025 Autonomy®
+// Copyright (c) 2026 Autonomy®
 /**
  * E2E: BOOL expressions built from comparisons, bit reads and AND/OR/XOR/NOT
  * build as C++ bool and give the right values. `bool & bool` is an int in
@@ -12,7 +12,12 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { compile } from "../../src/index.js";
-import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
+import {
+  hasGpp,
+  createPCH,
+  compileAndRunStandalone,
+  runE2ETestPipeline,
+} from "./test-helpers.js";
 
 const SOURCE = `
 TYPE E_Mode : (Idle, Run, Stop); END_TYPE
@@ -56,7 +61,9 @@ VAR
   q0, q1, q2, q3, q4, q5, q6, q7, q8, q9 : BOOL;
   q10, q11, q12, q13, q14, q15, q16, q17, q18, q19 : BOOL;
   q20, q21, q22, q23, q24, q25, q26, q27, q28, q29 : BOOL;
-  q30 : BOOL;
+  q30, q31, q32, q33, q34, q35 : BOOL;
+  pw : POINTER TO WORD;
+  sb, rb : BYTE;
 END_VAR
 r1 := DINT_TO_REAL(a);
 r2 := DINT_TO_REAL(b) * 0.5;
@@ -103,10 +110,18 @@ q28 := NOT (F_Pos(a) AND F_Pos(b));
 u(a := a, b := b);
 q29 := u.q AND u.q2;
 q30 := u.q3;
+pw := ADR(w);
+q31 := NOT (pw^.3 XOR (a > 0));
+q32 := NOT (pw^.3 AND (a > 0));
+q33 := NOT (pw^.3 OR (b > 5));
+sb := SHL(w.3, 2);
+q34 := sb = 0;
+rb := ROL(w.3, 1);
+q35 := BYTE_TO_INT(rb) = BOOL_TO_INT(w.3);
 END_PROGRAM
 `;
 
-/** The expected q0..q30 for one input case, computed independently. */
+/** The expected q0..q35 for one input case, computed independently. */
 function expected(a: number, b: number, x: boolean, w: number): boolean[] {
   const r1 = a;
   const r2 = b * 0.5;
@@ -150,6 +165,11 @@ function expected(a: number, b: number, x: boolean, w: number): boolean[] {
     !(pos(a) && pos(b)),
     !(a >= 6 && b >= 6),
     !(a >= 6),
+    !(w3 !== a > 0),
+    !(w3 && a > 0),
+    !(w3 || b > 5),
+    true,
+    true,
   ];
 }
 
@@ -179,13 +199,47 @@ int main() {
             prog.Q7, prog.Q8, prog.Q9, prog.Q10, prog.Q11, prog.Q12, prog.Q13,
             prog.Q14, prog.Q15, prog.Q16, prog.Q17, prog.Q18, prog.Q19,
             prog.Q20, prog.Q21, prog.Q22, prog.Q23, prog.Q24, prog.Q25,
-            prog.Q26, prog.Q27, prog.Q28, prog.Q29, prog.Q30};
+            prog.Q26, prog.Q27, prog.Q28, prog.Q29, prog.Q30, prog.Q31,
+            prog.Q32, prog.Q33, prog.Q34, prog.Q35};
         for (bool v : q) std::cout << (v ? '1' : '0');
         std::cout << '\\n';
     }
     return 0;
 }
 `;
+
+const MEMBERS_SOURCE = `TYPE ST_S : STRUCT w : WORD; v : WORD; END_STRUCT END_TYPE
+FUNCTION_BLOCK FB_O
+VAR_OUTPUT wOut : WORD := 16#0F0F; END_VAR
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR
+  s : ST_S; ps : POINTER TO ST_S; fb : FB_O; a : DINT := 1; w : WORD := 16#0008;
+  r1, r2, r3, r4 : WORD; q : BOOL;
+END_VAR
+VAR CONSTANT C_BIT : INT := 3; END_VAR
+s.w := 16#00FF;
+s.v := 16#0F0F;
+ps := ADR(s);
+r1 := s.w AND s.v;
+r2 := fb.wOut OR 16#F0;
+r3 := GVL.wx XOR GVL.wy;
+r4 := ps^.w OR ps^.v;
+q := NOT (w.C_BIT AND (a > 0));
+END_PROGRAM
+`;
+
+const MEMBERS_OPTIONS = {
+  fileName: "main.st",
+  additionalSources: [
+    {
+      source:
+        "VAR_GLOBAL wx : WORD := 16#00FF; wy : WORD := 16#0F0F; END_VAR\n",
+      fileName: "GVL.st",
+    },
+  ],
+  features: ["+named_global_lists"],
+};
 
 describe.skipIf(!hasGpp)("BOOL logic of comparisons and bit reads", () => {
   let tempDir: string;
@@ -221,5 +275,60 @@ describe.skipIf(!hasGpp)("BOOL logic of comparisons and bit reads", () => {
                 .join(""),
             );
     expect(stdout.split("\n")).toEqual(want);
+  });
+
+  it("keeps WORD members, FB outputs and list globals bitwise", () => {
+    const result = compile(MEMBERS_SOURCE, MEMBERS_OPTIONS);
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode!,
+      cppCode: result.cppCode!,
+      testName: "bool_logic_members",
+      mainCode: `
+#include <iostream>
+int main() {
+    strucpp::Program_MAIN prog;
+    prog.run();
+    std::cout << std::hex << static_cast<int>(prog.R1) << " " << static_cast<int>(prog.R2)
+              << " " << static_cast<int>(prog.R3) << " " << static_cast<int>(prog.R4)
+              << " " << static_cast<int>(prog.Q) << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("f fff ff0 fff 0");
+  });
+
+  it("builds and passes a test file of bit reads in BOOL logic", () => {
+    const { stdout, exitCode } = runE2ETestPipeline({
+      sourceST: `
+TYPE ST_M : STRUCT w : WORD; END_STRUCT END_TYPE
+PROGRAM P
+VAR k : INT; END_VAR
+k := 1;
+END_PROGRAM
+`,
+      testST: `
+TEST 'bit reads in BOOL logic'
+  VAR w : WORD; m : ST_M; x : INT; p : POINTER TO WORD; END_VAR
+  w := 16#0008;
+  m.w := 16#0004;
+  x := 3;
+  p := ADR(w);
+  ASSERT_TRUE(NOT (w.2 AND (x > 0)));
+  ASSERT_FALSE(NOT (m.w.2 AND (x > 0)));
+  ASSERT_FALSE(NOT (w.3 OR (x > 5)));
+  ASSERT_FALSE(NOT (w.3));
+  ASSERT_FALSE(NOT (p^.3 XOR (x > 5)));
+END_TEST
+`,
+      testFileName: "test_bits.st",
+      tempDirPrefix: "strucpp-bool-logic-test-",
+    });
+    expect(stdout).toContain("[PASS] bit reads in BOOL logic");
+    expect(stdout).toContain("1 test, 1 passed, 0 failed");
+    expect(exitCode).toBe(0);
   });
 });

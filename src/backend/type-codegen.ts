@@ -389,7 +389,6 @@ export class TypeCodeGenerator {
     return upper;
   }
 
-  /** BYTE, WORD, DWORD or LWORD a type name is, through aliases. */
   /** The elementary type `expr` resolved to, through the unit's aliases, upper case. */
   private elementaryBase(expr: Expression): string | undefined {
     const t = expr.resolvedType;
@@ -403,6 +402,7 @@ export class TypeCodeGenerator {
     return upper;
   }
 
+  /** BYTE, WORD, DWORD or LWORD a type name is, through aliases. */
   private bitStringBase(name: string): string | undefined {
     let upper = name.toUpperCase();
     for (let i = 0; i < 32; i++) {
