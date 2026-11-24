@@ -379,6 +379,45 @@ function boundInput(
     : inputs[index];
 }
 
+/** How validateAssignment reports an input argument (checkArgumentValue). */
+interface ArgumentAssignment {
+  /** Whether narrowing into `targetName` warns. */
+  narrowingWarning: (targetName: string) => boolean;
+  /** Whether a type the assignment refuses is only warned about. */
+  warnOnly: (targetName: string, valueName: string) => boolean;
+}
+
+const TEMPORAL_32 = new Set(["TIME", "DATE", "TOD", "DT"]);
+const WIDE_INTEGERS = new Set(["LINT", "LTIME", "LDATE", "LTOD", "LDT"]);
+
+/**
+ * Whether an argument of elementary type `value` into an input of type
+ * `target` (an assignment refuses it) fails the C++ build: a STRING or
+ * WSTRING on either side, a 32-bit TIME, DATE, TOD or DT into another type
+ * (LTIME into TIME converts) or out of one into other than a 64-bit integer
+ * or L form. The others convert in C++ (measured on development).
+ */
+function failsAsCppArgument(value: string, target: string): boolean {
+  const strings = ["STRING", "WSTRING"];
+  if (strings.includes(value) || strings.includes(target)) return true;
+  if (TEMPORAL_32.has(target)) return !(value === "LTIME" && target === "TIME");
+  return TEMPORAL_32.has(value) && !WIDE_INTEGERS.has(target);
+}
+
+/**
+ * Whether an argument of type `value` into an input of type `target` (both
+ * temporal or one an integer; C++ converts it) gets another value than the
+ * named conversion `<value>_TO_<target>`: the raw count changes unit (an
+ * LDATE counts days, TIME milliseconds). Measured on development.
+ */
+function temporalValueDiffers(value: string, target: string): boolean {
+  if (target === "LDATE") return value !== "LTIME" && value !== "LTOD";
+  if (value === "LDATE") return !["BOOL", "LTIME", "LTOD"].includes(target);
+  // A 32-bit TIME, DATE, TOD or DT reaches here only into a 64-bit type.
+  if (TEMPORAL_32.has(value)) return !(value === "TOD" && target === "LDT");
+  return value === "LDT" && target === "LTOD";
+}
+
 /** `NULL` or `0`: the only initializers a pointer or reference keeps (it starts null anyway). */
 function isNullInitializer(expr: Expression): boolean {
   return (
@@ -612,6 +651,16 @@ const STRICT_ARITHMETIC_OPS: ReadonlySet<string> = new Set([
   "/",
   "MOD",
 ]);
+/** The target validateAssignment reports an input argument against (it names no variable). */
+const ARGUMENT_TARGET: VariableExpression = {
+  kind: "VariableExpression",
+  sourceSpan: { file: "", startLine: 0, startCol: 0, endLine: 0, endCol: 0 },
+  name: "",
+  fieldAccess: [],
+  subscripts: [],
+  isDereference: false,
+};
+
 const STRICT_BIT_STRINGS: ReadonlySet<string> = new Set([
   "BYTE",
   "WORD",
@@ -797,6 +846,8 @@ export class TypeChecker {
             this.checkAddressStore(
               this.storeTargetTypeName(stmt.target, target, scope),
               stmt.value,
+              undefined,
+              scope,
             );
           }
         } else if (node.kind === "FunctionCallExpression") {
@@ -1240,6 +1291,7 @@ export class TypeChecker {
    * Public so codegen can call it for standalone expressions.
    */
   resolveExprType(expr: Expression, scope: Scope): IECType | undefined {
+    this.lastResolvedScope = scope;
     const type = this.inferType(expr, scope);
     if (type) {
       expr.resolvedType = type;
@@ -1983,6 +2035,9 @@ export class TypeChecker {
     );
   }
 
+  /** The scope of the latest resolveExprType: named constants are folded in it (valueFitsNarrowTarget). */
+  private lastResolvedScope: Scope | undefined;
+
   /**
    * Infer the type of an expression.
    */
@@ -2633,7 +2688,12 @@ export class TypeChecker {
     ) {
       this.refuseAddressArithmetic(expr, scope);
     }
-    if (this.strict && STRICT_ARITHMETIC_OPS.has(expr.operator)) {
+    // `pb + 1` moves an address: no arithmetic on the BYTE it points to.
+    if (
+      this.strict &&
+      STRICT_ARITHMETIC_OPS.has(expr.operator) &&
+      expr.addressArithmetic !== true
+    ) {
       this.checkStrictArithmetic(expr, leftType, rightType);
     }
     // The result of arithmetic on an enumeration has no type to check further.
@@ -3340,19 +3400,25 @@ export class TypeChecker {
   ): void {
     if (
       declared === undefined ||
-      declared.arrayDimensions !== undefined ||
       declared.referenceKind !== "pointer_to" ||
       (declared.referenceChain?.length ?? 1) !== 1
     ) {
       return;
     }
-    const dest = elementarySize(declared.name);
+    // A POINTER TO ARRAY or STRUCT is aligned as its elements or fields are.
+    const dest =
+      declared.arrayDimensions === undefined
+        ? (elementarySize(declared.name) ??
+          this.compositeAlignment(declared.name))
+        : this.arrayAlignment(declared.elementTypeName ?? declared.name);
     if (dest === undefined || dest.bytes <= 1n) return;
     const terms = this.chainTerms(value);
     if (terms.length < 2) return;
     const addresses = terms.filter((t) => this.isAddressTerm(t.expr, scope));
     if (addresses.length !== 1 || addresses[0]!.sign !== 1) return;
-    const base = this.pointerTargetSize(addresses[0]!.expr, scope);
+    const base =
+      this.pointerTargetSize(addresses[0]!.expr, scope) ??
+      this.addressedAlignment(addresses[0]!.expr, scope);
     if (base === undefined || base.bytes < dest.bytes) return;
     let offset = 0n;
     for (const t of terms) {
@@ -3372,6 +3438,85 @@ export class TypeChecker {
       span.startCol,
       span.file,
     );
+  }
+
+  /**
+   * The alignment of a value of type `name` (through aliases): an elementary
+   * type's size, a STRUCT's widest field, a named ARRAY's element; a pointer
+   * is 8. Undefined when not known here (a STRING, a library type).
+   */
+  private typeAlignment(
+    name: string,
+    depth = 0,
+  ): { name: string; bytes: bigint } | undefined {
+    if (depth > 16) return undefined;
+    const base = this.aliasBase(name);
+    const size = elementarySize(base);
+    if (size !== undefined) {
+      return ELEMENTARY_TYPES[base]?.sizeBits === 0 ? undefined : size;
+    }
+    return this.compositeAlignment(base, depth);
+  }
+
+  /** typeAlignment of an ARRAY OF `element`, named as such. */
+  private arrayAlignment(
+    element: string,
+  ): { name: string; bytes: bigint } | undefined {
+    const a = this.typeAlignment(element);
+    return a === undefined
+      ? undefined
+      : { name: `ARRAY OF ${element.toUpperCase()}`, bytes: a.bytes };
+  }
+
+  /** typeAlignment of a STRUCT or named ARRAY TYPE this unit declares. */
+  private compositeAlignment(
+    name: string,
+    depth = 0,
+  ): { name: string; bytes: bigint } | undefined {
+    const upper = name.toUpperCase();
+    const def = this.ast?.types.find(
+      (t) => t.name.toUpperCase() === upper,
+    )?.definition;
+    if (def?.kind === "ArrayDefinition") {
+      const el = def.elementType;
+      if ((el.referenceKind ?? "none") !== "none")
+        return { name: upper, bytes: 8n };
+      const a = this.typeAlignment(el.name, depth + 1);
+      return a === undefined ? undefined : { name: upper, bytes: a.bytes };
+    }
+    if (def?.kind !== "StructDefinition" || def.fields.length === 0) {
+      return undefined;
+    }
+    let bytes = 1n;
+    for (const field of def.fields) {
+      const a =
+        (field.type.referenceKind ?? "none") !== "none"
+          ? { bytes: 8n }
+          : this.typeAlignment(field.type.name, depth + 1);
+      if (a === undefined) return undefined;
+      if (a.bytes > bytes) bytes = a.bytes;
+    }
+    return { name: upper, bytes };
+  }
+
+  /** The alignment of what `ADR(x)` addresses when `x` is an ARRAY or STRUCT. */
+  private addressedAlignment(
+    e: Expression,
+    scope: Scope,
+  ): { name: string; bytes: bigint } | undefined {
+    if (
+      e.kind !== "FunctionCallExpression" ||
+      e.functionName.toUpperCase() !== "ADR" ||
+      e.arguments.length !== 1
+    ) {
+      return undefined;
+    }
+    const operand = e.arguments[0]!.value;
+    const declared = this.accessedType(operand, scope);
+    if (declared === undefined || declared.referenceKind !== "none") {
+      return undefined;
+    }
+    return this.typeAlignment(declared.elementTypeName ?? declared.name);
   }
 
   /** Positions already refused by refuseMisalignedPointerStore. */
@@ -3631,6 +3776,8 @@ export class TypeChecker {
     value: Expression,
   ): void {
     if (targetType?.typeKind !== "elementary") return;
+    if (this.overflowChecked.has(value)) return;
+    this.overflowChecked.add(value);
     // A typed literal has its own range check
     if (value.kind === "LiteralExpression" && (value.typePrefix ?? "") !== "") {
       return;
@@ -3647,6 +3794,9 @@ export class TypeChecker {
     const v = this.constantIntegerValue(value);
     if (v !== undefined) this.warnOverflowAt(value, v, name);
   }
+
+  /** Values warnConstantOverflow has checked (an argument is checked by two routes). */
+  private overflowChecked = new WeakSet<Expression>();
 
   /** The --strict wrap warning at `at` when `v` is outside the integer type `name`. */
   private warnOverflowAt(at: Expression, v: bigint, name: string): void {
@@ -3840,6 +3990,31 @@ export class TypeChecker {
       expr.sourceSpan.startCol,
       expr.sourceSpan.file,
     );
+  }
+
+  /**
+   * `-d` of a DATE, TOD or DT (or an L form): Table 30 has no negation of a
+   * point in time, and the C++ value wraps (`-D#2020-01-01` gave 2056-02-07).
+   * Refused in every mode. True when refused.
+   */
+  private refuseNegatedDate(
+    expr: UnaryExpression,
+    operandType: IECType,
+  ): boolean {
+    if (operandType.typeKind !== "elementary") return false;
+    const name = canonicalElementaryName(
+      this.aliasBase((operandType as ElementaryType).name),
+    );
+    if (!["DATE", "TOD", "DT", "LDATE", "LTOD", "LDT"].includes(name)) {
+      return false;
+    }
+    this.addError(
+      `Unary '-' does not apply to ${name}: a date or time of day has no negation (IEC 61131-3 Table 30)`,
+      expr.sourceSpan.startLine,
+      expr.sourceSpan.startCol,
+      expr.sourceSpan.file,
+    );
+    return true;
   }
 
   /**
@@ -4194,6 +4369,9 @@ export class TypeChecker {
     }
 
     if (expr.operator === "-") this.refuseNegatedTimeConstant(expr, scope);
+    if (expr.operator === "-" && this.refuseNegatedDate(expr, operandType)) {
+      return undefined;
+    }
 
     let type: IECType | undefined;
     if (expr.operator === "NOT") {
@@ -4281,11 +4459,14 @@ export class TypeChecker {
     );
     if (inputs === undefined) this.refuseLibraryArrayInOuts(expr, scope);
     {
+      if (this.isFBInstanceCall(expr, scope)) {
+        this.checkEnArgument(expr.arguments, scope);
+      }
       this.checkStrictArguments(
-        this.callInputs(expr, scope) ??
-          this.dottedMethodInputs(expr.functionName, scope),
+        this.argumentInputs(expr, scope),
         expr.arguments,
         scope,
+        this.isStdTimerType(this.calledFbType(expr, scope)),
       );
       if (this.strict) this.checkStrictConversionArgument(expr, scope);
     }
@@ -6469,6 +6650,7 @@ export class TypeChecker {
     typeName: string | undefined,
     value: Expression,
     scope?: Scope,
+    assignmentScope?: Scope,
   ): boolean {
     if (typeName === undefined) return false;
     const user = (name: string): boolean =>
@@ -6479,7 +6661,7 @@ export class TypeChecker {
     // `ADR(x) * 2` into an integer: no address, no offset of one.
     if (
       addressMisuse(value, user, this.isPointerRead) &&
-      addressFit(typeName, this.ast?.types ?? []) !== undefined &&
+      this.addressFitOf(typeName) !== undefined &&
       !this.userAddressFunction()
     ) {
       if (chainError !== undefined) {
@@ -6498,13 +6680,13 @@ export class TypeChecker {
     const source = addressSource(value, user, this.isPointerRead);
     if (source === undefined) {
       return (
-        this.checkPointerValueStore(typeName, value, scope) ||
+        this.checkPointerValueStore(typeName, value, scope, assignmentScope) ||
         this.checkXwordStore(typeName, value)
       );
     }
     // A user FUNCTION named ADR is called, not the operator.
     if (source.op === "ADR" && this.userAddressFunction()) return false;
-    const fit = addressFit(typeName, this.ast?.types ?? []);
+    const fit = this.addressFitOf(typeName);
     if (source.op === "ADR" && !this.features.has("pointer_to")) {
       return fit !== undefined;
     }
@@ -6541,6 +6723,18 @@ export class TypeChecker {
     return true;
   }
 
+  /** addressFit of `typeName`, a library alias (`TYPE TDw2 : DWORD` in an archive) through its base. */
+  private addressFitOf(
+    typeName: string,
+  ): ReturnType<typeof addressFit> | undefined {
+    const fit = addressFit(typeName, this.ast?.types ?? []);
+    if (fit !== undefined) return fit;
+    const base = this.aliasBase(typeName);
+    return base !== typeName.toUpperCase()
+      ? addressFit(base, this.ast?.types ?? [])
+      : undefined;
+  }
+
   /**
    * A POINTER TO or REF_TO variable passed to an input (`LEFT(s, p)`): refused
    * as an ADR is when the input is an integer narrower than 64 bits or a
@@ -6550,10 +6744,12 @@ export class TypeChecker {
   private checkPointerValueStore(
     typeName: string,
     value: Expression,
-    scope: Scope | undefined,
+    inputScope: Scope | undefined,
+    assignmentScope?: Scope,
   ): boolean {
     let v = value;
     while (v.kind === "ParenthesizedExpression") v = v.expression;
+    const scope = inputScope ?? assignmentScope;
     if (scope === undefined || v.kind !== "VariableExpression") return false;
     const declared = this.declaredVariableType(v, scope);
     if (declared === undefined) return false;
@@ -6566,27 +6762,31 @@ export class TypeChecker {
     ) {
       return false;
     }
-    const fit = addressFit(typeName, this.ast?.types ?? []);
+    const fit = this.addressFitOf(typeName);
     if (fit === undefined) return false;
+    const assignment = inputScope === undefined;
     if (fit === "wide") {
-      // An input takes it as its 64-bit integer.
-      value.addressInto ??= typeName;
+      // An input takes it as its 64-bit integer; so does an assignment of a
+      // REF_TO (a POINTER TO converts in C++ as it is).
+      if (!assignment || kind === "ref_to") value.addressInto ??= typeName;
       return true;
     }
     const span = value.sourceSpan;
     const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
-    if (!this.addressStoresReported.has(key)) {
-      this.addressStoresReported.add(key);
-      this.addError(
-        narrowAddressMessage(
-          `A ${kind === "pointer_to" ? "POINTER TO" : "REF_TO"} value`,
-          fit.narrow,
-        ),
-        span.startLine,
-        span.startCol,
-        span.file,
-      );
+    if (this.addressStoresReported.has(key)) return true;
+    this.addressStoresReported.add(key);
+    const message = narrowAddressMessage(
+      `A ${kind === "pointer_to" ? "POINTER TO" : "REF_TO"} value`,
+      fit.narrow,
+    );
+    // `n := p` truncates the address: a warning by default (bundled OSCAT
+    // does it), an error under iec-3 and --strict; an input refuses it.
+    if (assignment && !this.strict && !this.inOutErrors) {
+      if (kind === "ref_to") value.addressInto ??= typeName;
+      this.addWarning(message, span.startLine, span.startCol, span.file);
+      return true;
     }
+    this.addError(message, span.startLine, span.startCol, span.file);
     return true;
   }
 
@@ -6603,7 +6803,7 @@ export class TypeChecker {
     ) {
       return false;
     }
-    const fit = addressFit(typeName, this.ast?.types ?? []);
+    const fit = this.addressFitOf(typeName);
     if (typeof fit !== "object" || !isNarrowInteger(fit.narrow)) return false;
     const span = value.sourceSpan;
     const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
@@ -6838,6 +7038,14 @@ export class TypeChecker {
     for (const block of blocks) {
       for (const decl of block.declarations) {
         if (!decl.initialValue) continue;
+        // `gp : POINTER TO DINT := ADR(gd) + 1` misaligns as its assignment does.
+        if (decl.type.referenceKind === "pointer_to") {
+          this.refuseMisalignedPointerStore(
+            decl.type,
+            decl.initialValue,
+            this.symbolTables.globalScope,
+          );
+        }
         if ((decl.type.referenceKind ?? "none") !== "none") continue;
         this.refuseNarrowAddressNested(decl.type, decl.initialValue);
       }
@@ -7002,7 +7210,7 @@ export class TypeChecker {
         scope,
       );
       if (target === undefined) continue;
-      const fit = addressFit(target, this.ast.types);
+      const fit = this.addressFitOf(target);
       if (fit === undefined) continue;
       if (fit === "wide") {
         // A FUNCTION's output binds by reference: an integer takes a copy.
@@ -7151,10 +7359,13 @@ export class TypeChecker {
           this.checkAddressStore(
             this.storeTargetTypeName(stmt.target, targetType, scope),
             stmt.value,
+            undefined,
+            scope,
           )
         ) {
           break;
         }
+        if (this.warnIntegerIntoPointer(stmt.target, stmt.value, scope)) break;
         if (this.isAddressIntoPointer(stmt.target, valueType, scope)) break;
         if (this.isZeroIntoPointer(stmt.target, stmt.value, scope)) break;
         if (this.checkArrayScalarAssignment(stmt.target, stmt.value, scope)) {
@@ -7717,6 +7928,7 @@ export class TypeChecker {
     valueType: IECType | undefined,
     target: Expression,
     value: Expression,
+    argument?: ArgumentAssignment,
   ): void {
     if (this.adaptCharLiteral(value, this.charTypeOf(targetType))) {
       valueType = value.resolvedType;
@@ -7738,6 +7950,9 @@ export class TypeChecker {
       return;
     }
     if (!targetType || !valueType) return;
+    // A target of an alias of an elementary type (`TYPE TB : BOOL`) is checked
+    // as its base; an alias-typed value is not (alias arithmetic keeps the alias).
+    targetType = this.elementaryAliasBase(targetType);
 
     const related = this.structRelation(
       typeNameUtil(targetType),
@@ -7814,6 +8029,8 @@ export class TypeChecker {
 
         // Narrowing conversions are warnings, not errors
         if (isNarrowingConversion(tName, vName)) {
+          if (argument?.narrowingWarning(tName) === false) return;
+          if (this.valueFitsNarrowTarget(value, tName)) return;
           this.addWarning(
             `Implicit narrowing conversion from ${vName} to ${tName}`,
             value.sourceSpan.startLine,
@@ -7837,14 +8054,99 @@ export class TypeChecker {
         return;
       }
 
+      const tName = typeNameUtil(targetType);
+      const vName = typeNameUtil(valueType);
+      if (argument?.warnOnly(tName, vName) === true) {
+        this.addWarning(
+          `Cannot pass ${vName} to an input of type ${tName} without a conversion; use ${vName}_TO_${tName}`,
+          value.sourceSpan.startLine,
+          value.sourceSpan.startCol,
+          value.sourceSpan.file,
+        );
+        return;
+      }
       this.addError(
-        `Cannot assign ${typeNameUtil(valueType)} to ${typeNameUtil(targetType)}`,
+        `Cannot assign ${vName} to ${tName}`,
         value.sourceSpan.startLine,
         value.sourceSpan.startCol,
         value.sourceSpan.file,
       );
       return;
     }
+  }
+
+  /**
+   * A value the narrowing warning into integer type `target` leaves alone: a
+   * constant (`-1`, a named constant) whose value fits it, or arithmetic of a
+   * value no wider than it with an untyped constant that fits it (`s + 1` is
+   * a SINT, the literal taking its operand's type).
+   */
+  private valueFitsNarrowTarget(value: Expression, target: string): boolean {
+    const range = integerTypeRange(target);
+    if (range === undefined) return false;
+    const scope = this.lastResolvedScope;
+    // A typed literal (`DINT#5`) keeps its type; an untyped constant or a
+    // named constant is judged by its value.
+    let bare = value;
+    while (bare.kind === "ParenthesizedExpression") bare = bare.expression;
+    const v =
+      this.untypedConstantKind(value) === "INT"
+        ? this.constantIntegerValue(value)
+        : bare.kind === "VariableExpression" && scope !== undefined
+          ? this.foldIntegerConstant(bare, scope, 0)
+          : undefined;
+    if (v !== undefined) return v >= range.min && v <= range.max;
+    const adapted = this.adaptedIntegerType(value, range);
+    return adapted !== undefined && !isNarrowingConversion(target, adapted);
+  }
+
+  /**
+   * The integer type of `e` when an untyped constant in it takes the type of
+   * the other operand: `s + 1` with a SINT `s` is a SINT. Undefined when no
+   * constant adapts or one does not fit `range`.
+   */
+  private adaptedIntegerType(
+    e: Expression,
+    range: { min: bigint; max: bigint },
+    depth = 0,
+  ): string | undefined {
+    if (depth > 16) return undefined;
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    if (
+      e.kind !== "BinaryExpression" ||
+      !["+", "-", "*", "/", "MOD"].includes(e.operator)
+    ) {
+      return undefined;
+    }
+    const typed = (x: Expression): string | undefined => {
+      const inner = this.adaptedIntegerType(x, range, depth + 1);
+      if (inner !== undefined) return inner;
+      const t = x.resolvedType;
+      if (t?.typeKind !== "elementary") return undefined;
+      const name = canonicalElementaryName((t as ElementaryType).name);
+      return integerTypeRange(name) !== undefined ? name : undefined;
+    };
+    const fits = (x: Expression): boolean => {
+      if (this.untypedConstantKind(x) !== "INT") return false;
+      const v = this.constantIntegerValue(x);
+      return v !== undefined && v >= range.min && v <= range.max;
+    };
+    if (fits(e.right)) return typed(e.left);
+    if (fits(e.left)) return typed(e.right);
+    return undefined;
+  }
+
+  /** The elementary type an alias of one names (through aliases); `type` otherwise. */
+  private elementaryAliasBase(type: IECType): IECType {
+    if (type.typeKind !== "elementary") return type;
+    const name = (type as ElementaryType).name;
+    if (ELEMENTARY_TYPES[name.toUpperCase()] !== undefined) return type;
+    if (this.isUserTypeOfEd3Name(name)) return type;
+    const base = this.aliasBase(name);
+    if (base === name.toUpperCase() || this.isUserTypeOfEd3Name(base)) {
+      return type;
+    }
+    return ELEMENTARY_TYPES[base] ?? type;
   }
 
   /** The interface this compile declares under `name`. */
@@ -10302,6 +10604,150 @@ export class TypeChecker {
     return true;
   }
 
+  /**
+   * `p := i + 4` or `p := ADR(a) - ADR(b)`: an integer narrower than an
+   * address, or a byte count, stored into a POINTER TO (or its alias). C++
+   * converts it, so a warning by default, an error under iec-3 and --strict.
+   * A 64-bit integer (`p := lw`) may hold an address and is accepted (true,
+   * with no narrowing warning to the target's type).
+   */
+  private warnIntegerIntoPointer(
+    target: Expression,
+    value: Expression,
+    scope: Scope,
+  ): boolean {
+    const alias = this.isPointerAliasTarget(target, scope);
+    const shape = this.declaredReferenceShape(target, scope);
+    if (shape?.chain[0] !== "pointer_to" && !alias) return false;
+    if (isUntypedZero(value)) return false;
+    // A STRUCT or FB target refuses an integer through the assignment check.
+    if (
+      !alias &&
+      (shape?.chain.length !== 1 ||
+        ELEMENTARY_TYPES[
+          canonicalElementaryName(this.aliasBase(shape.base))
+        ] === undefined)
+    ) {
+      return false;
+    }
+    const difference = this.isAddressDifference(value);
+    const integer = difference
+      ? undefined
+      : this.integerValueBase(value, scope);
+    if (!difference && integer === undefined) return false;
+    const span = value.sourceSpan;
+    // A POINTER TO member of a STRUCT is a plain C++ pointer: no integer
+    // converts to it, so the C++ build failed.
+    if (!alias && this.isStructMemberTarget(target, scope)) {
+      this.addError(
+        "A POINTER TO member of a STRUCT cannot take an integer; assign ADR(...), another pointer or 0",
+        span.startLine,
+        span.startCol,
+        span.file,
+      );
+      return true;
+    }
+    // A 64-bit integer may hold an address: no narrowing to the target type.
+    if (
+      integer !== undefined &&
+      (addressFit(integer, []) === "wide" ||
+        ["__XWORD", "XWORD", "__UXINT", "__XINT"].includes(integer))
+    ) {
+      return true;
+    }
+    const message = difference
+      ? "A difference of two addresses is a byte count, not an address; a POINTER TO takes ADR(...), another pointer or 0"
+      : "An integer is not an address; a POINTER TO takes ADR(...), another pointer or 0";
+    if (this.strict || this.inOutErrors) {
+      this.addError(message, span.startLine, span.startCol, span.file);
+    } else {
+      this.addWarning(message, span.startLine, span.startCol, span.file);
+    }
+    return true;
+  }
+
+  /**
+   * The canonical integer type of a value that is an integer, not an address:
+   * a literal, an integer variable, member, dereference, function result or
+   * arithmetic of them. Undefined otherwise.
+   */
+  private integerValueBase(
+    value: Expression,
+    scope: Scope,
+  ): string | undefined {
+    if (this.isAddressArgument(value, scope)) return undefined;
+    if (!this.isIntegerValue(value, scope)) {
+      let v = value;
+      while (v.kind === "ParenthesizedExpression") v = v.expression;
+      if (
+        v.kind !== "FunctionCallExpression" &&
+        v.kind !== "VariableExpression"
+      ) {
+        return undefined;
+      }
+    }
+    const t = value.resolvedType;
+    if (t?.typeKind !== "elementary") return undefined;
+    const base = canonicalElementaryName(
+      this.aliasBase((t as ElementaryType).name),
+    );
+    return INTEGER_STORAGE[base] !== undefined ||
+      ["__XWORD", "XWORD", "__UXINT", "__XINT"].includes(base)
+      ? base
+      : undefined;
+  }
+
+  /** `target` is a member of a STRUCT (or UNION) value: `q.p`, `pst^.p`, `arr[i].p`. */
+  private isStructMemberTarget(target: Expression, scope: Scope): boolean {
+    const owner = this.lastFieldOwnerType(target, scope);
+    if (owner === undefined) return false;
+    const name = this.aliasTarget(owner);
+    return (
+      this.isStructType(name) ||
+      this.symbolTables.lookupType(name)?.resolvedType?.typeKind === "struct"
+    );
+  }
+
+  /** The type name of the value whose member `target` names last, typed silently; undefined when its last step is no field. */
+  private lastFieldOwnerType(
+    target: Expression,
+    scope: Scope,
+  ): string | undefined {
+    if (target.kind !== "VariableExpression") return undefined;
+    const chain = target.accessChain ?? [];
+    const last = chain[chain.length - 1];
+    if (last !== undefined) {
+      if (last.kind !== "field") return undefined;
+    } else if (
+      target.subscripts.length !== 0 ||
+      target.fieldAccess.length === 0
+    ) {
+      return undefined;
+    }
+    const owner: VariableExpression = {
+      ...target,
+      fieldAccess: target.fieldAccess.slice(0, -1),
+    };
+    if (chain.length > 0) owner.accessChain = chain.slice(0, -1);
+    else delete owner.accessChain;
+    // The declared type it reaches (`pst^` of a POINTER TO ST_Q is ST_Q)
+    const declared = this.accessedType(owner, scope);
+    if (declared !== undefined) {
+      // A REFERENCE TO is read through implicitly (`rq.p`).
+      const kind = declared.referenceKind ?? "none";
+      return (kind === "none" || kind === "reference_to") &&
+        declared.arrayDimensions === undefined
+        ? declared.name
+        : undefined;
+    }
+    const errors = this.errors.length;
+    const warnings = this.warnings.length;
+    const ownerType = this.inferType(owner, scope);
+    this.errors.length = errors;
+    this.warnings.length = warnings;
+    return ownerType !== undefined ? typeNameUtil(ownerType) : undefined;
+  }
+
   /** `target` is a variable or member declared with a POINTER TO alias of this unit (`p : PINT`). */
   private isPointerAliasTarget(target: Expression, scope: Scope): boolean {
     if (target.kind !== "VariableExpression") return false;
@@ -10478,6 +10924,35 @@ export class TypeChecker {
     const declared = sym.declaration as VarDeclaration | undefined;
     if (!declared) return undefined;
     return this.fbInputsOf(declared.type.name);
+  }
+
+  /**
+   * The inputs a call's arguments are checked against: a user callable's, an
+   * FB or interface method's through any receiver (`it.M`, `SUPER^.M`,
+   * `p^(...)`, `s.f(...)`), a shaped library FUNCTION's or a library METHOD's.
+   */
+  private argumentInputs(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): CallInput[] | undefined {
+    const parts = expr.functionName.split(".");
+    const sym =
+      parts.length === 2 && expr.instance === undefined
+        ? scope.lookup(parts[0]!)
+        : undefined;
+    const typeName =
+      sym?.kind === "variable"
+        ? (sym.declaration as VarDeclaration | undefined)?.type.name
+        : undefined;
+    return (
+      this.callInputs(expr, scope) ??
+      this.dottedMethodInputs(expr.functionName, scope) ??
+      this.anyCallInputs(expr, scope) ??
+      this.libraryShapedFunctionInputs(expr, scope) ??
+      (typeName !== undefined
+        ? this.libraryMethodInputs(typeName, parts[1]!)
+        : undefined)
+    );
   }
 
   /**
@@ -11208,7 +11683,8 @@ export class TypeChecker {
     }
     if (operand !== undefined && "refused" in operand) return;
     const rank = operand?.rank;
-    const value = this.constantIntegerValue(dim);
+    const value =
+      this.constantIntegerValue(dim) ?? this.foldIntegerConstant(dim, scope, 0);
     if (value === undefined) return;
     // A constant DIM outside 1..rank of an array of a known rank
     const outOfShape = rank !== undefined && value > BigInt(rank);
@@ -12177,11 +12653,16 @@ export class TypeChecker {
     this.addStrictError(strictConversionMessage(v, t), arg.value);
   }
 
-  /** Strict conversion check for each input argument of a call (the BOOL narrowing warning outside `--strict`). */
+  /**
+   * Each input argument of a call checked as the assignment `input := arg`
+   * is: `--strict` conversions, a type the assignment refuses (STRING into
+   * DWORD, TIME into BOOL) and the BOOL narrowing warning. EN is a BOOL input.
+   */
   private checkStrictArguments(
     inputs: CallInput[] | undefined,
     args: readonly Argument[],
-    _scope: Scope,
+    scope: Scope,
+    stdTimer = false,
   ): void {
     if (!inputs) return;
     stripEnEno([...args]).forEach((arg, i) => {
@@ -12190,38 +12671,168 @@ export class TypeChecker {
       if (!input) return;
       const refKind = input.type.referenceKind;
       if (refKind !== undefined && refKind !== "none") return;
-      if (input.type.arrayDimensions !== undefined) return;
-      const declared = ELEMENTARY_TYPES[input.type.name.toUpperCase()];
-      if (this.strict) {
-        if (declared) this.checkStrictConversion(declared, arg.value);
+      if (
+        !input.inOut &&
+        this.refuseScalarIntoComposite(input, arg.value, scope)
+      ) {
         return;
       }
-      // A VAR_IN_OUT mismatch has its own diagnostic (validateInOutArguments)
-      if (input.inOut) return;
-      this.warnBoolInputNarrowing(input.type.name, arg.value);
+      if (input.type.arrayDimensions !== undefined) return;
+      if (input.inOut) {
+        // A VAR_IN_OUT mismatch has its own diagnostic (validateInOutArguments)
+        const declared = ELEMENTARY_TYPES[input.type.name.toUpperCase()];
+        if (this.strict && declared) {
+          this.checkStrictConversion(declared, arg.value);
+        }
+        return;
+      }
+      // Table 46: TP, TON and TOF take a TIME or an LTIME preset.
+      if (
+        stdTimer &&
+        input.name.toUpperCase() === "PT" &&
+        this.operandElementaryName(arg.value, scope) === "LTIME"
+      ) {
+        return;
+      }
+      this.checkArgumentValue(input.type.name, arg.value, scope);
     });
   }
 
+  /** TP, TON or TOF of the standard library. */
+  private isStdTimerType(typeName: string | undefined): boolean {
+    const upper = typeName?.toUpperCase();
+    if (upper !== "TP" && upper !== "TON" && upper !== "TOF") return false;
+    return (
+      this.symbolTables.lookupFunctionBlock(upper)?.libraryName ===
+      "iec-standard-fb"
+    );
+  }
+
   /**
-   * Outside `--strict`: a non-BOOL value bound to a BOOL input gets the
-   * narrowing warning its assignment `b := i` gets (an untyped constant adapts).
+   * An address, a pointer or an elementary value bound to an ARRAY or STRUCT
+   * input (`F(ADR(arr))`): no C++ conversion exists, so it is refused in
+   * every mode. True when refused.
    */
-  private warnBoolInputNarrowing(inputType: string, value: Expression): void {
-    if (this.aliasBase(inputType).toUpperCase() !== "BOOL") return;
-    if (this.untypedConstantKind(value) !== undefined) return;
-    const valueType = value.resolvedType;
-    if (valueType?.typeKind !== "elementary") return;
-    const vName = this.aliasBase(
-      (valueType as ElementaryType).name,
-    ).toUpperCase();
-    if (vName === "BOOL" || ELEMENTARY_TYPES[vName] === undefined) return;
-    if (!isNarrowingConversion("BOOL", vName)) return;
-    this.addWarning(
-      `Implicit narrowing conversion from ${vName} to BOOL`,
+  private refuseScalarIntoComposite(
+    input: CallInput,
+    value: Expression,
+    scope: Scope,
+  ): boolean {
+    const name = input.type.name;
+    const kind =
+      input.type.arrayDimensions !== undefined
+        ? "ARRAY"
+        : this.compositeTypeKind(name);
+    // A UNION input has its own check (validateStructArguments).
+    if (kind === undefined || this.isUnionType(name)) return false;
+    let what: string | undefined;
+    if (this.isAddressArgument(value, scope)) {
+      what = "an address";
+    } else if (value.resolvedType?.typeKind === "elementary") {
+      const base = canonicalElementaryName(
+        this.aliasBase((value.resolvedType as ElementaryType).name),
+      );
+      if (ELEMENTARY_TYPES[base] !== undefined)
+        what = `a value of type ${base}`;
+    }
+    if (what === undefined) return false;
+    this.addError(
+      `Cannot pass ${what} to input '${input.name.toUpperCase()}', which takes ${kind === "ARRAY" ? "an ARRAY" : `a ${kind}`}`,
       value.sourceSpan.startLine,
       value.sourceSpan.startCol,
       value.sourceSpan.file,
     );
+    return true;
+  }
+
+  /** "STRUCT" or "ARRAY" when `name` (through aliases) is a STRUCT or named ARRAY type, here or in a library. */
+  private compositeTypeKind(name: string): "STRUCT" | "ARRAY" | undefined {
+    const target = this.aliasTarget(name);
+    if (this.isStructType(target)) return "STRUCT";
+    const upper = target.toUpperCase();
+    const def = this.ast?.types.find(
+      (t) => t.name.toUpperCase() === upper,
+    )?.definition;
+    if (def?.kind === "ArrayDefinition") return "ARRAY";
+    const resolved = this.symbolTables.lookupType(target)?.resolvedType;
+    if (resolved?.typeKind === "struct") return "STRUCT";
+    if (resolved?.typeKind === "array") return "ARRAY";
+    return undefined;
+  }
+
+  /** `EN := v` of an FB call: checked as a BOOL input (a FUNCTION's EN has its own check). */
+  private checkEnArgument(args: readonly Argument[], scope: Scope): void {
+    const en = args.find((a) => !a.isOutput && a.name?.toUpperCase() === "EN");
+    if (en !== undefined) this.checkArgumentValue("BOOL", en.value, scope);
+  }
+
+  /**
+   * `value` bound to an input of elementary type `typeName` (through
+   * aliases), checked by validateAssignment as `input := value`. An address
+   * or pointer value has its own check (refuseNarrowAddressArguments).
+   */
+  private checkArgumentValue(
+    typeName: string,
+    value: Expression,
+    scope: Scope,
+  ): void {
+    const base = canonicalElementaryName(this.aliasBase(typeName));
+    const target = ELEMENTARY_TYPES[base];
+    if (target === undefined || this.isUserTypeOfEd3Name(base)) return;
+    // CHAR and WCHAR inputs have their own check (adaptCharArguments).
+    if (base === "CHAR" || base === "WCHAR") return;
+    if (this.isAddressArgument(value, scope)) return;
+    const valueType = value.resolvedType;
+    if (valueType?.typeKind !== "elementary") return;
+    // An alias-typed value is left alone, as in an assignment.
+    const valueBase = canonicalElementaryName(
+      (valueType as ElementaryType).name,
+    );
+    if (ELEMENTARY_TYPES[valueBase] === undefined) return;
+    // An untyped constant adapts as in the assignment; into a BOOL input it
+    // gets no narrowing warning.
+    const untypedConstant = this.untypedConstantKind(value) !== undefined;
+    const strictMode = this.strict || this.inOutErrors;
+    this.validateAssignment(
+      target,
+      ELEMENTARY_TYPES[valueBase],
+      { ...ARGUMENT_TARGET, sourceSpan: value.sourceSpan },
+      value,
+      {
+        narrowingWarning: (t) => t !== "BOOL" || !untypedConstant,
+        warnOnly: (t, v) =>
+          !strictMode &&
+          !failsAsCppArgument(v, t) &&
+          !temporalValueDiffers(v, t),
+      },
+    );
+  }
+
+  /** An address (ADR, REF, their arithmetic), a POINTER TO or REF_TO value or an `__XWORD`. */
+  private isAddressArgument(value: Expression, scope: Scope): boolean {
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    let v = value;
+    while (v.kind === "ParenthesizedExpression") v = v.expression;
+    if (
+      addressSource(v, user, this.isPointerRead) !== undefined ||
+      addressMisuse(v, user, this.isPointerRead) ||
+      this.isAddressDifference(v)
+    ) {
+      return true;
+    }
+    if (v.resolvedType !== undefined) {
+      const name = typeNameUtil(v.resolvedType).toUpperCase();
+      if (name === "__XWORD" || v.resolvedType.typeKind === "reference") {
+        return true;
+      }
+    }
+    if (v.kind !== "VariableExpression") return false;
+    const declared = this.declaredVariableType(v, scope);
+    if (declared === undefined) return false;
+    const type = resolveAccessType(declared, v, this.accessLookup);
+    const kind = type?.referenceKind;
+    return kind === "pointer_to" || kind === "ref_to";
   }
 
   /** The input parameters of the method a method-call expression names. */
@@ -12295,7 +12906,7 @@ export class TypeChecker {
 
   /** The type `owner` names in `owner.member(...)`: THIS, SUPER or a variable's type. */
   private callOwnerType(owner: string, scope: Scope): string | undefined {
-    const upper = owner.toUpperCase();
+    const upper = owner.toUpperCase().replace(/\^$/, "");
     if (upper === "THIS") return this.currentFBName;
     if (upper === "SUPER") {
       return this.ast?.functionBlocks.find(
