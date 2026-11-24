@@ -316,6 +316,8 @@ interface CallInput {
   position?: number;
   /** From a library manifest, which omits a REF_TO STRING / WSTRING target's length. */
   lengthUnrecorded?: boolean;
+  /** Declared by a library, whose archive may not record a STRING's length. */
+  fromLibrary?: boolean;
 }
 
 /** The VAR_INPUT and VAR_IN_OUT of one POU's blocks, each with its positional place. */
@@ -7683,7 +7685,14 @@ export class TypeChecker {
       arg.inOutCopy = true;
       return;
     }
-    const mismatch = this.inOutTypeMismatch(input.type, argType);
+    const mismatch = this.inOutTypeMismatch(
+      input.type,
+      argType,
+      input.fromLibrary === true,
+      // A member or a library global may be a library's unrecorded STRING(n).
+      this.hasMemberAccess(value) ||
+        this.symbolTables.globalScope.definedByLibrary(value.name),
+    );
     if (mismatch === undefined) return;
     // STRING and STRING of two default lengths (80 and 254): copied, unremarked
     if (defaultStringsOnly(input.type, argType)) {
@@ -7707,6 +7716,8 @@ export class TypeChecker {
   private inOutTypeMismatch(
     param: AccessType,
     arg: AccessType,
+    libraryParam = false,
+    libraryArg = false,
   ): { param: string; arg: string } | undefined {
     if (
       param.arrayDimensions !== undefined ||
@@ -7730,25 +7741,28 @@ export class TypeChecker {
     if (this.isSameStructuredAccess(param, arg)) return undefined;
     const describe = (t: AccessType): string => {
       const levels = referenceShapeOf(t)?.chain ?? [];
-      const length = (t as { maxLength?: number | string }).maxLength;
+      const length = t.maxLength;
       const base =
         length !== undefined ? `${t.name}(${String(length)})` : t.name;
       return describeReferenceShape({ chain: levels, base });
     };
-    // A STRING / WSTRING without a length here is one of 254 (the feature
-    // string_default_80 gives every plain one its length before this).
-    const key = (t: AccessType): string => {
+    // A STRING / WSTRING a variable of this compile declares without a length
+    // is one of 254 (the feature string_default_80 gives every plain one its
+    // length before this); any other may be an unrecorded STRING(n): as written.
+    const key = (t: AccessType, library: boolean): string => {
       const name = canonicalElementaryName(t.name.toUpperCase());
       const plainString =
+        !library &&
         (name === "STRING" || name === "WSTRING") &&
-        (t as { maxLength?: number | string }).maxLength === undefined;
+        t.maxLength === undefined;
       return describe({
         ...t,
         name,
         ...(plainString ? { maxLength: IEC_DEFAULT_STRING_LENGTH } : {}),
       });
     };
-    if (key(param) === key(arg)) return undefined;
+    const asWritten = libraryParam || libraryArg;
+    if (key(param, asWritten) === key(arg, asWritten)) return undefined;
     return {
       param: describe(param).toUpperCase(),
       arg: describe(arg).toUpperCase(),
@@ -9317,6 +9331,7 @@ export class TypeChecker {
       name: m.name,
       type: m.declaration.type,
       inOut,
+      fromLibrary: true,
     }));
   }
 
@@ -9349,7 +9364,15 @@ export class TypeChecker {
     return params.flatMap((p) => {
       const type = (p.declaration as VarDeclaration | undefined)?.type;
       return type
-        ? [{ name: p.name, type, inOut: p.isInOut, lengthUnrecorded: true }]
+        ? [
+            {
+              name: p.name,
+              type,
+              inOut: p.isInOut,
+              lengthUnrecorded: true,
+              fromLibrary: true,
+            },
+          ]
         : [];
     });
   }
@@ -9376,7 +9399,15 @@ export class TypeChecker {
       .flatMap((p) => {
         const type = (p.declaration as VarDeclaration | undefined)?.type;
         return type
-          ? [{ name: p.name, type, inOut: p.isInOut, lengthUnrecorded: true }]
+          ? [
+              {
+                name: p.name,
+                type,
+                inOut: p.isInOut,
+                lengthUnrecorded: true,
+                fromLibrary: true,
+              },
+            ]
           : [];
       });
   }
