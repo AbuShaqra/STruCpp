@@ -962,6 +962,7 @@ export class TypeChecker {
         }
         if (node.kind !== "BinaryExpression") return;
         const expr = node as BinaryExpression;
+        this.markInitialMixedSignBitwise(expr, scope);
         if (
           !["=", "<>", "<", ">", "<=", ">="].includes(expr.operator) ||
           this.refusedMixedComparisons.has(expr)
@@ -1017,6 +1018,74 @@ export class TypeChecker {
         visit(field.initialValue, global);
       }
     }
+  }
+
+  /**
+   * AND/OR/XOR of a signed and an unsigned integer in an initial value the
+   * checks above do not type: computed in the widened type, as in a body.
+   */
+  private markInitialMixedSignBitwise(
+    expr: BinaryExpression,
+    scope: Scope,
+  ): void {
+    if (
+      !["AND", "OR", "XOR"].includes(expr.operator) ||
+      expr.resolvedType !== undefined
+    ) {
+      return;
+    }
+    const left = this.initialIntegerType(expr.left, scope);
+    const right = this.initialIntegerType(expr.right, scope);
+    const widened =
+      left !== undefined && right !== undefined
+        ? this.mixedSignCommonType(left, right)
+        : undefined;
+    if (widened !== undefined) {
+      expr.computeAs = (widened as ElementaryType).name.toUpperCase();
+    }
+  }
+
+  /**
+   * The integer type of an initial value operand known without inference: a
+   * typed literal, a declared name, a resolved type, or AND/OR/XOR of those.
+   */
+  private initialIntegerType(
+    expr: Expression,
+    scope: Scope,
+  ): IECType | undefined {
+    let type: IECType | undefined;
+    switch (expr.kind) {
+      case "ParenthesizedExpression":
+        type = this.initialIntegerType(expr.expression, scope);
+        break;
+      case "LiteralExpression":
+        type =
+          expr.resolvedType ??
+          (expr.typePrefix !== undefined
+            ? ELEMENTARY_TYPES[expr.typePrefix.toUpperCase()]
+            : undefined);
+        break;
+      case "UnaryExpression":
+        type =
+          expr.resolvedType ?? this.initialIntegerType(expr.operand, scope);
+        break;
+      case "BinaryExpression": {
+        if (expr.resolvedType !== undefined) {
+          type = expr.resolvedType;
+        } else if (["AND", "OR", "XOR"].includes(expr.operator)) {
+          const l = this.initialIntegerType(expr.left, scope);
+          const r = this.initialIntegerType(expr.right, scope);
+          type =
+            l !== undefined && r !== undefined
+              ? this.bitwiseResultType(l, r)
+              : undefined;
+        }
+        break;
+      }
+      default:
+        type = this.knownOperandType(expr, scope);
+    }
+    return type !== undefined && this.isIntegerType(type) ? type : undefined;
   }
 
   /** An operand's type when known without inference: a literal, a declared name or a resolved type. */
@@ -1991,7 +2060,7 @@ export class TypeChecker {
     if (symbol === undefined) {
       this.refuseSelfMember(expr);
       // Don't report error here — Pass 3 undeclared-variable check handles this
-      return undefined;
+      return this.selfMemberType(expr);
     }
 
     const enumValueType = this.enumValueType(expr, symbol);
@@ -2036,10 +2105,9 @@ export class TypeChecker {
         if (step.kind === "field") {
           if (this.isUnionStorageType(currentTypeName)) inUnion = true;
           // Resolve struct/FB field (local AST + dependency-library FB members)
-          const fieldType = this.resolveFieldTypeAnywhere(
-            currentTypeName,
-            step.name,
-          );
+          const fieldType =
+            this.resolveFieldTypeAnywhere(currentTypeName, step.name) ??
+            this.numericPropertyType(currentTypeName, step.name);
           this.refuseInternalMember(currentTypeName, step.name, expr);
           if (fieldType) {
             currentTypeName = fieldType;
@@ -2512,7 +2580,12 @@ export class TypeChecker {
     }
     // Arithmetic operators return the "wider" type
     else if (["+", "-", "*", "/", "MOD", "**"].includes(expr.operator)) {
-      type = getCommonType(leftType, rightType) ?? leftType;
+      type =
+        expr.addressArithmetic === true
+          ? ELEMENTARY_TYPES["__XWORD"]
+          : (this.untypedWithBitString(expr, leftType, rightType) ??
+            getCommonType(leftType, rightType) ??
+            leftType);
     } else {
       type = leftType;
     }
@@ -2716,6 +2789,29 @@ export class TypeChecker {
       default:
         return false;
     }
+  }
+
+  /**
+   * `dw / 86400`, `3 + w`: an untyped integer constant with a bit string
+   * (BYTE, WORD, DWORD, LWORD, __XWORD) takes its type. Undefined otherwise.
+   */
+  private untypedWithBitString(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): IECType | undefined {
+    if (expr.operator === "**") return undefined;
+    const bitString = (t: IECType): boolean =>
+      t.typeKind === "elementary" &&
+      (STRICT_BIT_STRINGS.has(this.aliasBase((t as ElementaryType).name)) ||
+        this.aliasBase((t as ElementaryType).name) === "__XWORD");
+    if (this.untypedConstantKind(expr.left) === "INT" && bitString(rightType)) {
+      return rightType;
+    }
+    if (this.untypedConstantKind(expr.right) === "INT" && bitString(leftType)) {
+      return leftType;
+    }
+    return undefined;
   }
 
   /** The elementary type a variable path names through `^`, fields and subscripts, if any. */
@@ -3618,6 +3714,17 @@ export class TypeChecker {
     const ownMethod = this.ownMethod(expr.functionName);
     if (ownMethod) {
       const retType = this.methodReturnType(ownMethod);
+      if (retType) expr.resolvedType = retType;
+      return retType;
+    }
+
+    // `fb.M()`, `THIS^.M()`, `SUPER^.M()`: the method's declared result
+    const dottedMethod =
+      expr.instance === undefined && expr.functionName.includes(".")
+        ? this.dottedMethodAnywhere(expr.functionName, scope)
+        : undefined;
+    if (dottedMethod) {
+      const retType = this.methodReturnType(dottedMethod);
       if (retType) expr.resolvedType = retType;
       return retType;
     }
@@ -4894,6 +5001,117 @@ export class TypeChecker {
     );
   }
 
+  /**
+   * `THIS^.x`, `SUPER^.x` and a member or PROPERTY of the enclosing FB reached
+   * by its bare name from a base: the declared type, set on the expression
+   * when it is an elementary number, bit string, BOOL or duration/date.
+   */
+  private selfMemberType(expr: VariableExpression): IECType | undefined {
+    const fbName = this.currentFBName;
+    if (fbName === undefined || !this.ast) return undefined;
+    const root = expr.name.toUpperCase();
+    let base: AccessType | undefined;
+    if (root === "THIS" || root === "SUPER") {
+      const owner = root === "THIS" ? fbName : this.fbExtends(fbName);
+      base =
+        owner === undefined
+          ? undefined
+          : { name: owner, referenceKind: "none" };
+    } else {
+      base =
+        this.inheritedMemberType(expr.name) ??
+        this.fbPropertyType(fbName, expr.name);
+    }
+    if (base === undefined) return undefined;
+    const reached = resolveAccessType(base, expr, this.memberOrPropertyLookup);
+    // A REFERENCE TO is read as its target
+    const type =
+      reached?.referenceKind === "reference_to" &&
+      (reached.referenceChain?.length ?? 1) === 1
+        ? { ...reached, referenceKind: "none" as const }
+        : reached;
+    if (
+      type === undefined ||
+      type.arrayDimensions !== undefined ||
+      (type.referenceKind ?? "none") !== "none"
+    ) {
+      return undefined;
+    }
+    const elementary = this.nonTextElementary(type.name);
+    if (elementary === undefined) return undefined;
+    const resolved = this.resolveNamedType(type.name);
+    expr.resolvedType =
+      resolved.typeKind === "elementary" ? resolved : elementary;
+    return expr.resolvedType;
+  }
+
+  /** A PROPERTY of an FB of this compile whose type is elementary and no text: its type name. */
+  private numericPropertyType(
+    ownerName: string,
+    propertyName: string,
+  ): string | undefined {
+    const name = this.fbPropertyType(ownerName, propertyName)?.name;
+    return name !== undefined && this.nonTextElementary(name) !== undefined
+      ? name
+      : undefined;
+  }
+
+  /** The elementary type `name` is or aliases, when it is no STRING, WSTRING, CHAR or WCHAR. */
+  private nonTextElementary(name: string): ElementaryType | undefined {
+    const elementary = ELEMENTARY_TYPES[this.aliasBase(name)];
+    return elementary === undefined ||
+      /^W?(STRING|CHAR)$/.test(elementary.name.toUpperCase())
+      ? undefined
+      : elementary;
+  }
+
+  /** The base an FB of this compile EXTENDS, if any. */
+  private fbExtends(fbName: string): string | undefined {
+    const upper = fbName.toUpperCase();
+    return this.ast?.functionBlocks.find((f) => f.name.toUpperCase() === upper)
+      ?.extends;
+  }
+
+  /** The declared type of a PROPERTY of an FB or interface of this compile, or of a base of it. */
+  private fbPropertyType(
+    ownerName: string,
+    propertyName: string,
+  ): TypeReference | undefined {
+    if (!this.ast) return undefined;
+    const prop = propertyName.toUpperCase();
+    const pending = [ownerName.toUpperCase()];
+    const seen = new Set<string>();
+    while (pending.length > 0) {
+      const name = pending.shift()!;
+      if (seen.has(name) || seen.size > 64) continue;
+      seen.add(name);
+      const fb = this.ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === name,
+      );
+      const itf = this.ast.interfaces.find(
+        (i) => i.name.toUpperCase() === name,
+      );
+      const found = (fb?.properties ?? itf?.properties ?? []).find(
+        (p) => p.name.toUpperCase() === prop,
+      );
+      if (found) return found.type;
+      if (fb?.extends !== undefined) pending.push(fb.extends.toUpperCase());
+      for (const b of itf?.extends ?? []) pending.push(b.toUpperCase());
+    }
+    return undefined;
+  }
+
+  /** `accessLookup`, with a PROPERTY of an FB of this compile read as a member of its type. */
+  private readonly memberOrPropertyLookup: AccessLookup = {
+    field: (typeName, fieldName) => {
+      const member = this.lookupMember(typeName, fieldName);
+      if (member) return member;
+      const type = this.fbPropertyType(typeName, fieldName);
+      return type === undefined ? undefined : { type };
+    },
+    arrayElement: (typeName) => this.accessLookup.arrayElement(typeName),
+  };
+
   /** The declared type of a member the enclosing FB inherits from a base. */
   private inheritedMemberType(name: string): TypeReference | undefined {
     const upper = name.toUpperCase();
@@ -5719,27 +5937,9 @@ export class TypeChecker {
         : sym?.kind === "variable"
           ? (sym.declaration as VarDeclaration | undefined)?.type.name
           : undefined;
-    const prop = target.fieldAccess[0]!.toUpperCase();
-    const pending = owner !== undefined ? [owner.toUpperCase()] : [];
-    const seen = new Set<string>();
-    while (pending.length > 0) {
-      const name = pending.shift()!;
-      if (seen.has(name) || seen.size > 64) continue;
-      seen.add(name);
-      const fb = this.ast.functionBlocks.find(
-        (f) => f.name.toUpperCase() === name,
-      );
-      const itf = this.ast.interfaces.find(
-        (i) => i.name.toUpperCase() === name,
-      );
-      const found = (fb?.properties ?? itf?.properties ?? []).find(
-        (p) => p.name.toUpperCase() === prop,
-      );
-      if (found) return found.type;
-      if (fb?.extends !== undefined) pending.push(fb.extends.toUpperCase());
-      for (const base of itf?.extends ?? []) pending.push(base.toUpperCase());
-    }
-    return undefined;
+    return owner === undefined
+      ? undefined
+      : this.fbPropertyType(owner, target.fieldAccess[0]!);
   }
 
   /** The declared type a variable access reaches (`p`, `pu^`, `s.pu^`). */

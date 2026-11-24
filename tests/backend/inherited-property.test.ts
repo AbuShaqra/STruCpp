@@ -58,7 +58,7 @@ describe("PROPERTY inherited from a base FB", () => {
       END_FUNCTION_BLOCK`,
       ["+self_caret"],
     );
-    expect(code).toContain("this->set_P(FBA::get_P() + this->get_P());");
+    expect(code).toContain("this->set_P(strucpp::iec_add<DINT_t>({FBA::get_P(), this->get_P()}));");
     expect(code).toContain("M_result = this->get_P();");
   });
 
@@ -90,11 +90,11 @@ describe("PROPERTY inherited from a base FB", () => {
       END_METHOD
         o := P;
       END_FUNCTION_BLOCK`);
-    expect(code).toContain("this->set_P(this->get_P() + 1);");
+    expect(code).toContain("this->set_P(strucpp::iec_add<DINT_t>({this->get_P(), 1}));");
     expect(code).toContain("M_result = this->get_Q();");
     expect(code).toContain("O = this->get_P();");
-    expect(code).toContain("Q_result = this->get_P() * 2;");
-    expect(code).toContain("this->set_P(Q + 100);");
+    expect(code).toContain("Q_result = strucpp::iec_mul<DINT_t>({this->get_P(), 2});");
+    expect(code).toContain("this->set_P(strucpp::iec_add<DINT_t>({Q, 100}));");
     // The base's own accessors keep their result and value parameter.
     expect(code).toContain("P_result = _P;");
     expect(code).toContain("_P = P;");
