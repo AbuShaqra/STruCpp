@@ -124,12 +124,23 @@ END_PROGRAM
 
   it("casts a computed argument of a function with no mixed-type overload to the deduced type", () => {
     const cpp = generate(`PROGRAM Main
-VAR dw : DWORD; w : WORD; r : LINT; END_VAR
+VAR dw : DWORD; w : WORD; i : INT; r : LINT; END_VAR
 r := AND(dw + 1, dw, 16#FF);
 r := ADD(w + 1, w, 1);
 r := LIMIT(0, w + 1, 100000);
+r := ADD(w + 1, w * 2);
+r := MAX(w + 1, w * 2, 1);
+r := EXPT(i, i * 2);
 END_PROGRAM
 `);
+    expect(cpp).toContain(
+      "MAX(strucpp::iec_add<DINT_t>({W, 1}), strucpp::iec_mul<DINT_t>({W, 2}), static_cast<IEC_WORD>(1))",
+    );
+    expect(cpp).toContain("EXPT(I, strucpp::iec_mul<DINT_t>({I, 2}))");
+    // Only beside an IECVar argument: all computed arguments deduce alike already
+    expect(cpp).toContain(
+      "ADD(strucpp::iec_add<DINT_t>({W, 1}), strucpp::iec_mul<DINT_t>({W, 2}))",
+    );
     expect(cpp).toContain(
       "AND(static_cast<IEC_DWORD>(DW + 1), DW, static_cast<IEC_DWORD>(0xFF))",
     );

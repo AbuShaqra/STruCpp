@@ -8733,14 +8733,29 @@ export class CodeGenerator {
       const t = argTypes[i];
       if (t && t !== dominant && this.canImplicitWiden(t, dominant)) {
         args[i] = `static_cast<IEC_${dominant}>(${args[i]})`;
-      } else if (
-        t === dominant &&
-        !mixedOverloads &&
-        INTEGER_RANGES[dominant] !== undefined &&
-        stripEnEno([...argExprs]).length > 1 &&
-        COMPUTED_ARGUMENT_KINDS.has(argExprs[i]!.value.kind)
+      }
+    }
+
+    // A computed integer is a raw C++ number: beside a variable (an IECVar<T>)
+    // the template would not deduce, so it is passed as IEC_<dominant> there.
+    // EXPT takes its operands at different types already.
+    if (
+      mixedOverloads ||
+      name === "EXPT" ||
+      INTEGER_RANGES[dominant] === undefined
+    ) {
+      return;
+    }
+    const isVariable = argExprs.map(
+      (a) => !isEnEnoArgument(a) && a.value.kind === "VariableExpression",
+    );
+    for (let i = 0; i < args.length && i < argExprs.length; i++) {
+      if (
+        argTypes[i] === dominant &&
+        !literalIndices.includes(i) &&
+        COMPUTED_ARGUMENT_KINDS.has(argExprs[i]!.value.kind) &&
+        isVariable.some((v, j) => v && j !== i)
       ) {
-        // An integer computed value is a raw C++ number, not the IECVar<T> the template deduces
         args[i] = `static_cast<IEC_${dominant}>(${args[i]})`;
       }
     }
