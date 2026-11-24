@@ -4,7 +4,8 @@
  * A library FUNCTION's manifest records its parameters' POINTER TO, REF_TO
  * and ARRAY shapes (`parameterShapes`), so an address passed to a narrow
  * value input of it is refused; an archive written before, without the
- * marker, reads its parameters as before.
+ * marker, has its POINTER TO and REF_TO levels read back from its functions'
+ * C++ prototypes, so it is checked the same way.
  */
 import { describe, it, expect } from "vitest";
 import { analyze, compileStlib } from "../../src/index.js";
@@ -49,9 +50,6 @@ VAR x : INT; dx : DINT; px : POINTER TO BYTE; arr : ARRAY[0..3] OF INT; ap : ARR
 n := F_Shapes(p := ADR(x), r := REF(dx), pp := ADR(px), a := arr, ap := ap, rr := x, d := ${d});
 END_PROGRAM
 `;
-
-const NARROW = (fn: string, type: string): string =>
-  `${fn} gives a 64-bit address, which ${type} cannot hold; use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT`;
 
 describe("library FUNCTION parameter shapes", () => {
   it("records POINTER TO, REF_TO and ARRAY parameters in the manifest", () => {
@@ -101,9 +99,9 @@ describe("library FUNCTION parameter shapes", () => {
     ]);
   });
 
-  // A pre-parameterShapes archive keeps REFERENCE TO, so its inputs are
-  // checked, by their bare names: P as INT, R as DINT, PP as BYTE.
-  it("reads an archive written without parameterShapes as before", () => {
+  // A pre-parameterShapes archive records P, R and PP as INT, DINT and BYTE;
+  // their levels come back from the chunk's prototype.
+  it("reads an archive written without parameterShapes by its C++ prototypes", () => {
     const old = JSON.parse(JSON.stringify(library())) as StlibArchive;
     delete old.manifest.parameterShapes;
     for (const p of old.manifest.functions[0]!.parameters) {
@@ -114,19 +112,20 @@ describe("library FUNCTION parameter shapes", () => {
       delete p.elementReferenceChain;
     }
     const archive = loadStlibArchive(old);
-    expect(
-      archive.manifest.functions[0]!.parameters.find((p) => p.name === "RR")
-        ?.referenceKind,
-    ).toBe("reference_to");
-    expect(
-      analyze(CALL("0"), {
-        features: FEATURES,
-        libraries: [archive],
-      }).errors.map((e) => e.message),
-    ).toEqual([
-      NARROW("ADR", "INT"),
-      NARROW("REF", "DINT"),
-      NARROW("ADR", "BYTE"),
+    const byName = (n: string) =>
+      archive.manifest.functions[0]!.parameters.find((p) => p.name === n);
+    expect(byName("RR")?.referenceKind).toBe("reference_to");
+    expect(byName("P")?.referenceKind).toBe("pointer_to");
+    expect(byName("R")?.referenceKind).toBe("ref_to");
+    expect(byName("PP")).toMatchObject({
+      referenceKind: "pointer_to",
+      referenceChain: ["pointer_to", "pointer_to"],
+    });
+    expect(byName("D")?.referenceKind).toBeUndefined();
+    const opts = { features: FEATURES, libraries: [archive] };
+    expect(analyze(CALL("0"), opts).errors).toEqual([]);
+    expect(analyze(CALL("ADR(x)"), opts).errors.map((e) => e.message)).toEqual([
+      "ADR gives a 64-bit address, which DWORD cannot hold; use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT",
     ]);
   });
 
