@@ -4,7 +4,7 @@
  * Debug table gaps: an instance of a FB that EXTENDS another lists the
  * inherited members (user and library bases, retained ones included);
  * `incomplete` retain warnings are one per declaration with their places; a
- * library type whose archive records no layout says so.
+ * library type whose archive records its layout lists its leaves.
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
@@ -119,14 +119,68 @@ ${CFG.replace("PROGRAM P1 WITH T1 : Main;", "PROGRAM P1 WITH T1 : Main;\nPROGRAM
   });
 });
 
-describe("debug table: library types without a recorded layout", () => {
-  it("say what their archive lacks", () => {
+/** Archives as built before enumeration values and array shapes were recorded. */
+const withoutShapes = (archives: ReturnType<typeof discoverStlibs>) =>
+  archives.map((a) => ({
+    ...a,
+    manifest: {
+      ...a.manifest,
+      types: (a.manifest.types ?? []).map(
+        ({
+          members: _members,
+          arrayDimensions: _dims,
+          elementTypeName: _element,
+          fields,
+          ...rest
+        }) => ({
+          ...rest,
+          ...(fields === undefined
+            ? {}
+            : {
+                fields: fields.map(
+                  ({ arrayDimensions: _fd, elementTypeName: _fe, ...field }) =>
+                    field,
+                ),
+              }),
+        }),
+      ),
+    },
+  }));
+
+describe("debug table: library types whose archive records their layout", () => {
+  it("lists an array field's elements and an enumeration as its base", () => {
     const r = compile(
       `PROGRAM Main
 VAR e : ESR_DATA; st : SMC_AXIS_STATE; END_VAR
 END_PROGRAM
 ${CFG}`,
       { libraries: libs() },
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.debugMap!.leaves.map((l) => `${l.path} ${l.type}`)).toEqual([
+      "P1.E.TYP BYTE",
+      "P1.E.DS DT",
+      "P1.E.TS TIME",
+      ...Array.from({ length: 8 }, (_, i) => `P1.E.DATA[${i}] BYTE`),
+      "P1.ST INT",
+    ]);
+    // Only the STRING(10) field stays out, for its length
+    expect(
+      r.warnings
+        .map((w) => w.message)
+        .filter((m) => m.includes("not debuggable")),
+    ).toEqual([
+      "P1.E.ADRESS is not debuggable: declared STRING(10), but the debug dispatch addresses strings as STRING(254). It is declared in the library type ESR_DATA, so it cannot be exposed here.",
+    ]);
+  });
+
+  it("say what an older archive lacks", () => {
+    const r = compile(
+      `PROGRAM Main
+VAR e : ESR_DATA; st : SMC_AXIS_STATE; END_VAR
+END_PROGRAM
+${CFG}`,
+      { libraries: withoutShapes(libs()) },
     );
     expect(r.errors).toEqual([]);
     const debug = r.warnings

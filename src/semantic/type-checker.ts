@@ -10,6 +10,7 @@
  * Sub-Phase C: Validates type rules (assignment compatibility, conditions, FOR vars, function args).
  */
 
+import { spellingsOf } from "./declared-spellings.js";
 import { IEC_DEFAULT_STRING_LENGTH } from "./string-default-length.js";
 import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import type {
@@ -8689,9 +8690,15 @@ export class TypeChecker {
         const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
         if (reported.has(key)) return;
         reported.add(key);
-        const owner = this.sourceEnumOwning(e.name) ?? "";
+        // As declared: the enumeration's name is not quoted, so not re-spelled later
+        const spelled = (n: string): string =>
+          (this.ast === undefined
+            ? undefined
+            : spellingsOf(this.ast)?.spellings().get(n.toUpperCase())) ?? n;
+        const owner = spelled(this.sourceEnumOwning(e.name) ?? "");
+        const value = spelled(e.name);
         this.addError(
-          `'${e.name}' is both a value of enumeration ${owner} and a library global; write ${owner}#${e.name} for the value`,
+          `'${value}' is both a value of enumeration ${owner} and a library global; write ${owner}#${value} for the value`,
           span.startLine,
           span.startCol,
           span.file,
