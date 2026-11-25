@@ -2514,7 +2514,7 @@ export class CodeGenerator {
           this.earlyLibraryTypeChunks.has(`${archive.manifest.name}/${c.name}`),
       );
       if (early.length === 0) continue;
-      this.emitHeader(`// Library types: ${archive.manifest.name}`);
+      this.emitHeader(`// Library: ${archive.manifest.name}`);
       for (const chunk of early) {
         for (const line of chunk.header.split("\n")) this.emitHeader(line);
       }
