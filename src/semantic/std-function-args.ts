@@ -135,6 +135,19 @@ export function bindStdFunctionArguments(
     });
     failed = true;
   }
+  // A fixed signature's inputs after the last one given: missing too, when
+  // more are missing than arguments failed to bind (each may be one of them).
+  const unbound = issues.filter(
+    (i) => i.argument !== undefined && i.severity === "error",
+  ).length;
+  if (failed && !variadic && params.length - slots.size > unbound) {
+    for (let i = count; i < params.length; i++) {
+      issues.push({
+        severity: "error",
+        message: `Function '${functionName}' is missing parameter '${slotName(i, params)}'`,
+      });
+    }
+  }
   if (failed) return { issues, failed };
 
   const ordered: Argument[] = [];

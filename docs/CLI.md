@@ -340,15 +340,18 @@ earlier one is left out:
 
 - an error at the same position as an ARRAY bound, inline type or CONFIGURATION/task error (a negative
   task `INTERVAL` is reported once, not also as a negative `TIME` literal);
-- a semantic error on a line where the parser recovered from a syntax or lexer error;
-- an error on a line that uses a name the lexer read without a refused character, when that name then
-  collides with another (`xä` and `x` both read `X`);
-- an error on a line that uses, or that names, a variable declared twice with two types or a POU
-  declared twice (the analysis takes one declaration, and the error may be about the other);
-- a name a global variable list error left unresolved (`GVL.nope` is not also undeclared), or one a
-  FUNCTION_BLOCK may inherit from a base that is undefined;
-- the argument count or a missing input of a call whose named arguments were refused;
+- at the declaration of a name the lexer read without a refused character, what follows from it (`xä`
+  read as `x`, then `x` declared twice; `ınt` read as an undefined type `NT`);
+- a type error in a statement that uses a variable its POU declares twice with two types (the analysis
+  takes one declaration, and the error may be about the other); the duplicate and every other error stay;
+- `Undeclared variable 'T'` for `T.M` when `T` is reported as an undefined type;
+- a name a global variable list error left unresolved (`GVL.nope` is not also undeclared);
+- the argument count of a standard function call whose named arguments were refused, and missing inputs
+  unless more are missing than arguments were misnamed (each may have been meant for one);
 - an internal failure of analysis on a tree the parser recovered.
+
+On a file with syntax errors the analysis runs on the tree the parser recovered, and every error it finds
+there is reported, also on the line of the syntax error.
 
 Where a later phase cannot run on a broken earlier one, it does not run:
 
@@ -357,7 +360,7 @@ Where a later phase cannot run on a broken earlier one, it does not run:
 | The dialect does not resolve (`--dialect`, `--dialect-file`, `--feature`)               | Everything: the one error is the dialect's                                                                    |
 | A file's conditional pragmas or IL bodies have an error                                 | Compile mode: analysis of every file (`--check` goes on with the text as prepared)                            |
 | The parser produces no tree, or building or lowering the AST throws (an internal error) | Compile mode: analysis (`--check` analyses what was built)                                                    |
-| A file has syntax errors                                                                | Nothing, but analysis sees the tree the parser recovered (see above)                                          |
+| A file has syntax errors                                                                | Nothing: analysis runs on the tree the parser recovered                                                       |
 | A semantic pass throws (an internal error, reported as `Semantic analysis failed: ...`) | The semantic passes after it; the errors found before it stay                                                 |
 | Analysis reports an error                                                               | C++ generation and the refusals only it makes (UNION, FB_init, alias `REFERENCE TO` uses); no file is written |
 

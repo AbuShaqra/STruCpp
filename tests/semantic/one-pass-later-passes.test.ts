@@ -140,12 +140,31 @@ describe("no echo of an earlier error", () => {
     ).toEqual(["3:6 Function 'INSERT' is missing parameter 'IN2'"]);
   });
 
-  it("does not ask for an input a misnamed argument may be", () => {
+  it("asks only for the inputs more than the misnamed arguments leave out", () => {
+    const F =
+      "FUNCTION F : INT\nVAR_INPUT a : INT; c : INT; d : INT; END_VAR\nF := a;\nEND_FUNCTION\n";
     expect(
       errorsOf(
-        "FUNCTION F : INT\nVAR_INPUT a : INT; END_VAR\nF := a;\nEND_FUNCTION\nPROGRAM Main\nVAR i : INT; END_VAR\ni := F(b := 1);\nEND_PROGRAM\n",
+        `${F}PROGRAM Main\nVAR i : INT; END_VAR\ni := F(b := 1, c := 2, d := 3);\nEND_PROGRAM\n`,
       ),
     ).toEqual(["7:8 Function 'F' has no parameter named 'B'"]);
+    expect(
+      errorsOf(
+        `${F}PROGRAM Main\nVAR i : INT; END_VAR\ni := F(zz := 1);\nEND_PROGRAM\n`,
+      ),
+    ).toEqual([
+      "7:8 Function 'F' has no parameter named 'ZZ'",
+      "7:6 'F' is missing required inputs: A, C, D",
+    ]);
+    expect(
+      errorsOf(
+        "PROGRAM Main\nVAR i : INT; END_VAR\ni := LIMIT(MN := 1, MN := 2);\nEND_PROGRAM\n",
+      ),
+    ).toEqual([
+      "3:21 Parameter 'MN' of 'LIMIT' is given more than once",
+      "3:6 Function 'LIMIT' is missing parameter 'IN'",
+      "3:6 Function 'LIMIT' is missing parameter 'MX'",
+    ]);
   });
 
   it("does not report a name a global-list error left unresolved", () => {
@@ -159,15 +178,30 @@ describe("no echo of an earlier error", () => {
     ]);
   });
 
-  it("reports nothing else on a line the parser recovered", () => {
+  it("reports a negative task INTERVAL once", () => {
     expect(
       errorsOf(
-        "PROGRAM Main\nVAR i : INT; j : INT;\ni := 1;\nj := i + 2;\nEND_PROGRAM\n",
+        `${program("i := 1;")}CONFIGURATION C\nRESOURCE R ON PLC\nTASK T1(INTERVAL := T#-10ms, PRIORITY := 1);\nPROGRAM I1 WITH T1 : Main;\nEND_RESOURCE\nEND_CONFIGURATION\n`,
       ),
-    ).toEqual(["3:3 Expected `Colon`, found `:=`."]);
+    ).toEqual(["9:21 Task 'T1' INTERVAL must not be negative"]);
   });
 
-  it("reports nothing about a name the lexer read without a refused character", () => {
+  it("leaves out only the type errors a variable declared twice with two types makes", () => {
+    // The uses of X in Main; X elsewhere, ZZ, and the other statements stay
+    expect(
+      errorsOf(
+        "FUNCTION F : INT\nVAR_INPUT a : INT; END_VAR\nF := a + x;\nEND_FUNCTION\nFUNCTION_BLOCK FB2\nVAR x : INT; d : DATE; t : TIME; END_VAR\nx := 1; d := t;\nEND_FUNCTION_BLOCK\nPROGRAM Main\nVAR x : INT; x : STRING; i : INT; r : REAL; b : INT; END_VAR\nx := 'a';\ni := x + zz; b := r MOD 2;\nEND_PROGRAM\n",
+      ),
+    ).toEqual([
+      "10:14 Symbol 'X' already defined in scope 'MAIN'",
+      `12:19 ${MOD_ERROR}`,
+      "7:14 Cannot assign TIME to DATE",
+      "12:10 Undeclared variable 'ZZ'",
+      "3:10 Undeclared variable 'X'",
+    ]);
+  });
+
+  it("reports nothing that follows from a name the lexer read without a refused character", () => {
     expect(
       errorsOf(
         "TYPE NT : STRUCT a : INT; END_STRUCT; END_TYPE\nPROGRAM Main\nVAR xä : NT; x : INT; i : INT; r : REAL; END_VAR\nx := 1;\ni := r MOD 2;\nEND_PROGRAM\n",
@@ -178,44 +212,21 @@ describe("no echo of an earlier error", () => {
     ]);
   });
 
-  it("reports a negative task INTERVAL once", () => {
+  it("reports T.M of an undefined type T once, as the undefined type", () => {
     expect(
       errorsOf(
-        `${program("i := 1;")}CONFIGURATION C\nRESOURCE R ON PLC\nTASK T1(INTERVAL := T#-10ms, PRIORITY := 1);\nPROGRAM I1 WITH T1 : Main;\nEND_RESOURCE\nEND_CONFIGURATION\n`,
-      ),
-    ).toEqual(["9:21 Task 'T1' INTERVAL must not be negative"]);
-  });
-
-  it("reports nothing about the uses of a name declared twice with two types", () => {
-    expect(
-      errorsOf(
-        "PROGRAM Main\nVAR a : INT; a : STRING; i : INT; r : REAL; END_VAR\na := 'x';\na := 1;\ni := r MOD 2;\nEND_PROGRAM\n",
+        "PROGRAM Main\nVAR s : TrafficState; i : INT; END_VAR\nCASE s OF\n  TrafficState.RED: i := 1;\nEND_CASE;\ns := TrafficState.RED;\nEND_PROGRAM\n",
       ),
     ).toEqual([
-      "2:14 Symbol 'A' already defined in scope 'MAIN'",
-      `5:6 ${MOD_ERROR}`,
+      "2:9 Undefined type 'TRAFFICSTATE' in PROGRAM 'MAIN'",
+      "3:6 CASE selector must be an integer, bit, or enum type, got TRAFFICSTATE",
     ]);
-  });
-
-  it("reports nothing about the uses of a FUNCTION_BLOCK declared twice", () => {
+    // Never declared as a type: an undeclared name, as before
     expect(
       errorsOf(
-        "FUNCTION_BLOCK K\nVAR_INPUT q : INT; END_VAR\nEND_FUNCTION_BLOCK\nFUNCTION_BLOCK K\nVAR_INPUT z : INT; END_VAR\nEND_FUNCTION_BLOCK\nPROGRAM Main\nVAR k : K; i : INT; r : REAL; END_VAR\nk(z := 2);\ni := r MOD 2;\nEND_PROGRAM\n",
+        "PROGRAM Main\nVAR i : INT; END_VAR\ni := Nope.RED;\nEND_PROGRAM\n",
       ),
-    ).toEqual([
-      "4:1 Duplicate function block declaration: K",
-      `10:6 ${MOD_ERROR}`,
-    ]);
-  });
-
-  it("takes a name in a block with an undefined base as inherited", () => {
-    expect(
-      errorsOf(
-        "FUNCTION_BLOCK K EXTENDS Nope\nVAR q : INT; END_VAR\nq := inherited + 1;\nEND_FUNCTION_BLOCK\n",
-      ),
-    ).toEqual([
-      "1:1 Undefined type 'NOPE' in EXTENDS clause of FUNCTION_BLOCK 'K'",
-    ]);
+    ).toEqual(["3:6 Undeclared variable 'NOPE'"]);
   });
 
   it("still generates nothing after an error", () => {
@@ -223,6 +234,55 @@ describe("no echo of an earlier error", () => {
     expect(r.success).toBe(false);
     expect(r.cppCode).toBe("");
     expect(r.headerCode).toBe("");
+  });
+});
+
+describe("what development's analysis reported stays", () => {
+  const P = (body: string): string =>
+    `PROGRAM Main\nVAR\n  i : INT;\n  r : REAL;\n  b : BOOL;\nEND_VAR\n${body}\nEND_PROGRAM\n`;
+
+  it("an error before a syntax error on the same line", () => {
+    expect(errorsOf(P("i := zz; i := 3 +;"))).toContain(
+      "7:6 Undeclared variable 'ZZ'",
+    );
+    expect(errorsOf(P("i := r MOD 2; i := 3 +;"))).toContain(
+      `7:6 ${MOD_ERROR}`,
+    );
+    expect(
+      errorsOf(
+        "PROGRAM Main\nVAR i : INT; END_VAR\ni := x $ 1;\nEND_PROGRAM\n",
+      ),
+    ).toContain("3:6 Undeclared variable 'X'");
+  });
+
+  it("a statement on the line after a missing semicolon", () => {
+    expect(errorsOf(P("i := 1\ni := zz;"))).toContain(
+      "8:6 Undeclared variable 'ZZ'",
+    );
+  });
+
+  it("the statements of a file being typed (no END_PROGRAM yet)", () => {
+    expect(
+      errorsOf(
+        "PROGRAM Main\nVAR\n  x : INT;\nEND_VAR\nx := missingVar + 1;\n",
+      ),
+    ).toContain("5:6 Undeclared variable 'MISSINGVAR'");
+  });
+
+  it("a misnamed argument of a FUNCTION declared twice", () => {
+    expect(
+      errorsOf(
+        "FUNCTION F : INT\nVAR_INPUT a : INT; END_VAR\nF := a;\nEND_FUNCTION\nFUNCTION F : INT\nVAR_INPUT a : INT; END_VAR\nF := a;\nEND_FUNCTION\nPROGRAM Main\nVAR i : INT; END_VAR\ni := F(a := 1, b := 2);\nEND_PROGRAM\n",
+      ),
+    ).toContain("11:16 Function 'F' has no parameter named 'B'");
+  });
+
+  it("an undeclared name in a block whose base is undefined", () => {
+    expect(
+      errorsOf(
+        "FUNCTION_BLOCK Der EXTENDS Basse\nVAR_INPUT q : INT; END_VAR\nq := 1; zz := 1;\nEND_FUNCTION_BLOCK\n",
+      ),
+    ).toContain("3:9 Undeclared variable 'ZZ'");
   });
 });
 

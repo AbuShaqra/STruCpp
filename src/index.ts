@@ -12,7 +12,6 @@ import {
   CompileResult,
   CompileError,
   AnalysisResult,
-  type SourceSpan,
 } from "./types.js";
 import { withYieldedFunctions } from "./library/yield-library.js";
 import { parse as parseSource } from "./frontend/parser.js";
@@ -45,7 +44,10 @@ import type {
   TypeReference,
   ASTNode,
   VariableExpression,
-  VarDeclaration,
+  Expression,
+  MethodCallExpression,
+  RefExpression,
+  RefAssignStatement,
 } from "./frontend/ast.js";
 import { mergeCompilationUnits } from "./merge.js";
 import { lowerInlineTypes } from "./frontend/lower-inline-types.js";
@@ -597,178 +599,145 @@ function prepareFile(
   };
 }
 
-/** Where the parse of one file recovered (see {@link recoveryOf}). */
-interface Recovery {
-  /** Lines with a parse error, or a lexer error other than a refused name character. */
-  lines: Set<number>;
-  /** Each name the lexer read without a refused character (`xä` as `X`) → the lines using it. */
-  names: Map<string, Set<number>>;
+/**
+ * True when some POU passes a VAR_EXTERNAL it declares as a call argument
+ * (a VAR_IN_OUT binding, `ADR(g)`, `REF(g)`) or takes its reference: only
+ * then can code generation give a shared-global race warning.
+ */
+function mayBindSharedGlobal(ast: CompilationUnit): boolean {
+  for (const pou of [
+    ...ast.programs,
+    ...ast.functionBlocks,
+    ...ast.functions,
+  ]) {
+    const blocks = [
+      ...pou.varBlocks,
+      ...("methods" in pou ? pou.methods.flatMap((m) => m.varBlocks) : []),
+    ];
+    const externals = new Set(
+      blocks
+        .filter((b) => b.blockType === "VAR_EXTERNAL")
+        .flatMap((b) => b.declarations.flatMap((d) => d.names))
+        .map((n) => n.toUpperCase()),
+    );
+    if (externals.size === 0) continue;
+    const isExternal = (e: Expression | undefined): boolean =>
+      e?.kind === "VariableExpression" && externals.has(e.name.toUpperCase());
+    let found = false;
+    walkAST(pou, (node) => {
+      if (
+        ((node.kind === "FunctionCallExpression" ||
+          node.kind === "MethodCallExpression") &&
+          (
+            node as FunctionCallExpression | MethodCallExpression
+          ).arguments.some((a) => isExternal(a.value))) ||
+        (node.kind === "RefExpression" &&
+          isExternal((node as RefExpression).operand)) ||
+        (node.kind === "RefAssignStatement" &&
+          isExternal((node as RefAssignStatement).source))
+      ) {
+        found = true;
+      }
+      return !found;
+    });
+    if (found) return true;
+  }
+  return false;
 }
 
-/** Where the parse of `text`, with these lexer and parse errors, recovered. */
-function recoveryOf(
-  text: string,
-  parseErrors: readonly CompileError[],
-): Recovery {
-  const refusal = (e: CompileError): boolean =>
-    e.message.includes(" is not allowed in a name: ");
-  const lines = new Set(
-    parseErrors.filter((e) => !refusal(e)).map((e) => e.line),
-  );
-  const names = new Map<string, Set<number>>();
-  const refusals = parseErrors.filter(refusal);
-  if (refusals.length === 0) return { lines, names };
-  const identifiers = tokenize(text).tokens.filter(
-    (t) => t.tokenType.name === "Identifier",
-  );
-  for (const e of refusals) {
-    for (const t of identifiers) {
-      const start = t.startColumn ?? 0;
-      const end = t.endColumn ?? start;
-      if (
-        t.startLine === e.line &&
-        start <= e.column + 1 &&
-        e.column <= end + 1
-      ) {
-        names.set(t.image.toUpperCase(), new Set());
+/**
+ * The starts (`file:line:column`) of the names in a declaration that the
+ * lexer read without a character it refused, or that are spelled as one
+ * such name: `ıx : INT` is read as `x`, and what analysis says at a
+ * declaration of `x` (declared twice, an undefined type `NT` for `ınt`)
+ * follows from the refused character, which is reported.
+ */
+function refusedNameDeclarations(
+  ast: CompilationUnit,
+  sources: ReadonlyMap<string, string>,
+  lexErrors: ReadonlyMap<string, readonly CompileError[]>,
+): Set<string> {
+  const starts: Array<{ file: string; line: number; col: number }> = [];
+  for (const [file, errs] of lexErrors) {
+    const text = sources.get(file);
+    if (text === undefined) continue;
+    const lineStart = [0];
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === "\n") lineStart.push(i + 1);
+    }
+    const refusedAt = errs.filter((e) => {
+      const code =
+        text.codePointAt((lineStart[e.line - 1] ?? 0) + e.column - 1) ?? 0;
+      return code >= 0x7f || (code < 0x20 && code !== 0x09);
+    });
+    if (refusedAt.length === 0) continue;
+    const names = tokenize(text).tokens.filter(
+      (t) => t.tokenType.name === "Identifier",
+    );
+    // A name read without a refused character, and every other token of
+    // that name: the declaration it now collides with is one of them.
+    const touched = new Set(
+      names
+        .filter((t) => {
+          const start = t.startColumn ?? 0;
+          const end = t.endColumn ?? start;
+          return refusedAt.some(
+            (e) =>
+              t.startLine === e.line &&
+              start <= e.column + 1 &&
+              e.column <= end + 1,
+          );
+        })
+        .map((t) => t.image.toUpperCase()),
+    );
+    for (const t of names) {
+      if (touched.has(t.image.toUpperCase())) {
+        starts.push({ file, line: t.startLine ?? 0, col: t.startColumn ?? 0 });
       }
     }
   }
-  for (const t of identifiers) {
-    names.get(t.image.toUpperCase())?.add(t.startLine ?? 0);
-  }
-  return { lines, names };
-}
-
-/** Names declared twice in a way analysis cannot settle, and the lines that use them. */
-interface Conflicts {
-  names: Set<string>;
-  /** `file:line` of each use or declaration of such a name, or of a variable of such a type. */
-  lines: Set<string>;
+  const declared = new Set<string>();
+  if (starts.length === 0) return declared;
+  walkAST(ast, (node) => {
+    if (node.kind !== "VarDeclaration" && node.kind !== "TypeDeclaration") {
+      return;
+    }
+    const span = node.sourceSpan;
+    for (const { file, line: l, col: c } of starts) {
+      if (
+        file === span.file &&
+        (l > span.startLine || (l === span.startLine && c >= span.startCol)) &&
+        (l < span.endLine || (l === span.endLine && c <= span.endCol))
+      ) {
+        declared.add(`${file}:${l}:${c}`);
+      }
+    }
+  });
+  return declared;
 }
 
 /**
- * A variable declared twice with two types, or a POU declared twice: the
- * analysis takes one of them, so what it finds where the name is used may
- * be about the other one.
+ * Drop the diagnostics from `start` on at the position of an error in
+ * `earlier` (lowering and project-model errors): there the later phase finds
+ * the same problem again (a negative task INTERVAL is the task's error, not
+ * also the literal's). The same for a declared name in `refusedNames`.
  */
-function conflictsOf(
-  ast: CompilationUnit,
-  semantic: readonly CompileError[],
-  earlier: readonly CompileError[],
-  primaryFile: string,
-): Conflicts {
-  const names = new Set<string>();
-  const lines = new Set<string>();
-  const twice = new Set<string>();
-  for (const e of semantic) {
-    const name = /^Symbol '([^']+)' already defined/.exec(e.message)?.[1];
-    if (name !== undefined) twice.add(name.toUpperCase());
-  }
-  for (const e of earlier) {
-    const name =
-      /^Duplicate (?:program|function|function block) declaration: (\S+)$/.exec(
-        e.message,
-      )?.[1];
-    if (name !== undefined) names.add(name.toUpperCase());
-  }
-  if (twice.size === 0 && names.size === 0) return { names, lines };
-  const shapes = new Map<string, Set<string>>();
-  walkAST(ast, (node) => {
-    if (node.kind !== "VarDeclaration") return;
-    const decl = node as VarDeclaration;
-    const shape = `${decl.type.name.toUpperCase()}|${decl.type.referenceKind ?? ""}|${decl.type.arrayDimensions?.length ?? 0}`;
-    for (const n of decl.names) {
-      const upper = n.toUpperCase();
-      if (!twice.has(upper)) continue;
-      const seen = shapes.get(upper) ?? new Set<string>();
-      seen.add(shape);
-      shapes.set(upper, seen);
-    }
-  });
-  // One shape: both declarations agree. None: a type or POU declared twice.
-  for (const n of twice) if (shapes.get(n)?.size !== 1) names.add(n);
-  if (names.size === 0) return { names, lines };
-  const at = (span: SourceSpan): string =>
-    `${span.file ?? primaryFile}:${span.startLine}`;
-  const typed = new Set<string>();
-  walkAST(ast, (node) => {
-    if (node.kind !== "VarDeclaration") return;
-    const decl = node as VarDeclaration;
-    if (!names.has(decl.type.name.toUpperCase())) return;
-    for (const n of decl.names) typed.add(n.toUpperCase());
-    lines.add(at(decl.sourceSpan));
-  });
-  const uses = (name: string): boolean => {
-    const root = (name.split(".")[0] ?? "").toUpperCase();
-    return names.has(root) || typed.has(root);
-  };
-  walkAST(ast, (node) => {
-    if (node.kind === "VariableExpression") {
-      const v = node as VariableExpression;
-      if (uses(v.name)) lines.add(at(v.sourceSpan));
-    } else if (node.kind === "FunctionCallExpression") {
-      const call = node as FunctionCallExpression;
-      if (uses(call.functionName)) lines.add(at(call.sourceSpan));
-    }
-  });
-  return { names, lines };
-}
-
-/**
- * Drop the diagnostics from `start` on that echo an earlier phase: one on a
- * line where the parse recovered; one on a line using a name the lexer read
- * without a refused character when that name collides with another (`xä` and
- * `x` both read `X`); one at the position of a lowering or project-model
- * error in `earlier` (a negative task INTERVAL is the task's error, not also
- * the literal's); one on a line of, or naming, a {@link Conflicts} name; and
- * an internal failure on a recovered tree.
- */
-function dropRecoveryEchoes(
+function dropEchoes(
   diags: CompileError[],
   start: number,
-  recovered: ReadonlyMap<string, Recovery>,
-  primaryFile: string,
   earlier: readonly CompileError[],
-  conflicts: Conflicts,
-  /** The semantic errors, which name the colliding names. */
-  semantic: readonly CompileError[] = diags.slice(start),
+  primaryFile: string,
+  /** Positions of names read without a refused character (refusedNameDeclarations). */
+  refusedNames: ReadonlySet<string>,
 ): void {
-  const fileOf = (d: CompileError): string => d.file ?? primaryFile;
-  const at = (d: CompileError): string => `${fileOf(d)}:${d.line}:${d.column}`;
-  const taken = new Set(earlier.filter((d) => d.line > 0).map(at));
-  const dropped = new Map<string, Set<number>>();
-  for (const [file, recovery] of recovered) {
-    dropped.set(file, new Set(recovery.lines));
-  }
-  for (const e of semantic) {
-    const name = /^Symbol '([^']+)' already defined/.exec(e.message)?.[1];
-    const lines =
-      name === undefined
-        ? undefined
-        : recovered.get(fileOf(e))?.names.get(name.toUpperCase());
-    for (const line of lines ?? []) dropped.get(fileOf(e))?.add(line);
-  }
-  // The duplicate declaration itself stays.
-  const echoesConflict = (d: CompileError): boolean =>
-    !/^Symbol '[^']+' already defined/.test(d.message) &&
-    (conflicts.lines.has(`${fileOf(d)}:${d.line}`) ||
-      [...conflicts.names].some((n) =>
-        d.message.toUpperCase().includes(`'${n}'`),
-      ));
-  const kept = diags
-    .slice(start)
-    .filter(
-      (d) =>
-        !taken.has(at(d)) &&
-        dropped.get(fileOf(d))?.has(d.line) !== true &&
-        !echoesConflict(d) &&
-        !(
-          recovered.size > 0 &&
-          d.line === 0 &&
-          d.message.startsWith("Semantic analysis failed: ")
-        ),
-    );
+  if (earlier.length === 0 && refusedNames.size === 0) return;
+  const at = (d: CompileError): string =>
+    `${d.file ?? primaryFile}:${d.line}:${d.column}`;
+  const taken = new Set([
+    ...earlier.filter((d) => d.line > 0).map(at),
+    ...refusedNames,
+  ]);
+  const kept = diags.slice(start).filter((d) => !taken.has(at(d)));
   diags.splice(start, diags.length - start, ...kept);
 }
 
@@ -917,8 +886,10 @@ function runPipeline(
       mergedOptions.fileName,
     ),
   );
-  /** File name → where its parse recovered. */
-  const recovered = new Map<string, Recovery>();
+  /** True when a file's parse recovered: analysis sees a repaired tree. */
+  let recovered = false;
+  /** File name → its lexer and parse errors. */
+  const parseErrorsByFile = new Map<string, CompileError[]>();
   /** Lowering and project-model errors, which semantic analysis may find again. */
   const echoed: CompileError[] = [];
   if (parseResult.errors.length > 0) {
@@ -927,10 +898,8 @@ function runPipeline(
       mergedOptions.fileName,
     );
     errors.push(...withPragmaHint(parseErrors, pragmaHint));
-    recovered.set(
-      mergedOptions.fileName ?? "main.st",
-      recoveryOf(effectiveSource, parseErrors),
-    );
+    recovered = true;
+    parseErrorsByFile.set(mergedOptions.fileName ?? "main.st", parseErrors);
     // Both modes go on with the CST Chevrotain recovered.
   }
 
@@ -1026,10 +995,8 @@ function runPipeline(
             addlSource.fileName,
           );
           errors.push(...withPragmaHint(parseErrors, pragmaHint));
-          recovered.set(
-            addlSource.fileName,
-            recoveryOf(effectiveAddlSource, parseErrors),
-          );
+          recovered = true;
+          parseErrorsByFile.set(addlSource.fileName, parseErrors);
           // Built from the CST Chevrotain recovered, in both modes.
         }
         if (addlParseResult.cst) {
@@ -1294,7 +1261,7 @@ function runPipeline(
     }
   }
 
-  // Semantic diagnostics start here; dropRecoveryEchoes filters them.
+  // Semantic diagnostics start here; dropEchoes filters them.
   const earlierErrors = errors.length;
   const semanticWarnings = warnings.length;
   try {
@@ -1310,6 +1277,8 @@ function runPipeline(
       symbolTables = semanticResult.symbolTables;
     }
     for (const err of semanticResult.errors) {
+      // A pass that threw on a tree the parser repaired says nothing new
+      if (recovered && err === semanticResult.failure) continue;
       errors.push({
         message: err.message,
         line: err.line ?? 0,
@@ -1338,30 +1307,14 @@ function runPipeline(
   }
 
   errors.push(...libraryShadowErrors(ast, allArchives));
-  const semanticErrors = errors.slice(earlierErrors);
-  const conflicts = conflictsOf(
+  const primaryFile = mergedOptions.fileName ?? "main.st";
+  const refusedNames = refusedNameDeclarations(
     ast,
-    semanticErrors,
-    errors.slice(0, earlierErrors),
-    mergedOptions.fileName ?? "main.st",
+    sourcesByFile,
+    parseErrorsByFile,
   );
-  dropRecoveryEchoes(
-    errors,
-    earlierErrors,
-    recovered,
-    mergedOptions.fileName ?? "main.st",
-    echoed,
-    conflicts,
-  );
-  dropRecoveryEchoes(
-    warnings,
-    semanticWarnings,
-    recovered,
-    mergedOptions.fileName ?? "main.st",
-    echoed,
-    conflicts,
-    semanticErrors,
-  );
+  dropEchoes(errors, earlierErrors, echoed, primaryFile, refusedNames);
+  dropEchoes(warnings, semanticWarnings, echoed, primaryFile, refusedNames);
 
   // Annotate errors/warnings with POU + section context so programmatic
   // consumers (e.g. the OpenPLC Editor) can route diagnostics to the
@@ -1708,7 +1661,8 @@ export function analyze(
   if (
     pipeline.errors.length === 0 &&
     pipeline.ast !== undefined &&
-    tasksMayRace(pipeline.projectModel, options.threaded === true)
+    tasksMayRace(pipeline.projectModel, options.threaded === true) &&
+    mayBindSharedGlobal(pipeline.ast)
   ) {
     let racy: CompileError[] = [];
     try {

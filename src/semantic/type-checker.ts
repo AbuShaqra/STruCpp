@@ -5315,12 +5315,12 @@ export class TypeChecker {
 
   /** Function calls whose argument names were already checked. */
   private checkedFunctionCallNames = new WeakSet<FunctionCallExpression>();
-  /** Function calls with an argument naming no parameter (reported here). */
-  private misnamedArgumentCalls = new WeakSet<FunctionCallExpression>();
+  /** Function calls → how many of their named arguments name no parameter (reported here). */
+  private misnamedArgumentCalls = new WeakMap<FunctionCallExpression, number>();
 
-  /** True when a named argument of `expr` names no parameter of the function it calls. */
-  hasMisnamedArguments(expr: FunctionCallExpression): boolean {
-    return this.misnamedArgumentCalls.has(expr);
+  /** How many named arguments of `expr` name no parameter of the function it calls. */
+  misnamedArgumentCount(expr: FunctionCallExpression): number {
+    return this.misnamedArgumentCalls.get(expr) ?? 0;
   }
 
   /**
@@ -5372,7 +5372,10 @@ export class TypeChecker {
     const known = new Set(params.map((p) => p.toUpperCase()));
     for (const arg of stripEnEno([...expr.arguments])) {
       if (arg.name === undefined || known.has(arg.name.toUpperCase())) continue;
-      this.misnamedArgumentCalls.add(expr);
+      this.misnamedArgumentCalls.set(
+        expr,
+        this.misnamedArgumentCount(expr) + 1,
+      );
       this.addError(
         `Function '${declaredName}' has no parameter named '${arg.name}'`,
         arg.sourceSpan.startLine,
