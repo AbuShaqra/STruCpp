@@ -47,7 +47,7 @@ import type {
   VariableExpression,
 } from "../frontend/ast.js";
 import { walkAST } from "../ast-utils.js";
-import { PointerFlow } from "./pointer-flow.js";
+import { PointerFlow, type PointerScope } from "./pointer-flow.js";
 
 /** What a global's creation reads. */
 export interface CallReads {
@@ -123,6 +123,10 @@ export class CallReadTracer {
   private readonly builders = new Map<string, () => Unit>();
   /** What each pointer may point to. */
   private readonly flow: PointerFlow;
+  /** The code that can run while globals are created, and their initial values. */
+  private readonly creationCode: ASTNode[] = [];
+  /** Globals (upper-case) that code may store into, bind or take the address of. */
+  private settable?: Set<string>;
 
   constructor(
     ast: CompilationUnit,
@@ -132,6 +136,21 @@ export class CallReadTracer {
     private readonly globals: ReadonlyMap<string, VarDeclaration>,
   ) {
     this.flow = new PointerFlow(ast, owner, globals);
+    // PROGRAMs run after every global exists
+    this.creationCode.push(
+      ...ast.functions,
+      ...ast.functionBlocks,
+      ...ast.functionBlocks.flatMap((fb) => [
+        ...fb.actions,
+        ...fb.properties.flatMap((p) => [
+          ...(p.getterVarBlocks ?? []),
+          ...(p.setterVarBlocks ?? []),
+        ]),
+      ]),
+      ...ast.actions,
+      ...ast.globalVarBlocks,
+      ...ast.configurations.flatMap((c) => c.varBlocks),
+    );
     for (const fb of ast.functionBlocks) {
       this.fbs.set(fb.name.toUpperCase(), fb);
     }
@@ -502,10 +521,14 @@ export class CallReadTracer {
         r = { ty: this.tyOf(prop.prop.type), dynamic: false };
       }
     }
-    // A dereference further along reads what an unknown pointer may hold
-    if (steps.slice(1).some((s) => s.kind === "dereference")) {
-      for (const g of this.flow.everyAddressed()) unit.reads.add(g);
-    }
+    // A dereference further along reads what the pointer before it may hold
+    all.forEach((step, i) => {
+      if (step.kind !== "dereference" || i === 0) return;
+      const scope = this.scopeOf(ctx);
+      for (const g of this.flow.pathTargets(upper, all.slice(0, i), scope)) {
+        unit.reads.add(g);
+      }
+    });
     steps.forEach((step, i) => {
       if (r.ty === undefined || r.ty === UNKNOWN) return;
       if (step.kind === "subscript") {
@@ -543,14 +566,19 @@ export class CallReadTracer {
     return r;
   }
 
-  /** A dereference of the variable `upper`: it reads what it may point to. */
-  private readTargets(upper: string, ctx: Context, unit: Unit): void {
-    const cell = this.flow.cellOf(upper, {
+  /** Where pointer-flow.ts looks up the names of the body `ctx`. */
+  private scopeOf(ctx: Context): PointerScope {
+    return {
       blocks: ctx.blocks,
       ...(ctx.fb ? { fb: ctx.fb } : {}),
       ...(ctx.pou !== undefined ? { pou: ctx.pou } : {}),
       ...(ctx.result !== undefined ? { result: ctx.result } : {}),
-    });
+    };
+  }
+
+  /** A dereference of the variable `upper`: it reads what it may point to. */
+  private readTargets(upper: string, ctx: Context, unit: Unit): void {
+    const cell = this.flow.cellOf(upper, this.scopeOf(ctx));
     const targets =
       cell === undefined
         ? this.flow.everyAddressed()
@@ -910,7 +938,52 @@ export class CallReadTracer {
         return { type, dynamic: false, global, exact: [fb] };
       }
     }
+    // An interface global holding NULL while globals are created: a call
+    // through it runs no implementer
+    if (
+      ty !== undefined &&
+      ty !== UNKNOWN &&
+      !("array" in ty) &&
+      ty.refs.length === 0 &&
+      this.interfaces.has(ty.name) &&
+      isNullValue(value) &&
+      !this.mayBeSet(global)
+    ) {
+      return { type, dynamic: false, global, exact: [] };
+    }
     return { type, dynamic: false, global };
+  }
+
+  /**
+   * Whether code that can run while globals are created may change the
+   * global `upper`: it is assigned, bound to an output or in/out (any call
+   * argument naming it), or its address is taken. Any variable of that name
+   * counts, hidden by a local or not.
+   */
+  private mayBeSet(upper: string): boolean {
+    if (this.settable === undefined) {
+      const settable = new Set<string>();
+      const add = (e: Expression): void => {
+        if (e.kind !== "VariableExpression") return;
+        const g = this.owner.get(e.name.toUpperCase());
+        if (g !== undefined) settable.add(g);
+      };
+      for (const root of this.creationCode) {
+        walkAST(root, (node) => {
+          if (node.kind === "AssignmentStatement") {
+            add((node as AssignmentStatement).target);
+          } else if (node.kind === "RefAssignStatement") {
+            add((node as RefAssignStatement).target);
+          } else if (node.kind === "Argument") {
+            add((node as Argument).value);
+          } else if (node.kind === "RefExpression") {
+            add((node as RefExpression).operand);
+          }
+        });
+      }
+      this.settable = settable;
+    }
+    return this.settable.has(upper);
   }
 
   private tyOf(type: TypeReference | undefined): Typed {
@@ -1014,6 +1087,17 @@ export class CallReadTracer {
     }
     return undefined;
   }
+}
+
+/** No initial value, NULL, or 0 (an interface holding no instance). */
+function isNullValue(value: Expression | undefined): boolean {
+  if (value === undefined) return true;
+  let e = value;
+  while (e.kind === "ParenthesizedExpression") e = e.expression;
+  return (
+    e.kind === "LiteralExpression" &&
+    (e.literalType === "NULL" || e.value === 0)
+  );
 }
 
 function refsOf(type: TypeReference): string[] {

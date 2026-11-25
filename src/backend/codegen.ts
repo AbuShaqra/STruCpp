@@ -2646,13 +2646,15 @@ export class CodeGenerator {
         return this.knownFBTypes.has(upper) || this.lateTypeNames.has(upper);
       });
     // Each global after the globals its initial value names; one that names
-    // a late global is late too.
-    const { order, dependencies } = orderGlobals(ast);
+    // a late global is late too, and so is one whose code reads a
+    // CONFIGURATION global, created just before the late globals.
+    const { order, dependencies, outerReads } = orderGlobals(ast);
     const lateNames = new Set<string>();
     for (const item of order) {
       const upper = item.name.toUpperCase();
       if (
         holdsFB(item.decl.type) ||
+        outerReads.has(upper) ||
         (dependencies.get(upper) ?? []).some((d) => lateNames.has(d))
       ) {
         lateNames.add(upper);
@@ -3213,8 +3215,11 @@ export class CodeGenerator {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
             // Same metadata-aware lookup as VAR_IN_OUT — see the comment above.
+            // An ARRAY[*] is a view of the bound array, passed by value.
             params.push(
-              `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${this.paramCppName(name, decl.type.name)}`,
+              VLA_TYPE_NAME.test(decl.type.name)
+                ? `${this.mapTypeRefToCpp(decl.type)} ${this.paramCppName(name, decl.type.name)}`
+                : `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${this.paramCppName(name, decl.type.name)}`,
             );
           }
         }
@@ -3602,8 +3607,11 @@ export class CodeGenerator {
       } else if (block.blockType === "VAR_OUTPUT") {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
+            // An ARRAY[*] is a view of the bound array, passed by value
             params.push(
-              `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${this.paramCppName(name, decl.type.name)}`,
+              VLA_TYPE_NAME.test(decl.type.name)
+                ? `${this.mapTypeRefToCpp(decl.type)} ${this.paramCppName(name, decl.type.name)}`
+                : `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${this.paramCppName(name, decl.type.name)}`,
             );
           }
         }
@@ -4938,7 +4946,7 @@ export class CodeGenerator {
     );
     if (decl === undefined) return config.globalVars;
     const rank = new Map(
-      orderConfigurationGlobals(decl).order.map((item, i) => [
+      orderConfigurationGlobals(decl, this.ast).order.map((item, i) => [
         item.name.toUpperCase(),
         i,
       ]),

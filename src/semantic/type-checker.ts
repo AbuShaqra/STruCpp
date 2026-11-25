@@ -6703,7 +6703,7 @@ export class TypeChecker {
       [topLevel, []] as const,
       // A CONFIGURATION global also sees the top-level globals
       ...ast.configurations.map(
-        (c) => [orderConfigurationGlobals(c), topLevel.order] as const,
+        (c) => [orderConfigurationGlobals(c, ast), topLevel.order] as const,
       ),
     ]) {
       this.reportGlobalInitialCycles(ordered);
