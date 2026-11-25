@@ -201,6 +201,56 @@ describe("no echo of an earlier error", () => {
     ]);
   });
 
+  it("keeps a type error that does not depend on which declaration is taken", () => {
+    // Only LEN(x) depends on X being INT or REAL; the other errors stay
+    expect(
+      errorsOf(
+        "PROGRAM Main\nVAR x : INT; x : REAL; y : INT; d : DATE; t : TIME; r : REAL; b : BOOL; s : STRING; END_VAR\ny := x + zz;\nd := t; x := 1;\nIF x > 0 AND r MOD 2 = 0 THEN y := 1; END_IF\ny := x + s;\nb := (x > 1) AND (d = t);\ny := LEN(x) + r MOD 3;\nEND_PROGRAM\n",
+      ),
+    ).toEqual([
+      "2:14 Symbol 'X' already defined in scope 'MAIN'",
+      "4:6 Cannot assign TIME to DATE",
+      `5:14 ${MOD_ERROR}`,
+      "6:6 Operator '+' does not apply to STRING; join strings with CONCAT",
+      `8:15 ${MOD_ERROR}`,
+      "3:10 Undeclared variable 'ZZ'",
+    ]);
+  });
+
+  it("checks a local that shadows a doubled name as itself", () => {
+    expect(
+      errorsOf(
+        "VAR_GLOBAL g : INT; g : REAL; END_VAR\nFUNCTION_BLOCK FB\nVAR g : BOOL; d : DATE; t : TIME; r : REAL; END_VAR\ng := r MOD 2 = 1;\nd := t;\nEND_FUNCTION_BLOCK\n",
+      ),
+    ).toEqual([
+      "1:21 Symbol 'G' already defined in scope 'global'",
+      `4:6 ${MOD_ERROR}`,
+      "5:6 Cannot assign TIME to DATE",
+    ]);
+  });
+
+  it("does not take a global two CONFIGURATIONs declare for a doubled variable", () => {
+    // As development: the type checks there run against the global as declared
+    const cfg = (n: number, type: string): string =>
+      `CONFIGURATION C${n}\nVAR_GLOBAL g : ${type}; END_VAR\nRESOURCE R${n} ON PLC\nTASK T${n}(INTERVAL := T#10ms, PRIORITY := 1);\nPROGRAM I${n} WITH T${n} : P;\nEND_RESOURCE\nEND_CONFIGURATION\n`;
+    const src = `${cfg(1, "INT")}${cfg(2, "REAL")}PROGRAM P\nVAR_EXTERNAL g : INT; END_VAR\nVAR r : REAL; y : INT; END_VAR\ny := g + r MOD 2;\nIF g + r MOD 2 THEN y := 1; END_IF\nEND_PROGRAM\n`;
+    const both = [
+      "9:12 Global 'G' of CONFIGURATION C2 is also declared in CONFIGURATION C1; rename one of them",
+      `18:10 ${MOD_ERROR}`,
+    ];
+    const condition = [
+      `19:8 ${MOD_ERROR}`,
+      "19:4 Condition must be a boolean or bit type, got REAL",
+    ];
+    expect(errorsOf(src)).toEqual([...both, ...condition]);
+    expect(errorsOf(src, { strict: true })).toEqual([
+      ...both,
+      "18:6 Implicit conversion from REAL to INT is not allowed; use REAL_TO_INT",
+      "19:29 Missing ';' after END_IF",
+      ...condition,
+    ]);
+  });
+
   it("reports nothing that follows from a name the lexer read without a refused character", () => {
     expect(
       errorsOf(

@@ -342,8 +342,10 @@ earlier one is left out:
   task `INTERVAL` is reported once, not also as a negative `TIME` literal);
 - at the declaration of a name the lexer read without a refused character, what follows from it (`xä`
   read as `x`, then `x` declared twice; `ınt` read as an undefined type `NT`);
-- a type error in a statement that uses a variable its POU declares twice with two types (the analysis
-  takes one declaration, and the error may be about the other); the duplicate and every other error stay;
+- a type error that depends on which declaration of a variable declared twice with two types in one POU,
+  method or the global lists the analysis took: the file is checked again with the other declaration,
+  and only the type errors both checks give are reported (the duplicate itself stays; a global two
+  CONFIGURATIONs declare is not such a variable);
 - `Undeclared variable 'T'` for `T.M` when `T` is reported as an undefined type;
 - a name a global variable list error left unresolved (`GVL.nope` is not also undeclared);
 - the argument count of a standard function call whose named arguments were refused, and missing inputs

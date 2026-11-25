@@ -44,6 +44,7 @@ import type {
   TypeReference,
   ASTNode,
   VariableExpression,
+  VarBlock,
   Expression,
   MethodCallExpression,
   RefExpression,
@@ -716,6 +717,87 @@ function refusedNameDeclarations(
   return declared;
 }
 
+/** The declarations of one scope: a POU's, a method's, or the global lists'. */
+function declarationScopes(ast: CompilationUnit): VarBlock[][] {
+  return [
+    ast.globalVarBlocks,
+    ...[...ast.programs, ...ast.functionBlocks].flatMap((pou) => [
+      pou.varBlocks,
+      ...pou.methods.map((m) => m.varBlocks),
+    ]),
+    ...ast.functions.map((f) => f.varBlocks),
+  ];
+}
+
+/**
+ * Each variable one scope declares twice with two types (the symbol table
+ * keeps the first, and its type checks run against that one): its scope's
+ * index in {@link declarationScopes} and its upper-case name. Two
+ * CONFIGURATIONs declaring a global are not one scope and are not listed.
+ */
+function variablesDeclaredTwice(
+  ast: CompilationUnit,
+): Array<{ scope: number; name: string }> {
+  const found: Array<{ scope: number; name: string }> = [];
+  declarationScopes(ast).forEach((blocks, scope) => {
+    const shapes = new Map<string, string[]>();
+    for (const block of blocks) {
+      for (const d of block.declarations) {
+        const shape = `${d.type.name.toUpperCase()}|${d.type.referenceKind ?? ""}|${d.type.arrayDimensions?.length ?? 0}`;
+        for (const n of d.names) {
+          const upper = n.toUpperCase();
+          shapes.set(upper, [...(shapes.get(upper) ?? []), shape]);
+        }
+      }
+    }
+    for (const [name, list] of shapes) {
+      if (new Set(list).size > 1) found.push({ scope, name });
+    }
+  });
+  return found;
+}
+
+/**
+ * The type errors of `result` that depend on which declaration of a doubled
+ * variable the analysis took: `other` (the tree before analysis) is checked
+ * again with the first declaration of each such variable left out, and a
+ * type error it does not give at the same position, with the same text, is
+ * one. The duplicate itself, and every error both checks give, stay.
+ */
+function pickedEchoes(
+  result: { typeErrors?: ReadonlySet<CompileError> },
+  other: CompilationUnit,
+  analyze: (unit: CompilationUnit) => { errors: CompileError[] },
+): Set<CompileError> {
+  const echoes = new Set<CompileError>();
+  const typeErrors = result.typeErrors;
+  if (typeErrors === undefined || typeErrors.size === 0) return echoes;
+  const scopes = declarationScopes(other);
+  for (const { scope, name } of variablesDeclaredTwice(other)) {
+    const blocks = scopes[scope] ?? [];
+    const decl = blocks
+      .flatMap((b) => b.declarations)
+      .find((d) => d.names.some((n) => n.toUpperCase() === name));
+    if (decl === undefined) continue;
+    decl.names = decl.names.filter((n) => n.toUpperCase() !== name);
+    if (decl.names.length === 0) {
+      for (const b of blocks) {
+        b.declarations = b.declarations.filter((d) => d !== decl);
+      }
+    }
+  }
+  const key = (e: CompileError): string =>
+    `${e.file ?? ""}:${e.line}:${e.column}:${e.message}`;
+  let again: Set<string>;
+  try {
+    again = new Set(analyze(other).errors.map(key));
+  } catch {
+    return echoes;
+  }
+  for (const e of typeErrors) if (!again.has(key(e))) echoes.add(e);
+  return echoes;
+}
+
 /**
  * Drop the diagnostics from `start` on at the position of an error in
  * `earlier` (lowering and project-model errors): there the later phase finds
@@ -1227,51 +1309,67 @@ function runPipeline(
     }
   }
 
-  // Phase 5: Semantic analysis
-  let semanticSymbolTables: SymbolTables | undefined;
-  if (allArchives.length > 0) {
-    semanticSymbolTables = new SymbolTables();
-    for (const archive of allArchives) {
-      registerLibrarySymbols(archive.manifest, semanticSymbolTables);
-    }
-  }
-
-  // Register global constants in symbol tables
-  if (mergedOptions.globalConstants) {
-    if (!semanticSymbolTables) {
-      semanticSymbolTables = new SymbolTables();
-    }
-    semanticSymbolTables.globalConstants = mergedOptions.globalConstants;
-    for (const name of Object.keys(mergedOptions.globalConstants)) {
-      try {
-        semanticSymbolTables.globalScope.define({
-          name,
-          kind: "constant",
-          declaration:
-            undefined as unknown as import("./frontend/ast.js").VarDeclaration,
-          type: {
-            typeKind: "elementary",
-            name: "ULINT",
-            sizeBits: 64,
-          } as import("./frontend/ast.js").ElementaryType,
-        });
-      } catch {
-        // Ignore duplicate
+  // Phase 5: Semantic analysis. Each run gets its own tables: analysis adds to them.
+  const freshSymbolTables = (): SymbolTables | undefined => {
+    let tables: SymbolTables | undefined;
+    if (allArchives.length > 0) {
+      tables = new SymbolTables();
+      for (const archive of allArchives) {
+        registerLibrarySymbols(archive.manifest, tables);
       }
     }
+    // Register global constants in symbol tables
+    if (mergedOptions.globalConstants) {
+      tables ??= new SymbolTables();
+      tables.globalConstants = mergedOptions.globalConstants;
+      for (const name of Object.keys(mergedOptions.globalConstants)) {
+        try {
+          tables.globalScope.define({
+            name,
+            kind: "constant",
+            declaration:
+              undefined as unknown as import("./frontend/ast.js").VarDeclaration,
+            type: {
+              typeKind: "elementary",
+              name: "ULINT",
+              sizeBits: 64,
+            } as import("./frontend/ast.js").ElementaryType,
+          });
+        } catch {
+          // Ignore duplicate
+        }
+      }
+    }
+    return tables;
+  };
+  const newAnalyzer = (): SemanticAnalyzer =>
+    new SemanticAnalyzer({
+      strict: mergedOptions.strict === true,
+      features: dialect.features,
+      dialect,
+      sources: sourcesByFile,
+    });
+  // A variable declared twice with two types: the tree as it is before
+  // analysis, to check it again with the other declaration (pickedEchoes).
+  const doubled = variablesDeclaredTwice(ast);
+  let other: CompilationUnit | undefined;
+  try {
+    other = doubled.length > 0 ? structuredClone(ast) : undefined;
+  } catch {
+    // A tree that does not copy is checked once, as development did
   }
 
   // Semantic diagnostics start here; dropEchoes filters them.
   const earlierErrors = errors.length;
   const semanticWarnings = warnings.length;
   try {
-    const analyzer = new SemanticAnalyzer({
-      strict: mergedOptions.strict === true,
-      features: dialect.features,
-      dialect,
-      sources: sourcesByFile,
-    });
-    const semanticResult = analyzer.analyze(ast, semanticSymbolTables);
+    const semanticResult = newAnalyzer().analyze(ast, freshSymbolTables());
+    const echoes =
+      other === undefined
+        ? new Set<CompileError>()
+        : pickedEchoes(semanticResult, other, (unit) =>
+            newAnalyzer().analyze(unit, freshSymbolTables()),
+          );
     // Incomplete tables after a pass threw are not handed on (as when it threw out)
     if (semanticResult.passFailed !== true) {
       symbolTables = semanticResult.symbolTables;
@@ -1279,6 +1377,7 @@ function runPipeline(
     for (const err of semanticResult.errors) {
       // A pass that threw on a tree the parser repaired says nothing new
       if (recovered && err === semanticResult.failure) continue;
+      if (echoes.has(err)) continue;
       errors.push({
         message: err.message,
         line: err.line ?? 0,

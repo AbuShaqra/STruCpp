@@ -367,6 +367,9 @@ export interface SemanticAnalysisResult {
   /** The error that reports the pass that threw, when one did. */
   failure?: CompileError;
 
+  /** The errors the type checker (pass 2) reported. */
+  typeErrors?: ReadonlySet<CompileError>;
+
   /** Errors found during analysis */
   errors: CompileError[];
 
@@ -597,6 +600,7 @@ export class SemanticAnalyzer {
     this.warnings = [];
     this.locatedVars = [];
     this.failure = undefined;
+    this.typeErrors = new Set();
     this.undefinedTypes.clear();
 
     // Use provided symbol tables (with library symbols pre-registered) or create new ones
@@ -639,6 +643,7 @@ export class SemanticAnalyzer {
       symbolTables: this.symbolTables,
       ...(passed ? {} : { passFailed: true }),
       ...(this.failure !== undefined ? { failure: this.failure } : {}),
+      typeErrors: this.typeErrors,
       errors: this.errors,
       warnings: this.warnings,
     };
@@ -662,6 +667,8 @@ export class SemanticAnalyzer {
 
   /** The error of the pass that threw in this analysis, if one did. */
   private failure: CompileError | undefined;
+  /** The errors pass 2 reported in this analysis. */
+  private typeErrors = new Set<CompileError>();
 
   /**
    * Pass 1: the declaration-level rules and the symbol tables, global lists
@@ -735,137 +742,9 @@ export class SemanticAnalyzer {
         ? sourceNameLocator(this.options.sources)
         : undefined;
     const typeResult = this.typeChecker.check(ast);
-    const echoes = this.conflictEchoes(ast, typeResult.errors);
-    this.errors.push(...typeResult.errors.filter((e) => !echoes.has(e)));
+    for (const e of typeResult.errors) this.typeErrors.add(e);
+    this.errors.push(...typeResult.errors);
     this.warnings.push(...typeResult.warnings);
-  }
-
-  /**
-   * The type errors a variable declared twice with two types makes: the
-   * symbol table holds one declaration, so a statement of the same POU
-   * that uses the name is checked against it and may be wrong about the
-   * other. Only type errors inside such a statement (or a condition) are
-   * left out; the duplicate itself and every other error stay.
-   */
-  private conflictEchoes(
-    ast: CompilationUnit,
-    typeErrors: readonly CompileError[],
-  ): Set<CompileError> {
-    const echoes = new Set<CompileError>();
-    if (typeErrors.length === 0) return echoes;
-    const twice = (blocks: readonly VarBlock[]): Set<string> => {
-      const shapes = new Map<string, Set<string>>();
-      const count = new Map<string, number>();
-      for (const block of blocks) {
-        for (const d of block.declarations) {
-          const shape = `${d.type.name.toUpperCase()}|${d.type.referenceKind ?? ""}|${d.type.arrayDimensions?.length ?? 0}`;
-          for (const n of d.names) {
-            const upper = n.toUpperCase();
-            count.set(upper, (count.get(upper) ?? 0) + 1);
-            shapes.set(upper, (shapes.get(upper) ?? new Set()).add(shape));
-          }
-        }
-      }
-      return new Set(
-        [...shapes]
-          .filter(([n, set]) => set.size > 1 && (count.get(n) ?? 0) > 1)
-          .map(([n]) => n),
-      );
-    };
-    const globals = twice([
-      ...ast.globalVarBlocks,
-      ...ast.configurations.flatMap((c) => c.varBlocks),
-    ]);
-    const spans: SourceSpan[] = [];
-    const uses = (node: ASTNode, names: ReadonlySet<string>): boolean => {
-      let found = false;
-      walkAST(node, (n): boolean => {
-        if (
-          n.kind === "VariableExpression" &&
-          names.has((n as VariableExpression).name.toUpperCase())
-        ) {
-          found = true;
-        }
-        return !found;
-      });
-      return found;
-    };
-    const visit = (
-      body: readonly Statement[],
-      names: ReadonlySet<string>,
-    ): void => {
-      for (const stmt of body) {
-        switch (stmt.kind) {
-          case "IfStatement":
-            for (const c of [
-              stmt.condition,
-              ...stmt.elsifClauses.map((e) => e.condition),
-            ]) {
-              if (uses(c, names)) spans.push(c.sourceSpan);
-            }
-            visit(stmt.thenStatements, names);
-            for (const e of stmt.elsifClauses) visit(e.statements, names);
-            visit(stmt.elseStatements, names);
-            break;
-          case "WhileStatement":
-          case "RepeatStatement":
-            if (uses(stmt.condition, names))
-              spans.push(stmt.condition.sourceSpan);
-            visit(stmt.body, names);
-            break;
-          case "ForStatement":
-            for (const e of [
-              stmt.start,
-              stmt.end,
-              ...(stmt.step ? [stmt.step] : []),
-            ]) {
-              if (uses(e, names)) spans.push(e.sourceSpan);
-            }
-            if (names.has(stmt.controlVariable.toUpperCase())) {
-              spans.push(stmt.sourceSpan);
-            }
-            visit(stmt.body, names);
-            break;
-          case "CaseStatement":
-            if (uses(stmt.selector, names))
-              spans.push(stmt.selector.sourceSpan);
-            for (const c of stmt.cases) visit(c.statements, names);
-            visit(stmt.elseStatements, names);
-            break;
-          default:
-            if (uses(stmt, names)) spans.push(stmt.sourceSpan);
-        }
-      }
-    };
-    const pou = (
-      owner: readonly VarBlock[],
-      own: readonly VarBlock[],
-      body: readonly Statement[],
-    ): void => {
-      // A method local may shadow a member of another type: each list alone
-      const names = new Set([...globals, ...twice(owner), ...twice(own)]);
-      if (names.size > 0) visit(body, names);
-    };
-    for (const p of ast.programs) {
-      pou([], p.varBlocks, p.body);
-      for (const m of p.methods) pou(p.varBlocks, m.varBlocks, m.body);
-    }
-    for (const f of ast.functions) pou([], f.varBlocks, f.body);
-    for (const fb of ast.functionBlocks) {
-      pou([], fb.varBlocks, fb.body);
-      for (const m of fb.methods) pou(fb.varBlocks, m.varBlocks, m.body);
-    }
-    if (spans.length === 0) return echoes;
-    const inside = (e: CompileError, span: SourceSpan): boolean =>
-      (e.file ?? span.file) === span.file &&
-      (e.line > span.startLine ||
-        (e.line === span.startLine && e.column >= span.startCol)) &&
-      (e.line < span.endLine ||
-        (e.line === span.endLine && e.column <= span.endCol));
-    for (const e of typeErrors) {
-      if (spans.some((span) => inside(e, span))) echoes.add(e);
-    }
-    return echoes;
   }
 
   /** Two passes may find the same error (`ADR(3)`): it is reported once. */
