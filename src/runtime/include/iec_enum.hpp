@@ -22,6 +22,16 @@
 namespace strucpp {
 
 /**
+ * The initial value of an enumeration without one of its own: the value of
+ * its first member (IEC 61131-3 Table 11). Codegen declares an overload next
+ * to each enumeration whose first member is not 0; ADL finds it.
+ */
+template<typename EnumType>
+constexpr EnumType iec_enum_first(const EnumType*) noexcept {
+    return EnumType{};
+}
+
+/**
  * Value wrapper for IEC enumerations.
  * Provides a type-safe wrapper around C++ enum class types.
  *
@@ -35,8 +45,9 @@ private:
 public:
     using enum_type = EnumType;
     
-    // Default constructor - initializes to first enum value (0)
-    constexpr IEC_ENUM_Value() noexcept : value_{} {}
+    // Default constructor - initializes to the first member's value
+    constexpr IEC_ENUM_Value() noexcept
+        : value_(iec_enum_first(static_cast<const EnumType*>(nullptr))) {}
     
     // Constructor from enum value
     constexpr IEC_ENUM_Value(EnumType val) noexcept : value_(val) {}
@@ -109,7 +120,7 @@ private:
     value_type value_;
     
 public:
-    IEC_ENUM_Var() noexcept : value_{} {}
+    IEC_ENUM_Var() noexcept : value_() {}
 
     // Non-explicit so raw `EnumType` values can implicitly convert at call
     // sites — matches the implicit `IECVar(T v)` constructor for elementary

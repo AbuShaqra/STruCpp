@@ -22,7 +22,11 @@ import type {
   FunctionCallExpression,
   ElementaryType,
 } from "../frontend/ast.js";
-import { charLiteralUnits, stringBodyBeforeNul } from "../literal-utils.js";
+import {
+  charLiteralUnits,
+  stringBodyBeforeNul,
+  untypedIntegerConstant,
+} from "../literal-utils.js";
 import { TypeRegistry, isElementaryType } from "../semantic/type-registry.js";
 import {
   temporalArithmeticCpp,
@@ -695,7 +699,29 @@ export class TypeCodeGenerator {
     });
 
     this.emit(`enum class ${name}${baseType} { ${members.join(", ")} };`);
+    // Not 0 first: variables without an initial value start at the first member
+    const first = def.members[0];
+    if (first?.value !== undefined && !this.isZeroConstant(first.value)) {
+      this.emit(
+        `constexpr ${name} iec_enum_first(const ${name}*) noexcept { return ${name}::${first.name}; }`,
+      );
+    }
     this.emit("");
+  }
+
+  /** True when `expr` is the integer literal 0 (in parentheses or signed). */
+  private isZeroConstant(expr: Expression): boolean {
+    if (expr.kind === "ParenthesizedExpression") {
+      return this.isZeroConstant(expr.expression);
+    }
+    if (expr.kind === "UnaryExpression" && expr.operator !== "NOT") {
+      return this.isZeroConstant(expr.operand);
+    }
+    return (
+      expr.kind === "LiteralExpression" &&
+      expr.literalType === "INT" &&
+      /^([A-Za-z_]+#)?(0+|(2|8|16)#0+)$/.test(expr.rawValue.replace(/_/g, ""))
+    );
   }
 
   /**
@@ -1067,6 +1093,15 @@ export class TypeCodeGenerator {
   private binaryExprToCpp(expr: BinaryExpression): string {
     const left = this.expressionToCpp(expr.left);
     const right = this.expressionToCpp(expr.right);
+    // An integer power stored in a REAL or LREAL (markRealPowers); else a
+    // constant integer power is its exact value
+    if (expr.operator === "**") {
+      const exact =
+        expr.realPower === true ? undefined : untypedIntegerConstant(expr);
+      return exact !== undefined
+        ? formatIntegerLiteral(exact.value.toString(), Number(exact.value))
+        : `std::pow(static_cast<double>(${left}), static_cast<double>(${right}))`;
+    }
     // Date arithmetic in a default goes by days, as in a body.
     const temporal = (e: Expression): string | undefined => {
       const t = e.resolvedType;
