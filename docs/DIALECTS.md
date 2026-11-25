@@ -670,8 +670,9 @@ END_PROGRAM
   field of STRUCT 'ST_S'`), and init arguments on a library FB, whose FB_init is not known (`FB_init of
   'T' is not supported yet: 'TON' comes from a library`). `__NEW` does not run FB_init. A CONFIGURATION
   `VAR_GLOBAL` cannot hold a FUNCTION_BLOCK, as before.
-- In the generated C++, the global instances' work is the once-only `__fb_init_globals()`, which every
-  PROGRAM constructor calls first; a FUNCTION_BLOCK with member work gets `__fb_init_members(...)`, whose parameters are its chain's
+- In the generated C++, the global instances' work runs once, right after the globals of their storage
+  segment are created (`__fb_init_segment2`, and `__fb_init_segment3` for globals created after a
+  PROGRAM instance they use), before any later global; a FUNCTION_BLOCK with member work gets `__fb_init_members(...)`, whose parameters are its chain's
   FB_init inputs, called with the values the instance's FB_init then receives; each level
   of the chain is called non-virtually (`x.FB_B0::FB_INIT(false, false, ...)`). Code without FB_init and
   init arguments generates the same C++ as before.
@@ -750,8 +751,7 @@ VAR_EXTERNAL globals as arguments), after its class. Being an inline header obje
 any later static of every translation unit that includes the header, and its address is a constant. The
 configuration holds it by reference (`Program_PRG_A& PA;`), so the task runs the same instance; the debug
 table addresses `__program_PRG_A`, the REPL harness binds `prog_PRG_A` to it, and a test's variable of the
-type binds to it (so its state carries from one test to the next, as globals do). Its constructor still runs
-`__fb_init_globals()` first. A program run by a task and also called by name is the same instance, so its
+type binds to it (so its state carries from one test to the next, as globals do). A program run by a task and also called by name is the same instance, so its
 body runs once more per cycle for each call: that is what the call asks for. Calls from a POU of another task
 are not synchronised with the task that runs the program.
 

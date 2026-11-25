@@ -437,7 +437,7 @@ PROGRAM Main END_PROGRAM
       { features: ["+fb_init"] },
     );
     expect(located(r)).toEqual([
-      "11:35 The initial value of global 'lv' reads 'lb' before its FB_init runs (once every global is created); assign 'lv' in a program instead",
+      "11:35 The initial value of global 'lv' reads 'lb' before its FB_init runs (right after the globals created with it); assign 'lv' in a program instead",
     ]);
   });
 
@@ -521,7 +521,7 @@ PROGRAM Main END_PROGRAM
 });
 
 describe("round 4: FB_init, write order and VAR_INPUT views", () => {
-  it("refuses an FB_init global created after a PROGRAM instance through another global", () => {
+  it("accepts an FB_init global created after a PROGRAM instance through another global", () => {
     expect(
       located(
         compile(
@@ -554,9 +554,7 @@ END_PROGRAM
           { features: ["+fb_init", "+program_methods"] },
         ),
       ),
-    ).toEqual([
-      "19:16 Global 'gfb' is created after a PROGRAM instance its creation needs (directly or through other globals), which runs the FB_init of the global instances before 'gfb' exists; assign it in a program instead",
-    ]);
+    ).toEqual([]);
   });
 
   it("counts a store through a REFERENCE local in FB_init", () => {
@@ -586,7 +584,7 @@ END_PROGRAM
         ),
       ),
     ).toEqual([
-      "13:35 The initial value of global 'g' reads 'inst' before its FB_init runs (once every global is created); assign 'g' in a program instead",
+      "13:35 The initial value of global 'g' reads 'inst' before its FB_init runs (right after the globals created with it); assign 'g' in a program instead",
     ]);
   });
 

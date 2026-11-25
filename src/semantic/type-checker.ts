@@ -7076,12 +7076,11 @@ export class TypeChecker {
   }
 
   /**
-   * Feature fb_init: the FB_init of the global instances runs once every
-   * global is created, so a global's creation reading an instance whose
-   * FB_init changes what may be read (a member its code reads, or one read
-   * from outside) would see it before; and an instance created after a
-   * PROGRAM instance (which runs those FB_init) would miss it. Both are
-   * refused.
+   * Feature fb_init: the FB_init of the global instances runs right after
+   * the globals of their storage segment are created (codegen.ts
+   * emitFbInitSegment), so a global's creation reading an instance of its
+   * own segment whose FB_init changes what may be read (a member its code
+   * reads, or one read from outside) would see it before. That is refused.
    */
   private refuseReadsBeforeFbInit(
     ast: CompilationUnit,
@@ -7103,25 +7102,20 @@ export class TypeChecker {
       }
       return result;
     };
-    const needsInit = (upper: string): boolean => {
-      const item = decls.get(upper);
-      const stored = item && storedInstance(ast, item.decl.type);
-      return stored !== undefined && plan.needs(stored.name);
-    };
     for (const item of all.order) {
       const value = item.decl.initialValue;
       if (item.decl.names[0] !== item.name) continue;
       const span = (value ?? item.decl).sourceSpan;
       const reads = all.reads.get(item.name.toUpperCase()) ?? [];
-      const read = reads.find((r) => visible(r));
+      // A global created after a PROGRAM instance it uses comes after the
+      // FB_init of the instances created before that PROGRAM instance
+      const after = all.programUsers.has(item.name.toUpperCase());
+      const read = reads.find(
+        (r) => visible(r) && (!after || all.programUsers.has(r)),
+      );
       let message: string | undefined;
       if (read !== undefined) {
-        message = `The initial value of global '${item.name}' reads '${decls.get(read)!.name}' before its FB_init runs (once every global is created); assign '${item.name}' in a program instead`;
-      } else if (
-        all.programUsers.has(item.name.toUpperCase()) &&
-        needsInit(item.name.toUpperCase())
-      ) {
-        message = `Global '${item.name}' is created after a PROGRAM instance its creation needs (directly or through other globals), which runs the FB_init of the global instances before '${item.name}' exists; assign it in a program instead`;
+        message = `The initial value of global '${item.name}' reads '${decls.get(read)!.name}' before its FB_init runs (right after the globals created with it); assign '${item.name}' in a program instead`;
       }
       if (message !== undefined) {
         this.addError(message, span.startLine, span.startCol, span.file);

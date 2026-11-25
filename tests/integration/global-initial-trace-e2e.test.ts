@@ -1104,6 +1104,72 @@ END_PROGRAM
     features: ["+fb_init"],
     expected: "1",
   },
+  {
+    title:
+      "FB_init of a global created after a PROGRAM instance through another global",
+    source: `FUNCTION_BLOCK FBG
+VAR_INPUT a : INT; END_VAR
+VAR_OUTPUT v : INT; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+v := 50;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Setup
+VAR_OUTPUT o : INT := 7; END_VAR
+o := o + 1;
+END_PROGRAM
+FUNCTION F : INT
+Setup();
+F := Setup.o;
+END_FUNCTION
+VAR_GLOBAL
+  y : INT := F();
+  gfb : FBG := (a := y);
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL gfb : FBG; END_VAR
+VAR O1 : INT; END_VAR
+O1 := gfb.v;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+fb_init", "+program_methods"],
+    expected: "50",
+  },
+  {
+    title:
+      "FB_init of a global created after a PROGRAM instance it uses directly",
+    source: `FUNCTION_BLOCK FBG
+VAR_INPUT a : INT; END_VAR
+VAR_OUTPUT v : INT; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+v := 50;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Setup
+VAR_OUTPUT o : INT := 7; END_VAR
+o := o + 1;
+END_PROGRAM
+FUNCTION F : INT
+Setup();
+F := Setup.o;
+END_FUNCTION
+VAR_GLOBAL
+  y : INT := F();
+  gfb : FBG := (a := F());
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL gfb : FBG; END_VAR
+VAR O1 : INT; END_VAR
+O1 := gfb.v;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+fb_init", "+program_methods"],
+    expected: "50",
+  },
 ];
 
 describe.skipIf(!hasGpp)(

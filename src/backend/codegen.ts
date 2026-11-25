@@ -1045,9 +1045,6 @@ export class CodeGenerator {
   /** FB_init start-up work of this unit (feature fb_init), or undefined when off. */
   private fbInitPlan: FbInitPlan | undefined;
 
-  /** True once the header defines `__fb_init_globals()`. */
-  private fbInitGlobalsEmitted = false;
-
   /** Upper-case PROGRAMs reached by name from another POU: one shared instance each. */
   protected reachedPrograms: ReadonlySet<string> = new Set();
 
@@ -2204,7 +2201,6 @@ export class CodeGenerator {
     this.ast = ast; // Store AST for looking up program bodies
     this.fbInitPlan =
       this.options.fbInit === true ? new FbInitPlan(ast) : undefined;
-    this.fbInitGlobalsEmitted = false;
     this.reachedPrograms = programsReachedByName(ast);
 
     // Build set of known FB types from AST (library FB types already registered
@@ -2681,8 +2677,10 @@ export class CodeGenerator {
       this.emitHeaderChunkMarker("end", "functionBlock", fb.name);
     }
 
-    // GVL globals that hold a function block, now that its class is complete
+    // GVL globals that hold a function block, now that its class is complete,
+    // then their FB_init
     this.emitGlobalSegment(ast, 2);
+    this.emitFbInitSegment(ast, 2);
 
     // Generate program class declarations
     if (this.projectModel) {
@@ -2719,11 +2717,10 @@ export class CodeGenerator {
       }
     }
 
-    // Globals whose creation uses a PROGRAM instance, now that it exists;
-    // the FB_init of the global instances, called from the PROGRAM
-    // constructors, once every global is declared
+    // Globals whose creation uses a PROGRAM instance, now that it exists,
+    // then the FB_init of those of them that are instances
     this.emitGlobalSegment(ast, 3);
-    this.emitFbInitGlobals(ast);
+    this.emitFbInitSegment(ast, 3);
 
     // Generate function declarations
     for (const func of ast.functions) {
@@ -5087,32 +5084,34 @@ export class CodeGenerator {
   }
 
   /**
-   * Header: the once-only start-up work of the global instances, in
-   * declaration order, which every PROGRAM constructor runs first.
+   * Header: the start-up work (FB_init) of the global instances created in
+   * segment `at` (see planGlobals), in declaration order, run once right
+   * after them: each runs once the instance exists, before any later global.
    */
-  private emitFbInitGlobals(ast: CompilationUnit): void {
+  private emitFbInitSegment(ast: CompilationUnit, at: number): void {
     if (!this.fbInitPlan) return;
+    const { segment } = this.planGlobals(ast);
     const lines: string[] = [];
     for (const block of ast.globalVarBlocks) {
       for (const decl of block.declarations) {
         for (const name of decl.names) {
+          if (segment.get(name.toUpperCase()) !== at) continue;
           lines.push(...this.fbInitInstanceLines(decl, name));
         }
       }
     }
     if (lines.length === 0) return;
-    this.fbInitGlobalsEmitted = true;
-    this.emitHeader("// Start-up FB_init of the global instances, run once");
-    this.emitHeader("inline void __fb_init_globals() {");
-    this.emitHeader("    static bool done = false;");
-    this.emitHeader("    if (done) return;");
-    this.emitHeader("    done = true;");
+    this.emitHeader(
+      "// Start-up FB_init of the global instances above, run once after them",
+    );
+    this.emitHeader(`inline const bool __fb_init_segment${at} = [] {`);
     for (const line of lines) this.emitHeader(`    ${line}`);
-    this.emitHeader("}");
+    this.emitHeader("    return true;");
+    this.emitHeader("}();");
     this.emitHeader("");
   }
 
-  /** Program constructor body: the global start-up work, then the program's instances. */
+  /** Program constructor body: the FB_init of the program's instances. */
   private emitProgramFbInit(
     prog: ProgramDecl,
     astProg: CompilationUnit["programs"][0] | undefined,
@@ -5127,7 +5126,6 @@ export class CodeGenerator {
     astProg: CompilationUnit["programs"][0] | undefined,
   ): void {
     if (!this.fbInitPlan) return;
-    if (this.fbInitGlobalsEmitted) this.emit("    __fb_init_globals();");
     if (!astProg) return;
     this.currentProgramName = prog.name;
     this.enterScope(astProg.varBlocks);
