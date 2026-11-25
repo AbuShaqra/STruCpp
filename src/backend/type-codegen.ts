@@ -1115,7 +1115,12 @@ export class TypeCodeGenerator {
 
     // Bare enum member: Stopped → Irrigation_State::Stopped
     const enumEntry = this.enumMemberToType.get(nameUpper);
-    if (enumEntry?.typeName && expr.fieldAccess.length === 0) {
+    if (
+      enumEntry?.typeName &&
+      expr.fieldAccess.length === 0 &&
+      // A library's global the checker read the name as
+      expr.libraryGlobal !== true
+    ) {
       return `${enumEntry.typeName}::${expr.name}`;
     }
 

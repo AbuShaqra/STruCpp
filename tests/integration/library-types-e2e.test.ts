@@ -447,20 +447,24 @@ END_PROGRAM
     const { stdout } = run(
       `TYPE U1 : (Red := 20, Pink); END_TYPE
 PROGRAM Main
-VAR c : LColor := Red; u : U1; r : INT; END_VAR
+VAR c : LColor := Red; u : U1; r : INT; c2 : LColor; rc : REFERENCE TO LColor; END_VAR
 u := Red;
 IF c = LColor#Red THEN r := 1; END_IF
 IF u = U1#Red THEN r := r + 10; END_IF
 c := Blue;
 c := Red;
 IF c = LColor#Red THEN r := r + 100; END_IF
+rc REF= c2;
+rc := Blue;
+rc := Red;
+IF c2 = LColor#Red AND rc = Red THEN r := r + 1000; END_IF
 END_PROGRAM
 `,
       "p.R",
       "libtypes_enum_context",
       [JSON.parse(JSON.stringify(lib.archive)) as StlibArchive],
     );
-    expect(stdout).toBe("111");
+    expect(stdout).toBe("1111");
   });
 
   it("reports a VAR_IN_OUT inherited from a library block that a call leaves unassigned", () => {
@@ -586,19 +590,24 @@ END_PROGRAM
     expect(lib.errors).toEqual([]);
     const { stdout } = run(
       `TYPE UE : (LK, X); END_TYPE
+TYPE S : STRUCT u : UE := LK; END_STRUCT END_TYPE
+TYPE AU : UE := LK; END_TYPE
+FUNCTION FU : INT VAR_INPUT u : UE; END_VAR FU := BOOL_TO_INT(u = UE#LK) * 1000; END_FUNCTION
 PROGRAM Main
-VAR v : INT; u : UE := LK; w : UE; END_VAR
-v := LK * 10;
+VAR v : INT; u : UE := LK; w : UE; s : S; s2 : S := (u := LK); a : ARRAY[0..1] OF UE := [LK]; au : AU; END_VAR
+v := 50;
 w := LK;
 IF u = LK THEN v := v + 1; END_IF
 CASE w OF LK: v := v + 100; END_CASE
+v := v + FU(LK);
+IF s.u = LK AND s2.u = LK AND a[0] = LK AND au = (LK) THEN v := v + 10000; END_IF
 END_PROGRAM
 `,
       "p.V",
       "libtypes_enum_vs_constant",
       [JSON.parse(JSON.stringify(lib.archive)) as StlibArchive],
     );
-    expect(stdout).toBe("151");
+    expect(stdout).toBe("11151");
   });
 
   it("reads a user enumeration value named like an OSCAT global through members, elements and calls", () => {
@@ -623,6 +632,27 @@ END_PROGRAM
       [],
     );
     expect(stdout).toBe("11111");
+  });
+
+  it("reads a name of a user enumeration and an OSCAT STRUCT global as the global for its own type, else as the value", () => {
+    // MATH and PHYS are CONSTANTS_MATH and CONSTANTS_PHYS globals of oscat-basic
+    const { stdout } = run(
+      `TYPE Mode : (IDLE, SETUP, RUN, MATH, PHYS); END_TYPE
+FUNCTION FP : REAL VAR_INPUT c : CONSTANTS_MATH; END_VAR FP := c.PI; END_FUNCTION
+PROGRAM Main
+VAR cm : CONSTANTS_MATH; m : Mode := MATH; r1 : LINT; r2 : LINT; r3 : LINT; r4 : LINT; END_VAR
+cm := MATH;
+r1 := TO_INT(MATH) + TO_DINT(PHYS) * 10;
+r2 := REAL_TO_LINT(cm.PI * 1000.0) + REAL_TO_LINT(FP(MATH) * 1000.0) * 10000;
+r3 := REAL_TO_LINT(MATH.PI2 * 1000.0);
+IF m = MATH AND MATH = m THEN r4 := 1; END_IF;
+END_PROGRAM
+`,
+      'p.R1 << " " << p.R2 << " " << p.R3 << " " << p.R4',
+      "libtypes_user_enum_oscat_struct_global",
+      [],
+    );
+    expect(stdout).toBe("43 31423142 6283 1");
   });
 
   it("takes an enumeration value named like an FB as the value wherever the context is the enumeration", () => {

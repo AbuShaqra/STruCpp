@@ -113,12 +113,28 @@ export function generateInitializerValue(
         emitter,
         depth,
       );
-      return `{strucpp::iec_head(${[rest, ...elements].join(", ")})}`;
+      return headInitializerCpp(elementCppType, rest, elements);
     }
     return `{${elements.join(", ")}}`;
   }
 
   return emitter.emitValue(value, stTypeName);
+}
+
+/**
+ * `{iec_head_value<E, N>{fill, {{e0, e1}}}}`: a partial initializer of an
+ * ARRAY of a type with a default, each value converted to the element type
+ * `E` here. Without `E` the given values alone (the rest value-initialised).
+ */
+export function headInitializerCpp(
+  elementCppType: string | undefined,
+  fill: string,
+  elements: string[],
+): string {
+  if (elementCppType === undefined) return `{${elements.join(", ")}}`;
+  const e = elementCppType;
+  const head = elements.map((x) => `static_cast<${e}>(${x})`).join(", ");
+  return `{strucpp::iec_head_value<${e}, ${elements.length}>{static_cast<${e}>(${fill}), {{${head}}}}}`;
 }
 
 /** True when every element of an array literal is itself an array literal. */
@@ -131,7 +147,7 @@ function isArrayLiteralOf(value: Expression): boolean {
 }
 
 /** `typename <array type>::element_type`, or undefined when the type is unknown. */
-function arrayElementCppType(
+export function arrayElementCppType(
   cppTypeExpr: string | undefined,
 ): string | undefined {
   if (cppTypeExpr === undefined || cppTypeExpr === "") return undefined;

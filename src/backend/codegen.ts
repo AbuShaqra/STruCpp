@@ -146,7 +146,9 @@ import {
   enumBehindAlias,
 } from "../semantic/type-utils.js";
 import {
+  arrayElementCppType,
   generateInitializerValue,
+  headInitializerCpp,
   isStructInitializerValue,
   type StructInitEmitter,
 } from "./struct-init-codegen.js";
@@ -977,8 +979,6 @@ export class CodeGenerator {
   private libraryStructFieldTypes: Map<string, string> = new Map();
   /** Upper-cased names of the types library manifests declare. */
   private libraryTypeNames: Set<string> = new Set();
-  /** Upper-cased names of library globals (VAR_GLOBAL, constants included). */
-  private libraryGlobalNames: Set<string> = new Set();
   /** Upper-cased names of library enumerations (aliases of one included). */
   private libraryEnumTypeNames: Set<string> = new Set();
   /** Each library alias TYPE's base, upper-cased. */
@@ -1938,9 +1938,6 @@ export class CodeGenerator {
       );
       if (archive.manifest.types) {
         this.registerLibraryTypes(archive.manifest.types);
-      }
-      for (const g of archive.manifest.globals ?? []) {
-        this.libraryGlobalNames.add(g.name.toUpperCase());
       }
     }
     this.inheritLibraryInOuts();
@@ -7183,7 +7180,7 @@ export class CodeGenerator {
         // The given values, then the element type's default for the rest
         if (expr.fillRest !== undefined) {
           const rest = this.generateExpression(expr.fillRest);
-          return `{strucpp::iec_head(${[rest, ...elements].join(", ")})}`;
+          return headInitializerCpp(undefined, rest, elements);
         }
         return `{${elements.join(", ")}}`;
       }
@@ -12761,6 +12758,19 @@ export class CodeGenerator {
       value.literalType === "NULL"
     ) {
       return `${cppType}()`;
+    }
+    // `[1, 2]` for an ARRAY of a type with a default: typed by the array's elements
+    if (
+      value.kind === "ArrayLiteralExpression" &&
+      value.fillRest !== undefined &&
+      cppType !== "" &&
+      !isStructInitializerValue(value)
+    ) {
+      return headInitializerCpp(
+        arrayElementCppType(cppType),
+        this.generateExpression(value.fillRest),
+        value.elements.map((e) => this.generateExpression(e)),
+      );
     }
     if (!isStructInitializerValue(value)) {
       return this.generateExpression(value);

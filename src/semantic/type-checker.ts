@@ -1357,6 +1357,7 @@ export class TypeChecker {
     }
 
     this.checkInitialValueOperators(ast);
+    this.reportEnumGlobalNames(ast);
 
     return {
       errors: this.errors,
@@ -2093,6 +2094,14 @@ export class TypeChecker {
     }
     visit(ast, undefined);
     for (const t of ast.types) {
+      // `TYPE AU : UE := LK`: a value of the type itself
+      if (t.defaultValue) {
+        this.settleBareValue(
+          t.defaultValue,
+          t.name,
+          this.symbolTables.globalScope,
+        );
+      }
       if (t.defaultValue && t.definition.kind === "TypeReference") {
         this.checkCharInitialValue(t.name, t.defaultValue);
       }
@@ -2294,7 +2303,7 @@ export class TypeChecker {
    */
   private checkEnumInitialValue(typeName: string, value: Expression): void {
     if (this.typeDefaults.has(value)) return;
-    this.settleLibraryEnumValue(
+    this.settleBareValue(
       value,
       typeName,
       this.initializerScope ?? this.symbolTables.globalScope,
@@ -2667,25 +2676,14 @@ export class TypeChecker {
         return settled;
       }
     }
-    // A value of an enumeration of the sources that a library global shares
-    // the name of, not settled as the global (`libraryGlobal`): the value,
-    // as codegen emits it
+    // Both a value of an enumeration of the sources and a library's global,
+    // not settled as either: refused by reportEnumGlobalNames, untyped here
     if (
       expr.enumType === undefined &&
       expr.libraryGlobal !== true &&
-      (symbol.kind === "variable" || symbol.kind === "constant") &&
-      !this.hasMemberAccess(expr) &&
-      this.symbolTables.globalScope.definedByLibrary(expr.name)
+      this.isEnumGlobalName(expr, scope)
     ) {
-      const owner = this.sourceEnumOwning(expr.name);
-      const ownerType =
-        owner === undefined
-          ? undefined
-          : this.symbolTables.lookupType(owner)?.resolvedType;
-      if (ownerType?.typeKind === "enum") {
-        expr.resolvedType = ownerType;
-        return ownerType;
-      }
+      return undefined;
     }
     const enumValueType = this.enumValueType(expr, symbol);
     if (enumValueType) return enumValueType;
@@ -3096,18 +3094,16 @@ export class TypeChecker {
     expr: BinaryExpression,
     scope: Scope,
   ): IECType | undefined {
+    // An operand needs an elementary value: not a STRUCT or FB global
+    this.settleValueBesideNonElementaryGlobal(expr.left, scope);
+    this.settleValueBesideNonElementaryGlobal(expr.right, scope);
     // `u = LK`: a bare value compared with an enumeration is that enumeration's
     if (expr.operator === "=" || expr.operator === "<>") {
       for (const [one, other] of [
         [expr.left, expr.right],
         [expr.right, expr.left],
       ] as const) {
-        if (!this.isBareName(one)) continue;
-        this.settleLibraryEnumValue(
-          one,
-          this.contextTypeNameOf(other, scope),
-          scope,
-        );
+        this.settleBareValue(one, this.contextTypeNameOf(other, scope), scope);
       }
     }
     if (expr.operator === "+" || expr.operator === "-") {
@@ -5269,6 +5265,7 @@ export class TypeChecker {
     expr: UnaryExpression,
     scope: Scope,
   ): IECType | undefined {
+    this.settleValueBesideNonElementaryGlobal(expr.operand, scope);
     const operandType = this.resolveExprType(expr.operand, scope);
 
     if (operandType === undefined) {
@@ -5346,9 +5343,8 @@ export class TypeChecker {
         stripEnEno([...expr.arguments]).forEach((arg, i) => {
           if (arg.isOutput) return;
           const input = boundInput(inputs, arg, i);
-          if (input === undefined || input.inOut) return;
-          this.settleLibraryEnumValue(arg.value, input.type.name, scope);
-          this.settleGlobalOperands(arg.value, input.type.name, scope);
+          if (input === undefined) return;
+          this.settleBareValue(arg.value, input.type.name, scope);
         });
       }
     }
@@ -6285,6 +6281,24 @@ export class TypeChecker {
     }
     if (binding.ordered) expr.arguments = binding.ordered;
     if (binding.failed) this.unboundStdFunctionCalls.add(expr);
+    // A conversion's or ANY_* input's argument needs an elementary value
+    const conversion =
+      desc === undefined ||
+      desc.name.toUpperCase().startsWith("TO_") ||
+      this.stdRegistry.resolveConversion(upper) !== undefined;
+    const inputs = stripEnEno([...expr.arguments]).filter((a) => !a.isOutput);
+    inputs.forEach((arg, i) => {
+      const param =
+        arg.name !== undefined
+          ? params.find((p) => p.name.toUpperCase() === arg.name!.toUpperCase())
+          : params[Math.min(i, params.length - 1)];
+      if (
+        conversion ||
+        (param !== undefined && !param.isByRef && param.constraint !== "ANY")
+      ) {
+        this.settleValueBesideNonElementaryGlobal(arg.value, scope);
+      }
+    });
   }
 
   /** Function calls whose argument names were already checked. */
@@ -7397,7 +7411,6 @@ export class TypeChecker {
         if (!targetType) continue; // Non-elementary types — handled elsewhere
         // A CHAR initial value refused already (checkCharInitialValue).
         if (this.reportedCharValues.has(decl.initialValue)) continue;
-        this.settleGlobalOperands(decl.initialValue, decl.type.name, scope);
         const valueType = this.resolveExprType(decl.initialValue, scope);
         if (!valueType) continue;
         this.ltimeStores.add(decl.initialValue);
@@ -8519,75 +8532,194 @@ export class TypeChecker {
     const result = this.resultTargetType(e);
     if (result !== undefined) return result.name;
     if (this.isBareName(e)) {
+      if (e.enumType !== undefined) return e.enumType;
+      if (e.libraryGlobal !== true && this.isEnumGlobalName(e, scope)) {
+        return undefined;
+      }
       const sym = scope.lookup(e.name);
       if (sym?.kind === "enumValue") return sym.enumType;
       if (sym?.kind !== "variable" && sym?.kind !== "constant")
         return undefined;
     }
-    const type = this.accessedType(e, scope);
+    const type =
+      this.accessedType(e, scope) ?? this.propertyTargetType(e, scope);
+    // A REFERENCE TO stands for its target
     return type !== undefined &&
-      (type.referenceKind ?? "none") === "none" &&
+      ["none", "reference_to"].includes(type.referenceKind ?? "none") &&
+      type.referenceChain === undefined &&
       type.arrayDimensions === undefined
       ? type.name
       : undefined;
   }
 
   /**
-   * In a value stored into a number (`V := LK * 10`), a bare name that is a
-   * value of an enumeration of the sources and a library's global is the
-   * global: recorded on the node for codegen. Elsewhere it stays the
-   * enumeration's value.
+   * A bare value stored in, compared with or passed as `typeName`: a value of
+   * a library enumeration hidden by one of the sources (`c : LColor := Red`),
+   * or a name that is both a value of an enumeration of the sources and a
+   * library's global (`LK`). The latter is the value where `typeName` is that
+   * enumeration, the global where it is the global's own enumeration or
+   * STRUCT type; anywhere else `reportEnumGlobalNames` refuses it.
    */
-  private settleGlobalOperands(
+  private settleBareValue(
     value: Expression,
-    targetTypeName: string | undefined,
+    typeName: string | undefined,
     scope: Scope,
   ): void {
-    const target =
-      targetTypeName === undefined
-        ? undefined
-        : ELEMENTARY_TYPES[
-            canonicalElementaryName(this.aliasBase(targetTypeName))
-          ];
+    while (value.kind === "ParenthesizedExpression") value = value.expression;
+    this.settleLibraryEnumValue(value, typeName, scope);
     if (
-      target === undefined ||
-      !(
-        _isTypeInCategory(target, "ANY_NUM") ||
-        _isTypeInCategory(target, "ANY_BIT")
-      )
+      typeName === undefined ||
+      !this.isEnumGlobalName(value, scope) ||
+      value.enumType !== undefined
     ) {
       return;
     }
-    const visit = (e: Expression): void => {
-      switch (e.kind) {
-        case "ParenthesizedExpression":
-          visit(e.expression);
+    const global = this.symbolTables.globalScope.lookup(value.name);
+    if (global?.kind !== "variable" && global?.kind !== "constant") return;
+    const declared = (global.declaration as VarDeclaration | undefined)?.type;
+    if (
+      declared === undefined ||
+      declared.arrayDimensions !== undefined ||
+      (declared.referenceKind ?? "none") !== "none"
+    ) {
+      return;
+    }
+    const own = this.aliasBase(declared.name);
+    const kind = this.symbolTables.lookupType(own)?.resolvedType?.typeKind;
+    if (
+      (kind === "enum" || kind === "struct") &&
+      this.aliasBase(typeName) === own
+    ) {
+      value.libraryGlobal = true;
+      return;
+    }
+    // An elementary context: not a STRUCT or FB global
+    if (
+      ELEMENTARY_TYPES[canonicalElementaryName(this.aliasBase(typeName))] !==
+      undefined
+    ) {
+      this.settleValueBesideNonElementaryGlobal(value, scope);
+    }
+  }
+
+  /**
+   * A name that is both a value of an enumeration of the sources and a
+   * library global of no elementary or enumeration type (`MATH` of
+   * CONSTANTS_MATH), where an elementary value is needed (`TO_INT(MATH)`): the
+   * global cannot be it, so it is the enumeration's value.
+   */
+  private settleValueBesideNonElementaryGlobal(
+    value: Expression,
+    scope: Scope,
+  ): void {
+    while (value.kind === "ParenthesizedExpression") value = value.expression;
+    if (
+      !this.isEnumGlobalName(value, scope) ||
+      value.enumType !== undefined ||
+      value.libraryGlobal === true
+    ) {
+      return;
+    }
+    const global = this.symbolTables.globalScope.lookup(value.name);
+    if (global?.kind !== "variable" && global?.kind !== "constant") return;
+    const declared = (global.declaration as VarDeclaration | undefined)?.type;
+    if (declared === undefined) return;
+    if (declared.arrayDimensions === undefined) {
+      if ((declared.referenceKind ?? "none") !== "none") return;
+      const base = this.aliasBase(declared.name);
+      if (ELEMENTARY_TYPES[canonicalElementaryName(base)] !== undefined) return;
+      const kind = this.symbolTables.lookupType(base)?.resolvedType?.typeKind;
+      if (kind === undefined || kind === "enum") return;
+    }
+    const owner = this.sourceEnumOwning(value.name);
+    if (owner !== undefined) value.enumType = owner;
+  }
+
+  /**
+   * A bare name that is both a value of an enumeration of the sources and a
+   * library's global (`LK`), where no variable of the sources hides it.
+   */
+  private isEnumGlobalName(
+    e: Expression,
+    scope: Scope,
+  ): e is VariableExpression {
+    return (
+      this.isBareName(e) &&
+      e.typedLiteral !== true &&
+      this.isLibraryValueName(e.name.toUpperCase()) &&
+      !this.isSourceVariable(e.name, scope) &&
+      this.sourceEnumOwning(e.name) !== undefined
+    );
+  }
+
+  /**
+   * Refuse each bare name that is both a value of an enumeration of the
+   * sources and a library's global where no context settled which one it is
+   * (`settleBareValue`), once at the name, in every dialect.
+   */
+  private reportEnumGlobalNames(ast: CompilationUnit): void {
+    const global = this.symbolTables.globalScope;
+    const reported = new Set<string>();
+    const walk = (
+      root: ASTNode | undefined,
+      scope: Scope | undefined,
+    ): void => {
+      if (root === undefined) return;
+      const within = scope ?? global;
+      walkAST(root, (node): boolean | void => {
+        // A method, property or action is walked with its own scope
+        if (
+          node !== root &&
+          (node.kind === "MethodDeclaration" ||
+            node.kind === "PropertyDeclaration" ||
+            node.kind === "ActionDeclaration")
+        ) {
+          return false;
+        }
+        if (node.kind !== "VariableExpression") return;
+        const e = node as VariableExpression;
+        if (
+          e.enumType !== undefined ||
+          e.libraryGlobal === true ||
+          !this.isEnumGlobalName(e, within)
+        ) {
           return;
-        case "UnaryExpression":
-          visit(e.operand);
-          return;
-        case "BinaryExpression":
-          if (["+", "-", "*", "/", "MOD", "**"].includes(e.operator)) {
-            visit(e.left);
-            visit(e.right);
-          }
-          return;
-        case "VariableExpression":
-          if (
-            this.isBareName(e) &&
-            e.enumType === undefined &&
-            this.isLibraryValueName(e.name.toUpperCase()) &&
-            this.sourceEnumOwning(e.name) !== undefined &&
-            scope.lookup(e.name)?.kind !== "enumValue"
-          ) {
-            e.libraryGlobal = true;
-          }
-          return;
-        default:
-          return;
-      }
+        }
+        const span = e.sourceSpan;
+        const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+        if (reported.has(key)) return;
+        reported.add(key);
+        const owner = this.sourceEnumOwning(e.name) ?? "";
+        this.addError(
+          `'${e.name}' is both a value of enumeration ${owner} and a library global; write ${owner}#${e.name} for the value`,
+          span.startLine,
+          span.startCol,
+          span.file,
+        );
+      });
     };
-    visit(value);
+    for (const block of ast.globalVarBlocks) walk(block, global);
+    for (const c of ast.configurations) walk(c, global);
+    for (const t of ast.types) walk(t, global);
+    for (const prog of ast.programs) {
+      const scope = this.symbolTables.getProgramScope(prog.name);
+      walk(prog, scope);
+      for (const m of prog.methods) {
+        walk(m, this.symbolTables.getMethodScope(prog.name, m.name) ?? scope);
+      }
+    }
+    for (const f of ast.functions) {
+      walk(f, this.symbolTables.getFunctionScope(f.name));
+    }
+    for (const fb of ast.functionBlocks) {
+      const scope = this.symbolTables.getFBScope(fb.name);
+      walk(fb, scope);
+      for (const m of fb.methods) {
+        walk(m, this.symbolTables.getMethodScope(fb.name, m.name) ?? scope);
+      }
+      for (const p of fb.properties) walk(p, scope);
+      for (const a of fb.actions) walk(a, scope);
+    }
   }
 
   /** The enumeration of the sources that has the value `name`; undefined otherwise. */
@@ -8686,8 +8818,7 @@ export class TypeChecker {
         // The stored value's context is the target's type, whatever it is
         const targetContext = this.contextTypeNameOf(stmt.target, scope);
         if (this.refuseTypeAsValue(stmt.value, scope, targetContext)) break;
-        this.settleLibraryEnumValue(stmt.value, targetContext, scope);
-        this.settleGlobalOperands(stmt.value, targetContext, scope);
+        this.settleBareValue(stmt.value, targetContext, scope);
         let targetType = this.resolveExprType(stmt.target, scope);
         const valueType = this.resolveExprType(stmt.value, scope);
         this.refuseMisalignedPointerStore(
@@ -8947,7 +9078,7 @@ export class TypeChecker {
         for (const c of stmt.cases) {
           for (const label of c.labels) {
             // A label of an enumeration selector is that enumeration's value
-            this.settleLibraryEnumValue(label.start, selectorTypeName, scope);
+            this.settleBareValue(label.start, selectorTypeName, scope);
             this.resolveExprType(label.start, scope);
             if (label.end) this.resolveExprType(label.end, scope);
             this.typeNotFromExpected(label.start, selectorType);
@@ -10160,7 +10291,11 @@ export class TypeChecker {
       target.toUpperCase() !== this.aliasTarget(typeNameUtil(b)).toUpperCase()
     )
       return false;
-    return this.isStructType(target);
+    // Also a library's STRUCT (`cm := MATH` of a CONSTANTS_MATH global)
+    return (
+      this.isStructType(target) ||
+      this.symbolTables.lookupType(target)?.resolvedType?.typeKind === "struct"
+    );
   }
 
   /** {@link isSameStructuredType} for two declared types without reference levels. */

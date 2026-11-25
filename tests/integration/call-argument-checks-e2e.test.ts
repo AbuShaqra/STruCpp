@@ -347,4 +347,95 @@ END_PROGRAM
     );
     expect(stdout).toBe("248.5 5000000011 1099511627776 2216");
   });
+
+  it("converts integer, real and wide literals of a partial initializer to the element type", () => {
+    const { stdout } = run(
+      `TYPE MR : REAL := 1; END_TYPE
+TYPE ML : LINT := 7; END_TYPE
+TYPE MW : LWORD := 16#10; END_TYPE
+PROGRAM Main
+VAR a : ARRAY[0..3] OF MR := [3, 2.25, 9000000000]; b : ARRAY[0..2] OF ML := [5, 9000000000];
+  w : ARRAY[0..2] OF MW := [1, 16#FFFFFFFFFFFFFFFF];
+  r1 : LREAL; r2 : LINT; r3 : LWORD; r4 : LWORD; END_VAR
+r1 := a[0] * 1000 + a[1] * 100 + a[3];
+r2 := b[0] + b[1] + b[2];
+r3 := w[0] + w[2]; r4 := w[1];
+IF a[2] > 8.9E9 THEN r1 := r1 + 0.5; END_IF;
+END_PROGRAM
+`,
+      'p.R1 << " " << p.R2 << " " << p.R3 << " " << p.R4',
+      "argchecks_fill_convert",
+    );
+    expect(stdout).toBe("3226.5 9000000012 17 18446744073709551615");
+  });
+
+  it("stores each kind of element of a partial initializer as an assignment or declaration of it does", () => {
+    // Pairs: the element, then a plain variable of the element type given the same value
+    const { stdout } = run(
+      `TYPE AS2 : STRING(2) := 'z'; END_TYPE
+TYPE ASI : SINT := 9; END_TYPE
+TYPE AUS : USINT := 4; END_TYPE
+TYPE AI : INT := 9; END_TYPE
+TYPE AUL : ULINT := 3; END_TYPE
+TYPE AUD : UDINT := 4; END_TYPE
+TYPE AWS : WSTRING(3) := "y"; END_TYPE
+TYPE ATT : TIME := T#1s; END_TYPE
+TYPE AE : (EA, EB, EC) := EB; END_TYPE
+TYPE ABL : BOOL := TRUE; END_TYPE
+TYPE PT : STRUCT x : INT := 5; y : INT := 6; END_STRUCT; END_TYPE
+TYPE APT : PT := (y := 8); END_TYPE
+VAR_GLOBAL CONSTANT KI : INT := 4; END_VAR
+PROGRAM Main
+VAR
+  a1 : ARRAY[0..2] OF AS2 := ['abcdef']; s1 : AS2;
+  a2 : ARRAY[0..2] OF ASI := [200]; s2 : ASI;
+  a3 : ARRAY[0..2] OF AUS := [300, -1]; s3 : AUS; s3b : AUS;
+  a4 : ARRAY[0..2] OF AI := [2.7]; s4 : AI;
+  a5 : ARRAY[0..2] OF AUL := [-1]; s5 : AUL := -1;
+  a6 : ARRAY[0..2] OF AUD := [-1]; s6 : AUD := -1;
+  a7 : ARRAY[0..2] OF AWS := ["abcdef"]; s7 : AWS;
+  a8 : ARRAY[0..2] OF ATT := [T#5ms]; s8 : ATT;
+  a9 : ARRAY[0..2] OF AE := [EC]; s9 : AE;
+  a10 : ARRAY[0..2] OF ABL := [0, 1]; s10 : ABL; s10b : ABL;
+  a11 : ARRAY[0..2] OF APT := [(x := 1)]; s11 : APT;
+  a12 : ARRAY[0..2] OF AI := [KI, KI * 2]; s12 : AI; s12b : AI;
+  v : ARRAY[0..40] OF LINT;
+END_VAR
+s1 := 'abcdef'; s2 := 200; s3 := 300; s3b := -1; s4 := 2.7; s7 := "abcdef"; s8 := T#5ms; s9 := EC;
+s10 := 0; s10b := 1; s12 := KI; s12b := KI * 2;
+v[0] := LEN(a1[0]) * 100 + LEN(s1) * 10 + LEN(a1[1]); v[1] := BOOL_TO_INT(a1[0] = s1);
+v[2] := a2[0]; v[3] := s2; v[4] := a3[0]; v[5] := s3; v[6] := a3[1]; v[7] := s3b; v[8] := a4[0]; v[9] := s4;
+v[10] := ULINT_TO_LINT(a5[0] / 2); v[11] := ULINT_TO_LINT(s5 / 2); v[12] := a6[0]; v[13] := s6;
+v[14] := WLEN(a7[0]) * 10 + WLEN(s7); v[15] := BOOL_TO_INT(a7[0] = s7);
+v[16] := TIME_TO_LINT(a8[0]); v[17] := TIME_TO_LINT(s8); v[18] := TIME_TO_LINT(a8[2]);
+v[19] := BOOL_TO_INT(a9[0] = EC) * 10 + BOOL_TO_INT(s9 = EC); v[20] := BOOL_TO_INT(a9[2] = EB);
+v[21] := BOOL_TO_INT(a10[0]) * 100 + BOOL_TO_INT(a10[1]) * 10 + BOOL_TO_INT(a10[2]); v[22] := BOOL_TO_INT(s10) * 10 + BOOL_TO_INT(s10b);
+v[23] := a11[0].x * 10 + a11[0].y; v[24] := a11[1].x * 10 + a11[1].y; v[25] := s11.x * 10 + s11.y;
+v[26] := a12[0] * 100 + a12[1] * 10 + a12[2]; v[27] := s12 * 10 + s12b;
+END_PROGRAM
+`,
+      'p.V[0] << " " << p.V[1] << " " << p.V[2] << " " << p.V[3] << " " << p.V[4] << " " << p.V[5] << " " << p.V[6] << " " << p.V[7] << " " << p.V[8] << " " << p.V[9] << " " << p.V[10] << " " << p.V[11] << " " << p.V[12] << " " << p.V[13] << " " << p.V[14] << " " << p.V[15] << " " << p.V[16] << " " << p.V[17] << " " << p.V[18] << " " << p.V[19] << " " << p.V[20] << " " << p.V[21] << " " << p.V[22] << " " << p.V[23] << " " << p.V[24] << " " << p.V[25] << " " << p.V[26] << " " << p.V[27]',
+      "argchecks_fill_like_assignment",
+    );
+    expect(stdout).toBe(
+      "221 1 -56 -56 44 44 255 255 2 2 9223372036854775807 9223372036854775807 4294967295 4294967295 33 1 5 5 1000 11 1 11 1 16 58 58 489 48",
+    );
+  });
+
+  it("compiles a partial initializer of 2000 values quickly", () => {
+    const values = Array.from({ length: 2000 }, (_, i) => i + 1).join(",");
+    const started = Date.now();
+    const { stdout } = run(
+      `TYPE AI : INT := 9; END_TYPE
+PROGRAM Main
+VAR a : ARRAY[0..2009] OF AI := [${values}]; END_VAR
+END_PROGRAM
+`,
+      'p.A[0] << " " << p.A[1999] << " " << p.A[2000] << " " << p.A[2009]',
+      "argchecks_fill_2000",
+    );
+    expect(stdout).toBe("1 2000 9 9");
+    // A recursive template took minutes and gigabytes here
+    expect(Date.now() - started).toBeLessThan(30000);
+  });
 });

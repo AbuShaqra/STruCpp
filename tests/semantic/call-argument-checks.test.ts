@@ -674,27 +674,102 @@ describe("a user enumeration value named like a library global", () => {
     ...LIBS,
     loadStlibArchive(JSON.parse(JSON.stringify(lib.archive))),
   ];
-  it("is the value where the enumeration is the context, the global in a number", () => {
-    const src = `TYPE UE : (LK, X); END_TYPE
+  const both = (name: string): string =>
+    `'${name}' is both a value of enumeration UE and a library global; write UE#${name} for the value`;
+  for (const [mode, options] of [
+    ["no dialect", {}],
+    ["iec-3", IEC],
+    ["strict", STRICT],
+  ] as const) {
+    it(`is the value where the enumeration is the context (${mode})`, () => {
+      const src = `TYPE UE : (LK, X); END_TYPE
+TYPE S : STRUCT u : UE := LK; END_STRUCT END_TYPE
+TYPE AU : UE := LK; END_TYPE
+FUNCTION FU : INT VAR_INPUT u : UE; END_VAR FU := 1; END_FUNCTION
 PROGRAM Main
-VAR v : INT; u : UE := LK; w : UE; END_VAR
-v := LK * 10;
+VAR v : INT; u : UE := LK; w : UE; s2 : S := (u := LK); a : ARRAY[0..1] OF UE := [LK]; END_VAR
 w := LK;
-IF u = LK THEN v := v + 1; END_IF
-CASE w OF LK: v := v + 100; END_CASE
+w := (LK);
+IF u = LK THEN v := 1; END_IF;
+IF (LK) <> w THEN v := 2; END_IF;
+CASE w OF LK: v := 3; END_CASE;
+v := FU(LK) + FU(u := LK);
 END_PROGRAM
 `;
-    expect(diagnostics(src, {}, libs).errors).toEqual([]);
-  });
-  it("is the enumeration's value where neither decides it (refused into a STRING)", () => {
-    const src = `TYPE UE : (LK, X); END_TYPE
+      expect(diagnostics(src, options, libs).errors).toEqual([]);
+    });
+
+    it(`refuses it once where nothing settles it (${mode})`, () => {
+      const src = `TYPE UE : (LK, X); END_TYPE
+TYPE AI : INT := LK; END_TYPE
+TYPE S : STRUCT i : INT := LK; END_STRUCT END_TYPE
+FUNCTION FI : INT VAR_INPUT i : INT; END_VAR FI := i; END_FUNCTION
+FUNCTION FIO : INT VAR_IN_OUT i : INT; END_VAR FIO := i; END_FUNCTION
 PROGRAM Main
-VAR s : STRING; END_VAR
+VAR v : INT; s : STRING; ai : ARRAY[0..1] OF INT := [LK]; si : S := (i := LK); l : LINT; END_VAR
+v := LK * 10;
+v := MAX(LK, 3);
+l := INT_TO_LINT(LK);
+v := FI(LK);
+v := FIO(LK);
+IF LK = 5 THEN v := 1; END_IF;
 s := LK;
 END_PROGRAM
 `;
-    expect(diagnostics(src, {}, libs).errors).toEqual([
-      "4: Cannot assign UE to STRING",
-    ]);
+      expect(diagnostics(src, options, libs).errors).toEqual([
+        `2: ${both("LK")}`,
+        `3: ${both("LK")}`,
+        `7: ${both("LK")}`,
+        `7: ${both("LK")}`,
+        `8: ${both("LK")}`,
+        `9: ${both("LK")}`,
+        `10: ${both("LK")}`,
+        `11: ${both("LK")}`,
+        `12: ${both("LK")}`,
+        `13: ${both("LK")}`,
+        `14: ${both("LK")}`,
+      ]);
+    });
+  }
+});
+
+describe("a user enumeration value named like a library global of a STRUCT type", () => {
+  const lib = compileStlib(
+    [
+      {
+        source: `TYPE LS : STRUCT a : INT := 7; END_STRUCT END_TYPE
+VAR_GLOBAL G : LS; END_VAR
+FUNCTION LF : INT VAR_INPUT s : LS; END_VAR LF := s.a; END_FUNCTION`,
+        fileName: "g.st",
+      },
+    ],
+    { name: "lglob", version: "1.0.0", namespace: "lglob" },
+  );
+  const libs = [
+    ...LIBS,
+    loadStlibArchive(JSON.parse(JSON.stringify(lib.archive))),
+  ];
+  it("is the global where its own type is the context or a member is read", () => {
+    const src = `TYPE UE : (A, G); END_TYPE
+PROGRAM Main
+VAR s : LS; v : INT; u : UE; END_VAR
+s := G;
+v := LF(G) + G.a;
+u := G;
+END_PROGRAM
+`;
+    expect(lib.errors).toEqual([]);
+    expect(diagnostics(src, {}, libs).errors).toEqual([]);
+  });
+  it("is the value where an elementary value is needed, which the global cannot be", () => {
+    const src = `TYPE UE : (A, G); END_TYPE
+PROGRAM Main
+VAR v : INT; u : UE; END_VAR
+v := TO_INT(G);
+IF G = u THEN v := v + 1; END_IF;
+END_PROGRAM
+`;
+    expect(diagnostics(src, {}, libs).errors).toEqual([]);
+    expect(diagnostics(src, STRICT, libs).errors).toEqual([]);
   });
 });
