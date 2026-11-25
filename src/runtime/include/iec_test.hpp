@@ -165,6 +165,20 @@ inline std::string to_display_string(const IECVar<char16_t>& value) {
     return to_display_string(value.get());
 }
 
+// SINT, USINT and BYTE as numbers, not as the character of that code
+inline std::string to_display_string(const int8_t& value) {
+    return std::to_string(static_cast<int>(value));
+}
+inline std::string to_display_string(const uint8_t& value) {
+    return std::to_string(static_cast<unsigned>(value));
+}
+inline std::string to_display_string(const IECVar<int8_t>& value) {
+    return to_display_string(value.get());
+}
+inline std::string to_display_string(const IECVar<uint8_t>& value) {
+    return to_display_string(value.get());
+}
+
 // ============================================================================
 // JSON helpers (no external library — simple char-by-char escaping)
 // ============================================================================

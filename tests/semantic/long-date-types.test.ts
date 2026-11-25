@@ -92,7 +92,7 @@ ldt := LDATE_AND_TIME#2024-01-16-00:00:00;`,
         expect(r.cppCode).toContain(
           "LDT = TO_LDT(IEC_LDT(iec_long_value(static_cast<DT_t>(DT1))));",
         );
-        expect(r.cppCode).toContain("N = TO_LINT(DATE_TO_NS(LD));");
+        expect(r.cppCode).toContain("N = TO_LINT(DATE_TO_NS(IEC_LDATE(LD)));");
       });
 
       it("keeps a variable named like a long type", () => {

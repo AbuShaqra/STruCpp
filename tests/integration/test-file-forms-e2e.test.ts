@@ -3,7 +3,7 @@
 /**
  * E2E (test runner): test-file forms that were refused or failed g++:
  * - ASSERT_EQ / ASSERT_NEQ on a WSTRING and on a CHAR or WCHAR beside a
- *   one-character literal (a failure prints both values);
+ *   one-character literal (a failure prints both values; a SINT as a number);
  * - an integer `MOD(a + 1, 5)`;
  * - a TEST variable of a PROGRAM type with a VAR_EXTERNAL of a CONFIGURATION
  *   global, and a FUNCTION writing that global through VAR_EXTERNAL;
@@ -69,6 +69,10 @@ TEST 'a char failure'
   VAR c : CHAR := 'x'; END_VAR
   ASSERT_EQ(c, 'q');
 END_TEST
+TEST 'a sint failure'
+  VAR si : SINT := -5; END_VAR
+  ASSERT_EQ(si, 3);
+END_TEST
 `;
 
 const GVL_SOURCE = `
@@ -113,7 +117,8 @@ describe.skipIf(!hasGpp)("test-file forms (e2e)", () => {
     expect(stdout).toContain("[PASS] strings and characters");
     expect(stdout).toContain('expected "ac", got "ab"');
     expect(stdout).toContain("expected 'q', got 'x'");
-    expect(stdout).toContain("6 tests, 4 passed, 2 failed");
+    expect(stdout).toContain("SI expected 3, got -5");
+    expect(stdout).toContain("7 tests, 4 passed, 3 failed");
     expect(exitCode).toBe(1);
   });
 

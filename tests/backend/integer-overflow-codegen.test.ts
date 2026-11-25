@@ -145,17 +145,25 @@ describe("integer ** stored as an integer", () => {
     expect(cpp).toContain("strucpp::iec_expt<DINT_t>(D, 31)");
   });
 
-  it("keeps pow for a REAL target, a negative constant exponent or a REAL operand", () => {
+  it("keeps pow for a REAL target or a REAL operand", () => {
     const { cpp } = compileOk(
       program(
-        "i : DINT := 2; r : REAL; d : DINT; x : REAL := 2.0;",
-        "r := i ** 2; d := i ** -1; r := x ** i;",
+        "i : DINT := 2; r : REAL; x : REAL := 2.0;",
+        "r := i ** 2; r := x ** i;",
       ),
     );
     expect(cpp).not.toContain("iec_expt");
     expect(cpp).toContain(
-      "std::pow(static_cast<double>(I), static_cast<double>(-1))",
+      "std::pow(static_cast<double>(I), static_cast<double>(2))",
     );
+  });
+
+  it("computes a negative constant exponent as an exact integer power", () => {
+    const { cpp } = compileOk(
+      program("i : DINT := 2; d : DINT;", "d := i ** -1;"),
+    );
+    expect(cpp).toContain("strucpp::iec_expt<DINT_t>(I, -1)");
+    expect(cpp).not.toContain("std::pow");
   });
 });
 

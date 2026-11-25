@@ -12486,7 +12486,16 @@ export class TypeChecker {
    */
   private selectedInputsType(values: Argument[]): IECType | undefined {
     const types = values.map((a) => a.value.resolvedType);
-    if (types.some((t) => t === undefined || isGenericGroupType(t))) {
+    // Strings and characters keep their own rules (checkCharStdArguments)
+    if (
+      types.some(
+        (t) =>
+          t === undefined ||
+          isGenericGroupType(t) ||
+          this.stringKindOf(t) !== undefined ||
+          this.charTypeOf(t) !== undefined,
+      )
+    ) {
       return undefined;
     }
     const typed = values
@@ -12669,7 +12678,12 @@ export class TypeChecker {
       const param = desc.params[i]!;
       const argType = arg.value.resolvedType;
 
-      if (argType?.typeKind === "enum") {
+      // UPPER_BOUND / LOWER_BOUND refuse an enumeration DIM on their own.
+      if (
+        argType?.typeKind === "enum" &&
+        nameUpper !== "UPPER_BOUND" &&
+        nameUpper !== "LOWER_BOUND"
+      ) {
         this.refuseEnumNumericArgument(nameUpper, param, arg);
         continue;
       }

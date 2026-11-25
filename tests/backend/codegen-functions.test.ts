@@ -263,7 +263,7 @@ END_PROGRAM`,
         { headerFileName: "generated.hpp" },
       );
       expect(result.errors).toEqual([]);
-      expect(result.cppCode).toContain("N = TO_LINT(DATE_TO_NS(D));");
+      expect(result.cppCode).toContain("N = TO_LINT(DATE_TO_NS(IEC_LDATE(D)));");
       expect(result.cppCode).toContain("D = TO_LDATE(DATE_FROM_NS(N));");
       expect(result.cppCode).toContain("N = TO_LINT(T);");
       expect(result.cppCode).toContain("N = TO_LINT(DT);");

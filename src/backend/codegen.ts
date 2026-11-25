@@ -9177,12 +9177,15 @@ export class CodeGenerator {
     ) {
       return;
     }
-    // A variable, or a literal cast to IEC_<T> above, is an IECVar<T>.
+    // A variable is an IECVar<T>; so is a literal cast to IEC_<T> above where
+    // the two arguments deduce one T (`MOD(a + 1, 5)`, `AND(d + 1, -2)`).
+    const pair = stripEnEno([...argExprs]).length === 2;
     const isVariable = argExprs.map(
       (a, i) =>
         !isEnEnoArgument(a) &&
         (a.value.kind === "VariableExpression" ||
-          (literalIndices.includes(i) &&
+          (pair &&
+            literalIndices.includes(i) &&
             (args[i] ?? "").startsWith("static_cast<IEC_"))),
     );
     for (let i = 0; i < args.length && i < argExprs.length; i++) {
