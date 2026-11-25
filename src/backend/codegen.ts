@@ -149,7 +149,11 @@ import {
 } from "./struct-init-codegen.js";
 import { vendorOperatorCpp } from "../semantic/vendor-operators.js";
 import { pointerReadTarget } from "../semantic/address-store.js";
-import { untypedNotCpp, untypedNotTarget } from "../semantic/untyped-not.js";
+import {
+  isUntypedIntegerConstant,
+  untypedNotCpp,
+  untypedNotTarget,
+} from "../semantic/untyped-not.js";
 import { bitPlaceOf, bitRunMemberName } from "./bit-runs.js";
 import type { StructDefinition } from "../frontend/ast.js";
 import { typeDefaultOf } from "../frontend/type-defaults.js";
@@ -686,6 +690,14 @@ export interface CodeGenResult {
 // =============================================================================
 
 /** The value range of each integer and bit string type, for literal fitting. */
+/** The bit string of each signed integer's width. */
+const SIGNED_BIT_STRING: Readonly<Record<string, string>> = {
+  SINT: "BYTE",
+  INT: "WORD",
+  DINT: "DWORD",
+  LINT: "LWORD",
+};
+
 const INTEGER_RANGES: Readonly<Record<string, readonly [bigint, bigint]>> = {
   SINT: [-128n, 127n],
   INT: [-32768n, 32767n],
@@ -8535,6 +8547,8 @@ export class CodeGenerator {
     operand: Expression,
     operandCpp?: string,
   ): string | undefined {
+    // An untyped constant is typed from its use (untypedNotTarget), else logical
+    if (isUntypedIntegerConstant(operand)) return undefined;
     // Without a checked type (a test body, a STRUCT default) only a plain
     // variable or a typed literal is typed reliably
     let bare = operand;
@@ -8558,6 +8572,23 @@ export class CodeGenerator {
     }
     const cpp = operandCpp ?? this.generateExpression(operand);
     return `static_cast<${type}_t>(~static_cast<${type}_t>(${cpp}))`;
+  }
+
+  /**
+   * A NOT operand the type checker did not type (a test body) and that is
+   * no untyped constant: its C++ type decides (strucpp::iec_not).
+   */
+  private uncheckedNotOperand(operand: Expression): boolean {
+    return (
+      this.isTestMainCodegen() &&
+      operand.resolvedType === undefined &&
+      !isUntypedIntegerConstant(operand)
+    );
+  }
+
+  /** True in the generator of a test main (test bodies are not type-checked). */
+  protected isTestMainCodegen(): boolean {
+    return false;
   }
 
   /** An elementary alias (`TYPE MyI : INT`, a subrange of one) followed to its base, upper-case. */
@@ -8599,6 +8630,10 @@ export class CodeGenerator {
         // NOT of an integer or bit string: its complement (Table 31); of a BOOL: logical
         const complement = this.integerComplement(expr.operand, operand);
         if (complement !== undefined) return complement;
+        // No checked type (a test body): decided by the C++ type
+        if (this.uncheckedNotOperand(expr.operand)) {
+          return `strucpp::iec_not(${operand})`;
+        }
         // An operand typed only by inference: a bit string still complements
         const opType = this.inferExprType(expr.operand)?.toUpperCase();
         return opType !== undefined &&
@@ -9147,13 +9182,25 @@ export class CodeGenerator {
     expr: FunctionCallExpression,
     name: string,
   ): void {
-    if (!["SHL", "SHR", "ROL", "ROR"].includes(name.toUpperCase())) return;
-    const i = expr.arguments.findIndex((a) => !isEnEnoArgument(a));
+    const upper = name.toUpperCase();
+    if (!["SHL", "SHR", "ROL", "ROR"].includes(upper)) return;
+    const named = expr.arguments.findIndex(
+      (a) => a.name?.toUpperCase() === "IN",
+    );
+    const i =
+      named >= 0
+        ? named
+        : expr.arguments.findIndex(
+            (a) => !isEnEnoArgument(a) && a.name === undefined,
+          );
     const arg = expr.arguments[i];
-    if (
-      arg === undefined ||
-      (arg.name !== undefined && arg.name.toUpperCase() !== "IN")
-    ) {
+    if (arg === undefined) return;
+    const type = this.elementaryAliasBase(this.inferExprType(arg.value));
+    // ROL/ROR of a signed integer: rotated as the bit string of its width
+    const rotated = type !== undefined ? SIGNED_BIT_STRING[type] : undefined;
+    if ((upper === "ROL" || upper === "ROR") && rotated !== undefined) {
+      args[i] =
+        `static_cast<IEC_${rotated}>(static_cast<${rotated}_t>(${args[i]}))`;
       return;
     }
     // Only an operator result is promoted; a call returns its own type
@@ -9162,12 +9209,7 @@ export class CodeGenerator {
         "BinaryExpression",
         "UnaryExpression",
         "ParenthesizedExpression",
-      ].includes(arg.value.kind)
-    ) {
-      return;
-    }
-    const type = this.inferExprType(arg.value)?.toUpperCase();
-    if (
+      ].includes(arg.value.kind) ||
       type === undefined ||
       !["BYTE", "WORD", "DWORD", "LWORD"].includes(type)
     ) {
@@ -9684,6 +9726,9 @@ export class CodeGenerator {
             ? this.integerComplement(operand)
             : undefined;
         if (complement !== undefined) return complement;
+        if (operand !== undefined && this.uncheckedNotOperand(operand)) {
+          return `strucpp::iec_not(${this.generateExpression(operand)})`;
+        }
       }
 
       // 0. ADR(x) → &(x) (CODESYS address-of operator)

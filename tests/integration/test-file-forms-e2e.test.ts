@@ -26,6 +26,13 @@ VAR_EXTERNAL cg : INT; END_VAR
 cg := v;
 FSet := cg;
 END_FUNCTION
+FUNCTION_BLOCK FNot
+VAR_OUTPUT o : INT := 5; END_VAR
+END_FUNCTION_BLOCK
+FUNCTION FNotI : INT
+VAR_INPUT x : INT; END_VAR
+FNotI := x;
+END_FUNCTION
 PROGRAM PExt
 VAR_EXTERNAL cg : INT; END_VAR
 VAR n : INT; END_VAR
@@ -76,6 +83,18 @@ TEST 'integer powers'
   r := 1 + b ** -n;
   ASSERT_EQ(r, 1);
 END_TEST
+TEST 'NOT of members, elements, calls and expressions'
+  VAR f : FNot; arr : ARRAY[0..1] OF INT := [5, 0]; i : INT := 5; b : BYTE := 16#F0; bo : BOOL := TRUE; r : INT; rb : BYTE; END_VAR
+  ASSERT_EQ(NOT f.o, -6);
+  ASSERT_EQ(NOT arr[0], -6);
+  ASSERT_EQ(NOT FNotI(5), -6);
+  r := NOT (i + 1);
+  ASSERT_EQ(r, -7);
+  rb := NOT (b AND 16#0F);
+  ASSERT_EQ(rb, 255);
+  ASSERT_FALSE(NOT bo);
+  ASSERT_EQ(NOT i, -6);
+END_TEST
 TEST 'a sint failure'
   VAR si : SINT := -5; END_VAR
   ASSERT_EQ(si, 3);
@@ -123,10 +142,13 @@ describe.skipIf(!hasGpp)("test-file forms (e2e)", () => {
     expect(stdout).toContain("[PASS] integer MOD of a computed argument");
     expect(stdout).toContain("[PASS] strings and characters");
     expect(stdout).toContain("[PASS] integer powers");
+    expect(stdout).toContain(
+      "[PASS] NOT of members, elements, calls and expressions",
+    );
     expect(stdout).toContain('expected "ac", got "ab"');
     expect(stdout).toContain("expected 'q', got 'x'");
     expect(stdout).toContain("SI expected 3, got -5");
-    expect(stdout).toContain("8 tests, 5 passed, 3 failed");
+    expect(stdout).toContain("9 tests, 6 passed, 3 failed");
     expect(exitCode).toBe(1);
   });
 

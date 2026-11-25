@@ -2244,6 +2244,25 @@ inline T XOR(T first, T second, Args... rest) noexcept {
     return XOR(T(iec_unwrap(first) ^ iec_unwrap(second)), rest...);
 }
 
+/**
+ * NOT where the operand's type is known only at C++ time (a test body):
+ * logical on a BOOL, the bitwise complement in the operand's C++ type on an
+ * integer or bit string.
+ */
+template<typename T,
+    std::enable_if_t<std::is_same<std::decay_t<decltype(iec_unwrap(std::declval<T>()))>, bool>::value, int> = 0>
+inline bool iec_not(const T& value) noexcept {
+    return !iec_unwrap(value);
+}
+
+template<typename T,
+    std::enable_if_t<!std::is_same<std::decay_t<decltype(iec_unwrap(std::declval<T>()))>, bool>::value &&
+                     std::is_integral<std::decay_t<decltype(iec_unwrap(std::declval<T>()))>>::value, int> = 0>
+inline auto iec_not(const T& value) noexcept -> std::decay_t<decltype(iec_unwrap(value))> {
+    using V = std::decay_t<decltype(iec_unwrap(value))>;
+    return static_cast<V>(~iec_unwrap(value));
+}
+
 // AND/OR/XOR on a signed integer (CODESYS extension, as for SHL/SHR and the
 // infix operators): two's complement bits, the result in the same type.
 template<typename T, std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>

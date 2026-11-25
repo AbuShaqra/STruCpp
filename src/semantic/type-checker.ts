@@ -578,12 +578,12 @@ function constantIntegerPower(
   return base ** exponent;
 }
 
-/** The unsigned integer of each bit string's width. */
-const BIT_STRING_UNSIGNED: Readonly<Record<string, string>> = {
-  BYTE: "USINT",
-  WORD: "UINT",
-  DWORD: "UDINT",
-  LWORD: "ULINT",
+/** The bit string of a signed integer's width (SHL/SHR/ROL/ROR take ANY_BIT). */
+const SIGNED_SHIFT_BIT_STRING: Readonly<Record<string, string>> = {
+  SINT: "BYTE",
+  INT: "WORD",
+  DINT: "DWORD",
+  LINT: "LWORD",
 };
 
 /** Constraints of standard-function parameters an enumeration does not meet. */
@@ -3075,10 +3075,27 @@ export class TypeChecker {
       if (widened !== undefined && type === widened) {
         expr.computeAs = (widened as ElementaryType).name.toUpperCase();
       }
-      // A signed integer with a bit string: computed in the signed type they widen to
+      // A signed integer with a BYTE or WORD of its width: computed in that
+      // bit string (C++ would promote both to int and keep the sign)
       if (
         type !== undefined &&
-        this.isIntegerType(type) &&
+        type.typeKind === "elementary" &&
+        ["BYTE", "WORD"].includes(
+          this.aliasBase((type as ElementaryType).name).toUpperCase(),
+        ) &&
+        [
+          [expr.left, leftType],
+          [expr.right, rightType],
+        ].some(
+          ([e, t]) =>
+            !this.isUntypedBitConstant(e as Expression) &&
+            (t as IECType).typeKind === "elementary" &&
+            ["SINT", "INT", "DINT", "LINT"].includes(
+              this.aliasBase(
+                (t as IECType as ElementaryType).name,
+              ).toUpperCase(),
+            ),
+        ) &&
         [leftType, rightType].some(
           (t) =>
             t.typeKind === "elementary" &&
@@ -3328,8 +3345,8 @@ export class TypeChecker {
       const name = this.aliasBase((t as ElementaryType).name);
       return STRICT_BIT_STRINGS.has(name) ? [ELEMENTARY_TYPES[name]!] : [];
     });
-    // A signed integer with a bit string: the bit string counts as the
-    // unsigned integer of its width, so the signed value keeps its sign
+    // A signed integer with a bit string: the wider type, the bit string
+    // at equal width (INT with BYTE is an INT, DINT with DWORD a DWORD)
     if (bits.length === 1) {
       const other = STRICT_BIT_STRINGS.has(
         this.aliasBase(typeNameUtil(leftType)),
@@ -3340,16 +3357,13 @@ export class TypeChecker {
         other.typeKind === "elementary"
           ? this.aliasBase((other as ElementaryType).name).toUpperCase()
           : "";
-      const unsigned = BIT_STRING_UNSIGNED[bits[0]!.name.toUpperCase()];
+      const signed = ELEMENTARY_TYPES[otherName];
       if (
         ["SINT", "INT", "DINT", "LINT"].includes(otherName) &&
-        unsigned !== undefined
+        signed !== undefined &&
+        signed.sizeBits > bits[0]!.sizeBits
       ) {
-        const widened = this.mixedSignCommonType(
-          ELEMENTARY_TYPES[otherName]!,
-          ELEMENTARY_TYPES[unsigned]!,
-        );
-        if (widened !== undefined) return widened;
+        return signed;
       }
     }
     if (bits.length > 0) {
@@ -3466,6 +3480,49 @@ export class TypeChecker {
     }
     return result;
   }
+
+  /**
+   * SHL, SHR, ROL and ROR take a bit string (ANY_BIT, IEC 61131-3 Table 30).
+   * A signed integer IN is refused under iec-3 and --strict. By default SHL
+   * and SHR of one stay the vendor extension (SHR arithmetic); ROL and ROR
+   * rotate it as the bit string of its width, with a warning.
+   */
+  private checkSignedShiftOperand(
+    expr: FunctionCallExpression,
+    nameUpper: string,
+  ): void {
+    if (!["SHL", "SHR", "ROL", "ROR"].includes(nameUpper)) return;
+    if (this.signedShiftChecked.has(expr)) return;
+    const args = stripEnEno(expr.arguments);
+    const arg =
+      args.find((a) => a.name?.toUpperCase() === "IN") ??
+      (args[0]?.name === undefined ? args[0] : undefined);
+    const type = arg?.value.resolvedType;
+    if (arg === undefined || type?.typeKind !== "elementary") return;
+    const base = this.aliasBase((type as ElementaryType).name).toUpperCase();
+    const bits = SIGNED_SHIFT_BIT_STRING[base];
+    if (bits === undefined || this.isUntypedBitConstant(arg.value)) return;
+    this.signedShiftChecked.add(expr);
+    const { startLine, startCol, file } = arg.value.sourceSpan;
+    if (this.strict || this.inOutErrors) {
+      this.addError(
+        `${nameUpper} takes a bit string (ANY_BIT, IEC 61131-3 Table 30), not ${base}; convert it with ${base}_TO_${bits}`,
+        startLine,
+        startCol,
+        file,
+      );
+    } else if (nameUpper === "ROL" || nameUpper === "ROR") {
+      this.addWarning(
+        `${nameUpper} takes a bit string (ANY_BIT, IEC 61131-3 Table 30): the ${base} is rotated as a ${bits}`,
+        startLine,
+        startCol,
+        file,
+      );
+    }
+  }
+
+  /** SHL/SHR/ROL/ROR calls checkSignedShiftOperand reported. */
+  private signedShiftChecked = new WeakSet<FunctionCallExpression>();
 
   /** The functional AND/OR/XOR/NOT counterpart of refuseIntegerBitwise (Table 31). */
   private refuseIntegerBitwiseCall(
@@ -8968,6 +9025,10 @@ export class TypeChecker {
    * a SINT, the literal taking its operand's type).
    */
   private valueFitsNarrowTarget(value: Expression, target: string): boolean {
+    let masked = value;
+    while (masked.kind === "ParenthesizedExpression")
+      masked = masked.expression;
+    if (this.maskedByBitString(masked, target)) return true;
     const range = integerTypeRange(target);
     if (range === undefined) return false;
     const scope = this.lastResolvedScope;
@@ -8984,6 +9045,41 @@ export class TypeChecker {
     if (v !== undefined) return v >= range.min && v <= range.max;
     const adapted = this.adaptedIntegerType(value, range);
     return adapted !== undefined && !isNarrowingConversion(target, adapted);
+  }
+
+  /**
+   * AND (operator or function) with a bit-string operand no wider than the
+   * unsigned or bit-string `target`: its bits are within that operand's, so
+   * it fits (`i AND BYTE#16#FF` into a BYTE).
+   */
+  private maskedByBitString(value: Expression, target: string): boolean {
+    const t = target.toUpperCase();
+    const targetBits = ELEMENTARY_TYPES[t]?.sizeBits;
+    if (
+      targetBits === undefined ||
+      !(
+        STRICT_BIT_STRINGS.has(t) ||
+        ["USINT", "UINT", "UDINT", "ULINT"].includes(t)
+      )
+    ) {
+      return false;
+    }
+    const operands =
+      value.kind === "BinaryExpression" && value.operator === "AND"
+        ? [value.left, value.right]
+        : value.kind === "FunctionCallExpression" &&
+            value.functionName.toUpperCase() === "AND"
+          ? stripEnEno(value.arguments).map((a) => a.value)
+          : [];
+    return operands.some((o) => {
+      const ot = o.resolvedType;
+      if (ot?.typeKind !== "elementary") return false;
+      const name = this.aliasBase((ot as ElementaryType).name).toUpperCase();
+      return (
+        STRICT_BIT_STRINGS.has(name) &&
+        (ELEMENTARY_TYPES[name]?.sizeBits ?? 64) <= targetBits
+      );
+    });
   }
 
   /**
@@ -13343,6 +13439,7 @@ export class TypeChecker {
     if (this.unboundStdFunctionCalls.has(expr)) return;
     this.refuseEnumOrderingArguments(expr, desc.params);
     this.refuseIntegerBitwiseCall(expr, nameUpper);
+    this.checkSignedShiftOperand(expr, nameUpper);
 
     // Validate argument types against parameter constraints. Strip EN/ENO
     // first — they're handled by the codegen wrapper and don't map onto the

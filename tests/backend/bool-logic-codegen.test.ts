@@ -209,9 +209,9 @@ describe("BOOL logic in a test file", () => {
       libraryArchives: result.resolvedLibraries,
     });
     for (const line of [
-      "NOT(static_cast<bool>((static_cast<bool>((static_cast<uint64_t>(W) >> 2) & 1)) & ((X > 0))))",
-      "NOT(static_cast<bool>((static_cast<bool>((static_cast<uint64_t>(M.W) >> 2) & 1)) & ((X > 0))))",
-      "NOT(static_cast<bool>((static_cast<bool>((static_cast<uint64_t>(W) >> 3) & 1)) | ((X > 5))))",
+      "strucpp::iec_not(static_cast<bool>((static_cast<bool>((static_cast<uint64_t>(W) >> 2) & 1)) & ((X > 0))))",
+      "strucpp::iec_not(static_cast<bool>((static_cast<bool>((static_cast<uint64_t>(M.W) >> 2) & 1)) & ((X > 0))))",
+      "strucpp::iec_not(static_cast<bool>((static_cast<bool>((static_cast<uint64_t>(W) >> 3) & 1)) | ((X > 5))))",
     ]) {
       expect(main).toContain(line);
     }

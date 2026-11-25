@@ -315,6 +315,10 @@ export class TestCodeGenerator extends CodeGenerator {
 
   // --- Hook overrides ---
 
+  protected override isTestMainCodegen(): boolean {
+    return true;
+  }
+
   protected override resolveVariableBaseName(name: string): string {
     if (this.setupVarNames.has(name)) {
       return `s.${name}`;

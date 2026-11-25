@@ -227,6 +227,31 @@ describe("date and time forms", () => {
   });
 });
 
+describe("final check: SHL/SHR/ROL/ROR of a signed integer (Table 30)", () => {
+  const src = body(
+    "i : INT; r : INT;",
+    "r := ROL(i, 4);\nr := ROR(IN := i, N := 1);\nr := SHL(i, 1);\nr := SHR(i, 1);",
+  );
+  it("rotates it as the bit string of its width with a warning; SHL/SHR stay the vendor extension", () => {
+    const d = diags(src);
+    expect(d.errors).toEqual([]);
+    expect(d.warnings).toEqual([
+      "3:10: ROL takes a bit string (ANY_BIT, IEC 61131-3 Table 30): the INT is rotated as a WORD",
+      "4:16: ROR takes a bit string (ANY_BIT, IEC 61131-3 Table 30): the INT is rotated as a WORD",
+    ]);
+  });
+  it("refuses all four under iec-3 and --strict", () => {
+    for (const [, options] of MODES.slice(1)) {
+      expect(diags(src, options).errors).toEqual([
+        "3:10: ROL takes a bit string (ANY_BIT, IEC 61131-3 Table 30), not INT; convert it with INT_TO_WORD",
+        "4:16: ROR takes a bit string (ANY_BIT, IEC 61131-3 Table 30), not INT; convert it with INT_TO_WORD",
+        "5:10: SHL takes a bit string (ANY_BIT, IEC 61131-3 Table 30), not INT; convert it with INT_TO_WORD",
+        "6:10: SHR takes a bit string (ANY_BIT, IEC 61131-3 Table 30), not INT; convert it with INT_TO_WORD",
+      ]);
+    }
+  });
+});
+
 describe("recheck: NOT of an integer is its complement", () => {
   it("complements an integer, an alias of one and a promoted bit string in its type; BOOL stays logical", () => {
     const r = compile(
@@ -276,11 +301,11 @@ describe("recheck: enumeration inputs of SEL and MUX, strict bitwise narrowing",
       "4:7: Implicit conversion from LWORD to DWORD is not allowed; use LWORD_TO_DWORD",
     ]);
   });
-  it("types a signed integer with a bit string as the signed type holding both", () => {
+  it("types a signed integer with a bit string as the wider, the bit string at equal width", () => {
     const d = diags(
       body(
-        "i : INT; b : BYTE; d : DINT; w : WORD; r : INT; rd : DINT;",
-        "r := OR(i, b);\nr := i OR b;\nrd := OR(d, w);\nrd := d OR w;",
+        "i : INT; b : BYTE; d : DINT; w : WORD; dw : DWORD; r : INT; rd : DINT; bt8 : BYTE;",
+        "r := OR(i, b);\nr := i OR b;\nrd := OR(d, w);\nrd := d OR w;\nd := d OR dw;\nbt8 := i AND BYTE#16#FF;",
       ),
     );
     expect(d.errors).toEqual([]);

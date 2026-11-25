@@ -142,6 +142,43 @@ int main() {
 }
 `;
 
+const FINAL = `
+VAR_GLOBAL CONSTANT KI : INT := 5; END_VAR
+TYPE SD : STRUCT
+  a : INT := NOT INT#5; b : DINT := NOT DINT#5; c : INT := NOT KI; d : USINT := NOT USINT#1;
+  arr : ARRAY[0..1] OF INT := [NOT INT#1, NOT 1]; bb : BOOL := NOT TRUE;
+END_STRUCT END_TYPE
+PROGRAM Main
+VAR i : INT := -2; d : DINT := -16; dw : DWORD := 16#F; si : SINT := -16; by8 : BYTE := 16#0F;
+  ib : INT := -16; w : WORD := 16#000F; s : SD; flag : BOOL;
+  r : ARRAY[1..12] OF LINT; END_VAR
+r[1] := BOOL_TO_LINT((d OR dw) = 16#FFFFFFFF);
+r[2] := BOOL_TO_LINT((d OR dw) < 0);
+r[3] := SHR(d OR dw, 28);
+r[4] := ROR(d OR dw, 4);
+r[5] := ROL(NOT i, 1);
+r[6] := ROL(i, 4);
+r[7] := ROR(IN := d, N := 4);
+r[8] := OR(si, by8); r[9] := si OR by8;
+r[10] := OR(ib, w); r[11] := ib OR w;
+r[12] := OR(ib, by8);
+flag := NOT 1;
+END_PROGRAM
+`;
+
+const FINAL_MAIN = `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    for (int k = 1; k <= 12; ++k) std::cout << p.R[k].get() << " ";
+    std::cout << "|" << p.S.A.get() << " " << p.S.B.get() << " " << p.S.C.get() << " " << int(p.S.D.get())
+              << " " << p.S.ARR[0].get() << " " << p.S.ARR[1].get() << " " << p.S.BB.get() << " " << p.FLAG.get();
+    std::cout << std::endl;
+    return 0;
+}
+`;
+
 const ZERO_POWER = `
 PROGRAM Main
 VAR z : DINT := 0; m : DINT := -1; r : DINT; END_VAR
@@ -208,6 +245,23 @@ describe.skipIf(!hasGpp)("standard-function forms — g++ e2e", () => {
       "65535 240 65294 65535 65295 3840 32888 255",
       "-1 -6 -6 -9 0 -256 -11 -6 65535 -1 -1 1 00",
       "-1 -1 -1 -1 1 143 4080 -1",
+    ]);
+  });
+
+  it("keeps DINT OR DWORD a DWORD, rotates signed operands as bit strings, complements in STRUCT defaults", () => {
+    const result = compile(FINAL, { headerFileName: "generated.hpp" });
+    expect(result.errors).toEqual([]);
+    const out = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "std_function_final",
+      mainCode: FINAL_MAIN,
+    });
+    expect(out.split("|").map((p) => p.trim())).toEqual([
+      "1 0 15 4294967295 2 65519 268435455 255 255 65535 65535 -1",
+      "-6 -6 -6 254 -2 -2 0 0",
     ]);
   });
 
