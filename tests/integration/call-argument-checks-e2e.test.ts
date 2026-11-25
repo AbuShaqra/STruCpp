@@ -160,7 +160,7 @@ END_PROGRAM
     );
     expect(stdout).toBe("301");
     expect(warnings).toEqual([
-      "Implicit narrowing conversion of each element: ARRAY[1..3] OF DINT stored in input 'A' of type ARRAY[1..3] OF INT",
+      "Implicit narrowing conversion of each element: ARRAY[1..3] OF DINT stored in input 'a' of type ARRAY[1..3] OF INT",
     ]);
   });
 

@@ -238,13 +238,13 @@ END_PROGRAM
   it("refuses other bounds and element types without a conversion, warns on narrowing", () => {
     const r = diagnostics(src);
     expect(r.errors).toEqual([
-      "6: Cannot store ARRAY[1..4] OF INT in input 'A' of type ARRAY[1..3] OF INT; the bounds differ",
-      "9: Cannot store ARRAY[1..3] OF TIME in input 'A' of type ARRAY[1..3] OF INT",
-      "10: Cannot store ARRAY[0..2] OF INT in input 'A' of type ARRAY[1..3] OF INT; the bounds differ",
+      "6: Cannot store ARRAY[1..4] OF INT in input 'a' of type ARRAY[1..3] OF INT; the bounds differ",
+      "9: Cannot store ARRAY[1..3] OF TIME in input 'a' of type ARRAY[1..3] OF INT",
+      "10: Cannot store ARRAY[0..2] OF INT in input 'a' of type ARRAY[1..3] OF INT; the bounds differ",
       "11: Cannot store ARRAY[1..4] OF INT in a variable of type ARRAY[1..3] OF INT; the bounds differ",
     ]);
     expect(r.warnings).toEqual([
-      "7: Implicit narrowing conversion of each element: ARRAY[1..3] OF DINT stored in input 'A' of type ARRAY[1..3] OF INT",
+      "7: Implicit narrowing conversion of each element: ARRAY[1..3] OF DINT stored in input 'a' of type ARRAY[1..3] OF INT",
       "12: Implicit narrowing conversion of each element: ARRAY[1..3] OF DINT stored in a variable of type ARRAY[1..3] OF INT",
     ]);
   });
@@ -253,7 +253,7 @@ END_PROGRAM
     const r = diagnostics(src, STRICT);
     expect(r.errors).toHaveLength(7);
     expect(r.errors).toContain(
-      "8: Cannot store ARRAY[1..3] OF WORD in input 'A' of type ARRAY[1..3] OF INT",
+      "8: Cannot store ARRAY[1..3] OF WORD in input 'a' of type ARRAY[1..3] OF INT",
     );
     // INT into DINT widens each element exactly, as a scalar does
     expect(r.errors.some((e) => e.startsWith("13:"))).toBe(false);
@@ -466,7 +466,7 @@ END_PROGRAM
 `;
     for (const options of [{}, IEC]) {
       expect(diagnostics(src, options).errors).toEqual([
-        "4: 'MYS' names a type, not a value",
+        "4: 'MyS' names a type, not a value",
         "5: 'COMPLEX' names a type, not a value",
         "6: 'TON' names a function block, not a value",
       ]);
@@ -625,8 +625,8 @@ m := Run;
 END_PROGRAM
 `;
     expect(diagnostics(src, {}, libs).errors).toEqual([
-      "4: 'RUN' names a type, not a value",
-      "5: 'RUN' names a type, not a value",
+      "4: 'Run' names a type, not a value",
+      "5: 'Run' names a type, not a value",
     ]);
   });
 });
