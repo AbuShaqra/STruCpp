@@ -8535,12 +8535,16 @@ export class CodeGenerator {
     operand: Expression,
     operandCpp?: string,
   ): string | undefined {
-    // Without a checked type (a test body) only a plain variable is typed reliably
+    // Without a checked type (a test body, a STRUCT default) only a plain
+    // variable or a typed literal is typed reliably
+    let bare = operand;
+    while (bare.kind === "ParenthesizedExpression") bare = bare.expression;
     const plain =
-      operand.kind === "VariableExpression" &&
-      operand.fieldAccess.length === 0 &&
-      operand.subscripts.length === 0 &&
-      !operand.isDereference;
+      (bare.kind === "VariableExpression" &&
+        bare.fieldAccess.length === 0 &&
+        bare.subscripts.length === 0 &&
+        !bare.isDereference) ||
+      (bare.kind === "LiteralExpression" && (bare.typePrefix ?? "") !== "");
     const type =
       operand.resolvedType !== undefined || plain
         ? this.elementaryAliasBase(this.inferExprType(operand))
@@ -8593,7 +8597,15 @@ export class CodeGenerator {
           return untypedNotCpp(contextType, operand);
         }
         // NOT of an integer or bit string: its complement (Table 31); of a BOOL: logical
-        return this.integerComplement(expr.operand, operand) ?? `!${operand}`;
+        const complement = this.integerComplement(expr.operand, operand);
+        if (complement !== undefined) return complement;
+        // An operand typed only by inference: a bit string still complements
+        const opType = this.inferExprType(expr.operand)?.toUpperCase();
+        return opType !== undefined &&
+          opType !== "BOOL" &&
+          getTypeCategory(opType) === "BIT"
+          ? `~${operand}`
+          : `!${operand}`;
       }
       case "-": {
         // Negating a variable wraps like `0 - x`; a literal stays as written
