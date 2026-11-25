@@ -100,8 +100,13 @@ int main() {
         "FUNCTION_BLOCK FB VAR_OUTPUT lt : LTIME; o : WORD; END_VAR END_FUNCTION_BLOCK\nPROGRAM Main\nVAR CONSTANT k : WORD := 1; END_VAR\nVAR fb : FB; t : TIME; END_VAR\nfb(lt => t);\nfb(o => k);\nEND_PROGRAM\n",
         options,
       );
+      // An LTIME output into a TIME is converted: a warning by default
       expect(r.errors.map((e) => e.message)).toEqual([
-        "Cannot assign LTIME to TIME",
+        ...(label === "no dialect"
+          ? []
+          : [
+              "Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+            ]),
         "Cannot assign to CONSTANT variable 'K'",
       ]);
     });
@@ -120,7 +125,9 @@ int main() {
         "Cannot assign LTIME to TIME",
         "Cannot assign to CONSTANT variable 'K'",
         ...(strict
-          ? ["Implicit conversion from DINT to SINT is not allowed; use DINT_TO_SINT"]
+          ? [
+              "Implicit conversion from DINT to SINT is not allowed; use DINT_TO_SINT",
+            ]
           : []),
         // Reported with the type errors, not only once they are fixed
         ...(label === "iec-3" ? ["ADR needs the feature pointer_to"] : []),
