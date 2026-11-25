@@ -284,6 +284,11 @@ function describeReferenceShape(shape: ReferenceShape): string {
     .toUpperCase();
 }
 
+/** `text` after "a" or "an", as its first letter is spelled (`an INT`, `a STRING`). */
+function withArticle(text: string): string {
+  return `${/^[AEIOU]/i.test(text) ? "an" : "a"} ${text}`;
+}
+
 /** The reference levels and target type of a declared type. */
 interface ReferenceShape {
   chain: string[];
@@ -2337,8 +2342,12 @@ export class TypeChecker {
               currentTypeName = (currentType as ElementaryType).name;
             }
           } else {
-            // `q^` with `q : PI` and `TYPE PI : POINTER TO INT`: the target type
-            currentTypeName = this.pointerAliasTarget(currentTypeName);
+            // `q^` with `q : PI` and `TYPE PI : POINTER TO INT`: the target type,
+            // as the last step only (a member reached past it keeps no reference shape).
+            const last = step === expr.accessChain[expr.accessChain.length - 1];
+            currentTypeName = last
+              ? this.pointerAliasTarget(currentTypeName)
+              : undefined;
             currentType =
               currentTypeName !== undefined
                 ? this.resolveNamedType(currentTypeName)
@@ -2401,7 +2410,11 @@ export class TypeChecker {
       if (expr.isDereference) inUnion = false;
       if (expr.isDereference && currentType?.typeKind === "reference") {
         currentType = (currentType as ReferenceType).referencedType;
-      } else if (expr.isDereference) {
+      } else if (
+        expr.isDereference &&
+        expr.fieldAccess.length === 0 &&
+        expr.subscripts.length === 0
+      ) {
         // `q^` with `q : PI` and `TYPE PI : POINTER TO INT`: the target type
         const target = this.pointerAliasTarget(currentTypeName);
         if (target !== undefined) currentType = this.resolveNamedType(target);
@@ -8896,7 +8909,7 @@ export class TypeChecker {
             },
           );
     return {
-      message: `REFERENCE TO ${describe(target, want)} cannot refer to a ${sourceText.toUpperCase()} variable`,
+      message: `REFERENCE TO ${describe(target, want)} cannot refer to ${withArticle(sourceText.toUpperCase())} variable`,
     };
   }
 
@@ -8931,7 +8944,7 @@ export class TypeChecker {
         const t = this.stringAliasResolved(target);
         const v = this.stringAliasResolved(source);
         if (isStringBase(t.base) && stringLengthsDiffer(t, v)) {
-          return `${describeReferenceShape(t)} cannot refer to a ${stringText(v)} variable`;
+          return `${describeReferenceShape(t)} cannot refer to ${withArticle(stringText(v))} variable`;
         }
         if (target.chain[0] === "reference_to") {
           this.markAliasReferenceBinding(target, source, value);
@@ -8939,7 +8952,7 @@ export class TypeChecker {
         return undefined;
       }
     }
-    return `${describeReferenceShape(target)} cannot refer to a ${describeReferenceShape(source)} variable${levelsOk ? this.referenceMismatchReason(this.aliasBase(source.base)) : ""}`;
+    return `${describeReferenceShape(target)} cannot refer to ${withArticle(describeReferenceShape(source))} variable${levelsOk ? this.referenceMismatchReason(this.aliasBase(source.base)) : ""}`;
   }
 
   /**
@@ -11048,7 +11061,7 @@ export class TypeChecker {
     }
     const span = value.sourceSpan;
     this.addError(
-      `${describeReferenceShape(target)} holds the address of a ${describeReferenceShape({ chain: target.chain.slice(1), base: target.base })}, not of a ${shape.base.toUpperCase()}`,
+      `${describeReferenceShape(target)} holds the address of ${withArticle(describeReferenceShape({ chain: target.chain.slice(1), base: target.base }))}, not of ${withArticle(shape.base.toUpperCase())}`,
       span.startLine,
       span.startCol,
       span.file,

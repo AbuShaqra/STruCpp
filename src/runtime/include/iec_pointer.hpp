@@ -184,9 +184,17 @@ public:
     IEC_REF_TO() noexcept : ptr_(nullptr) {}
 
     /**
-     * Constructor from pointer to IECVar: also `ADR(x)` passed to a REF_TO input
+     * Constructor from pointer to IECVar
      */
-    IEC_REF_TO(pointer_type p) noexcept : ptr_(p) {}
+    explicit IEC_REF_TO(pointer_type p) noexcept : ptr_(p) {}
+
+    /**
+     * `ADR(x)` passed to a REF_TO input: exactly a pointer_type converts
+     * implicitly, so a literal 0 still reaches only the nullptr constructor.
+     */
+    template<typename P,
+             typename std::enable_if<std::is_same<P, pointer_type>::value, int>::type = 0>
+    IEC_REF_TO(P p) noexcept : ptr_(p) {}
 
     /**
      * Constructor from nullptr (NULL)
@@ -316,6 +324,12 @@ public:
      */
     IEC_REF_TO& operator=(std::uintptr_t addr) noexcept {
         set(reinterpret_cast<pointer_type>(addr));
+        return *this;
+    }
+
+    /** The literal `0` (`fb(r := 0)`, a STRUCT member's `:= 0`): NULL, not an ambiguous conversion. */
+    IEC_REF_TO& operator=(int addr) noexcept {
+        set(reinterpret_cast<pointer_type>(static_cast<std::uintptr_t>(addr)));
         return *this;
     }
 
@@ -971,6 +985,10 @@ template<typename T,
          typename std::enable_if<detail::binds_itself<T>::value, int>::type = 0>
 inline IEC_REFERENCE_TO<T> ref_bind(T& var) noexcept {
     return IEC_REFERENCE_TO<T>(var);
+}
+template<typename E>
+inline IEC_REFERENCE_TO<E> ref_bind(IEC_ENUM_Var<E>& var) noexcept {
+    return IEC_REFERENCE_TO<E>(var);
 }
 template<size_t N>
 inline IEC_REFERENCE_TO<IECString<N>> ref_bind(IECStringVar<N>& var) noexcept {

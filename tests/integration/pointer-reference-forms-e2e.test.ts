@@ -229,5 +229,82 @@ END_PROGRAM
         ),
       ).toEqual(["5", "6", "1", "1"]);
     });
+
+    it("reaches pointer members through an inline POINTER TO, a POINTER TO alias and a REF_TO alias", () => {
+      expect(
+        runMain(
+          "members_through_aliases",
+          `TYPE S : STRUCT p : POINTER TO INT; r : REF_TO INT; a : ARRAY[0..1] OF POINTER TO INT; pp : POINTER TO POINTER TO INT; END_STRUCT END_TYPE
+TYPE PS : POINTER TO S; END_TYPE
+TYPE RS : REF_TO S; END_TYPE
+FUNCTION F : INT
+VAR_INPUT p : POINTER TO INT; END_VAR
+F := p^;
+END_FUNCTION
+PROGRAM Main
+VAR s : S; ip : POINTER TO S; ap : PS; ar : RS; i : INT := 3; q : POINTER TO INT;
+  t1, t2, t3, t4, t5, t6, t7, t8, t9 : INT; END_VAR
+ip := ADR(s); ap := ADR(s); ar := REF(s); q := ADR(i);
+ip^.p := ADR(i); t1 := ip^.p^ + F(ip^.p);
+ap^.p := ADR(i); t2 := ap^.p^ + F(ap^.p);
+ar^.p := ADR(i); t3 := ar^.p^ + F(ar^.p);
+ap^.r := REF(i); t4 := ap^.r^; ar^.r := REF(i); t5 := ar^.r^;
+ap^.a[1] := ADR(i); t6 := ap^.a[1]^ + F(ap^.a[1]); ar^.a[0] := q; t7 := F(ar^.a[0]);
+ap^.pp := ADR(q); t8 := ap^.pp^^; ar^.pp := ADR(q); t9 := F(ar^.pp^);
+q := ap^.p; q := ar^.a[1];
+END_PROGRAM
+`,
+          ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"],
+        ),
+      ).toEqual(["6", "6", "6", "3", "3", "6", "3", "3", "3"]);
+    });
+
+    it("stores 0 and NULL into a REF_TO everywhere: assignment, input, default, STRUCT, array", () => {
+      expect(
+        runMain(
+          "ref_to_null",
+          `TYPE S : STRUCT r : REF_TO INT := 0; n : REF_TO INT := NULL; END_STRUCT END_TYPE
+FUNCTION F : INT
+VAR_INPUT r : REF_TO INT := 0; END_VAR
+IF r = 0 THEN F := -1; ELSE F := r^; END_IF;
+END_FUNCTION
+FUNCTION_BLOCK FB
+VAR_INPUT r : REF_TO INT := NULL; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+IF r <> NULL THEN o := r^; ELSE o := -2; END_IF;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR i : INT := 7; r : REF_TO INT := 0; r2 : REF_TO INT := NULL; s : S; s2 : S := (r := 0, n := NULL);
+  ar : ARRAY[0..1] OF REF_TO INT := [0, NULL]; fb : FB; a, b, c, d, e, g : INT; b1, b2, b3, b4 : BOOL; END_VAR
+r := 0; r2 := NULL; ar[0] := 0; ar[1] := NULL; s.r := 0; s.n := NULL;
+a := F(0); b := F(NULL); c := F(); d := F(REF(i)); fb(r := 0); e := fb.o; fb(r := REF(i)); g := fb.o;
+b1 := r = 0; b2 := r2 = NULL; b3 := s2.r = 0; b4 := ar[1] = NULL;
+END_PROGRAM
+`,
+          ["A", "B", "C", "D", "E", "G", "B1", "B2", "B3", "B4"],
+        ),
+      ).toEqual(["-1", "-1", "-1", "7", "-2", "7", "1", "1", "1", "1"]);
+    });
+
+    it("binds an enumeration, a STRING and a STRUCT to REFERENCE TO inputs of an FB", () => {
+      expect(
+        runMain(
+          "reference_inputs_enum",
+          `TYPE E : (A1, B1, C1); END_TYPE
+TYPE S : STRUCT x : INT; END_STRUCT END_TYPE
+FUNCTION_BLOCK FB
+VAR_INPUT ri : REFERENCE TO INT; re : REFERENCE TO E; rs : REFERENCE TO STRING; rst : REFERENCE TO S; END_VAR
+ri := ri + 1; re := C1; rs := 'zz'; rst.x := 3;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR i : INT := 1; e : E; s : STRING; st : S; fb : FB; r1, r2, r3, r4 : INT; END_VAR
+fb(ri := i, re := e, rs := s, rst := st);
+r1 := i; IF e = C1 THEN r2 := 1; END_IF; r3 := LEN(s); r4 := st.x;
+END_PROGRAM
+`,
+          ["R1", "R2", "R3", "R4"],
+        ),
+      ).toEqual(["2", "1", "2", "3"]);
+    });
   },
 );

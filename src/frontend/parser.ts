@@ -1053,13 +1053,29 @@ export class STParser extends CstParser {
         },
       ]);
     });
-    const typeNameTok = this.CONSUME(tokens.Identifier);
+    // `REFERENCE TO ARRAY[..]` where no variable is declared (a result, an
+    // element, a TYPE): read so the analyzer refuses it by name. The type
+    // name stays a plain CONSUME otherwise, so error recovery is unchanged.
+    let referenceArray = false;
+    this.OPTION9({
+      GATE: (): boolean =>
+        this.LA(0).tokenType === tokens.REFERENCE_TO &&
+        this.LA(1).tokenType === tokens.ARRAY,
+      DEF: (): void => {
+        this.SUBRULE(this.arrayType);
+        if (!this.RECORDING_PHASE) referenceArray = true;
+      },
+    });
+    const typeNameTok: IToken | undefined =
+      this.RECORDING_PHASE || !referenceArray
+        ? this.CONSUME(tokens.Identifier)
+        : undefined;
     // Optional parameterized length for STRING(n) / WSTRING(n) / STRING(CONSTANT_NAME)
     // GATE: only when the type name is STRING or WSTRING, consume ( IntegerLiteral ) or ( Identifier )
     // Avoid ( Identifier ) for typed enums and ( IntegerLiteral .. ) for subrange types
     this.OPTION2({
       GATE: () => {
-        const name = typeNameTok.image.toUpperCase();
+        const name = typeNameTok?.image.toUpperCase() ?? "";
         return (
           (name === "STRING" || name === "WSTRING") &&
           this.LA(1).tokenType === tokens.LParen &&
@@ -1084,7 +1100,7 @@ export class STParser extends CstParser {
     // Ed. 3 spelling of the same length: STRING[n] / WSTRING[n] / STRING[CONSTANT_NAME]
     this.OPTION3({
       GATE: () => {
-        const name = typeNameTok.image.toUpperCase();
+        const name = typeNameTok?.image.toUpperCase() ?? "";
         // Not after a parenthesised length, and only an Unsigned_Int (no base)
         return (
           (name === "STRING" || name === "WSTRING") &&

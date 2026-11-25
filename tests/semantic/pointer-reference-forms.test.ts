@@ -71,7 +71,7 @@ describe("ADR into a POINTER TO POINTER TO", () => {
   const decls =
     "FUNCTION F : INT\nVAR_INPUT pp : POINTER TO POINTER TO INT; END_VAR\nF := pp^^;\nEND_FUNCTION\n";
   const message =
-    "POINTER TO POINTER TO INT holds the address of a POINTER TO INT, not of a INT";
+    "POINTER TO POINTER TO INT holds the address of a POINTER TO INT, not of an INT";
 
   it("refuses the address of a value that is no pointer", () => {
     expect(
@@ -217,12 +217,12 @@ END_FUNCTION
         "ra REF= a3;\nra REF= d;\nra REF= i;\nra REF= p;\nrt REF= a3;\nr := F(d);",
       ).errors,
     ).toEqual([
-      "1: REFERENCE TO ARRAY[0..2] OF INT cannot refer to a ARRAY[0..3] OF INT variable",
-      "2: REFERENCE TO ARRAY[0..2] OF INT cannot refer to a ARRAY[0..2] OF DINT variable",
-      "3: REFERENCE TO ARRAY[0..2] OF INT cannot refer to a INT variable",
+      "1: REFERENCE TO ARRAY[0..2] OF INT cannot refer to an ARRAY[0..3] OF INT variable",
+      "2: REFERENCE TO ARRAY[0..2] OF INT cannot refer to an ARRAY[0..2] OF DINT variable",
+      "3: REFERENCE TO ARRAY[0..2] OF INT cannot refer to an INT variable",
       "4: REFERENCE TO ARRAY[0..2] OF INT cannot refer to a POINTER TO INT variable",
-      "5: REFERENCE TO TA cannot refer to a ARRAY[0..3] OF INT variable",
-      "6: REFERENCE TO ARRAY[0..2] OF INT cannot refer to a ARRAY[0..2] OF DINT variable",
+      "5: REFERENCE TO TA cannot refer to an ARRAY[0..3] OF INT variable",
+      "6: REFERENCE TO ARRAY[0..2] OF INT cannot refer to an ARRAY[0..2] OF DINT variable",
     ]);
   });
 
@@ -267,7 +267,7 @@ describe("REFERENCE TO POINTER TO", () => {
 
   it("refuses a value or a pointer of another type", () => {
     expect(run("", vars, "rp REF= i;\nrp REF= d;").errors).toEqual([
-      "1: REFERENCE TO POINTER TO INT cannot refer to a INT variable",
+      "1: REFERENCE TO POINTER TO INT cannot refer to an INT variable",
       "2: REFERENCE TO POINTER TO INT cannot refer to a POINTER TO DINT variable",
     ]);
   });
@@ -338,5 +338,68 @@ describe("pinned: a non-zero integer into a POINTER TO", () => {
     expect(
       run("", "p : POINTER TO INT;", "p := 5;", { strict: true }).errors,
     ).toEqual([`1: ${message}`]);
+  });
+});
+
+describe("REFERENCE TO ARRAY forms that are not supported", () => {
+  const messages = (source: string): string[] =>
+    compile(source).errors.map((e) => `${e.line}: ${e.message}`);
+  const misplaced = (where: string): string =>
+    `REFERENCE TO ARRAY can only be declared as a variable, an input or a STRUCT member, not as a result, an array element or a TYPE in ${where}`;
+
+  it("refuses one as a result, a TYPE, an array element and REFERENCE TO elements", () => {
+    expect(
+      messages(`FUNCTION F : REFERENCE TO ARRAY[0..1] OF INT
+END_FUNCTION
+TYPE RA : REFERENCE TO ARRAY[0..1] OF INT; END_TYPE
+TYPE AA : ARRAY[0..1] OF REFERENCE TO ARRAY[0..1] OF INT; END_TYPE
+PROGRAM Main
+VAR b : ARRAY[0..1] OF REFERENCE TO ARRAY[0..1] OF INT; c : REFERENCE TO ARRAY[0..1] OF REFERENCE TO INT; END_VAR
+END_PROGRAM
+`),
+    ).toEqual([
+      `6: ${misplaced("PROGRAM 'MAIN'")}`,
+      "6: REFERENCE TO cannot be combined with other reference levels in PROGRAM 'MAIN'",
+      `1: ${misplaced("FUNCTION 'F' return type")}`,
+      `3: ${misplaced("type alias 'RA'")}`,
+      `4: ${misplaced("ARRAY type 'AA'")}`,
+    ]);
+  });
+
+  it("refuses REFERENCE TO ARRAY[*] and a VAR_IN_OUT REFERENCE TO ARRAY", () => {
+    expect(
+      messages(`FUNCTION F : INT
+VAR_INPUT ra : REFERENCE TO ARRAY[*] OF INT; END_VAR
+F := 0;
+END_FUNCTION
+FUNCTION G : INT
+VAR_IN_OUT ra : REFERENCE TO ARRAY[0..2] OF INT; END_VAR
+G := 0;
+END_FUNCTION
+`),
+    ).toEqual([
+      "2: REFERENCE TO ARRAY[*] is not supported in FUNCTION 'F'; declare a VAR_IN_OUT ARRAY[*] instead",
+      "6: A VAR_IN_OUT cannot be a REFERENCE TO ARRAY in FUNCTION 'G'; declare it VAR_IN_OUT ARRAY[..] OF its element type",
+    ]);
+  });
+});
+
+describe("pointer members reached through a POINTER TO or REF_TO alias", () => {
+  it("are checked as on development: no error for valid stores and reads", () => {
+    expect(
+      run(
+        `TYPE S : STRUCT p : POINTER TO INT; r : REF_TO INT; a : ARRAY[0..1] OF POINTER TO INT; END_STRUCT END_TYPE
+TYPE PS : POINTER TO S; END_TYPE
+TYPE RS : REF_TO S; END_TYPE
+FUNCTION F : INT
+VAR_INPUT p : POINTER TO INT; END_VAR
+F := p^;
+END_FUNCTION
+`,
+        "s : S; ap : PS; ar : RS; i : INT; q : POINTER TO INT; r : INT;",
+        "ap := ADR(s);\nar := REF(s);\nap^.p := ADR(i);\nr := ap^.p^;\nq := ap^.p;\nr := F(ap^.p);\nr := F(ap^.a[1]);\nap^.r := REF(i);\nar^.p := ADR(i);\nr := ar^.p^;",
+        { strict: true },
+      ),
+    ).toEqual(clean);
   });
 });
