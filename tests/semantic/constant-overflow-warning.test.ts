@@ -1,4 +1,8 @@
-/** Under --strict an integer constant expression that does not fit its target warns; it wraps at run time. */
+/**
+ * An integer constant expression that does not fit its target wraps at run
+ * time: it warns under --strict, and also without it (iec-3 too) when it is
+ * untyped, the warning then standing for the narrowing one.
+ */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
 
@@ -27,12 +31,19 @@ describe("constant expression overflow", () => {
     );
   });
 
-  it("says nothing new without --strict", () => {
-    const r = compile(SOURCE);
-    expect(r.warnings.map((w) => w.message)).toEqual([
-      "Implicit narrowing conversion from INT to USINT",
-    ]);
-  });
+  for (const options of [{}, { dialect: "iec-3" }]) {
+    it(`warns on an untyped one without --strict (${JSON.stringify(options)})`, () => {
+      const r = compile(SOURCE, options);
+      expect(r.errors).toEqual([]);
+      expect(
+        r.warnings.map((w) => `${w.line}:${w.column} ${w.message}`),
+      ).toEqual([
+        "2:16 The constant expression is 32768, outside INT (-32768..32767): it wraps",
+        "3:6 The constant expression is 40000, outside INT (-32768..32767): it wraps",
+        "5:6 The constant expression is -1, outside USINT (0..255): it wraps",
+      ]);
+    });
+  }
   it("warns on an untyped literal, a typed expression and a call argument", () => {
     const r = compile(
       `FUNCTION F : INT

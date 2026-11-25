@@ -170,6 +170,12 @@ interface InOutCopyArg {
   once?: true;
   /** A POINTER TO or REF_TO output captured into this 64-bit integer type: copied out as its address, not copied in. */
   addressInto?: string;
+  /** An output into a PROPERTY: not copied in, copied out through its setter. */
+  property?: true;
+  /** The parameter is a REFERENCE TO: the temporary is a reference bound to the variable, or to a copy of it. */
+  referenceParam?: true;
+  /** With referenceParam: the variable is of the reference's target type. */
+  bindsTarget?: true;
 }
 
 /** The parts of a type reference that decide its C++ type. */
@@ -499,7 +505,10 @@ const TEMPORAL_CPP: Record<
  * date-and-time is split off (in every form, Table 26), and with a long
  * (Ed. 3) form on either side the value goes through the long form's unit (ns,
  * days for LDATE): a 32-bit source widens exactly, a 32-bit target is
- * truncated to its unit and taken modulo 2^32. Undefined for any other pair.
+ * truncated to its unit and taken modulo 2^32. A duration and a date or
+ * date-and-time convert as the time since 1970-01-01, as the runtime's DATE
+ * and DT count it (a date by whole days).
+ * Undefined for any other pair.
  */
 function longTemporalConversion(
   argExpr: string,
@@ -511,7 +520,11 @@ function longTemporalConversion(
   if (f === undefined || t === undefined) return undefined;
   const fromLong = LONG_TEMPORAL_NAMES.has(from);
   const toLong = LONG_TEMPORAL_NAMES.has(to);
-  if (!fromLong && !toLong) {
+  // A duration and a date or date-and-time: the time since 1970, as DATE/DT count
+  const sinceEpoch =
+    (f === "duration" && (t === "date" || t === "dt")) ||
+    (t === "duration" && (f === "date" || f === "dt"));
+  if (!fromLong && !toLong && !sinceEpoch) {
     // Table 26: the date or the time of day of a date-and-time.
     if (f === "dt" && t === "date") {
       return `DATE_OF_DT(IEC_DT(static_cast<DT_t>(${argExpr})))`;
@@ -524,12 +537,15 @@ function longTemporalConversion(
   const value = fromLong
     ? `static_cast<int64_t>(${argExpr})`
     : `iec_long_value(static_cast<${TEMPORAL_CPP[f].short}>(${argExpr}))`;
+  // A duration in ns counts as a date-and-time in ns
+  const fk = sinceEpoch && f === "duration" ? "dt" : f;
+  const tk = sinceEpoch && t === "duration" ? "dt" : t;
   let long: string;
-  if (f === t) long = value;
-  else if (f === "dt" && t === "date") {
+  if (fk === tk) long = value;
+  else if (fk === "dt" && tk === "date") {
     long = `iec_floor_div(${value}, ${NS_PER_DAY})`;
   } else if (f === "dt" && t === "tod") long = `TOD_NORMALIZE(${value})`;
-  else if (f === "date" && t === "dt") long = `(${value}) * ${NS_PER_DAY}`;
+  else if (fk === "date" && tk === "dt") long = `(${value}) * ${NS_PER_DAY}`;
   else if (f === "tod" && t === "dt") long = value;
   else return undefined;
   return toLong
@@ -720,6 +736,22 @@ const WRAPPING_COMPUTE_TYPE: Readonly<Record<string, string>> = {
   WORD: "DINT",
   DINT: "DINT",
   LINT: "LINT",
+};
+
+/** Width of each integer type an integer `**` may be computed in. */
+const INTEGER_BITS: Readonly<Record<string, number>> = {
+  SINT: 8,
+  USINT: 8,
+  BYTE: 8,
+  INT: 16,
+  UINT: 16,
+  WORD: 16,
+  DINT: 32,
+  UDINT: 32,
+  DWORD: 32,
+  LINT: 64,
+  ULINT: 64,
+  LWORD: 64,
 };
 
 /** A STRING or WSTRING parameter with no length (254), not an array or reference. */
@@ -1245,6 +1277,16 @@ export class CodeGenerator {
   /** The type `expr`'s +, -, * or unary minus is computed in so that it wraps, if any. */
   private wrappingComputeType(expr: Expression): string | undefined {
     const name = this.baseTypeName(expr);
+    // Arithmetic over an integer power computed wider (it is stored wider,
+    // see markIntegerPowers): computed in the power's type too
+    const power = this.widenedPowerType(expr);
+    if (power === "real") return undefined;
+    if (
+      power !== undefined &&
+      (INTEGER_BITS[power] ?? 0) > (INTEGER_BITS[name ?? ""] ?? 32)
+    ) {
+      return WRAPPING_COMPUTE_TYPE[power];
+    }
     const computed =
       name === undefined ? undefined : WRAPPING_COMPUTE_TYPE[name];
     if (computed !== "DINT") return computed;
@@ -1266,6 +1308,41 @@ export class CodeGenerator {
     // to fit it; otherwise the plain operator stays
     if (name === "DINT") return computed;
     return operands.every((e) => this.fitsDint(e)) ? computed : undefined;
+  }
+
+  /**
+   * The widest type an integer `**` in `expr` is computed in (through
+   * parentheses, unary +/- and + - * / MOD), if it has one; "real" when one
+   * is a real power (stored in a REAL or LREAL), which the arithmetic around
+   * it then is too.
+   */
+  private widenedPowerType(expr: Expression): string | undefined {
+    switch (expr.kind) {
+      case "ParenthesizedExpression":
+        return this.widenedPowerType(expr.expression);
+      case "UnaryExpression":
+        return expr.operator === "NOT"
+          ? undefined
+          : this.widenedPowerType(expr.operand);
+      case "BinaryExpression": {
+        if (expr.operator === "**") {
+          return (
+            expr.integerPower ?? (expr.realPower === true ? "real" : undefined)
+          );
+        }
+        if (!["+", "-", "*", "/", "MOD"].includes(expr.operator)) {
+          return undefined;
+        }
+        const l = this.widenedPowerType(expr.left);
+        const r = this.widenedPowerType(expr.right);
+        if (l === "real" || r === "real") return "real";
+        if (l === undefined) return r;
+        if (r === undefined) return l;
+        return (INTEGER_BITS[r] ?? 0) > (INTEGER_BITS[l] ?? 0) ? r : l;
+      }
+      default:
+        return undefined;
+    }
   }
 
   /**
@@ -1352,7 +1429,7 @@ export class CodeGenerator {
   /** An untyped integer literal (in parentheses or negated) outside DINT. */
   private isPastDintLiteral(expr: Expression): boolean {
     // A folded untyped constant subexpression past DINT (`2147483647 + 1`)
-    if (untypedIntegerConstant(expr)?.pastDint === true) return true;
+    if (untypedIntegerConstant(expr, true)?.pastDint === true) return true;
     if (expr.kind === "ParenthesizedExpression") {
       return this.isPastDintLiteral(expr.expression);
     }
@@ -5158,6 +5235,7 @@ export class CodeGenerator {
           });
           this.emitEnEnoWrapper(indent, enExpr, enoVar, (bi) => {
             this.emit(`${bi}${callExpr};`);
+            this.flushGlobalCopyOuts(bi);
           });
         } else if (stmt.call.kind === "MethodCallExpression") {
           this.emit(
@@ -5191,6 +5269,7 @@ export class CodeGenerator {
             const callExpr = this.generateFunctionCallExpression(modifiedCall);
             this.emitEnEnoWrapper(indent, enExpr, enoVar, (bi) => {
               this.emit(`${bi}${callExpr};`);
+              this.flushGlobalCopyOuts(bi);
             });
           } else {
             this.emit(`${indent}${this.generateExpression(stmt.call)};`);
@@ -5300,8 +5379,10 @@ export class CodeGenerator {
         ...stmt,
         value: { ...stmt.value, arguments: filteredArgs },
       };
+      // Copy-outs of arguments passed by copy run only with the call
       this.emitEnEnoWrapper(indent, enExpr, enoVar, (bi) => {
         this.generateAssignmentStatement(stripped, bi);
+        this.flushGlobalCopyOuts(bi);
       });
       return;
     }
@@ -5613,7 +5694,7 @@ export class CodeGenerator {
         const copy = this.inOutCopy(arg, tmp);
         this.emit(`${inner}${copy.declaration}`);
         this.globalInOutTemps.set(arg.value, tmp);
-        this.pendingGlobalCopyOuts.push(copy.copyOut);
+        if (copy.copyOut !== "") this.pendingGlobalCopyOuts.push(copy.copyOut);
         hoisted.push(arg.value);
       }
     }
@@ -5626,9 +5707,43 @@ export class CodeGenerator {
    * member's field type, so it binds the callee's `T&`).
    */
   private inOutCopy(
-    { value: arg, cppType, once, addressInto }: InOutCopyArg,
+    copyArg: InOutCopyArg,
     tmp: string,
   ): { declaration: string; copyOut: string } {
+    const { value: arg, cppType, once, addressInto, property } = copyArg;
+    // A REFERENCE TO in-out: bound to the variable itself when it is a plain
+    // lvalue of the target type, else to a copy of the target type
+    if (copyArg.referenceParam === true && cppType !== undefined) {
+      const upper = arg.name.toUpperCase();
+      if (
+        copyArg.bindsTarget === true &&
+        arg.unionMember !== true &&
+        !this.programExternals.has(upper) &&
+        !this.compositeExternals.has(upper) &&
+        this.lastFieldBitIndex(arg) === undefined
+      ) {
+        return {
+          declaration: `${cppType} ${tmp}(${this.generateLvalue(arg)});`,
+          copyOut: "",
+        };
+      }
+      const copy = this.inOutCopy(
+        { value: arg, cppType: `${cppType}::target_type` },
+        `${tmp}_v`,
+      );
+      return {
+        declaration: `${copy.declaration} ${cppType} ${tmp}(${tmp}_v);`,
+        copyOut: copy.copyOut,
+      };
+    }
+    const propWrite =
+      property === true ? this.detectPropertyWrite(arg) : undefined;
+    if (propWrite !== undefined && cppType !== undefined) {
+      return {
+        declaration: `${cppType} ${tmp};`,
+        copyOut: `${propWrite.objectCode}set_${propWrite.propertyName}(${tmp});`,
+      };
+    }
     const read = this.generateVariableExpression(arg);
     const copyIn = arg.unionMember === true ? `union_value(${read})` : read;
     const upper = arg.name.toUpperCase();
@@ -5700,15 +5815,17 @@ export class CodeGenerator {
     }
     const bit = (base: string): string =>
       `(${base} & ~(1ULL << ${bitIdx})) | ((${value} ? 1ULL : 0ULL) << ${bitIdx})`;
-    // A bit of a scalar VAR_EXTERNAL: read and written through its pointer
+    // A bit of a scalar VAR_EXTERNAL: the value first (it may read the
+    // global), then one read-modify-write under the global's lock
     if (
       baseVar.fieldAccess.length === 0 &&
       !baseVar.isDereference &&
       this.programExternals.has(target.name.toUpperCase()) &&
       !this.compositeExternals.has(target.name.toUpperCase())
     ) {
-      const read = `${target.name}->read()`;
-      return `${target.name}->write(static_cast<decltype(${read})>(${bit(read)}));`;
+      const tmp = `__gbv_${this.tempVarCounter++}`;
+      const stored = `(static_cast<uint64_t>(__glk->get()) & ~(1ULL << ${bitIdx})) | ((${tmp} ? 1ULL : 0ULL) << ${bitIdx})`;
+      return `{ const bool ${tmp} = static_cast<bool>(${value}); ${target.name}->with_lock([&](decltype(${target.name}->read())* __glk){ __glk->set(static_cast<decltype(__glk->get())>(${stored})); }); }`;
     }
     // An index that calls (`arr[IDX()].P.2`) is evaluated once: the object is bound first
     const once = this.indexCalls(baseVar);
@@ -5847,12 +5964,20 @@ export class CodeGenerator {
       (this.programExternals.has(e.name.toUpperCase()) ||
         this.currentScopeVarRefKinds.get(e.name.toUpperCase()) ===
           "reference_to");
+    // An output into a property is written through its setter after the call
+    const isProperty = (e: Expression): e is VariableExpression =>
+      e.kind === "VariableExpression" &&
+      this.detectPropertyWrite(e) !== undefined;
     const calleeBlocks = this.calleeVarBlocks(call);
     const varBlocks =
       calleeBlocks ??
       this.librarySizedStringBlocks(call) ??
-      (call.arguments.some((a) => a.inOutCopy === true) &&
-      call.kind === "FunctionCallExpression"
+      (call.arguments.some(
+        (a) =>
+          a.inOutCopy === true ||
+          a.inOutBindsTarget === true ||
+          (a.isOutput && isProperty(a.value)),
+      ) && call.kind === "FunctionCallExpression"
         ? this.libraryFunctionDeclaration(call.functionName)?.varBlocks
         : undefined);
     const hasSizedStringParam =
@@ -5874,7 +5999,9 @@ export class CodeGenerator {
           isCompositeGlobal(a.value) ||
           isUnionMember(a.value) ||
           rendersBound(a.value) ||
-          a.inOutCopy === true,
+          a.inOutCopy === true ||
+          a.inOutBindsTarget === true ||
+          (a.isOutput && isProperty(a.value)),
       )
     ) {
       return [];
@@ -5932,6 +6059,19 @@ export class CodeGenerator {
       if (param.blockType === "VAR_IN_OUT" && !arg.isOutput) {
         const sized = this.sizedStringLength(param.type);
         if (
+          param.type.referenceKind === "reference_to" &&
+          (arg.inOutCopy === true || arg.inOutBindsTarget === true)
+        ) {
+          // A REFERENCE TO in-out: a reference temporary (see inOutCopy)
+          result.push({
+            value,
+            cppType: this.inOutParamType(param.type),
+            referenceParam: true,
+            ...(arg.inOutBindsTarget === true
+              ? { bindsTarget: true as const }
+              : {}),
+          });
+        } else if (
           arg.inOutCopy === true ||
           otherLength ||
           (sized !== undefined &&
@@ -5978,6 +6118,12 @@ export class CodeGenerator {
             this.warnSharedGlobalInOut(value.name, param.name, call);
           }
         }
+      } else if (param.blockType === "VAR_OUTPUT" && isProperty(value)) {
+        result.push({
+          value,
+          cppType: this.inOutParamType(param.type),
+          property: true as const,
+        });
       } else if (
         param.blockType === "VAR_OUTPUT" &&
         !isCompositeGlobal(value) &&
@@ -7859,7 +8005,8 @@ export class CodeGenerator {
     if (
       expr.operator === "/" &&
       !isNonZeroIntegerLiteral(expr.right) &&
-      this.isIntegerExpression(expr)
+      this.isIntegerExpression(expr) &&
+      this.widenedPowerType(expr) !== "real"
     ) {
       return `iec_div(${left}, ${right}, ${this.faultSite(expr)})`;
     }
@@ -11178,15 +11325,24 @@ export class CodeGenerator {
     const byCopy = (b: { arg: Argument; param: string }): boolean =>
       kindOf(b.param) === "ref" &&
       (b.arg.inOutCopy === true ||
+        b.arg.inOutBindsTarget === true ||
         (b.arg.value.kind === "VariableExpression" &&
           b.arg.value.unionMember === true));
+    // ARRAY[*] OF STRING given a fixed array: through a ViewArgument, which
+    // copies when the element lengths differ
+    const viewHeld = (b: { arg: Argument; param: string }): boolean =>
+      kindOf(b.param) === "view" &&
+      this.fbViewOfStrings(fbTypeName, b.param) &&
+      b.arg.value.kind === "VariableExpression" &&
+      this.isFixedArrayArgument(b.arg.value);
     const outerIndent = indent;
-    if (bindings.some(byCopy)) {
+    if (bindings.some((b) => byCopy(b) || viewHeld(b))) {
       this.emit(`${indent}{`);
       indent = indent + this.options.indent;
     }
 
     const copyOuts: Array<{ target: Expression; source: string }> = [];
+    const copyBacks: string[] = [];
     const unbinds: string[] = [];
     for (const binding of bindings) {
       const { arg, param } = binding;
@@ -11199,6 +11355,15 @@ export class CodeGenerator {
           `${indent}${member} = ${this.generateExpression(arg.value)};`,
         );
         copyOuts.push({ target: arg.value, source: member });
+      } else if (kind === "view" && viewHeld(binding)) {
+        const tmp = `__io_${this.tempVarCounter++}`;
+        const target = this.inOutBindTarget(arg.value, param, call);
+        this.emit(
+          `${indent}strucpp::ViewArgument<decltype(${member}), std::decay_t<decltype(${target})>> ${tmp}(${target});`,
+        );
+        this.emit(`${indent}${member} = ${tmp}.target();`);
+        copyBacks.push(`${tmp}.copy_back();`);
+        unbinds.push(`${member} = decltype(${member})();`);
       } else if (kind === "view") {
         // ARRAY[*]: the view refers to the caller's array.
         this.emit(
@@ -11207,6 +11372,37 @@ export class CodeGenerator {
         if (this.isStackRooted(arg.value)) {
           unbinds.push(`${member} = decltype(${member})();`);
         }
+      } else if (
+        kind === "ref" &&
+        byCopy(binding) &&
+        this.fbInOutType(fbTypeName, param)?.referenceKind === "reference_to"
+      ) {
+        // A REFERENCE TO in-out: a reference bound to the variable, or to a
+        // copy of it of the reference's target type
+        const tmp = `__io_${this.tempVarCounter++}`;
+        const refType = `decltype(${member})::value_type`;
+        const value = arg.value;
+        const upper =
+          value.kind === "VariableExpression" ? value.name.toUpperCase() : "";
+        if (
+          arg.inOutBindsTarget === true &&
+          value.kind === "VariableExpression" &&
+          value.unionMember !== true &&
+          !this.programExternals.has(upper) &&
+          !this.compositeExternals.has(upper) &&
+          this.lastFieldBitIndex(value) === undefined
+        ) {
+          this.emit(
+            `${indent}${refType} ${tmp}(${this.generateLvalue(value)});`,
+          );
+        } else {
+          this.emit(`${indent}${refType}::target_type ${tmp}_v;`);
+          this.emit(`${indent}${tmp}_v = ${this.generateExpression(value)};`);
+          this.emit(`${indent}${refType} ${tmp}(${tmp}_v);`);
+          copyOuts.push({ target: value, source: `${tmp}_v` });
+        }
+        this.emit(`${indent}${member}.bind(${tmp});`);
+        unbinds.push(`${member}.unbind();`);
       } else if (kind === "ref" && byCopy(binding)) {
         const tmp = `__io_${this.tempVarCounter++}`;
         const read = this.generateLvalue(arg.value);
@@ -11232,9 +11428,27 @@ export class CodeGenerator {
       }
     }
 
+    // Capture output arguments (=> syntax), excluding ENO (already handled)
+    const captureOutputs = (atIndent: string): void => {
+      for (const arg of filteredArgs) {
+        if (arg.name && arg.isOutput) {
+          const member = `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`;
+          const source = kindOf(arg.name) === "ref" ? `(*${member})` : member;
+          this.emitCaptureToLvalue(
+            arg.value,
+            arg.addressInto === undefined
+              ? source
+              : this.addressAsInteger(arg.addressInto, source),
+            atIndent,
+          );
+        }
+      }
+    };
+
     // Call the FB/program execution body, wrapped with EN/ENO logic.
     // Pass the FB instance's ENO field so source code can read
     // `inst.ENO` after the invocation and see the right value.
+    // With EN, the copy-outs and output captures run only when the body does.
     this.emitEnEnoWrapper(
       indent,
       enExpr,
@@ -11245,6 +11459,13 @@ export class CodeGenerator {
         } else {
           this.emitPOUCallLine(instanceName, call.functionName, bi);
         }
+        if (enExpr !== null) {
+          for (const { target, source } of copyOuts) {
+            this.emitCaptureToLvalue(target, source, bi);
+          }
+          for (const line of copyBacks) this.emit(`${bi}${line}`);
+          captureOutputs(bi);
+        }
       },
       `${instanceName}.ENO`,
       fbTypeName !== undefined && this.declaredEnoType(fbTypeName) === "BOOL",
@@ -11252,27 +11473,80 @@ export class CodeGenerator {
 
     // Copy-outs of in-outs passed by copy, then the bindings that end with
     // the call (their targets live on this body's stack).
-    for (const { target, source } of copyOuts) {
-      this.emitCaptureToLvalue(target, source, indent);
+    if (enExpr === null) {
+      for (const { target, source } of copyOuts) {
+        this.emitCaptureToLvalue(target, source, indent);
+      }
+      for (const line of copyBacks) this.emit(`${indent}${line}`);
     }
     for (const line of unbinds) this.emit(`${indent}${line}`);
     if (indent !== outerIndent) this.emit(`${outerIndent}}`);
     indent = outerIndent;
 
-    // Capture output arguments (=> syntax), excluding ENO (already handled)
-    for (const arg of filteredArgs) {
-      if (arg.name && arg.isOutput) {
-        const member = `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`;
-        const source = kindOf(arg.name) === "ref" ? `(*${member})` : member;
-        this.emitCaptureToLvalue(
-          arg.value,
-          arg.addressInto === undefined
-            ? source
-            : this.addressAsInteger(arg.addressInto, source),
-          indent,
+    if (enExpr === null) captureOutputs(indent);
+  }
+
+  /** VAR_IN_OUT `param` of FB `fbTypeName` is an ARRAY[*] OF STRING or WSTRING. */
+  private fbViewOfStrings(
+    fbTypeName: string | undefined,
+    param: string,
+  ): boolean {
+    const name =
+      this.fbInOutType(fbTypeName, param)?.name ??
+      (fbTypeName === undefined
+        ? undefined
+        : this.libraryFBFieldTypes.get(
+            `${fbTypeName.toUpperCase()}.${param.toUpperCase()}`,
+          ));
+    const vla = name === undefined ? null : VLA_TYPE_NAME.exec(name);
+    return vla !== null && /^W?STRING$/i.test(vla[2]!);
+  }
+
+  /** `value` is a variable (or member) of a fixed-size array type, not an ARRAY[*] view. */
+  private isFixedArrayArgument(value: VariableExpression): boolean {
+    const hasAccess =
+      value.subscripts.length > 0 ||
+      value.fieldAccess.length > 0 ||
+      value.isDereference ||
+      (value.accessChain !== undefined && value.accessChain.length > 0);
+    const root =
+      this.currentScopeVarTypeRefs.get(value.name.toUpperCase()) ??
+      this.namespaceGlobalTypeRef(value.name.toUpperCase());
+    const type =
+      root !== undefined && hasAccess
+        ? resolveAccessType(root, value, this.accessLookup)
+        : root;
+    return (
+      type !== undefined &&
+      type.arrayDimensions !== undefined &&
+      !VLA_TYPE_NAME.test(type.name) &&
+      (type.referenceKind ?? "none") === "none"
+    );
+  }
+
+  /** The declared type of VAR_IN_OUT `param` of the user FB `fbTypeName` (or a base). */
+  private fbInOutType(
+    fbTypeName: string | undefined,
+    param: string,
+  ): TypeReference | undefined {
+    const upper = param.toUpperCase();
+    let current = fbTypeName?.toUpperCase();
+    for (let depth = 0; current !== undefined && depth < 32; depth++) {
+      const owner = current;
+      const fb = this.ast?.functionBlocks.find(
+        (f) => f.name.toUpperCase() === owner,
+      );
+      if (!fb) return undefined;
+      for (const block of fb.varBlocks) {
+        if (block.blockType !== "VAR_IN_OUT") continue;
+        const decl = block.declarations.find((d) =>
+          d.names.some((n) => n.toUpperCase() === upper),
         );
+        if (decl) return decl.type;
       }
+      current = fb.extends?.toUpperCase();
     }
+    return undefined;
   }
 
   /** `a.b(...)` on a member instance `b`: the instance as a variable access `a.b`. */
@@ -11512,6 +11786,14 @@ export class CodeGenerator {
       this.programExternals.has(target.name.toUpperCase())
     ) {
       this.emit(`${indent}${target.name}->write(${source});`);
+      return;
+    }
+    // A property (`o(q => pp.P)`): its setter
+    const propWrite = this.detectPropertyWrite(target);
+    if (propWrite) {
+      this.emit(
+        `${indent}${propWrite.objectCode}set_${propWrite.propertyName}(${source});`,
+      );
       return;
     }
     this.emit(`${indent}${this.generateLvalue(target)} = ${source};`);

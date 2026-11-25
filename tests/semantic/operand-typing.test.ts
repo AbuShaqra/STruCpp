@@ -108,7 +108,8 @@ END_PROGRAM
       "BYTE",
       "BYTE",
       "DINT",
-      "INT",
+      // the constant takes the signed operand's type too
+      "SINT",
     ]);
   });
 
