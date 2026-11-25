@@ -538,3 +538,36 @@ END_PROGRAM
     },
   );
 });
+
+describe("a derived FB stored into a base-type FUNCTION result", () => {
+  const SRC = `FUNCTION_BLOCK FB_A VAR_INPUT x : INT; END_VAR END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_D EXTENDS FB_A VAR y : INT; END_VAR END_FUNCTION_BLOCK
+FUNCTION F : FB_A VAR_INPUT r : FB_D; END_VAR F := r; END_FUNCTION
+`;
+  it("warns by default (it builds and copies the base part)", () => {
+    const r = compile(SRC, { headerFileName: "g.hpp" });
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.map((w) => w.message)).toEqual([
+      "Cannot assign FB_D to FB_A",
+    ]);
+  });
+
+  it("is an error under iec-3 and --strict", () => {
+    expect(errorsOf(SRC, { dialect: "iec-3" })).toEqual([
+      "Cannot assign FB_D to FB_A",
+    ]);
+    expect(errorsOf(SRC, { strict: true })).toEqual([
+      "Cannot assign FB_D to FB_A",
+    ]);
+  });
+
+  it("stays an error in every mode for a derived STRUCT (it does not build)", () => {
+    const src = `TYPE ST : STRUCT a : INT; END_STRUCT END_TYPE
+TYPE ST3 EXTENDS ST : STRUCT b : INT; END_STRUCT END_TYPE
+FUNCTION G : ST VAR_INPUT r : ST3; END_VAR G := r; END_FUNCTION
+`;
+    expect(errorsOf(src, { features: ["+struct_extends"] })).toEqual([
+      "Cannot assign ST3 to ST: a structured variable is assignment-compatible only with the same type (ST3 EXTENDS ST)",
+    ]);
+  });
+});

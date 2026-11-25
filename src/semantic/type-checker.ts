@@ -2019,15 +2019,6 @@ export class TypeChecker {
   }
 
   /**
-   * Resolve a type *name* to its IECType: an elementary type, else a registered
-   * type (struct/FB/enum from the local AST or a dependency library), else a
-   * minimal elementary placeholder. Using the registered type (rather than always
-   * wrapping the name in a placeholder elementary) keeps member/array-element
-   * access consistent with how a variable's declared type resolves — otherwise
-   * `event := prog[pos]` where both are a library struct would compare a real
-   * StructType against a placeholder elementary and be wrongly rejected.
-   */
-  /**
    * A library FUNCTION's STRUCT result, recorded by name only (`CADD : COMPLEX`):
    * the STRUCT type a variable of that name has, so the two are the same type.
    */
@@ -2039,6 +2030,15 @@ export class TypeChecker {
     return named?.typeKind === "struct" ? named : type;
   }
 
+  /**
+   * Resolve a type *name* to its IECType: an elementary type, else a registered
+   * type (struct/FB/enum from the local AST or a dependency library), else a
+   * minimal elementary placeholder. Using the registered type (rather than always
+   * wrapping the name in a placeholder elementary) keeps member/array-element
+   * access consistent with how a variable's declared type resolves — otherwise
+   * `event := prog[pos]` where both are a library struct would compare a real
+   * StructType against a placeholder elementary and be wrongly rejected.
+   */
   private resolveNamedType(name: string): IECType {
     return (
       ELEMENTARY_TYPES[name.toUpperCase()] ??
@@ -8350,6 +8350,25 @@ export class TypeChecker {
     }
   }
 
+  /** FB `source` EXTENDS FB `target`, directly or through bases of this compile. */
+  private fbDerivesFrom(source: string, target: string): boolean {
+    if (!this.ast || source.toUpperCase() === target.toUpperCase()) {
+      return false;
+    }
+    const seen = new Set<string>();
+    let current: string | undefined = source.toUpperCase();
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      const upper: string = current;
+      const fb = this.ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === upper,
+      );
+      current = fb?.extends?.toUpperCase();
+      if (current === target.toUpperCase()) return true;
+    }
+    return false;
+  }
+
   /** A function block type, of this compile or a library. */
   private isFbTypeName(name: string): boolean {
     const upper = name.toUpperCase();
@@ -8427,8 +8446,15 @@ export class TypeChecker {
     // `F := 0` into an interface result builds as NULL: the feature refusal warns
     const zeroIntoInterface =
       isUntypedZero(value) && this.interfaceTypeOf(targetType) !== undefined;
+    // A derived FB into a base-type result builds and copies the base part
+    // (a derived STRUCT does not build: it stays an error)
+    const derived = this.fbDerivesFrom(
+      typeNameUtil(valueType),
+      typeNameUtil(targetType),
+    );
     if (
       !zeroIntoInterface &&
+      !derived &&
       resultStoreFailsCpp(targetType, valueType, (n) => this.aliasBase(n))
     ) {
       return;
