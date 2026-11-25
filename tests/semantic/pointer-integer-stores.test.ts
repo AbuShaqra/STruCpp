@@ -251,23 +251,21 @@ END_FUNCTION
 `;
   const vars =
     "d : DINT; q : ST_Q; qa : ARRAY[0..1] OF ST_Q; pst : POINTER TO ST_Q; lw : LWORD; udi : UDINT; dw : DWORD; ppd : PDI; pd : POINTER TO DINT;";
-  const member =
-    "A POINTER TO member of a STRUCT cannot take an integer; assign ADR(...), another pointer or 0";
   const integer =
     "An integer is not an address; a POINTER TO takes ADR(...), another pointer or 0";
+  const body =
+    "pst := ADR(q);\nq.p := lw;\nq.p := udi;\npst^.p := dw;\npst^.p := lw;\nqa[1].p := lw;";
 
-  for (const options of [{}, { strict: true }] as Options[]) {
-    it(`refuses any integer into a STRUCT member, no C++ conversion exists (${JSON.stringify(options)})`, () => {
-      expect(
-        run(
-          decls,
-          vars,
-          "pst := ADR(q);\nq.p := lw;\nq.p := udi;\npst^.p := dw;\npst^.p := lw;\nqa[1].p := lw;",
-          options,
-        ).errors,
-      ).toEqual([2, 3, 4, 5, 6].map((l) => `${l}: ${member}`));
+  it("takes an integer into a STRUCT member as into a variable (it is the same IEC_Ptr)", () => {
+    expect(run(decls, vars, body, {})).toEqual({
+      errors: [],
+      warnings: [`3: ${integer}`, `4: ${integer}`],
     });
-  }
+    expect(run(decls, vars, body, { strict: true }).errors).toEqual([
+      `3: ${integer}`,
+      `4: ${integer}`,
+    ]);
+  });
 
   it("warns about a narrow integer into a pointer alias or from a function result", () => {
     expect(run(decls, vars, "ppd := udi;\npd := F_DW();", {})).toEqual({
@@ -296,8 +294,6 @@ TYPE ST_Q : STRUCT p : POINTER TO DINT; pa : PINT; END_STRUCT END_TYPE
     "q : ST_Q; qa : ARRAY[0..1] OF ST_Q; rq : REFERENCE TO ST_Q; lw : LWORD; udi : UDINT;";
   const integer =
     "An integer is not an address; a POINTER TO takes ADR(...), another pointer or 0";
-  const member =
-    "A POINTER TO member of a STRUCT cannot take an integer; assign ADR(...), another pointer or 0";
 
   it("follows the alias rule for a member of a POINTER TO alias type (it converts)", () => {
     expect(
@@ -308,11 +304,16 @@ TYPE ST_Q : STRUCT p : POINTER TO DINT; pa : PINT; END_STRUCT END_TYPE
     ).toEqual([`2: ${integer}`]);
   });
 
-  for (const options of [{}, { strict: true }] as Options[]) {
-    it(`refuses an integer into a member reached through a REFERENCE TO (${JSON.stringify(options)})`, () => {
-      expect(
-        run(decls, vars, "rq REF= q;\nrq.p := lw;\nrq.p := 7;", options).errors,
-      ).toEqual([`2: ${member}`, `3: ${member}`]);
-    });
-  }
+  it("takes an integer into a member reached through a REFERENCE TO as into a variable", () => {
+    expect(run(decls, vars, "rq REF= q;\nrq.p := lw;\nrq.p := 7;", {})).toEqual(
+      {
+        errors: [],
+        warnings: [`3: ${integer}`],
+      },
+    );
+    expect(
+      run(decls, vars, "rq REF= q;\nrq.p := lw;\nrq.p := 7;", { strict: true })
+        .errors,
+    ).toEqual([`3: ${integer}`]);
+  });
 });

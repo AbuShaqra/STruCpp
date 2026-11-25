@@ -1745,6 +1745,14 @@ export class ASTBuilder {
       }
     }
 
+    // `REFERENCE TO ARRAY[...] OF T`: the array is what the reference refers to.
+    const referenceToken = getFirstToken(children.REFERENCE_TO);
+    if (referenceToken) {
+      type.referenceKind = "reference_to";
+      type.isReference = true;
+      type.sourceSpan = spanStartingAt(referenceToken, type.sourceSpan);
+    }
+
     // This POINTER TO is the outermost level, wrapping any the type rule read.
     // The span starts at POINTER so it covers the type as written.
     const pointerToken = getFirstToken(children.POINTER);
@@ -1874,6 +1882,16 @@ export class ASTBuilder {
    */
   buildTypeReference(node: CstNode): TypeReference {
     const children = node.children as CstChildren;
+    // `REFERENCE TO ARRAY[..]` as a result, an element or a TYPE: refused by the analyzer
+    const arrayNode = getFirstNode(children.arrayType);
+    if (arrayNode) {
+      const type = this.buildInlineArrayTypeReference(arrayNode);
+      type.referenceKind = "reference_to";
+      type.isReference = true;
+      type.misplacedReferenceArray = true;
+      type.sourceSpan = nodeToSourceSpan(node);
+      return type;
+    }
 
     const nameToken = getFirstToken(children.Identifier);
     // `Namespace.Type` (a Dot is only ever the qualifier here): both names
@@ -2025,6 +2043,13 @@ export class ASTBuilder {
       result.elementTypeName = elementTypeName;
     }
     if (unresolved) result.unresolvedArray = unresolved;
+    // `ARRAY[..] OF REFERENCE TO ARRAY[..]`: refused by the analyzer
+    if (
+      elementTypeNode !== undefined &&
+      getFirstNode((elementTypeNode.children as CstChildren).arrayType)
+    ) {
+      result.misplacedReferenceArray = true;
+    }
     // Also on an ARRAY[*], whose element type is otherwise only in its name.
     const elementChain = this.elementReferenceChain(elementTypeNode);
     if (elementChain) result.elementReferenceChain = elementChain;

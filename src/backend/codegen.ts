@@ -698,6 +698,17 @@ const INTEGER_RANGES: Readonly<Record<string, readonly [bigint, bigint]>> = {
 };
 
 /** Argument expressions that are computed values, not variables. */
+/** `v` reads the target of a pointer: its last access step is a `^`. */
+function endsWithDereference(v: VariableExpression): boolean {
+  const chain = v.accessChain;
+  if (chain !== undefined && chain.length > 0) {
+    return chain[chain.length - 1]!.kind === "dereference";
+  }
+  return (
+    v.isDereference && v.fieldAccess.length === 0 && v.subscripts.length === 0
+  );
+}
+
 const COMPUTED_ARGUMENT_KINDS: ReadonlySet<string> = new Set([
   "BinaryExpression",
   "UnaryExpression",
@@ -9175,6 +9186,23 @@ export class CodeGenerator {
       }
     }
 
+    // `p^` is the raw value a POINTER TO reaches (`short&`), not an IECVar<T>:
+    // beside another argument it is passed as IEC_<dominant> so T deduces.
+    if (!mixedOverloads && name !== "EXPT" && args.length > 1) {
+      for (let i = 0; i < args.length && i < argExprs.length; i++) {
+        const value = argExprs[i]!.value;
+        if (
+          argTypes[i] === dominant &&
+          !isEnEnoArgument(argExprs[i]!) &&
+          value.kind === "VariableExpression" &&
+          endsWithDereference(value) &&
+          getTypeCategory(dominant) !== undefined
+        ) {
+          args[i] = `static_cast<IEC_${dominant}>(${args[i]})`;
+        }
+      }
+    }
+
     // A computed integer is a raw C++ number: beside a variable (an IECVar<T>)
     // the template would not deduce, so it is passed as IEC_<dominant> there.
     // EXPT takes its operands at different types already.
@@ -9538,8 +9566,16 @@ export class CodeGenerator {
             this.generateExpression(arg.value),
           );
           if (idx !== 0) return generated;
-          // `LTIME_TO_DINT(t)` of a TIME: the argument becomes the X first
+          // `LWORD_TO_DWORD(ADR(x))`: the address as the 64-bit integer converted
           const from = conversion.fromType.toUpperCase();
+          if (
+            arg.value.addressInto === undefined &&
+            INTEGER_RANGES[from] !== undefined &&
+            this.isAddressOperand(arg.value)
+          ) {
+            return this.addressAsInteger(from, generated);
+          }
+          // `LTIME_TO_DINT(t)` of a TIME: the argument becomes the X first
           const actual = this.temporalBase(arg.value)?.toUpperCase();
           const asFrom =
             actual !== undefined &&

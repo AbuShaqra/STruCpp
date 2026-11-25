@@ -72,6 +72,7 @@ import {
   resolveArrayElementAccessType,
   resolveFieldDeclaration,
   undeclaredFbAncestor,
+  resolveArrayShape,
   resolveArrayShapeByName,
   type AccessLookup,
   type AccessType,
@@ -282,6 +283,11 @@ function describeReferenceShape(shape: ReferenceShape): string {
   return [...shape.chain.map((k) => REFERENCE_LEVEL_TEXT[k] ?? k), base]
     .join(" ")
     .toUpperCase();
+}
+
+/** `text` after "a" or "an", as its first letter is spelled (`an INT`, `a STRING`). */
+function withArticle(text: string): string {
+  return `${/^[AEIOU]/i.test(text) ? "an" : "a"} ${text}`;
 }
 
 /** The reference levels and target type of a declared type. */
@@ -2413,8 +2419,16 @@ export class TypeChecker {
               currentTypeName = (currentType as ElementaryType).name;
             }
           } else {
-            currentType = undefined;
-            currentTypeName = undefined;
+            // `q^` with `q : PI` and `TYPE PI : POINTER TO INT`: the target type,
+            // as the last step only (a member reached past it keeps no reference shape).
+            const last = step === expr.accessChain[expr.accessChain.length - 1];
+            currentTypeName = last
+              ? this.pointerAliasTarget(currentTypeName)
+              : undefined;
+            currentType =
+              currentTypeName !== undefined
+                ? this.resolveNamedType(currentTypeName)
+                : undefined;
           }
         }
       }
@@ -2473,6 +2487,14 @@ export class TypeChecker {
       if (expr.isDereference) inUnion = false;
       if (expr.isDereference && currentType?.typeKind === "reference") {
         currentType = (currentType as ReferenceType).referencedType;
+      } else if (
+        expr.isDereference &&
+        expr.fieldAccess.length === 0 &&
+        expr.subscripts.length === 0
+      ) {
+        // `q^` with `q : PI` and `TYPE PI : POINTER TO INT`: the target type
+        const target = this.pointerAliasTarget(currentTypeName);
+        if (target !== undefined) currentType = this.resolveNamedType(target);
       }
     }
 
@@ -2676,7 +2698,9 @@ export class TypeChecker {
     if (
       type?.referenceKind !== "reference_to" ||
       (type.referenceChain?.length ?? 1) !== 1 ||
-      type.arrayDimensions !== undefined
+      type.arrayDimensions !== undefined ||
+      // A REFERENCE TO a pointer alias: `^` dereferences the pointer it reaches.
+      this.pointerAliasTarget(type.name) !== undefined
     ) {
       return;
     }
@@ -2727,11 +2751,14 @@ export class TypeChecker {
     }
     delete expr.comparesReferences;
     if (
-      (expr.operator === "=" || expr.operator === "<>") &&
+      COMPARISON_OPS.has(expr.operator) &&
       (this.isReferenceItself(expr.left, scope) ||
         this.isReferenceItself(expr.right, scope))
     ) {
       expr.comparesReferences = true;
+    }
+    if (COMPARISON_OPS.has(expr.operator)) {
+      this.markAddressComparison(expr, scope);
     }
     delete expr.addressArithmetic;
     if (
@@ -2753,6 +2780,23 @@ export class TypeChecker {
           ? [expr.left, expr.right, rightType]
           : [expr.right, expr.left, leftType];
       const accessed = this.accessedElementaryType(deref, scope);
+      // `ps^ + b`, `ps^ = 1`: a dereferenced STRING beside a value of no
+      // string type is refused as a STRING variable is.
+      if (
+        accessed !== undefined &&
+        this.stringKindOf(accessed) !== undefined &&
+        otherType?.typeKind === "elementary" &&
+        this.stringKindOf(otherType) === undefined &&
+        !isGenericGroupType(otherType)
+      ) {
+        this.refuseStringOperands(
+          expr,
+          leftType ?? accessed,
+          rightType ?? accessed,
+          scope,
+        );
+        return undefined;
+      }
       const derefChar = this.charTypeOf(accessed);
       if (
         derefChar !== undefined &&
@@ -3229,6 +3273,25 @@ export class TypeChecker {
     }
     const valueType = value.resolvedType;
     const valueChar = this.charTypeOf(valueType);
+    // `p^ := 65`: a number into a CHAR. C++ converts it, so a warning by
+    // default and an error under iec-3 and --strict, as a CHAR variable refuses.
+    if (
+      valueType?.typeKind === "elementary" &&
+      valueChar === undefined &&
+      !isStringBase(this.aliasBase((valueType as ElementaryType).name)) &&
+      !isGenericGroupType(valueType) &&
+      !this.reportedCharValues.has(value)
+    ) {
+      this.reportedCharValues.add(value);
+      const message = `Cannot assign ${typeNameUtil(valueType)} to ${charType}`;
+      const span = value.sourceSpan;
+      if (this.strict || this.inOutErrors) {
+        this.addError(message, span.startLine, span.startCol, span.file);
+      } else {
+        this.addWarning(message, span.startLine, span.startCol, span.file);
+      }
+      return;
+    }
     if (
       valueType?.typeKind !== "elementary" ||
       (!isStringBase(this.aliasBase((valueType as ElementaryType).name)) &&
@@ -6612,6 +6675,10 @@ export class TypeChecker {
         // `p : POINTER TO T := ADR(x);` takes an address of any target type.
         if (outerKind === "pointer_to" && isAddressOf(decl.initialValue)) {
           this.resolveExprType(decl.initialValue, scope);
+          const shape = referenceShapeOf(decl.type);
+          if (shape) {
+            this.refuseAdrLevelMismatch(shape, decl.initialValue, scope);
+          }
           continue;
         }
         if (
@@ -6848,11 +6915,20 @@ export class TypeChecker {
       return;
     }
     delete source.aliasReferenceBinding;
+    const array = this.arrayReferenceBinding(decl.type, source, scope);
+    if (array !== undefined) {
+      if (array !== "ok") {
+        const span = source.sourceSpan;
+        this.addError(array.message, span.startLine, span.startCol, span.file);
+      }
+      return;
+    }
     const targetShape = referenceShapeOf(decl.type);
     const sourceShape = this.declaredReferenceShape(source, scope);
     if (
       targetShape === undefined ||
-      targetShape.chain.length !== 1 ||
+      (targetShape.chain.length !== 1 &&
+        targetShape.chain[0] !== "reference_to") ||
       sourceShape === undefined
     ) {
       return;
@@ -6902,6 +6978,7 @@ export class TypeChecker {
     walkAST(value, (node) => {
       if (
         node.kind === "RefExpression" ||
+        node.kind === "NewExpression" ||
         (node.kind === "FunctionCallExpression" &&
           ADDRESS_CALLS.has(
             (node as FunctionCallExpression).functionName.toUpperCase(),
@@ -6934,6 +7011,8 @@ export class TypeChecker {
       this.findUserFunction(name) !== undefined;
     let top = value;
     while (top.kind === "ParenthesizedExpression") top = top.expression;
+    // `i := __NEW(INT)`: the pointer __NEW returns is an address too.
+    if (top.kind === "NewExpression") return this.checkNewStore(typeName, top);
     const chainError = this.addressArithmeticRefused.get(top);
     // `ADR(x) * 2` into an integer: no address, no offset of one.
     if (
@@ -7000,6 +7079,24 @@ export class TypeChecker {
     return true;
   }
 
+  /** The pointer `__NEW` returns stored into `typeName`: refused when that is no 64-bit integer. */
+  private checkNewStore(typeName: string, value: Expression): boolean {
+    const fit = this.addressFitOf(typeName);
+    if (fit === undefined) return false;
+    if (fit === "wide") {
+      value.addressInto = typeName;
+      return true;
+    }
+    const span = value.sourceSpan;
+    this.addError(
+      narrowAddressMessage("__NEW", fit.narrow),
+      span.startLine,
+      span.startCol,
+      span.file,
+    );
+    return true;
+  }
+
   /** addressFit of `typeName`, a library alias (`TYPE TDw2 : DWORD` in an archive) through its base. */
   private addressFitOf(
     typeName: string,
@@ -7032,9 +7129,10 @@ export class TypeChecker {
     if (declared === undefined) return false;
     const type = resolveAccessType(declared, v, this.accessLookup);
     const kind = type?.referenceKind;
+    // A POINTER TO ARRAY is a pointer too: its dimensions are its target's.
     if (
       type === undefined ||
-      type.arrayDimensions !== undefined ||
+      (type.arrayDimensions !== undefined && kind !== "pointer_to") ||
       (kind !== "pointer_to" && kind !== "ref_to")
     ) {
       return false;
@@ -7700,6 +7798,16 @@ export class TypeChecker {
           break;
         }
         if (this.warnIntegerIntoPointer(stmt.target, stmt.value, scope)) break;
+        if (this.refuseIntegerIntoReference(stmt.target, stmt.value, scope)) {
+          break;
+        }
+        const pointerShape = this.declaredReferenceShape(stmt.target, scope);
+        if (
+          pointerShape !== undefined &&
+          this.refuseAdrLevelMismatch(pointerShape, stmt.value, scope)
+        ) {
+          break;
+        }
         if (this.isAddressIntoPointer(stmt.target, valueType, scope)) break;
         if (this.isZeroIntoPointer(stmt.target, stmt.value, scope)) break;
         if (this.checkArrayScalarAssignment(stmt.target, stmt.value, scope)) {
@@ -7769,7 +7877,22 @@ export class TypeChecker {
           if (stmt.source.kind === "VariableExpression") {
             delete stmt.source.aliasReferenceBinding;
           }
-          const targetShape = declared ? referenceShapeOf(declared) : undefined;
+          const arrayBinding =
+            declared !== undefined
+              ? this.arrayReferenceBinding(declared, stmt.source, scope)
+              : undefined;
+          if (arrayBinding !== undefined && arrayBinding !== "ok") {
+            this.addError(
+              arrayBinding.message,
+              stmt.source.sourceSpan.startLine,
+              stmt.source.sourceSpan.startCol,
+              stmt.source.sourceSpan.file,
+            );
+          }
+          const targetShape =
+            declared && arrayBinding === undefined
+              ? referenceShapeOf(declared)
+              : undefined;
           const sourceShape = this.declaredReferenceShape(stmt.source, scope);
           if (
             targetShape?.chain.length === 1 &&
@@ -7784,7 +7907,8 @@ export class TypeChecker {
             );
           }
           if (
-            targetShape?.chain.length === 1 &&
+            (targetShape?.chain.length === 1 ||
+              targetShape?.chain[0] === "reference_to") &&
             (targetShape.chain[0] === "ref_to" ||
               targetShape.chain[0] === "reference_to") &&
             sourceShape !== undefined &&
@@ -7981,6 +8105,17 @@ export class TypeChecker {
               stmt.sourceSpan.startCol,
               stmt.sourceSpan.file,
             );
+          }
+          // A POINTER TO control variable takes an address (`e : PINT` included).
+          if (level === "pointer_to") {
+            for (const bound of [stmt.start, stmt.end]) {
+              if (
+                this.isAddressArgument(bound, scope) ||
+                this.isPointerAliasTarget(bound, scope)
+              ) {
+                addressBound.add(bound);
+              }
+            }
           }
           // Validate start/end compatibility with control variable
           // Use warnings instead of errors — CODESYS is lenient with FOR bounds
@@ -9268,10 +9403,21 @@ export class TypeChecker {
           ? inputs[i]
           : inputs.find((p) => p.name.toUpperCase() === argName);
       if (!input || input.inOut) return;
-      const target = referenceShapeOf(input.type);
-      if (target?.chain.length !== 1 || target.chain[0] !== "reference_to") {
+      const array = this.arrayReferenceBinding(input.type, arg.value, scope);
+      if (array !== undefined) {
+        if (array !== "ok") {
+          const span = arg.value.sourceSpan;
+          this.addError(
+            array.message,
+            span.startLine,
+            span.startCol,
+            span.file,
+          );
+        }
         return;
       }
+      const target = referenceShapeOf(input.type);
+      if (target?.chain[0] !== "reference_to") return;
       const value = arg.value;
       if (value.kind === "VariableExpression") {
         delete value.aliasReferenceBinding;
@@ -9303,7 +9449,84 @@ export class TypeChecker {
   }
 
   /**
-   * Why a REF_TO or REFERENCE TO (one level, `target`) cannot refer to the
+   * A REFERENCE TO an ARRAY (`REFERENCE TO ARRAY[0..2] OF INT`, or of an ARRAY
+   * alias) bound to `source`: "ok" when it is an array of the same bounds and
+   * element type, the refusal when it is known not to be, else undefined.
+   */
+  private arrayReferenceBinding(
+    target: AccessType,
+    source: Expression,
+    scope: Scope,
+  ): "ok" | { message: string } | undefined {
+    if (
+      target.referenceKind !== "reference_to" ||
+      (target.referenceChain?.length ?? 1) !== 1 ||
+      !this.ast
+    ) {
+      return undefined;
+    }
+    const want = resolveArrayShape(target, this.ast);
+    if (want === undefined || want.dims.some((d) => d === null)) {
+      return undefined;
+    }
+    const declared = this.accessedType(source, scope);
+    if (declared === undefined) return undefined;
+    const kind = declared.referenceKind ?? "none";
+    const have =
+      kind === "none" || kind === "reference_to"
+        ? resolveArrayShape(declared, this.ast)
+        : undefined;
+    const describe = (t: AccessType, shape: typeof have): string =>
+      t.arrayDimensions !== undefined && shape !== undefined
+        ? `ARRAY[${shape.dims.map((d) => `${d!.start}..${d!.end}`).join(", ")}] OF ${shape.elementTypeName}`
+        : t.name;
+    if (have !== undefined) {
+      if (have.dims.some((d) => d === null)) return undefined;
+      // A STRING element's length is compared only where both declare it inline.
+      if (
+        (target.elementMaxLength !== undefined ||
+          declared.elementMaxLength !== undefined) &&
+        (target.arrayDimensions === undefined ||
+          declared.arrayDimensions === undefined)
+      ) {
+        return undefined;
+      }
+      const same =
+        have.dims.length === want.dims.length &&
+        have.dims.every(
+          (d, i) =>
+            d!.start === want.dims[i]!.start && d!.end === want.dims[i]!.end,
+        ) &&
+        canonicalElementaryName(have.elementTypeName.toUpperCase()) ===
+          canonicalElementaryName(want.elementTypeName.toUpperCase()) &&
+        String(declared.elementMaxLength ?? "") ===
+          String(target.elementMaxLength ?? "") &&
+        (declared.elementReferenceChain ?? []).join() ===
+          (target.elementReferenceChain ?? []).join();
+      if (same) return "ok";
+    } else if (
+      kind === "none" &&
+      declared.arrayDimensions === undefined &&
+      !this.isReferableType(declared.name)
+    ) {
+      return undefined;
+    }
+    const sourceText =
+      kind === "none" || kind === "reference_to"
+        ? describe(declared, have)
+        : describeReferenceShape(
+            referenceShapeOf(declared) ?? {
+              chain: [kind],
+              base: declared.name,
+            },
+          );
+    return {
+      message: `REFERENCE TO ${describe(target, want)} cannot refer to ${withArticle(sourceText.toUpperCase())} variable`,
+    };
+  }
+
+  /**
+   * Why a REF_TO or REFERENCE TO (one level, or a REFERENCE TO over more, `target`) cannot refer to the
    * variable `value` of shape `source` (a plain variable or a REFERENCE TO,
    * which refers on): another type, or another STRING length. Undefined
    * when it can or the types are not known here; an alias source is marked.
@@ -9313,9 +9536,12 @@ export class TypeChecker {
     source: ReferenceShape,
     value: VariableExpression,
   ): string | undefined {
+    // `REFERENCE TO POINTER TO INT` refers to a POINTER TO INT variable.
+    const want = target.chain.slice(1);
+    const have =
+      source.chain[0] === "reference_to" ? source.chain.slice(1) : source.chain;
     const levelsOk =
-      source.chain.length === 0 ||
-      (source.chain.length === 1 && source.chain[0] === "reference_to");
+      have.length === want.length && have.every((k, i) => k === want[i]);
     if (levelsOk) {
       if (
         !this.isReferableType(target.base) ||
@@ -9330,7 +9556,7 @@ export class TypeChecker {
         const t = this.stringAliasResolved(target);
         const v = this.stringAliasResolved(source);
         if (isStringBase(t.base) && stringLengthsDiffer(t, v)) {
-          return `${describeReferenceShape(t)} cannot refer to a ${stringText(v)} variable`;
+          return `${describeReferenceShape(t)} cannot refer to ${withArticle(stringText(v))} variable`;
         }
         if (target.chain[0] === "reference_to") {
           this.markAliasReferenceBinding(target, source, value);
@@ -9338,7 +9564,7 @@ export class TypeChecker {
         return undefined;
       }
     }
-    return `${describeReferenceShape(target)} cannot refer to a ${describeReferenceShape(source)} variable${levelsOk ? this.referenceMismatchReason(this.aliasBase(source.base)) : ""}`;
+    return `${describeReferenceShape(target)} cannot refer to ${withArticle(describeReferenceShape(source))} variable${levelsOk ? this.referenceMismatchReason(this.aliasBase(source.base)) : ""}`;
   }
 
   /**
@@ -9350,9 +9576,10 @@ export class TypeChecker {
     let length = shape.length;
     for (let i = 0; i < 32; i++) {
       const upper = base;
-      const def = this.ast?.types.find(
-        (td) => td.name.toUpperCase() === upper,
-      )?.definition;
+      // This compile's TYPE, else a library's alias (`TS : STRING(20)` in an archive)
+      const def =
+        this.ast?.types.find((td) => td.name.toUpperCase() === upper)
+          ?.definition ?? this.libraryAliasDefinition(upper);
       if (
         def?.kind !== "TypeReference" ||
         def.arrayDimensions !== undefined ||
@@ -11078,7 +11305,10 @@ export class TypeChecker {
     if (this.isExactlyKnownType(name)) return true;
     const upper = name.toUpperCase();
     return (
-      this.ast?.types.some((td) => td.name.toUpperCase() === upper) ?? false
+      (this.ast?.types.some((td) => td.name.toUpperCase() === upper) ??
+        false) ||
+      // A library alias whose archive records its base (`TS : STRING(20)`)
+      this.libraryAliasDefinition(upper) !== undefined
     );
   }
 
@@ -11187,6 +11417,43 @@ export class TypeChecker {
   }
 
   /** Whether `expr` denotes a POINTER TO or REF_TO variable, not its target. */
+  /**
+   * `lw = ADR(x)`, `ps > 0`: an address compared with an integer is compared
+   * as a 64-bit integer (`p = 0` / `p <> 0` stay a NULL test of the pointer).
+   */
+  private markAddressComparison(expr: BinaryExpression, scope: Scope): void {
+    const user = (name: string): boolean =>
+      this.findUserFunction(name) !== undefined;
+    const isAddress = (e: Expression): boolean =>
+      this.isReferenceItself(e, scope) ||
+      this.isPointerAliasTarget(e, scope) ||
+      addressSource(e, user, this.isPointerRead) !== undefined;
+    const equality = expr.operator === "=" || expr.operator === "<>";
+    for (const [a, b] of [
+      [expr.left, expr.right],
+      [expr.right, expr.left],
+    ] as const) {
+      if (!isAddress(a) || isAddress(b)) continue;
+      // A POINTER TO variable on the left compares with an integer as it is (IEC_Ptr's operators).
+      if (
+        a === expr.left &&
+        addressSource(a, user, this.isPointerRead) === undefined &&
+        (this.declaredReferenceShape(a, scope)?.chain[0] === "pointer_to" ||
+          this.isPointerAliasTarget(a, scope))
+      ) {
+        continue;
+      }
+      if (
+        isUntypedZero(b)
+          ? equality
+          : this.integerValueBase(b, scope) === undefined
+      ) {
+        continue;
+      }
+      a.addressInto ??= "LWORD";
+    }
+  }
+
   private isReferenceItself(expr: Expression, scope: Scope): boolean {
     if (expr.kind !== "VariableExpression") return false;
     const outer = this.declaredReferenceShape(expr, scope)?.chain[0];
@@ -11212,17 +11479,26 @@ export class TypeChecker {
           ? inputs[i]
           : inputs.find((p) => p.name.toUpperCase() === argName);
       if (!input || input.inOut) return;
+      const level = referenceShapeOf(input.type)?.chain[0];
       if (
-        referenceShapeOf(input.type)?.chain[0] !== "pointer_to" &&
+        level !== "pointer_to" &&
+        level !== "ref_to" &&
         !this.isPointerAlias(input.type)
       ) {
         return;
       }
-      if (isUntypedZero(arg.value) || !this.isIntegerValue(arg.value, scope)) {
+      if (
+        isUntypedZero(arg.value) ||
+        // A function result, conversion or dereference of an integer too
+        (!this.isIntegerValue(arg.value, scope) &&
+          this.integerValueBase(arg.value, scope) === undefined)
+      ) {
         return;
       }
       this.addError(
-        `An integer cannot be passed to the POINTER TO input '${input.name.toUpperCase()}'; pass an address (ADR) or 0`,
+        level === "ref_to"
+          ? `An integer cannot be passed to the REF_TO input '${input.name.toUpperCase()}'; pass REF(...) or 0`
+          : `An integer cannot be passed to the POINTER TO input '${input.name.toUpperCase()}'; pass an address (ADR) or 0`,
         arg.value.sourceSpan.startLine,
         arg.value.sourceSpan.startCol,
         arg.value.sourceSpan.file,
@@ -11321,8 +11597,8 @@ export class TypeChecker {
   }
 
   /**
-   * `p := 0`: the untyped literal 0 stored in a POINTER TO of any target type
-   * is NULL, as it already is for an elementary target.
+   * `p := 0`: the untyped literal 0 stored in a POINTER TO or REF_TO of any
+   * target type is NULL, as it already is for an elementary target.
    */
   private isZeroIntoPointer(
     target: Expression,
@@ -11330,12 +11606,45 @@ export class TypeChecker {
     scope: Scope,
   ): boolean {
     if (!isUntypedZero(value)) return false;
-    if (this.declaredReferenceShape(target, scope)?.chain[0] !== "pointer_to") {
+    const level = this.declaredReferenceShape(target, scope)?.chain[0];
+    if (level !== "pointer_to" && level !== "ref_to") {
       // A POINTER TO alias of this unit: NULL too, checked as before.
       if (this.isPointerAliasTarget(target, scope)) value.asNull = true;
       return false;
     }
     value.asNull = true;
+    return true;
+  }
+
+  /**
+   * `r := i` or `r := 5` into a REF_TO: an integer is no reference. One
+   * narrower than an address, or a literal, makes a reference to no variable
+   * (an error in every mode); a 64-bit one may hold an address (a warning by
+   * default, an error under iec-3 and --strict). True when reported.
+   */
+  private refuseIntegerIntoReference(
+    target: Expression,
+    value: Expression,
+    scope: Scope,
+  ): boolean {
+    const shape = this.declaredReferenceShape(target, scope);
+    if (shape?.chain[0] !== "ref_to" || isUntypedZero(value)) return false;
+    // A constant 0 (`1 - 1`) is NULL too.
+    if (this.foldIntegerConstant(value, scope, 0) === 0n) return false;
+    const integer = this.integerValueBase(value, scope);
+    if (integer === undefined) return false;
+    const span = value.sourceSpan;
+    const message =
+      "An integer is not a reference; a REF_TO takes REF(...), another reference or 0";
+    const wide =
+      unparenthesized(value).kind !== "LiteralExpression" &&
+      (addressFit(integer, []) === "wide" ||
+        ["__XWORD", "XWORD", "__UXINT", "__XINT"].includes(integer));
+    if (wide && !this.strict && !this.inOutErrors) {
+      this.addWarning(message, span.startLine, span.startCol, span.file);
+    } else {
+      this.addError(message, span.startLine, span.startCol, span.file);
+    }
     return true;
   }
 
@@ -11371,17 +11680,6 @@ export class TypeChecker {
       : this.integerValueBase(value, scope);
     if (!difference && integer === undefined) return false;
     const span = value.sourceSpan;
-    // A POINTER TO member of a STRUCT is a plain C++ pointer: no integer
-    // converts to it, so the C++ build failed.
-    if (!alias && this.isStructMemberTarget(target, scope)) {
-      this.addError(
-        "A POINTER TO member of a STRUCT cannot take an integer; assign ADR(...), another pointer or 0",
-        span.startLine,
-        span.startCol,
-        span.file,
-      );
-      return true;
-    }
     // A 64-bit integer may hold an address: no narrowing to the target type.
     if (
       integer !== undefined &&
@@ -11432,57 +11730,6 @@ export class TypeChecker {
       : undefined;
   }
 
-  /** `target` is a member of a STRUCT (or UNION) value: `q.p`, `pst^.p`, `arr[i].p`. */
-  private isStructMemberTarget(target: Expression, scope: Scope): boolean {
-    const owner = this.lastFieldOwnerType(target, scope);
-    if (owner === undefined) return false;
-    const name = this.aliasTarget(owner);
-    return (
-      this.isStructType(name) ||
-      this.symbolTables.lookupType(name)?.resolvedType?.typeKind === "struct"
-    );
-  }
-
-  /** The type name of the value whose member `target` names last, typed silently; undefined when its last step is no field. */
-  private lastFieldOwnerType(
-    target: Expression,
-    scope: Scope,
-  ): string | undefined {
-    if (target.kind !== "VariableExpression") return undefined;
-    const chain = target.accessChain ?? [];
-    const last = chain[chain.length - 1];
-    if (last !== undefined) {
-      if (last.kind !== "field") return undefined;
-    } else if (
-      target.subscripts.length !== 0 ||
-      target.fieldAccess.length === 0
-    ) {
-      return undefined;
-    }
-    const owner: VariableExpression = {
-      ...target,
-      fieldAccess: target.fieldAccess.slice(0, -1),
-    };
-    if (chain.length > 0) owner.accessChain = chain.slice(0, -1);
-    else delete owner.accessChain;
-    // The declared type it reaches (`pst^` of a POINTER TO ST_Q is ST_Q)
-    const declared = this.accessedType(owner, scope);
-    if (declared !== undefined) {
-      // A REFERENCE TO is read through implicitly (`rq.p`).
-      const kind = declared.referenceKind ?? "none";
-      return (kind === "none" || kind === "reference_to") &&
-        declared.arrayDimensions === undefined
-        ? declared.name
-        : undefined;
-    }
-    const errors = this.errors.length;
-    const warnings = this.warnings.length;
-    const ownerType = this.inferType(owner, scope);
-    this.errors.length = errors;
-    this.warnings.length = warnings;
-    return ownerType !== undefined ? typeNameUtil(ownerType) : undefined;
-  }
-
   /** `target` is a variable or member declared with a POINTER TO alias of this unit (`p : PINT`). */
   private isPointerAliasTarget(target: Expression, scope: Scope): boolean {
     if (target.kind !== "VariableExpression") return false;
@@ -11494,6 +11741,35 @@ export class TypeChecker {
       ? resolveAccessType(declared.type, target, this.accessLookup)
       : declared.type;
     return type !== undefined && this.isPointerAlias(type);
+  }
+
+  /**
+   * The type a dereference of a variable of type `name` reaches when `name` is
+   * (through plain aliases) a single-level POINTER TO / REF_TO alias of a
+   * scalar or named type; undefined otherwise.
+   */
+  private pointerAliasTarget(name: string | undefined): string | undefined {
+    if (name === undefined) return undefined;
+    const upper = this.aliasBase(name);
+    const def =
+      this.ast?.types.find((td) => td.name.toUpperCase() === upper)
+        ?.definition ?? this.libraryReferenceDefinition(upper);
+    if (
+      def?.kind !== "TypeReference" ||
+      def.arrayDimensions !== undefined ||
+      (def.referenceKind !== "pointer_to" && def.referenceKind !== "ref_to") ||
+      (def.referenceChain?.length ?? 1) !== 1
+    ) {
+      return undefined;
+    }
+    return def.name;
+  }
+
+  /** A library type's definition when it records a reference level; undefined otherwise. */
+  private libraryReferenceDefinition(name: string): TypeReference | undefined {
+    if (!this.symbolTables.globalScope.definedByLibrary(name)) return undefined;
+    const def = this.symbolTables.lookupType(name)?.declaration?.definition;
+    return def?.kind === "TypeReference" ? def : undefined;
   }
 
   /** A type declared by name as a single-level POINTER TO alias (of this unit or a library). */
@@ -11516,6 +11792,72 @@ export class TypeChecker {
     );
   }
 
+  /** `shape` with every TYPE alias of this unit naming reference levels expanded into its chain. */
+  private aliasExpandedShape(shape: ReferenceShape): ReferenceShape {
+    let { chain, base } = shape;
+    for (let depth = 0; depth < 16; depth++) {
+      const upper = base.toUpperCase();
+      const def = this.ast?.types.find(
+        (td) => td.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+        break;
+      }
+      const levels =
+        def.referenceChain ??
+        ((def.referenceKind ?? "none") === "none" ? [] : [def.referenceKind]);
+      chain = [...chain, ...levels];
+      base = def.name;
+    }
+    return chain === shape.chain ? shape : { chain, base };
+  }
+
+  /**
+   * `ADR(i)` of a value that is no pointer into a POINTER TO POINTER TO
+   * (`pp := ADR(i)`): the INT would be read as an address. A warning by
+   * default, an error under iec-3 and --strict. True when reported.
+   */
+  private refuseAdrLevelMismatch(
+    target: ReferenceShape,
+    value: Expression,
+    scope: Scope,
+  ): boolean {
+    // `TYPE PPI : POINTER TO PI` and `POINTER TO PI` are POINTER TO POINTER TO INT.
+    target = this.aliasExpandedShape(target);
+    if (target.chain.length < 2 || target.chain[0] !== "pointer_to") {
+      return false;
+    }
+    const inner = unparenthesized(value);
+    if (
+      inner.kind !== "FunctionCallExpression" ||
+      inner.functionName.toUpperCase() !== "ADR" ||
+      this.findUserFunction("ADR") !== undefined
+    ) {
+      return false;
+    }
+    const operand = stripEnEno(inner.arguments)[0]?.value;
+    if (operand === undefined) return false;
+    const shape = this.declaredReferenceShape(operand, scope);
+    if (shape === undefined || shape.chain.length !== 0) return false;
+    // An alias of a pointer is a pointer; only a known non-pointer is refused.
+    if (
+      this.pointerAliasTarget(shape.base) !== undefined ||
+      this.aliasBase(shape.base) !== shape.base.toUpperCase() ||
+      !this.isExactlyKnownType(shape.base)
+    ) {
+      return false;
+    }
+    const span = value.sourceSpan;
+    // It goes wrong only when dereferenced: a warning by default.
+    const message = `${describeReferenceShape(target)} holds the address of ${withArticle(describeReferenceShape({ chain: target.chain.slice(1), base: target.base }))}, not of a value of type ${shape.base.toUpperCase()}`;
+    if (this.strict || this.inOutErrors) {
+      this.addError(message, span.startLine, span.startCol, span.file);
+    } else {
+      this.addWarning(message, span.startLine, span.startCol, span.file);
+    }
+    return true;
+  }
+
   /** Report `value` when it cannot be held by a target of shape `t`. */
   private validateReferenceValue(
     declaredTarget: ReferenceShape,
@@ -11523,13 +11865,27 @@ export class TypeChecker {
     scope: Scope,
   ): void {
     let t = declaredTarget;
+    if (this.refuseAdrLevelMismatch(t, value, scope)) return;
     if (t.chain[0] !== "ref_to") return;
     const inner = unparenthesized(value);
     // `__NEW(T)` returns a POINTER TO T.
+    // `ADR(x)` into a REF_TO is taken as `REF(x)`: C++ converts only that.
+    const adrOperand =
+      inner.kind === "FunctionCallExpression" &&
+      inner.functionName.toUpperCase() === "ADR" &&
+      this.findUserFunction("ADR") === undefined
+        ? stripEnEno(inner.arguments)[0]?.value
+        : undefined;
+    const adrShape =
+      adrOperand !== undefined
+        ? this.declaredReferenceShape(adrOperand, scope)
+        : undefined;
     const declaredValue =
       inner.kind === "NewExpression"
         ? { chain: ["pointer_to"], base: inner.allocationType.name }
-        : this.declaredReferenceShape(value, scope);
+        : adrShape !== undefined
+          ? { ...adrShape, chain: ["ref_to", ...adrShape.chain] }
+          : this.declaredReferenceShape(value, scope);
     if (!declaredValue || declaredValue.chain.length === 0) return;
     // An alias of a STRING(n) is that STRING(n).
     t = this.stringAliasResolved(t);
@@ -12731,7 +13087,7 @@ export class TypeChecker {
 
   private validateFunctionCallArgs(
     expr: FunctionCallExpression,
-    _scope: Scope,
+    scope: Scope,
   ): void {
     if (!this.stdRegistry) return;
 
@@ -12759,6 +13115,14 @@ export class TypeChecker {
         !argType ||
         argType.typeKind !== "elementary" ||
         isGenericGroupType(argType)
+      ) {
+        continue;
+      }
+      // A POINTER TO ARRAY value is an address, refused by the address check.
+      if (
+        arg.value.kind === "VariableExpression" &&
+        this.declaredReferenceShape(arg.value, scope) === undefined &&
+        this.accessedType(arg.value, scope)?.referenceKind === "pointer_to"
       ) {
         continue;
       }
@@ -13652,8 +14016,8 @@ export class TypeChecker {
         return true;
       }
     }
+    // A user or library FUNCTION returning a POINTER TO or REF_TO (`F(GP(1))`)
     if (v.kind === "FunctionCallExpression") {
-      // `F10()` of a FUNCTION returning a POINTER TO or REF_TO is an address.
       const kind = this.callResultReferenceKind(v, scope);
       return kind === "pointer_to" || kind === "ref_to";
     }
@@ -13661,7 +14025,9 @@ export class TypeChecker {
     const declared = this.declaredVariableType(v, scope);
     if (declared === undefined) return false;
     const type = resolveAccessType(declared, v, this.accessLookup);
-    const kind = type?.referenceKind;
+    // A REFERENCE TO POINTER TO reads the pointer it is bound to.
+    const chain = type?.referenceChain ?? [type?.referenceKind];
+    const kind = chain[0] === "reference_to" ? chain[1] : chain[0];
     return kind === "pointer_to" || kind === "ref_to";
   }
 
