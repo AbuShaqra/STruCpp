@@ -420,6 +420,17 @@ public:
         value_ = str;
     }
 
+    // Cross-size store (a STRING(10) written to a STRING global), truncating as operator= does
+    template<size_t OtherLen, std::enable_if_t<OtherLen != MaxLen, int> = 0>
+    void set(const IECStringVar<OtherLen>& other) noexcept {
+        value_ = other.get();
+    }
+
+    template<size_t OtherLen, std::enable_if_t<OtherLen != MaxLen, int> = 0>
+    void set(const IECString<OtherLen>& other) noexcept {
+        value_ = other;
+    }
+
     operator value_type() const noexcept {
         return value_;
     }

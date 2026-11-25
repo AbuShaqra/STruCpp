@@ -424,6 +424,12 @@ public:
         value_ = str;
     }
 
+    // Cross-size store (a WSTRING(10) written to a WSTRING global), truncating as operator= does
+    template<size_t OtherLen, std::enable_if_t<OtherLen != MaxLen, int> = 0>
+    void set(const IECWStringVar<OtherLen>& other) noexcept {
+        *this = other;
+    }
+
     operator value_type() const noexcept {
         return value_;
     }

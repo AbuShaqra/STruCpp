@@ -142,12 +142,12 @@ describe("BOOL logic codegen", () => {
     );
   });
 
-  it("integer and bit string AND/OR/XOR/NOT are unchanged", () => {
+  it("integer and bit string AND/OR/XOR stay bitwise; NOT is the complement in the type", () => {
     const cpp = body(
       VARS,
       "rw := NOT (w1 AND w2);\nrw := w1 OR w2;\nrw := w1 XOR 16#00FF;\nd := d AND 7;",
     );
-    expect(cpp).toContain("RW = NOT((W1) & (W2));");
+    expect(cpp).toContain("RW = static_cast<WORD_t>(~static_cast<WORD_t>((W1) & (W2)));");
     expect(cpp).toContain("RW = (W1) | (W2);");
     expect(cpp).toContain("RW = (W1) ^ (0x00FF);");
     expect(cpp).toContain("D = (D) & (7);");
@@ -209,9 +209,9 @@ describe("BOOL logic in a test file", () => {
       libraryArchives: result.resolvedLibraries,
     });
     for (const line of [
-      "NOT(static_cast<bool>((static_cast<bool>((static_cast<uint64_t>(W) >> 2) & 1)) & ((X > 0))))",
-      "NOT(static_cast<bool>((static_cast<bool>((static_cast<uint64_t>(M.W) >> 2) & 1)) & ((X > 0))))",
-      "NOT(static_cast<bool>((static_cast<bool>((static_cast<uint64_t>(W) >> 3) & 1)) | ((X > 5))))",
+      "strucpp::iec_not(static_cast<bool>((static_cast<bool>((static_cast<uint64_t>(W) >> 2) & 1)) & ((X > 0))))",
+      "strucpp::iec_not(static_cast<bool>((static_cast<bool>((static_cast<uint64_t>(M.W) >> 2) & 1)) & ((X > 0))))",
+      "strucpp::iec_not(static_cast<bool>((static_cast<bool>((static_cast<uint64_t>(W) >> 3) & 1)) | ((X > 5))))",
     ]) {
       expect(main).toContain(line);
     }

@@ -196,6 +196,18 @@ function typedDecimalPayload(expr: LiteralExpression): string | undefined {
 /** Bit string types, narrowest first. */
 const BIT_STRING_WIDTHS: readonly string[] = ["BYTE", "WORD", "DWORD", "LWORD"];
 
+/** The integer types: NOT of one is its complement in it. */
+const INTEGER_NAMES: ReadonlySet<string> = new Set([
+  "SINT",
+  "INT",
+  "DINT",
+  "LINT",
+  "USINT",
+  "UINT",
+  "UDINT",
+  "ULINT",
+]);
+
 function isBitStringName(name: string): boolean {
   const upper = name.toUpperCase();
   return getTypeCategory(upper) === "BIT" && upper !== "BOOL";
@@ -381,11 +393,11 @@ export class TypeCodeGenerator {
     return upper;
   }
 
-  /** BYTE, WORD, DWORD or LWORD a type name is, through aliases. */
+  /** The integer or bit string (BYTE..LWORD) a type name is, through aliases. */
   private bitStringBase(name: string): string | undefined {
     let upper = name.toUpperCase();
     for (let i = 0; i < 32; i++) {
-      if (isBitStringName(upper)) return upper;
+      if (isBitStringName(upper) || INTEGER_NAMES.has(upper)) return upper;
       const next = this.aliasTargets.get(upper);
       if (next === undefined) return undefined;
       upper = next;
@@ -1181,12 +1193,13 @@ export class TypeCodeGenerator {
    */
   private notToCpp(operandExpr: Expression, operand: string): string {
     const base = this.operandBitString(operandExpr);
+    // NOT of an integer is its complement in its type, as in a body
     return base === undefined
       ? `!${operand}`
-      : `static_cast<${base}_t>(~${operand})`;
+      : `static_cast<${base}_t>(~static_cast<${base}_t>(${operand}))`;
   }
 
-  /** The bit string type an operand is known to have: its type, or a typed literal's prefix. */
+  /** The integer or bit-string type an operand is known to have: its type, or a typed literal's prefix. */
   private operandBitString(expr: Expression): string | undefined {
     const t = expr.resolvedType;
     if (t?.typeKind === "elementary") {

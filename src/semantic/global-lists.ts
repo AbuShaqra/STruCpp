@@ -203,6 +203,45 @@ export function prepareGlobalLists(
   return { lists, ambiguous, clashing };
 }
 
+/**
+ * The lists of a unit {@link prepareGlobalLists} already ran on (a test
+ * file's sources): a global renamed `LIST__NAME` is NAME of LIST again, and
+ * the names two lists declare are ambiguous.
+ */
+export function recoverGlobalLists(ast: CompilationUnit): GlobalLists {
+  const lists = new Map<string, GlobalList>();
+  const declaredBy = new Map<string, string[]>();
+  for (const [block, name] of listBlocks(ast)) {
+    const key = name.toUpperCase();
+    let list = lists.get(key);
+    if (!list) {
+      list = {
+        name,
+        variables: new Map(),
+        file: block.sourceSpan.file || undefined,
+      };
+      lists.set(key, list);
+    }
+    const prefix = `${key}__`;
+    for (const decl of block.declarations) {
+      for (const varName of decl.names) {
+        const upper = varName.toUpperCase();
+        const own = upper.startsWith(prefix)
+          ? upper.slice(prefix.length)
+          : upper;
+        list.variables.set(own, varName);
+        if (own !== upper) {
+          declaredBy.set(own, [...(declaredBy.get(own) ?? []), list.name]);
+        }
+      }
+    }
+  }
+  const ambiguous = new Map(
+    [...declaredBy].filter(([, owners]) => owners.length > 1),
+  );
+  return { lists, ambiguous, clashing: new Set() };
+}
+
 /** Name resolution in the POU body being rewritten, supplied by the analyzer. */
 export interface GlobalListScope {
   /** True when `name` resolves to anything in the body, a list excepted. */
@@ -217,6 +256,8 @@ export interface GlobalListScope {
    * compile; false when another symbol already has that name.
    */
   defineAlias(name: string, alias: string): boolean;
+  /** Where no alias can be defined (a test file): why a hidden global is out of reach. */
+  hiddenBy?: string;
 }
 
 /** Rewrites qualified global list access in statements, reporting what it refuses. */
@@ -493,6 +534,14 @@ export class GlobalListResolver {
     // A local, or another global, already named like the internal name.
     if (scope.hidesGlobal(name)) return this.taken(list, member, name, span);
     if (name !== declared && !scope.defineAlias(declared, name)) {
+      if (scope.hiddenBy !== undefined) {
+        this.report({
+          message: `'${list.name}.${member.toUpperCase()}' is hidden by ${scope.hiddenBy} named ${member.toUpperCase()}; rename it`,
+          span,
+          featureRefusal: false,
+        });
+        return undefined;
+      }
       return this.taken(list, member, name, span);
     }
     return name;

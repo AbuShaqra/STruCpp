@@ -25,6 +25,7 @@ import type {
 } from "./frontend/ast.js";
 import type { CompileError, SourceSpan } from "./types.js";
 import { walkAST } from "./ast-utils.js";
+import { IEC_DEFAULT_STRING_LENGTH } from "./semantic/string-default-length.js";
 
 // =============================================================================
 // Project Model Interfaces
@@ -328,6 +329,39 @@ export function collectFileScopeGlobals(
   return globals;
 }
 
+/** A STRING/WSTRING declaration's length; a plain one has the default length. */
+function declaredStringLength(decl: {
+  typeName: string;
+  maxLength?: number | string;
+}): number | string | undefined {
+  const upper = decl.typeName.toUpperCase();
+  if (upper !== "STRING" && upper !== "WSTRING") return undefined;
+  const len = decl.maxLength ?? IEC_DEFAULT_STRING_LENGTH;
+  return typeof len === "string" ? len.toUpperCase() : len;
+}
+
+/** Two STRING/WSTRING declarations of different lengths (constant-named lengths of the same name agree). */
+function stringLengthsDiffer(
+  a: { typeName: string; maxLength?: number | string },
+  b: { typeName: string; maxLength?: number | string },
+): boolean {
+  const la = declaredStringLength(a);
+  const lb = declaredStringLength(b);
+  if (la === undefined || lb === undefined) return false;
+  if (typeof la !== typeof lb) return false;
+  return la !== lb;
+}
+
+/** `STRING(n)` as declared, for a mismatch message. */
+function stringTypeText(decl: {
+  typeName: string;
+  maxLength?: number | string;
+}): string {
+  return decl.maxLength !== undefined
+    ? `${decl.typeName}(${decl.maxLength})`
+    : decl.typeName;
+}
+
 /**
  * Result of building the project model.
  */
@@ -486,6 +520,8 @@ export class ProjectModelBuilder {
 
   /** File-level VAR_GLOBALs by upper-case name — see collectFileScopeGlobals. */
   private fileScopeGlobals: Map<string, ProjectVarDeclaration> = new Map();
+  /** Each FUNCTION's VAR_EXTERNAL references to CONFIGURATION globals (validated, not in the model). */
+  private functionExternals: Map<string, VarExternalDeclaration[]> = new Map();
 
   /**
    * Build the project model from an AST.
@@ -495,6 +531,7 @@ export class ProjectModelBuilder {
     this.warnings = [];
     this.programs = new Map();
     this.functions = new Map();
+    this.functionExternals = new Map();
     this.functionBlocks = new Map();
     this.configurations = [];
     this.fileScopeGlobals = collectFileScopeGlobals(ast);
@@ -599,8 +636,20 @@ export class ProjectModelBuilder {
     }
 
     const parameters: ProjectVarDeclaration[] = [];
+    const externals: VarExternalDeclaration[] = [];
 
     for (const block of func.varBlocks) {
+      if (block.blockType === "VAR_EXTERNAL") {
+        for (const decl of block.declarations) {
+          for (const varName of decl.names) {
+            this.addVarExternal(
+              externals,
+              this.convertVarExternal(varName, decl),
+              `function '${func.name}'`,
+            );
+          }
+        }
+      }
       if (block.blockType === "VAR_INPUT") {
         for (const decl of block.declarations) {
           for (const varName of decl.names) {
@@ -615,6 +664,7 @@ export class ProjectModelBuilder {
       returnType: func.returnType.name,
       parameters,
     });
+    this.functionExternals.set(name, externals);
   }
 
   /**
@@ -1039,6 +1089,13 @@ export class ProjectModelBuilder {
         ext.sourceSpan?.startCol ?? 0,
         ext.sourceSpan?.file,
       );
+    } else if (stringLengthsDiffer(fileScope, ext)) {
+      this.addError(
+        `Type mismatch for VAR_EXTERNAL '${ext.name}' in ${ownerLabel}: expected '${stringTypeText(fileScope)}' but found '${stringTypeText(ext)}'`,
+        ext.sourceSpan?.startLine ?? 0,
+        ext.sourceSpan?.startCol ?? 0,
+        ext.sourceSpan?.file,
+      );
     }
   }
 
@@ -1049,7 +1106,7 @@ export class ProjectModelBuilder {
     // Build a map of all global variables across all configurations
     const globalVarMap = new Map<
       string,
-      { typeName: string; configName: string }
+      { typeName: string; configName: string; maxLength?: number | string }
     >();
 
     for (const config of this.configurations) {
@@ -1072,14 +1129,16 @@ export class ProjectModelBuilder {
           globalVarMap.set(key, {
             typeName: globalVar.typeName,
             configName: config.name,
+            ...(globalVar.maxLength !== undefined
+              ? { maxLength: globalVar.maxLength }
+              : {}),
           });
         }
       }
     }
 
-    // Check every POU that may declare VAR_EXTERNAL. IEC 61131-3 allows both
-    // PROGRAMs and FUNCTION_BLOCKs to access globals this way (functions may
-    // not, so they're intentionally not checked here).
+    // Check every POU that may declare VAR_EXTERNAL: IEC 61131-3 allows
+    // PROGRAMs and FUNCTION_BLOCKs to access globals this way; FUNCTIONs below.
     for (const prog of this.programs.values()) {
       this.checkVarExternalReferences(
         prog.varExternal,
@@ -1094,6 +1153,14 @@ export class ProjectModelBuilder {
         globalVarMap,
       );
     }
+    // A FUNCTION reaching a CONFIGURATION global through VAR_EXTERNAL (a vendor form) is built as a pointer to it too.
+    for (const func of this.functions.values()) {
+      this.checkVarExternalReferences(
+        this.functionExternals.get(func.name.toUpperCase()) ?? [],
+        `function '${func.name}'`,
+        globalVarMap,
+      );
+    }
   }
 
   /**
@@ -1104,7 +1171,10 @@ export class ProjectModelBuilder {
   private checkVarExternalReferences(
     externals: VarExternalDeclaration[],
     ownerLabel: string,
-    globalVarMap: Map<string, { typeName: string; configName: string }>,
+    globalVarMap: Map<
+      string,
+      { typeName: string; configName: string; maxLength?: number | string }
+    >,
   ): void {
     for (const ext of externals) {
       const globalVar = globalVarMap.get(ext.name.toUpperCase());
@@ -1122,6 +1192,14 @@ export class ProjectModelBuilder {
       ) {
         this.addError(
           `Type mismatch for VAR_EXTERNAL '${ext.name}' in ${ownerLabel}: expected '${globalVar.typeName}' but found '${ext.typeName}'`,
+          span?.startLine ?? 0,
+          span?.startCol ?? 0,
+          span?.file,
+        );
+      } else if (stringLengthsDiffer(globalVar, ext)) {
+        // The external is a pointer to the global's storage: a STRING of another length is another C++ type.
+        this.addError(
+          `Type mismatch for VAR_EXTERNAL '${ext.name}' in ${ownerLabel}: expected '${stringTypeText(globalVar)}' but found '${stringTypeText(ext)}'`,
           span?.startLine ?? 0,
           span?.startCol ?? 0,
           span?.file,

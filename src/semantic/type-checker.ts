@@ -13,6 +13,8 @@
 import { IEC_DEFAULT_STRING_LENGTH } from "./string-default-length.js";
 import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import type {
+  AdvanceTimeStatement,
+  AssertCall,
   ASTNode,
   RefAssignStatement,
   RefExpression,
@@ -555,6 +557,44 @@ const CHAR_COMPARE_FUNCTIONS: ReadonlyMap<string, number> = new Map([
   ["MUX", 1],
 ]);
 
+/**
+ * The exact value of an integer `base ** exponent`, as the runtime's iec_expt
+ * computes it before it wraps: a negative exponent gives 0, or 1 / -1 for a
+ * base of 1 / -1. Undefined for 0 to a negative power and huge exponents.
+ */
+function constantIntegerPower(
+  base: bigint,
+  exponent: bigint,
+): bigint | undefined {
+  if (exponent < 0n) {
+    if (base === 0n) return undefined;
+    if (base === 1n) return 1n;
+    if (base === -1n) return exponent % 2n === 0n ? 1n : -1n;
+    return 0n;
+  }
+  if (base !== 0n && base !== 1n && base !== -1n && exponent > 256n) {
+    return undefined;
+  }
+  return base ** exponent;
+}
+
+/** The bit string of a signed integer's width (SHL/SHR/ROL/ROR take ANY_BIT). */
+const SIGNED_SHIFT_BIT_STRING: Readonly<Record<string, string>> = {
+  SINT: "BYTE",
+  INT: "WORD",
+  DINT: "DWORD",
+  LINT: "LWORD",
+};
+
+/** Constraints of standard-function parameters an enumeration does not meet. */
+const ENUM_REFUSING_CONSTRAINTS: ReadonlySet<string> = new Set([
+  "ANY_NUM",
+  "ANY_INT",
+  "ANY_REAL",
+  "ANY_BIT",
+  "ANY_MAGNITUDE",
+]);
+
 /** Standard functions whose result is one of their CHAR arguments. */
 const CHAR_SELECTION_FUNCTIONS: ReadonlySet<string> = new Set([
   "MAX",
@@ -656,6 +696,11 @@ const STRICT_ARITHMETIC_OPS: ReadonlySet<string> = new Set([
   "*",
   "/",
   "MOD",
+]);
+/** Operators of an untyped constant expression that adapts to its target under --strict (`2 ** 3` as `1 + 1`). */
+const STRICT_CONSTANT_OPS: ReadonlySet<string> = new Set([
+  ...STRICT_ARITHMETIC_OPS,
+  "**",
 ]);
 /** The target validateAssignment reports an input argument against (it names no variable). */
 const ARGUMENT_TARGET: VariableExpression = {
@@ -899,12 +944,28 @@ export class TypeChecker {
     roots: readonly ASTNode[],
     scope: Scope,
     ast: CompilationUnit | undefined,
-  ): CompileError[] {
+    /** iec-3 or --strict: an ADVANCE_TIME operand that builds is refused too. */
+    strictOperands = false,
+  ): { errors: CompileError[]; warnings: CompileError[] } {
     this.errors = [];
     this.warnings = [];
     this.ast = ast;
     for (const root of roots) {
       walkAST(root, (node) => {
+        // An assertion of integers compares the exact integer powers
+        if (node.kind === "AssertCall") {
+          const assert = node as AssertCall;
+          if (
+            assert.assertType !== "ASSERT_NEAR" &&
+            assert.args.every(
+              (a) => this.testIntegerType(a, scope) !== undefined,
+            )
+          ) {
+            for (const arg of assert.args) {
+              this.markTestIntegerPowers(undefined, arg, scope);
+            }
+          }
+        }
         if (node.kind === "FunctionCallExpression") {
           this.refuseRealModCall(node as FunctionCallExpression, scope);
         } else if (
@@ -917,20 +978,173 @@ export class TypeChecker {
             undefined,
             scope,
           );
+        } else if (node.kind === "AdvanceTimeStatement") {
+          this.refuseAdvanceTimeOperand(
+            (node as AdvanceTimeStatement).duration,
+            scope,
+            strictOperands,
+          );
         } else if (node.kind === "DeleteStatement") {
           this.refuseDeleteOperand((node as DeleteStatement).pointer, scope);
         } else if (node.kind === "AssignmentStatement") {
           const { target, value } = node as AssignmentStatement;
+          this.markTestIntegerPowers(target, value, scope);
           if (unparenthesized(value).kind !== "NewExpression") return;
           const shape = this.declaredReferenceShape(target, scope);
           if (shape) this.validateReferenceValue(shape, value, scope);
         }
       });
     }
-    const found = this.errors;
+    const found = { errors: this.errors, warnings: this.warnings };
     this.errors = [];
     this.warnings = [];
     return found;
+  }
+
+  /**
+   * ADVANCE_TIME takes a TIME, an LTIME or a number of nanoseconds (an integer
+   * or bit string). A BOOL, REAL, LREAL, LDATE, LTOD or LDT builds (as a count
+   * of ns): a warning, an error under iec-3 and --strict (`loose`); any other
+   * typed value fails in C++ and is an error.
+   */
+  private refuseAdvanceTimeOperand(
+    duration: Expression,
+    scope: Scope,
+    loose: boolean,
+  ): void {
+    const before = this.errors.length;
+    // A test variable reads its declared type
+    const type =
+      this.resolveExprType(duration, scope) ??
+      this.accessedElementaryType(duration, scope) ??
+      this.declaredEnumType(duration, scope);
+    // Only this check's refusal: the operand's other rules are checked elsewhere.
+    this.errors.length = before;
+    if (type === undefined) return;
+    if (type.typeKind === "elementary") {
+      if (isGenericGroupType(type)) return;
+      const name = canonicalElementaryName(
+        this.aliasBase((type as ElementaryType).name),
+      );
+      if (
+        name === "TIME" ||
+        name === "LTIME" ||
+        (name !== "REAL" &&
+          name !== "LREAL" &&
+          (this.isIntegerType(type) || TABLE30_NUMBERS.has(name)))
+      ) {
+        return;
+      }
+      const message = `ADVANCE_TIME takes a TIME, an LTIME or a number of nanoseconds (an integer), not ${typeNameUtil(type)}`;
+      const { startLine, startCol, file } = duration.sourceSpan;
+      if (
+        ["BOOL", "REAL", "LREAL", "LDATE", "LTOD", "LDT"].includes(name) &&
+        !loose
+      ) {
+        this.addWarning(message, startLine, startCol, file);
+        return;
+      }
+      this.addError(message, startLine, startCol, file);
+      return;
+    }
+    this.addError(
+      `ADVANCE_TIME takes a TIME, an LTIME or a number of nanoseconds (an integer), not ${typeNameUtil(type)}`,
+      duration.sourceSpan.startLine,
+      duration.sourceSpan.startCol,
+      duration.sourceSpan.file,
+    );
+  }
+
+  /**
+   * An integer `**` in a test body (stored in an integer, or in an assertion)
+   * is the exact integer power, as in a POU (markIntegerPowers). Test
+   * variables have no resolved type: operands are typed from declarations.
+   */
+  private markTestIntegerPowers(
+    target: Expression | undefined,
+    value: Expression,
+    scope: Scope,
+  ): void {
+    const intType = (e: Expression): string | undefined =>
+      this.testIntegerType(e, scope);
+    let targetName: string | undefined;
+    if (target !== undefined) {
+      const t = this.accessedElementaryType(target, scope);
+      if (
+        t === undefined ||
+        !(this.isIntegerType(t) || this.isBitStringTarget(t))
+      ) {
+        return;
+      }
+      targetName = this.aliasBase(typeNameUtil(t)).toUpperCase();
+    }
+    walkAST(value, (n) => {
+      if (n.kind !== "BinaryExpression") return;
+      const e = n as BinaryExpression;
+      if (e.operator !== "**") return;
+      const own = intType(e.left);
+      if (own === undefined || intType(e.right) === undefined) return;
+      e.integerPower = this.powerComputeType(targetName ?? own, own);
+    });
+  }
+
+  /** The integer type of a test-body expression, its variables typed from declarations. */
+  private testIntegerType(e0: Expression, scope: Scope): string | undefined {
+    const bits = (n: string): number => ELEMENTARY_TYPES[n]?.sizeBits ?? 32;
+    const intType = (e: Expression): string | undefined => {
+      switch (e.kind) {
+        case "LiteralExpression":
+          if (e.literalType !== "INT") return undefined;
+          return (e.typePrefix ?? "") !== ""
+            ? this.aliasBase(e.typePrefix!).toUpperCase()
+            : "DINT";
+        case "ParenthesizedExpression":
+          return intType(e.expression);
+        case "UnaryExpression":
+          return e.operator === "NOT" ? undefined : intType(e.operand);
+        case "VariableExpression": {
+          const t = e.resolvedType ?? this.accessedElementaryType(e, scope);
+          return t !== undefined && this.isIntegerType(t)
+            ? this.aliasBase(typeNameUtil(t)).toUpperCase()
+            : undefined;
+        }
+        case "BinaryExpression": {
+          if (!["+", "-", "*", "/", "MOD", "**"].includes(e.operator)) {
+            return undefined;
+          }
+          const l = intType(e.left);
+          const r = intType(e.right);
+          if (l === undefined || r === undefined) return undefined;
+          return e.operator === "**" || bits(l) >= bits(r) ? l : r;
+        }
+        default:
+          return undefined;
+      }
+    };
+    return intType(e0);
+  }
+
+  /** The enumeration a plain variable is declared of (a test variable has no resolved type). */
+  private declaredEnumType(
+    expr: Expression,
+    scope: Scope,
+  ): IECType | undefined {
+    if (
+      expr.kind !== "VariableExpression" ||
+      expr.fieldAccess.length > 0 ||
+      expr.subscripts.length > 0 ||
+      expr.isDereference
+    ) {
+      return undefined;
+    }
+    const sym = scope.lookup(expr.name);
+    if (sym?.kind !== "variable" && sym?.kind !== "constant") return undefined;
+    const declared = sym.declaration as VarDeclaration | undefined;
+    if (!declared || (declared.type.referenceKind ?? "none") !== "none") {
+      return undefined;
+    }
+    const t = this.symbolTables.lookupType(declared.type.name)?.resolvedType;
+    return t?.typeKind === "enum" ? t : undefined;
   }
 
   /**
@@ -2251,6 +2465,18 @@ export class TypeChecker {
     scope: Scope,
   ): IECType | undefined {
     this.refuseInheritedPrivateProperty(expr, scope);
+    // `E#a` names the enumeration E, also beside a variable named `e`
+    if (expr.typedLiteral === true && expr.fieldAccess.length === 1) {
+      const enumType = this.symbolTables.lookupType(expr.name)?.resolvedType;
+      if (
+        enumType?.typeKind === "enum" &&
+        (enumType as EnumType).values.some(
+          (v) => v.toUpperCase() === expr.fieldAccess[0]!.toUpperCase(),
+        )
+      ) {
+        return enumType;
+      }
+    }
     const symbol = scope.lookup(expr.name);
     if (symbol === undefined) {
       this.refuseSelfMember(expr);
@@ -2849,6 +3075,35 @@ export class TypeChecker {
       if (widened !== undefined && type === widened) {
         expr.computeAs = (widened as ElementaryType).name.toUpperCase();
       }
+      // A signed integer with a BYTE or WORD of its width: computed in that
+      // bit string (C++ would promote both to int and keep the sign)
+      if (
+        type !== undefined &&
+        type.typeKind === "elementary" &&
+        ["BYTE", "WORD"].includes(
+          this.aliasBase((type as ElementaryType).name).toUpperCase(),
+        ) &&
+        [
+          [expr.left, leftType],
+          [expr.right, rightType],
+        ].some(
+          ([e, t]) =>
+            !this.isUntypedBitConstant(e as Expression) &&
+            (t as IECType).typeKind === "elementary" &&
+            ["SINT", "INT", "DINT", "LINT"].includes(
+              this.aliasBase(
+                (t as IECType as ElementaryType).name,
+              ).toUpperCase(),
+            ),
+        ) &&
+        [leftType, rightType].some(
+          (t) =>
+            t.typeKind === "elementary" &&
+            STRICT_BIT_STRINGS.has(this.aliasBase((t as ElementaryType).name)),
+        )
+      ) {
+        expr.computeAs = (type as ElementaryType).name.toUpperCase();
+      }
       const names = [leftType, rightType].map((t) =>
         t.typeKind === "elementary"
           ? this.aliasBase((t as ElementaryType).name)
@@ -2901,7 +3156,8 @@ export class TypeChecker {
       type =
         expr.addressArithmetic === true && this.isAddressValue(expr, scope)
           ? ELEMENTARY_TYPES["__XWORD"]
-          : (this.untypedWithBitString(expr, leftType, rightType) ??
+          : (this.numberBesideLongTemporal(expr, leftType, rightType) ??
+            this.untypedWithBitString(expr, leftType, rightType) ??
             this.untypedWithInteger(expr, leftType, rightType) ??
             getCommonType(leftType, rightType) ??
             leftType);
@@ -2911,6 +3167,88 @@ export class TypeChecker {
 
     if (type) expr.resolvedType = type;
     return type;
+  }
+
+  /**
+   * MUL or DIV of a TIME or LTIME by a number (IEC 61131-3 Table 35, rows 10a
+   * and 11a): the duration, built as `*` / `/` (a zero divisor faults). The
+   * duration type when the call is one; marks it for code generation.
+   */
+  private durationByNumberCall(
+    expr: FunctionCallExpression,
+    nameUpper: string,
+  ): IECType | undefined {
+    delete expr.durationOperator;
+    if (nameUpper !== "MUL" && nameUpper !== "DIV") return undefined;
+    if (expr.instance || this.findUserFunction(nameUpper)) return undefined;
+    if (this.ownMethod(nameUpper)) return undefined;
+    // EN/ENO are wired around the call by code generation
+    const args = stripEnEno(expr.arguments);
+    if (args.length !== 2 || args.some((a) => a.isOutput)) return undefined;
+    const named = (n: string): Argument | undefined =>
+      args.find((a) => a.name?.toUpperCase() === n);
+    const [in1, in2] = args.every((a) => a.name === undefined)
+      ? [args[0], args[1]]
+      : [named("IN1"), named("IN2")];
+    const t1 = in1?.value.resolvedType;
+    const t2 = in2?.value.resolvedType;
+    if (t1?.typeKind !== "elementary" || t2?.typeKind !== "elementary") {
+      return undefined;
+    }
+    const base = (t: IECType): string =>
+      canonicalElementaryName(this.aliasBase((t as ElementaryType).name));
+    if (base(t1) !== "TIME" && base(t1) !== "LTIME") return undefined;
+    if (!TABLE30_NUMBERS.has(base(t2))) {
+      // The duration is right: the factor or divisor is the wrong argument
+      if (!this.durationArgumentRefused.has(expr)) {
+        this.durationArgumentRefused.add(expr);
+        const at = in2!.value.sourceSpan;
+        this.addError(
+          `Argument 'IN2' of '${nameUpper}' expects ANY_NUM, got ${typeNameUtil(t2)}; ${base(t1) === "LTIME" ? "an" : "a"} ${base(t1)} is ${nameUpper === "MUL" ? "multiplied" : "divided"} by a number (IEC 61131-3 Table 35)`,
+          at.startLine,
+          at.startCol,
+          at.file,
+        );
+      }
+      return t1;
+    }
+    expr.durationOperator = nameUpper === "MUL" ? "*" : "/";
+    // --strict: a bit-string factor is refused, as in `t * w`
+    if (
+      this.strict &&
+      STRICT_BIT_STRINGS.has(base(t2)) &&
+      !this.strictDurationRefused.has(expr)
+    ) {
+      this.strictDurationRefused.add(expr);
+      this.addStrictError(
+        `Arithmetic on ${base(t2)} is not allowed; convert it to an integer type first`,
+        in2!.value,
+      );
+    }
+    return t1;
+  }
+
+  /**
+   * A number + or - an LTIME, LDATE, LTOD or LDT (in that type's unit, refused
+   * under iec-3 and --strict by refuseTable30Operands) is of the temporal
+   * type, whichever side the number is on.
+   */
+  private numberBesideLongTemporal(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): IECType | undefined {
+    if (expr.operator !== "+" && expr.operator !== "-") return undefined;
+    const name = (t: IECType): string =>
+      t.typeKind === "elementary"
+        ? canonicalElementaryName(this.aliasBase((t as ElementaryType).name))
+        : "";
+    const l = name(leftType);
+    const r = name(rightType);
+    if (TABLE30_NUMBERS.has(l) && TEMPORAL_ANY_NAMES.has(r)) {
+      return TEMPORAL32_NAMES.has(r) ? undefined : rightType;
+    }
+    return undefined;
   }
 
   /**
@@ -3007,6 +3345,27 @@ export class TypeChecker {
       const name = this.aliasBase((t as ElementaryType).name);
       return STRICT_BIT_STRINGS.has(name) ? [ELEMENTARY_TYPES[name]!] : [];
     });
+    // A signed integer with a bit string: the wider type, the bit string
+    // at equal width (INT with BYTE is an INT, DINT with DWORD a DWORD)
+    if (bits.length === 1) {
+      const other = STRICT_BIT_STRINGS.has(
+        this.aliasBase(typeNameUtil(leftType)),
+      )
+        ? rightType
+        : leftType;
+      const otherName =
+        other.typeKind === "elementary"
+          ? this.aliasBase((other as ElementaryType).name).toUpperCase()
+          : "";
+      const signed = ELEMENTARY_TYPES[otherName];
+      if (
+        ["SINT", "INT", "DINT", "LINT"].includes(otherName) &&
+        signed !== undefined &&
+        signed.sizeBits > bits[0]!.sizeBits
+      ) {
+        return signed;
+      }
+    }
     if (bits.length > 0) {
       return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
     }
@@ -3099,6 +3458,109 @@ export class TypeChecker {
    * An untyped integer constant, or AND/OR/XOR/NOT of such constants only
    * (`16#F0 OR 16#0F`, `1 AND 0`): its type comes from where it is used.
    */
+  /**
+   * The type of AND/OR/XOR called with typed arguments of different integer
+   * or bit-string types: the one the infix operators give, folded left to
+   * right (an untyped constant adapts). Undefined when they agree.
+   */
+  private bitwiseCallType(args: Argument[]): IECType | undefined {
+    const typed = args
+      .filter((a) => !this.isUntypedBitConstant(a.value))
+      .map((a) => a.value.resolvedType);
+    if (typed.length < 2 || typed.some((t) => t === undefined)) {
+      return undefined;
+    }
+    const types = typed as IECType[];
+    const first = types[0]!;
+    const name = (t: IECType): string => typeNameUtil(t).toUpperCase();
+    if (types.every((t) => name(t) === name(first))) return undefined;
+    let result: IECType | undefined = first;
+    for (const t of types.slice(1)) {
+      result = result && this.bitwiseResultType(result, t);
+    }
+    return result;
+  }
+
+  /**
+   * SHL, SHR, ROL and ROR take a bit string (ANY_BIT, IEC 61131-3 Table 30).
+   * A signed integer IN is refused under iec-3 and --strict. By default SHL
+   * and SHR of one stay the vendor extension (SHR arithmetic); ROL and ROR
+   * rotate it as the bit string of its width, with a warning.
+   */
+  private checkSignedShiftOperand(
+    expr: FunctionCallExpression,
+    nameUpper: string,
+  ): void {
+    if (!["SHL", "SHR", "ROL", "ROR"].includes(nameUpper)) return;
+    if (this.signedShiftChecked.has(expr)) return;
+    const args = stripEnEno(expr.arguments);
+    const arg =
+      args.find((a) => a.name?.toUpperCase() === "IN") ??
+      (args[0]?.name === undefined ? args[0] : undefined);
+    const type = arg?.value.resolvedType;
+    if (arg === undefined || type?.typeKind !== "elementary") return;
+    const base = this.aliasBase((type as ElementaryType).name).toUpperCase();
+    const bits = SIGNED_SHIFT_BIT_STRING[base];
+    if (bits === undefined || this.isUntypedBitConstant(arg.value)) return;
+    this.signedShiftChecked.add(expr);
+    const { startLine, startCol, file } = arg.value.sourceSpan;
+    if (this.strict || this.inOutErrors) {
+      this.addError(
+        `${nameUpper} takes a bit string (ANY_BIT, IEC 61131-3 Table 30), not ${base}; convert it with ${base}_TO_${bits}`,
+        startLine,
+        startCol,
+        file,
+      );
+    } else if (nameUpper === "ROL" || nameUpper === "ROR") {
+      this.addWarning(
+        `${nameUpper} takes a bit string (ANY_BIT, IEC 61131-3 Table 30): the ${base} is rotated as a ${bits}`,
+        startLine,
+        startCol,
+        file,
+      );
+    }
+  }
+
+  /** SHL/SHR/ROL/ROR calls checkSignedShiftOperand reported. */
+  private signedShiftChecked = new WeakSet<FunctionCallExpression>();
+
+  /** The functional AND/OR/XOR/NOT counterpart of refuseIntegerBitwise (Table 31). */
+  private refuseIntegerBitwiseCall(
+    expr: FunctionCallExpression,
+    nameUpper: string,
+  ): void {
+    if (!this.strict && !this.inOutErrors) return;
+    if (!["AND", "OR", "XOR", "NOT"].includes(nameUpper)) return;
+    for (const arg of stripEnEno(expr.arguments)) {
+      const type = arg.value.resolvedType;
+      // An inner AND/OR/XOR/NOT was refused at its own operand already
+      let inner: Expression = arg.value;
+      while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
+      if (
+        !type ||
+        !this.isIntegerType(type) ||
+        this.isUntypedBitConstant(arg.value) ||
+        (inner.kind === "BinaryExpression" &&
+          ["AND", "OR", "XOR"].includes(inner.operator)) ||
+        (inner.kind === "UnaryExpression" && inner.operator === "NOT") ||
+        (inner.kind === "FunctionCallExpression" &&
+          ["AND", "OR", "XOR", "NOT"].includes(
+            inner.functionName.toUpperCase(),
+          ))
+      ) {
+        continue;
+      }
+      const base = this.aliasBase(typeNameUtil(type));
+      this.addError(
+        `${nameUpper} takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not ${base}; convert it with ${base}_TO_WORD or the like`,
+        arg.value.sourceSpan.startLine,
+        arg.value.sourceSpan.startCol,
+        arg.value.sourceSpan.file,
+      );
+      return;
+    }
+  }
+
   private isUntypedBitConstant(expr: Expression): boolean {
     if (this.untypedConstantKind(expr) === "INT") return true;
     switch (expr.kind) {
@@ -4116,6 +4578,8 @@ export class TypeChecker {
             return l * r;
           case "/":
             return r === 0n ? undefined : l / r;
+          case "**":
+            return constantIntegerPower(l, r);
           default:
             return undefined;
         }
@@ -4498,7 +4962,19 @@ export class TypeChecker {
         (lk === undefined || rk === undefined) &&
         !TEMPORAL32_NAMES.has(lk === undefined ? r : l)) ||
       (op === "MOD" && (lk === "TOD" || lk === "DT") && rk === undefined);
-    if (withNumber && !this.strict && !this.inOutErrors) return false;
+    if (withNumber && !this.strict && !this.inOutErrors) {
+      // A number minus a date or time builds, but is seldom meant
+      if (op === "-" && lk === undefined && !this.numberMinusWarned.has(expr)) {
+        this.numberMinusWarned.add(expr);
+        this.addWarning(
+          `${l} - ${r} subtracts the ${r} from a number (in its unit), giving a value of type ${r}; refused under iec-3 and --strict`,
+          expr.sourceSpan.startLine,
+          expr.sourceSpan.startCol,
+          expr.sourceSpan.file,
+        );
+      }
+      return false;
+    }
     this.refusedTemporalOperands.add(expr);
     this.addError(
       `Operator '${op}' does not apply to ${l} and ${r}; ${TABLE30_FORMS}`,
@@ -4733,12 +5209,19 @@ export class TypeChecker {
     }
     this.refuseRealModCall(expr, scope);
 
+    const duration = this.durationByNumberCall(expr, nameUpper);
+    if (duration !== undefined) {
+      expr.resolvedType = duration;
+      return duration;
+    }
+
     // Check user-defined functions in symbol tables
     const funcSymbol = this.symbolTables.lookupFunction(expr.functionName);
     if (funcSymbol !== undefined) {
       // A standard function listed by the std-function library keeps its constraints.
       if (funcSymbol.libraryName === STD_FUNCTIONS_LIBRARY) {
         this.validateFunctionCallArgs(expr, scope);
+        if (this.enumArgumentCalls.has(expr)) return undefined;
       }
       let returnType = this.libraryStructResult(funcSymbol.returnType);
       // Overloaded standard functions are published in the builtin stdlib
@@ -4768,6 +5251,11 @@ export class TypeChecker {
           returnType = ELEMENTARY_TYPES[mappedName];
         } else if (desc?.returnMatchesFirstParam) {
           if (firstArgType) returnType = firstArgType;
+        } else if (desc && (nameUpper === "SEL" || nameUpper === "MUX")) {
+          returnType = this.selectedInputsType(userArgs.slice(1)) ?? returnType;
+        }
+        if (desc && ["AND", "OR", "XOR"].includes(nameUpper)) {
+          returnType = this.bitwiseCallType(userArgs) ?? returnType;
         }
       }
       expr.resolvedType = returnType;
@@ -4780,6 +5268,7 @@ export class TypeChecker {
 
     // Validate standard function argument types (after resolving args)
     this.validateFunctionCallArgs(expr, scope);
+    if (this.enumArgumentCalls.has(expr)) return undefined;
 
     // Check standard function registry for return type
     if (this.stdRegistry) {
@@ -4818,6 +5307,24 @@ export class TypeChecker {
           if (retType) {
             expr.resolvedType = retType;
             return retType;
+          }
+        }
+        // AND / OR / XOR of several types: the type the infix form takes
+        if (["AND", "OR", "XOR"].includes(nameUpper)) {
+          const bitwise = this.bitwiseCallType(stripEnEno(expr.arguments));
+          if (bitwise) {
+            expr.resolvedType = bitwise;
+            return bitwise;
+          }
+        }
+        // SEL / MUX: the type of the inputs selected from
+        if (nameUpper === "SEL" || nameUpper === "MUX") {
+          const selected = this.selectedInputsType(
+            stripEnEno(expr.arguments).slice(1),
+          );
+          if (selected) {
+            expr.resolvedType = selected;
+            return selected;
           }
         }
         // Return matches first parameter (skipping EN/ENO — they're not part
@@ -8206,9 +8713,9 @@ export class TypeChecker {
   }
 
   /**
-   * Marks each integer `**` whose result is stored in the integer `target`
-   * (through parentheses, unary +/- and integer arithmetic) with a non-negative
-   * constant or variable integer exponent: it is an exact integer power,
+   * Marks each integer `**` whose result is stored in the integer or bit-string
+   * `target` (through parentheses, unary +/- and integer arithmetic) with an
+   * integer exponent: it is an exact integer power,
    * computed in the wider of `target` and its own type (narrower than 32 bits
    * in DINT), so it wraps only at the target's width.
    */
@@ -8227,12 +8734,8 @@ export class TypeChecker {
           e.resolvedType !== undefined && this.isIntegerType(e.resolvedType);
         if (!integer(value)) return;
         if (value.operator === "**") {
-          const exponent = this.constantIntegerValue(value.right);
-          if (
-            integer(value.left) &&
-            integer(value.right) &&
-            (exponent === undefined || exponent >= 0n)
-          ) {
+          // A negative exponent too: the exact integer result is 0, 1 or -1.
+          if (integer(value.left) && integer(value.right)) {
             value.integerPower = this.powerComputeType(
               target,
               this.aliasBase(
@@ -8252,6 +8755,13 @@ export class TypeChecker {
       default:
         return;
     }
+  }
+
+  /** `type` is BYTE, WORD, DWORD or LWORD (an alias of one too): an integer `**` stored there is exact too. */
+  private isBitStringTarget(type: IECType): boolean {
+    if (type.typeKind !== "elementary") return false;
+    const name = this.aliasBase((type as ElementaryType).name).toUpperCase();
+    return ["BYTE", "WORD", "DWORD", "LWORD"].includes(name);
   }
 
   /** `type` is REAL or LREAL (an alias of one too). */
@@ -8362,7 +8872,10 @@ export class TypeChecker {
       valueType = value.resolvedType;
     }
     this.warnConstantOverflow(targetType, value);
-    if (targetType !== undefined && this.isIntegerType(targetType)) {
+    if (
+      targetType !== undefined &&
+      (this.isIntegerType(targetType) || this.isBitStringTarget(targetType))
+    ) {
       this.markIntegerPowers(
         value,
         this.aliasBase((targetType as ElementaryType).name).toUpperCase(),
@@ -8512,6 +9025,10 @@ export class TypeChecker {
    * a SINT, the literal taking its operand's type).
    */
   private valueFitsNarrowTarget(value: Expression, target: string): boolean {
+    let masked = value;
+    while (masked.kind === "ParenthesizedExpression")
+      masked = masked.expression;
+    if (this.maskedByBitString(masked, target)) return true;
     const range = integerTypeRange(target);
     if (range === undefined) return false;
     const scope = this.lastResolvedScope;
@@ -8528,6 +9045,41 @@ export class TypeChecker {
     if (v !== undefined) return v >= range.min && v <= range.max;
     const adapted = this.adaptedIntegerType(value, range);
     return adapted !== undefined && !isNarrowingConversion(target, adapted);
+  }
+
+  /**
+   * AND (operator or function) with a bit-string operand no wider than the
+   * unsigned or bit-string `target`: its bits are within that operand's, so
+   * it fits (`i AND BYTE#16#FF` into a BYTE).
+   */
+  private maskedByBitString(value: Expression, target: string): boolean {
+    const t = target.toUpperCase();
+    const targetBits = ELEMENTARY_TYPES[t]?.sizeBits;
+    if (
+      targetBits === undefined ||
+      !(
+        STRICT_BIT_STRINGS.has(t) ||
+        ["USINT", "UINT", "UDINT", "ULINT"].includes(t)
+      )
+    ) {
+      return false;
+    }
+    const operands =
+      value.kind === "BinaryExpression" && value.operator === "AND"
+        ? [value.left, value.right]
+        : value.kind === "FunctionCallExpression" &&
+            value.functionName.toUpperCase() === "AND"
+          ? stripEnEno(value.arguments).map((a) => a.value)
+          : [];
+    return operands.some((o) => {
+      const ot = o.resolvedType;
+      if (ot?.typeKind !== "elementary") return false;
+      const name = this.aliasBase((ot as ElementaryType).name).toUpperCase();
+      return (
+        STRICT_BIT_STRINGS.has(name) &&
+        (ELEMENTARY_TYPES[name]?.sizeBits ?? 64) <= targetBits
+      );
+    });
   }
 
   /**
@@ -12653,6 +13205,82 @@ export class TypeChecker {
   }
 
   /**
+   * The type of the inputs SEL or MUX selects from: the one type of its typed
+   * inputs (untyped constants adapt); else undefined (left generic).
+   */
+  private selectedInputsType(values: Argument[]): IECType | undefined {
+    const types = values.map((a) => a.value.resolvedType);
+    // Strings and characters keep their own rules (checkCharStdArguments)
+    if (
+      types.some(
+        (t) =>
+          t === undefined ||
+          isGenericGroupType(t) ||
+          this.stringKindOf(t) !== undefined ||
+          this.charTypeOf(t) !== undefined,
+      )
+    ) {
+      return undefined;
+    }
+    const typed = values
+      .filter((a) => this.untypedConstantKind(a.value) === undefined)
+      .map((a) => a.value.resolvedType!);
+    // Constants only: left generic, as the constants take their type from the use.
+    const candidates = typed;
+    const first = candidates[0];
+    if (first === undefined) return undefined;
+    const name = typeNameUtil(first).toUpperCase();
+    return candidates.every((t) => typeNameUtil(t).toUpperCase() === name)
+      ? first
+      : undefined;
+  }
+
+  /** `5 - ldt` already warned. */
+  private numberMinusWarned = new WeakSet<BinaryExpression>();
+
+  /** MUL/DIV calls of a duration whose second argument was refused. */
+  private durationArgumentRefused = new WeakSet<FunctionCallExpression>();
+
+  /** MUL/DIV duration calls whose bit-string factor --strict refused. */
+  private strictDurationRefused = new WeakSet<FunctionCallExpression>();
+
+  /** Standard-function calls with an enumeration argument refused by refuseEnumNumericArgument. */
+  private enumArgumentCalls = new WeakSet<FunctionCallExpression>();
+
+  /** Calls whose enumeration selector refuseEnumSelector checked: true when refused. */
+  private enumSelectorChecked = new WeakMap<FunctionCallExpression, boolean>();
+
+  /**
+   * SEL's G (a BOOL) or MUX's K (an integer) of an enumeration: refused in
+   * every mode, once per call (no C++ overload takes it). True when refused.
+   */
+  private refuseEnumSelector(expr: FunctionCallExpression): boolean {
+    const known = this.enumSelectorChecked.get(expr);
+    if (known !== undefined) return known;
+    const upper = expr.functionName.toUpperCase();
+    const selector = stripEnEno([...expr.arguments])[0]?.value;
+    const type = selector?.resolvedType;
+    const refused =
+      (upper === "SEL" || upper === "MUX") &&
+      selector !== undefined &&
+      type?.typeKind === "enum";
+    this.enumSelectorChecked.set(expr, refused);
+    if (refused) {
+      const [name, expected, advice] =
+        upper === "SEL"
+          ? ["G", "BOOL", "no BOOL: compare it with one of its values"]
+          : ["K", "INT", "no integer: convert it with TO_INT or the like"];
+      this.addError(
+        `Argument '${name}' of '${upper}' expects ${expected}, got ${typeNameUtil(type)}; an enumeration is ${advice}`,
+        selector.sourceSpan.startLine,
+        selector.sourceSpan.startCol,
+        selector.sourceSpan.file,
+      );
+    }
+    return refused;
+  }
+
+  /**
    * The result of the standard SEL or MUX when any selected input is an
    * enumeration: that enumeration when every one is of it (aliases are the
    * enumeration), else "refused" after an error. Undefined otherwise.
@@ -12665,6 +13293,7 @@ export class TypeChecker {
     if (expr.instance || this.findUserFunction(upper)) return undefined;
     if (this.ownMethod(upper)) return undefined;
     if (this.unboundStdFunctionCalls.has(expr)) return undefined;
+    if (this.refuseEnumSelector(expr)) return "refused";
     const values = stripEnEno([...expr.arguments]).slice(1);
     const types = values.map((a) => a.value.resolvedType);
     const enumType = types.find((t) => t?.typeKind === "enum");
@@ -12775,7 +13404,9 @@ export class TypeChecker {
     stripEnEno(expr.arguments).forEach((arg, i) => {
       const param = params[i];
       const argType = arg.value.resolvedType;
+      // One report per call
       if (
+        refused ||
         param?.constraint !== "ANY_ELEMENTARY" ||
         argType?.typeKind !== "enum"
       ) {
@@ -12807,6 +13438,8 @@ export class TypeChecker {
     // Already refused: the arguments are in no parameter order.
     if (this.unboundStdFunctionCalls.has(expr)) return;
     this.refuseEnumOrderingArguments(expr, desc.params);
+    this.refuseIntegerBitwiseCall(expr, nameUpper);
+    this.checkSignedShiftOperand(expr, nameUpper);
 
     // Validate argument types against parameter constraints. Strip EN/ENO
     // first — they're handled by the codegen wrapper and don't map onto the
@@ -12817,6 +13450,20 @@ export class TypeChecker {
       const arg = userArgs[i]!;
       const param = desc.params[i]!;
       const argType = arg.value.resolvedType;
+
+      // UPPER_BOUND / LOWER_BOUND refuse an enumeration DIM on their own.
+      if (
+        argType?.typeKind === "enum" &&
+        nameUpper !== "UPPER_BOUND" &&
+        nameUpper !== "LOWER_BOUND"
+      ) {
+        if ((nameUpper === "SEL" || nameUpper === "MUX") && i === 0) {
+          this.refuseEnumSelector(expr);
+        } else {
+          this.refuseEnumNumericArgument(expr, nameUpper, param, arg);
+        }
+        continue;
+      }
 
       // A generic result left unrefined (ANY_ELEMENTARY) is not checked.
       if (
@@ -12880,7 +13527,7 @@ export class TypeChecker {
         );
         if (!canWiden) {
           this.addError(
-            `Argument '${param.name}' of '${nameUpper}' expects ${param.constraint}, got ${argDisplay}`,
+            `Argument '${param.name}' of '${nameUpper}' expects ${param.constraint}, got ${argDisplay}${this.realArgumentHint(nameUpper, param.constraint, argTypeName)}`,
             arg.value.sourceSpan.startLine,
             arg.value.sourceSpan.startCol,
             arg.value.sourceSpan.file,
@@ -12888,6 +13535,60 @@ export class TypeChecker {
         }
       }
     }
+  }
+
+  /**
+   * An enumeration given where a standard function takes a number or a bit
+   * string (MUX's selector K): it is no integer, as in an assignment, and the
+   * C++ overloads take none.
+   */
+  private refuseEnumNumericArgument(
+    expr: FunctionCallExpression,
+    nameUpper: string,
+    param: { name: string; constraint: string; specificType?: string },
+    arg: Argument,
+  ): void {
+    const expected =
+      param.constraint === "specific"
+        ? param.specificType
+        : ENUM_REFUSING_CONSTRAINTS.has(param.constraint)
+          ? param.constraint
+          : undefined;
+    if (expected === undefined) return;
+    // The call has no result type then: no second error where it is stored
+    this.enumArgumentCalls.add(expr);
+    const argType = arg.value.resolvedType!;
+    const kind = expected === "ANY_BIT" ? "bit string" : "number";
+    this.addError(
+      `Argument '${param.name}' of '${nameUpper}' expects ${expected}, got ${typeNameUtil(argType)}; an enumeration is no ${kind}: convert it with TO_INT or the like`,
+      arg.value.sourceSpan.startLine,
+      arg.value.sourceSpan.startCol,
+      arg.value.sourceSpan.file,
+    );
+  }
+
+  /**
+   * The advice after a bit string given to an ANY_REAL parameter: a bit string
+   * is not a number (no implicit conversion to REAL), so it is converted first.
+   */
+  private realArgumentHint(
+    nameUpper: string,
+    constraint: string,
+    argTypeName: string,
+  ): string {
+    const upper = argTypeName.toUpperCase();
+    if (
+      constraint !== "ANY_REAL" ||
+      upper === "BOOL" ||
+      !["BYTE", "WORD", "DWORD", "LWORD"].includes(upper)
+    ) {
+      return "";
+    }
+    const rule =
+      nameUpper === "EXPT"
+        ? " (the base of EXPT is ANY_REAL, IEC 61131-3 Table 29 note f)"
+        : "";
+    return `; a bit string is not a number${rule}: convert it with ${upper}_TO_REAL or ${upper}_TO_LREAL`;
   }
 
   /**
@@ -13224,7 +13925,7 @@ export class TypeChecker {
         return k === "BOOL" ? undefined : k;
       }
       case "BinaryExpression": {
-        if (!STRICT_ARITHMETIC_OPS.has(expr.operator)) return undefined;
+        if (!STRICT_CONSTANT_OPS.has(expr.operator)) return undefined;
         const l = this.untypedConstantKind(expr.left);
         const r = this.untypedConstantKind(expr.right);
         return l === r && l !== "BOOL" ? l : undefined;
@@ -13359,6 +14060,17 @@ export class TypeChecker {
           (a) => this.untypedConstantKind(a) === undefined,
         );
         if (typed.length === 0) return expr.resolvedType;
+        // AND/OR/XOR of typed arguments of different types: the type they combine to
+        if (
+          ["AND", "OR", "XOR"].includes(expr.functionName.toUpperCase()) &&
+          new Set(
+            typed.map((a) =>
+              a.resolvedType ? typeNameUtil(a.resolvedType).toUpperCase() : "",
+            ),
+          ).size > 1
+        ) {
+          return expr.resolvedType;
+        }
         const other = this.strictExprType(typed[0]!);
         if (other?.typeKind !== "elementary") return expr.resolvedType;
         const kind = strictKind((other as ElementaryType).name);
