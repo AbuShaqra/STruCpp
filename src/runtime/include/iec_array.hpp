@@ -13,6 +13,7 @@
 #pragma once
 
 #include <array>
+#include <tuple>
 #include <cstdint>
 #include <initializer_list>
 #include <type_traits>
@@ -45,24 +46,36 @@ constexpr iec_fill_value<V> iec_fill(V value) noexcept {
  * (`iec_head(fill, e0, e1)` as the only item of an initializer list): a
  * partial initializer of an ARRAY of a type with a default.
  */
-template<typename V, size_t N>
+template<typename V, typename... Es>
 struct iec_head_value {
     V fill;
-    std::array<V, N> head;
+    std::tuple<Es...> head;
 };
 
+/** Each value keeps its own type until it is stored in the element's. */
 template<typename V, typename... Es>
-inline iec_head_value<V, sizeof...(Es)> iec_head(V fill, Es... es) noexcept {
-    return iec_head_value<V, sizeof...(Es)>{fill, {{static_cast<V>(es)...}}};
+inline iec_head_value<V, Es...> iec_head(V fill, Es... es) noexcept {
+    return iec_head_value<V, Es...>{fill, std::tuple<Es...>(es...)};
 }
 
 namespace detail {
+/** Store head value I and the ones after it into `data` (dropping any past `size`). */
+template<size_t I, typename Data, typename... Es>
+inline typename std::enable_if<(I == sizeof...(Es))>::type
+iec_array_head(Data&, size_t, const std::tuple<Es...>&) noexcept {}
+template<size_t I, typename Data, typename... Es>
+inline typename std::enable_if<(I < sizeof...(Es))>::type
+iec_array_head(Data& data, size_t size, const std::tuple<Es...>& head) noexcept {
+    if (I < size) data[I] = std::get<I>(head);
+    iec_array_head<I + 1>(data, size, head);
+}
 /** `{iec_head(fill, ...)}`: the given values, then `fill` for every other element. */
-template<typename Data, typename V, size_t N>
-inline void iec_array_init(Data& data, size_t size, std::initializer_list<iec_head_value<V, N>> init) noexcept {
+template<typename Data, typename V, typename... Es>
+inline void iec_array_init(Data& data, size_t size, std::initializer_list<iec_head_value<V, Es...>> init) noexcept {
     if (init.size() == 0) return;
     const auto& h = *init.begin();
-    for (size_t i = 0; i < size; ++i) data[i] = i < N ? h.head[i] : h.fill;
+    for (size_t i = sizeof...(Es); i < size; ++i) data[i] = h.fill;
+    iec_array_head<0>(data, size, h.head);
 }
 /** Copy an initializer list into `data` (of `size` elements), dropping any overflow. */
 template<typename Data, typename U>

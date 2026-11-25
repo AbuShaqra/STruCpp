@@ -7551,8 +7551,8 @@ export class CodeGenerator {
     if (
       enumEntry?.typeName &&
       !this.currentScopeVarTypes.has(nameUpper) &&
-      // A library's global of the name is read unless the context settled it
-      !this.libraryGlobalNames.has(nameUpper) &&
+      // A library's global the checker read the name as
+      expr.libraryGlobal !== true &&
       !this.isCurrentFunctionResult(nameUpper) &&
       // In a SET body the property's name is the value being set.
       this.currentSetterProperty !== nameUpper &&

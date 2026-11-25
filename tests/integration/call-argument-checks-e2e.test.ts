@@ -324,4 +324,27 @@ END_PROGRAM
     expect(stdout).toBe(String(-3000 * 100000 + 25000 - 2000));
     expect(warnings).toHaveLength(3);
   });
+
+  it("keeps each explicit element's own value and fills the rest at the default, whatever the literal kinds", () => {
+    const { stdout } = run(
+      `TYPE MR : REAL := 1; END_TYPE
+TYPE ML : LINT := 1; END_TYPE
+TYPE MW : LWORD := 1; END_TYPE
+TYPE MLR : LREAL := 2; END_TYPE
+PROGRAM Main
+VAR a : ARRAY[0..2] OF MR := [2.5, -0.25]; b : ARRAY[0..1] OF ML := [5000000000];
+  c : ARRAY[0..1] OF MR; d : ARRAY[0..1] OF ML; w : ARRAY[0..1] OF MW := [16#FFFFFFFFFF];
+  e : ARRAY[0..1] OF MLR := [1.5]; f : ARRAY[0..1] OF MLR;
+  r1 : LREAL; r2 : LINT; r3 : LWORD; r4 : LREAL; END_VAR
+r1 := a[0] * 100 + a[1] * 10 + a[2];
+r4 := c[1] + e[0] * 10 + e[1] * 100 + f[1] * 1000;
+r2 := b[0] + b[1] + d[1] * 10;
+r3 := w[0] + w[1];
+END_PROGRAM
+`,
+      'p.R1 << " " << p.R2 << " " << p.R3 << " " << p.R4',
+      "argchecks_fill_kinds",
+    );
+    expect(stdout).toBe("248.5 5000000011 1099511627776 2216");
+  });
 });

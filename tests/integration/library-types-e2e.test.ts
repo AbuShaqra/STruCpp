@@ -601,6 +601,84 @@ END_PROGRAM
     expect(stdout).toBe("151");
   });
 
+  it("reads a user enumeration value named like an OSCAT global through members, elements and calls", () => {
+    // oscat-basic declares the globals SETUP and MATH
+    const { stdout } = run(
+      `TYPE Mode : (IDLE, SETUP, RUN); END_TYPE
+TYPE S : STRUCT m : Mode; END_STRUCT END_TYPE
+FUNCTION F : Mode VAR_INPUT m : Mode; END_VAR F := m; END_FUNCTION
+PROGRAM Main
+VAR s : S := (m := SETUP); a : ARRAY[0..1] OF Mode := [SETUP, RUN]; r : INT; END_VAR
+IF s.m = SETUP THEN r := 1; END_IF
+IF a[0] = SETUP THEN r := r + 10; END_IF
+IF F(Mode#SETUP) = SETUP THEN r := r + 100; END_IF
+s.m := SETUP;
+a[1] := SETUP;
+CASE s.m OF SETUP: r := r + 1000; END_CASE
+IF SETUP = a[1] THEN r := r + 10000; END_IF
+END_PROGRAM
+`,
+      "p.R",
+      "libtypes_user_enum_oscat_global",
+      [],
+    );
+    expect(stdout).toBe("11111");
+  });
+
+  it("takes an enumeration value named like an FB as the value wherever the context is the enumeration", () => {
+    const { stdout } = run(
+      `TYPE E : (Pump, Motor, Off); END_TYPE
+TYPE S2 : STRUCT m : E; END_STRUCT END_TYPE
+FUNCTION_BLOCK Motor VAR_OUTPUT o : INT; END_VAR o := 1; END_FUNCTION_BLOCK
+FUNCTION_BLOCK FBI VAR_INPUT i : E; END_VAR VAR_OUTPUT o : INT; END_VAR o := BOOL_TO_INT(i = E#Motor); END_FUNCTION_BLOCK
+FUNCTION FE : E VAR_INPUT x : INT; END_VAR FE := Motor; END_FUNCTION
+PROGRAM Main
+VAR s : S2; a : ARRAY[0..1] OF E; fbi : FBI; b : BOOL; r : INT; END_VAR
+s.m := Motor;
+a[1] := Motor;
+fbi(i := Motor);
+b := s.m = Motor;
+r := BOOL_TO_INT(b) + BOOL_TO_INT(a[1] = E#Motor) * 10 + fbi.o * 100;
+IF FE(0) = E#Motor THEN r := r + 1000; END_IF
+IF Pump = Motor THEN r := r + 10000; END_IF
+END_PROGRAM
+`,
+      "p.R",
+      "libtypes_enum_value_named_fb",
+      [],
+    );
+    expect(stdout).toBe("1111");
+  });
+
+  it("reads a variable named like a library enumeration value as the variable", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: "TYPE LColor : (LRed, LGreen, LBlue); END_TYPE",
+          fileName: "c.st",
+        },
+      ],
+      { name: "lcolor3", version: "1.0.0", namespace: "lcolor3" },
+    );
+    expect(lib.errors).toEqual([]);
+    const { stdout } = run(
+      `FUNCTION FC : INT VAR_INPUT c : LColor; END_VAR FC := BOOL_TO_INT(c = LColor#LBlue) * 5 + BOOL_TO_INT(c = LColor#LGreen); END_FUNCTION
+FUNCTION_BLOCK FBC VAR_INPUT c : LColor; END_VAR VAR_OUTPUT o : INT; END_VAR o := FC(c); END_FUNCTION_BLOCK
+VAR_GLOBAL LRed : LColor := LColor#LGreen; END_VAR
+PROGRAM Main
+VAR LBlue : LColor := LColor#LGreen; c : LColor; f : FBC; r : INT; END_VAR
+c := LBlue;
+f(c := LBlue);
+r := FC(LBlue) + BOOL_TO_INT(c = LBlue) * 10 + f.o * 100 + FC(LRed) * 1000;
+END_PROGRAM
+`,
+      "p.R",
+      "libtypes_variable_over_enum_value",
+      [JSON.parse(JSON.stringify(lib.archive)) as StlibArchive],
+    );
+    expect(stdout).toBe("1111");
+  });
+
   it("still loads an archive written before enumeration values and shapes were recorded", () => {
     const old = library();
     for (const t of old.manifest.types) {

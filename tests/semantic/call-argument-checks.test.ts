@@ -686,7 +686,7 @@ END_PROGRAM
 `;
     expect(diagnostics(src, {}, libs).errors).toEqual([]);
   });
-  it("is refused as ambiguous where neither decides it", () => {
+  it("is the enumeration's value where neither decides it (refused into a STRING)", () => {
     const src = `TYPE UE : (LK, X); END_TYPE
 PROGRAM Main
 VAR s : STRING; END_VAR
@@ -694,7 +694,7 @@ s := LK;
 END_PROGRAM
 `;
     expect(diagnostics(src, {}, libs).errors).toEqual([
-      "4: 'LK' is both a value of enumeration UE and a library global; write UE#LK for the value",
+      "4: Cannot assign UE to STRING",
     ]);
   });
 });
