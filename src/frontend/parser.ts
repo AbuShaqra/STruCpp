@@ -607,6 +607,13 @@ export class STParser extends CstParser {
       this.CONSUME(tokens.POINTER);
       this.CONSUME2(tokens.TO);
     });
+    // `REFERENCE TO ARRAY[...] OF T` (any other REFERENCE TO is read by dataType)
+    this.OPTION8({
+      GATE: () =>
+        this.LA(1).tokenType === tokens.REFERENCE_TO &&
+        this.LA(2).tokenType === tokens.ARRAY,
+      DEF: () => this.CONSUME(tokens.REFERENCE_TO),
+    });
     this.OR([
       {
         ALT: () => this.SUBRULE(this.arrayType),
@@ -1034,10 +1041,25 @@ export class STParser extends CstParser {
    * `POINTER TO REF_TO INT` keep every level.
    */
   public dataType = this.RULE("dataType", () => {
+    // `REFERENCE TO ARRAY[..]` where no variable is declared (a result, an
+    // element, a TYPE): read after its REFERENCE TO, so ARRAY stays out of
+    // this rule's first tokens, and refused by the analyzer by name.
+    let referenceArray = false;
     this.MANY(() => {
       this.OR([
         { ALT: () => this.CONSUME(tokens.REF_TO) },
-        { ALT: () => this.CONSUME(tokens.REFERENCE_TO) },
+        {
+          ALT: (): void => {
+            this.CONSUME(tokens.REFERENCE_TO);
+            this.OPTION9({
+              GATE: (): boolean => this.LA(1).tokenType === tokens.ARRAY,
+              DEF: (): void => {
+                this.SUBRULE(this.arrayType);
+                if (!this.RECORDING_PHASE) referenceArray = true;
+              },
+            });
+          },
+        },
         {
           ALT: () => {
             this.CONSUME(tokens.POINTER);
@@ -1046,13 +1068,16 @@ export class STParser extends CstParser {
         },
       ]);
     });
-    const typeNameTok = this.CONSUME(tokens.Identifier);
+    const typeNameTok: IToken | undefined =
+      this.RECORDING_PHASE || !referenceArray
+        ? this.CONSUME(tokens.Identifier)
+        : undefined;
     // Optional parameterized length for STRING(n) / WSTRING(n) / STRING(CONSTANT_NAME)
     // GATE: only when the type name is STRING or WSTRING, consume ( IntegerLiteral ) or ( Identifier )
     // Avoid ( Identifier ) for typed enums and ( IntegerLiteral .. ) for subrange types
     this.OPTION2({
       GATE: () => {
-        const name = typeNameTok.image.toUpperCase();
+        const name = typeNameTok?.image.toUpperCase() ?? "";
         return (
           (name === "STRING" || name === "WSTRING") &&
           this.LA(1).tokenType === tokens.LParen &&
@@ -1077,7 +1102,7 @@ export class STParser extends CstParser {
     // Ed. 3 spelling of the same length: STRING[n] / WSTRING[n] / STRING[CONSTANT_NAME]
     this.OPTION3({
       GATE: () => {
-        const name = typeNameTok.image.toUpperCase();
+        const name = typeNameTok?.image.toUpperCase() ?? "";
         // Not after a parenthesised length, and only an Unsigned_Int (no base)
         return (
           (name === "STRING" || name === "WSTRING") &&

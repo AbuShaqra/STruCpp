@@ -6134,23 +6134,81 @@ export class SemanticAnalyzer {
     );
   }
 
-  /** REFERENCE TO is an alias with no storage of its own, so it cannot be stacked with other levels. */
+  /**
+   * REFERENCE TO is an alias with no storage of its own, so it cannot be
+   * stacked with other levels; it can itself name a pointer
+   * (`REFERENCE TO POINTER TO INT`), except as an array's element.
+   */
   private validateReferenceLevels(
     typeRef: TypeReference,
     context: string,
   ): void {
-    const stacked = [
-      typeRef.referenceChain,
-      typeRef.elementReferenceChain,
-    ].some(
-      (chain) =>
-        chain !== undefined &&
-        chain.length > 1 &&
-        chain.includes("reference_to"),
-    );
+    const stackedOn = (chain: readonly string[] | undefined): boolean =>
+      chain !== undefined && chain.length > 1 && chain.includes("reference_to");
+    const toPointer =
+      !context.startsWith("ARRAY type") &&
+      typeRef.referenceChain?.[0] === "reference_to" &&
+      typeRef.referenceChain.slice(1).every((k) => k === "pointer_to");
+    const stacked =
+      (stackedOn(typeRef.referenceChain) && !toPointer) ||
+      stackedOn(typeRef.elementReferenceChain);
     if (!stacked) return;
     this.addError(
       `REFERENCE TO cannot be combined with other reference levels${context ? " in " + context : ""}`,
+      typeRef.sourceSpan.startLine,
+      typeRef.sourceSpan.startCol,
+      typeRef.sourceSpan.file,
+    );
+  }
+
+  /**
+   * `REFERENCE TO ARRAY[..] OF T` is a variable, an input or a STRUCT member:
+   * not a result, an array element or a TYPE, not `ARRAY[*]`, and not of
+   * REFERENCE TO elements.
+   */
+  private refuseReferenceArrayForms(
+    typeRef: TypeReference,
+    context: string,
+  ): void {
+    const where = context ? " in " + context : "";
+    let message: string | undefined;
+    if (typeRef.misplacedReferenceArray === true) {
+      message = `REFERENCE TO ARRAY can only be declared as a variable, an input or a STRUCT member, not as a result, an array element or a TYPE${where}`;
+    } else if (typeRef.referenceKind === "reference_to") {
+      if (typeRef.name.toUpperCase().startsWith("__VLA_")) {
+        message = `REFERENCE TO ARRAY[*] is not supported${where}; declare a VAR_IN_OUT ARRAY[*] instead`;
+      } else if (
+        typeRef.arrayDimensions !== undefined &&
+        typeRef.elementReferenceChain?.includes("reference_to") === true
+      ) {
+        message = `REFERENCE TO cannot be combined with other reference levels${where}`;
+      }
+    }
+    if (message === undefined) return;
+    this.addError(
+      message,
+      typeRef.sourceSpan.startLine,
+      typeRef.sourceSpan.startCol,
+      typeRef.sourceSpan.file,
+    );
+  }
+
+  /** A VAR_IN_OUT `REFERENCE TO ARRAY[..]`: the in-out is the reference already, so it is refused. */
+  private refuseInOutReferenceArray(
+    block: VarBlock,
+    typeRef: TypeReference,
+    context: string,
+  ): void {
+    if (
+      block.blockType !== "VAR_IN_OUT" ||
+      typeRef.referenceKind !== "reference_to" ||
+      typeRef.arrayDimensions === undefined ||
+      typeRef.misplacedReferenceArray === true
+    ) {
+      return;
+    }
+    this.addError(
+      `A VAR_IN_OUT cannot be a REFERENCE TO ARRAY in ${context}; declare it VAR_IN_OUT ARRAY[..] OF its element type`,
       typeRef.sourceSpan.startLine,
       typeRef.sourceSpan.startCol,
       typeRef.sourceSpan.file,
@@ -6230,6 +6288,7 @@ export class SemanticAnalyzer {
     context: string,
   ): void {
     this.validateReferenceLevels(typeRef, context);
+    this.refuseReferenceArrayForms(typeRef, context);
     this.requireReferenceFeatures(typeRef);
 
     // Skip empty or VOID type names
@@ -6277,6 +6336,7 @@ export class SemanticAnalyzer {
         for (const decl of block.declarations) {
           this.validateSingleTypeReference(decl.type, context);
           this.requireAdrFeatureIn(decl.initialValue);
+          this.refuseInOutReferenceArray(block, decl.type, context);
         }
       }
     };
