@@ -2,8 +2,10 @@
 // Copyright (c) 2026 Autonomy®
 /**
  * E2E: a RETAIN instance of a FB that EXTENDS another (a user block and the
- * library TON) restores its inherited state after a power cycle, and the
- * debugger reads an inherited member, through the generated debug table.
+ * library TON) restores its inherited state after a power cycle, a member the
+ * derived block declares again keeps both values (no two entries at one
+ * address), and a file-level RETAIN global is restored, through the generated
+ * debug table.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -27,8 +29,19 @@ END_FUNCTION_BLOCK
 FUNCTION_BLOCK FB_Tn EXTENDS TON
 VAR nT : INT; END_VAR
 END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Re EXTENDS FB_Base
+VAR nB : DINT; END_VAR
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Et EXTENDS TON
+VAR ET : TIME; END_VAR
+END_FUNCTION_BLOCK
+VAR_GLOBAL RETAIN
+  gi : INT;
+END_VAR
 PROGRAM Main
-VAR RETAIN d : FB_Der; t : FB_Tn; END_VAR
+VAR RETAIN d : FB_Der; t : FB_Tn; re : FB_Re; et : FB_Et; END_VAR
+VAR_EXTERNAL gi : INT; END_VAR
+gi := gi;
 END_PROGRAM
 CONFIGURATION Config0
   RESOURCE Res0 ON PLC
@@ -57,6 +70,11 @@ int main() {
   g_config.INSTANCE0.T.ET = strucpp::TIME_t(1234u);
   g_config.INSTANCE0.T.START_TIME = strucpp::TIME_t(987654u);
   g_config.INSTANCE0.T.NT = 7;
+  g_config.INSTANCE0.RE.FB_BASE::NB = 11;
+  g_config.INSTANCE0.RE.NB = 70000;
+  g_config.INSTANCE0.ET.TON::ET = strucpp::TIME_t(21u);
+  g_config.INSTANCE0.ET.ET = strucpp::TIME_t(22u);
+  GI = 33;
 
   unsigned char blob[1024] = {0};
   size_t n = retain::pack(blob, sizeof(blob), rd, sz);
@@ -69,6 +87,11 @@ int main() {
   g_config.INSTANCE0.T.ET = strucpp::TIME_t(0u);
   g_config.INSTANCE0.T.START_TIME = strucpp::TIME_t(0u);
   g_config.INSTANCE0.T.NT = 0;
+  g_config.INSTANCE0.RE.FB_BASE::NB = 0;
+  g_config.INSTANCE0.RE.NB = 0;
+  g_config.INSTANCE0.ET.TON::ET = strucpp::TIME_t(0u);
+  g_config.INSTANCE0.ET.ET = strucpp::TIME_t(0u);
+  GI = 0;
 
   chk("unpack ok", retain::unpack(blob, n, wr, sz) == retain::LoadResult::Ok);
   chk("inherited input", (bool)g_config.INSTANCE0.D.BIN == true);
@@ -77,6 +100,11 @@ int main() {
   chk("inherited library output", g_config.INSTANCE0.T.ET.get().raw == 1234u);
   chk("inherited library internal", g_config.INSTANCE0.T.START_TIME.get().raw == 987654u);
   chk("own local of the TON child", (int)g_config.INSTANCE0.T.NT == 7);
+  chk("hidden base member", (int)g_config.INSTANCE0.RE.FB_BASE::NB == 11);
+  chk("member declared again", (long)g_config.INSTANCE0.RE.NB == 70000);
+  chk("hidden library member", g_config.INSTANCE0.ET.TON::ET.get().raw == 21u);
+  chk("library member declared again", g_config.INSTANCE0.ET.ET.get().raw == 22u);
+  chk("file-level RETAIN global", (int)GI == 33);
 
   printf(fails ? "FAILURES=%d\\n" : "ALL_OK\\n", fails);
   return fails ? 1 : 0;

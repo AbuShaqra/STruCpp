@@ -10,7 +10,13 @@
 import type { ILTranspileResult, POURegion } from "./il-types.js";
 import { extractPOURegions } from "./il-detector.js";
 import { parseILBody } from "./il-parser.js";
-import { convertILToST } from "./il-to-st.js";
+import {
+  convertILToST,
+  ORIGIN_END,
+  ORIGIN_LINE_END,
+  ORIGIN_START,
+  stripOrigins,
+} from "./il-to-st.js";
 
 /**
  * Transpile any IL bodies in the source to ST.
@@ -54,6 +60,7 @@ export function transpileILSource(
   // Rebuild the source, replacing IL bodies with ST equivalents.
   // Process regions in reverse order so offsets remain valid.
   let result = source;
+  const operandOrigins: NonNullable<ILTranspileResult["operandOrigins"]> = [];
   const ilLabels: NonNullable<ILTranspileResult["ilLabels"]> = [];
 
   for (let i = ilRegions.length - 1; i >= 0; i--) {
@@ -103,17 +110,24 @@ export function transpileILSource(
       }
       pieces.push({ text: "  END_VAR", at: 0 });
     }
-    convertResult.stBody.split("\n").forEach((text, i) => {
-      pieces.push({ text, at: convertResult.lineSources?.[i] ?? 0 });
-    });
-    const newPOU =
-      region.headerText +
+    (convertResult.markedBody ?? convertResult.stBody)
+      .split("\n")
+      .forEach((text, i) => {
+        pieces.push({ text, at: convertResult.lineSources?.[i] ?? 0 });
+      });
+    const bodyOffset = region.startOffset + region.headerText.length;
+    const body = takeOrigins(
       layOutOnSourceLines(
         pieces,
         region.bodyStartLine,
         lineBreaks(region.bodyText),
-      ) +
-      region.closingText;
+      ),
+      region.bodyStartLine,
+      bodyOffset - (source.lastIndexOf("\n", bodyOffset - 1) + 1),
+      source,
+      operandOrigins,
+    );
+    const newPOU = region.headerText + body + region.closingText;
 
     // Replace the original POU text in the source
     result =
@@ -128,6 +142,7 @@ export function transpileILSource(
     errors,
     ilBodies: ilRegions.map((r) => ilBodyStart(source, r)),
     ilLabels,
+    operandOrigins,
   };
 }
 
@@ -157,6 +172,52 @@ function layOutOnSourceLines(
     if (piece.text.trim() !== "") lines[cursor]!.push(piece.text.trim());
   }
   return lines.map((parts) => parts.join(" ")).join("\n");
+}
+
+/**
+ * `body` without the operand marks of the generated ST (il-to-st.ts
+ * markOrigin), each marked operand recorded in `out` with its position in the
+ * output (line from `firstLine`; the first line starts at column
+ * `firstColumnOffset` + 1) and the IL line and column naming it in `source`.
+ */
+function takeOrigins(
+  body: string,
+  firstLine: number,
+  firstColumnOffset: number,
+  source: string,
+  out: NonNullable<ILTranspileResult["operandOrigins"]>,
+): string {
+  const sourceLines = source.split("\n");
+  return body
+    .split("\n")
+    .map((line, i) => {
+      let text = "";
+      for (let k = 0; k < line.length; k++) {
+        if (line[k] !== ORIGIN_START) {
+          if (line[k] !== ORIGIN_END) text += line[k];
+          continue;
+        }
+        const close = line.indexOf(ORIGIN_LINE_END, k);
+        const end = line.indexOf(ORIGIN_END, close);
+        const ilLine = Number(line.slice(k + 1, close));
+        const operand = stripOrigins(line.slice(close + 1, end));
+        const at =
+          sourceLines[ilLine - 1]
+            ?.toUpperCase()
+            .indexOf(operand.toUpperCase()) ?? -1;
+        out.push({
+          line: firstLine + i,
+          column: text.length + 1 + (i === 0 ? firstColumnOffset : 0),
+          length: operand.length,
+          ilLine,
+          ilColumn: at >= 0 ? at + 1 : 1,
+        });
+        text += operand;
+        k = end;
+      }
+      return text;
+    })
+    .join("\n");
 }
 
 /** The first non-blank character of an IL body, and the POU's name from its header. */

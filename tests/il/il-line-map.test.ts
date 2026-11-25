@@ -2,8 +2,10 @@
 // Copyright (c) 2026 Autonomy®
 /**
  * The ST an IL body becomes is laid out on the IL lines it comes from, so a
- * diagnostic inside an IL body points at the IL source line: straight-line
- * bodies and CASE state machines (labels, jumps) alike.
+ * diagnostic inside an IL body points at the IL source line: a statement's
+ * own at the instruction that ends it (the store), one at an operand at the
+ * instruction naming that operand. Straight-line bodies and CASE state
+ * machines (labels, jumps) alike.
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
@@ -50,18 +52,39 @@ const at = (src: string): string[] =>
     .sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
 
 describe("IL to ST line map", () => {
-  it("reports a straight-line body's error at the IL store", () => {
+  it("reports a straight-line body's errors at the IL operand", () => {
     expect(at(STRAIGHT + AFTER)).toEqual([
-      "11: Cannot assign STRING to INT",
+      "10: Cannot assign STRING to INT",
       "15: Cannot assign STRING to INT",
     ]);
   });
 
-  it("reports a state machine's errors at their IL lines", () => {
+  it("reports a state machine's errors at their IL operands", () => {
     expect(at(JUMPS + AFTER)).toEqual([
-      "9: Cannot assign STRING to INT",
-      "12: Undeclared variable 'undeclaredX'",
+      "8: Cannot assign STRING to INT",
+      "11: Undeclared variable 'undeclaredX'",
       "16: Cannot assign STRING to INT",
+    ]);
+  });
+
+  it("moves an operand's error to its instruction, a store's stays at the store", () => {
+    const src = `FUNCTION_BLOCK FB_Op
+VAR_INPUT q : INT; END_VAR
+VAR n : INT; END_VAR
+  LD q
+  ADD undeclaredY
+  ST n
+  LD q
+  ST undeclaredZ
+END_FUNCTION_BLOCK
+`;
+    expect(
+      compile(src, { fileName: "il.st" }).errors.map(
+        (e) => `${e.line}:${e.column} ${e.message}`,
+      ),
+    ).toEqual([
+      "5:7 Undeclared variable 'undeclaredY'",
+      "8:6 Undeclared variable 'undeclaredZ'",
     ]);
   });
 

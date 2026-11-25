@@ -48,6 +48,29 @@ export interface ILConvertResult {
   extraVars?: string;
   /** For each line of `stBody`, the IL source line it comes from (0: none). */
   lineSources?: number[];
+  /** `stBody` with each operand marked by the IL line naming it (see markOrigin). */
+  markedBody?: string;
+}
+
+/** Marks around an operand in generated ST: start, IL line, end of the line number, end. */
+export const ORIGIN_START = "\u0001";
+export const ORIGIN_LINE_END = "\u0002";
+export const ORIGIN_END = "\u0003";
+
+/**
+ * `operand` marked with the IL line that names it, so a diagnostic at it can
+ * be moved there (see il-transpiler.ts); the marks are removed from the ST.
+ */
+function markOrigin(operand: string, line: number): string {
+  return `${ORIGIN_START}${line}${ORIGIN_LINE_END}${operand}${ORIGIN_END}`;
+}
+
+/** `text` without the origin marks of {@link markOrigin}. */
+export function stripOrigins(text: string): string {
+  return text.replace(
+    new RegExp(`${ORIGIN_START}\\d+${ORIGIN_LINE_END}|${ORIGIN_END}`, "g"),
+    "",
+  );
 }
 
 /** Generated ST lines, each with the IL source line (`at` when pushed; 0: none). */
@@ -112,26 +135,28 @@ function convertStraightLine(elements: ILElement[]): ILConvertResult {
     const instr = elem as ILInstruction;
     const op = instr.operator;
     const operand = instr.operand;
+    const marked =
+      operand !== undefined ? markOrigin(operand, instr.sourceLine) : undefined;
     lines.at = instr.sourceLine;
 
     switch (op) {
       case "LD":
-        expr = operand ?? "";
+        expr = marked ?? "";
         break;
 
       case "LDN":
-        expr = `NOT ${operand ?? ""}`;
+        expr = `NOT ${marked ?? ""}`;
         break;
 
       case "ST":
         if (operand) {
-          lines.push(`  ${operand} := ${expr};`);
+          lines.push(`  ${marked} := ${expr};`);
         }
         break;
 
       case "STN":
         if (operand) {
-          lines.push(`  ${operand} := NOT (${expr});`);
+          lines.push(`  ${marked} := NOT (${expr});`);
         }
         break;
 
@@ -141,13 +166,13 @@ function convertStraightLine(elements: ILElement[]): ILConvertResult {
 
       case "S":
         if (operand) {
-          lines.push(`  IF ${expr} THEN ${operand} := TRUE; END_IF;`);
+          lines.push(`  IF ${expr} THEN ${marked} := TRUE; END_IF;`);
         }
         break;
 
       case "R":
         if (operand) {
-          lines.push(`  IF ${expr} THEN ${operand} := FALSE; END_IF;`);
+          lines.push(`  IF ${expr} THEN ${marked} := FALSE; END_IF;`);
         }
         break;
 
@@ -162,8 +187,8 @@ function convertStraightLine(elements: ILElement[]): ILConvertResult {
       case "IN":
       case "PT":
         if (operand) {
-          lines.push(`  ${operand}.${op} := ${expr};`);
-          lines.push(`  ${operand}();`);
+          lines.push(`  ${marked}.${op} := ${expr};`);
+          lines.push(`  ${marked}();`);
         }
         break;
 
@@ -201,7 +226,7 @@ function convertStraightLine(elements: ILElement[]): ILConvertResult {
         // Inline function call: applies function to accumulator
         // e.g., BCD_TO_INT → expr = BCD_TO_INT(expr)
         if (instr.functionName) {
-          expr = `${instr.functionName}(${expr})`;
+          expr = `${markOrigin(instr.functionName, instr.sourceLine)}(${expr})`;
         }
         break;
 
@@ -212,9 +237,9 @@ function convertStraightLine(elements: ILElement[]): ILConvertResult {
           if (instr.openParen) {
             // Push current expression and operator to stack
             exprStack.push({ expr, op: stOp });
-            expr = operand;
+            expr = marked ?? "";
           } else {
-            expr = `(${expr} ${stOp} ${operand})`;
+            expr = `(${expr} ${stOp} ${marked ?? ""})`;
           }
         } else if (!stOp) {
           errors.push({
@@ -229,7 +254,8 @@ function convertStraightLine(elements: ILElement[]): ILConvertResult {
   }
 
   return {
-    stBody: lines.text.join("\n"),
+    stBody: stripOrigins(lines.text.join("\n")),
+    markedBody: lines.text.join("\n"),
     errors,
     lineSources: lines.from,
   };
@@ -458,7 +484,8 @@ function convertWithStateMachine(elements: ILElement[]): ILConvertResult {
   const extraVars = "    __IL_STATE : INT := 0;\n    __IL_ACC_BOOL : BOOL;";
 
   return {
-    stBody: lines.text.join("\n"),
+    stBody: stripOrigins(lines.text.join("\n")),
+    markedBody: lines.text.join("\n"),
     errors,
     extraVars,
     lineSources: lines.from,
@@ -481,6 +508,8 @@ function convertBlockInstructions(instructions: ILInstruction[]): {
   for (const instr of instructions) {
     const op = instr.operator;
     const operand = instr.operand;
+    const marked =
+      operand !== undefined ? markOrigin(operand, instr.sourceLine) : undefined;
     lines.at = instr.sourceLine;
 
     // Skip control flow instructions (handled by block exit logic)
@@ -501,25 +530,25 @@ function convertBlockInstructions(instructions: ILInstruction[]): {
 
     switch (op) {
       case "LD":
-        expr = operand ?? "";
+        expr = marked ?? "";
         break;
       case "LDN":
-        expr = `NOT ${operand ?? ""}`;
+        expr = `NOT ${marked ?? ""}`;
         break;
       case "ST":
-        if (operand) lines.push(`${operand} := ${expr};`);
+        if (operand) lines.push(`${marked} := ${expr};`);
         break;
       case "STN":
-        if (operand) lines.push(`${operand} := NOT (${expr});`);
+        if (operand) lines.push(`${marked} := NOT (${expr});`);
         break;
       case "NOT":
         expr = `NOT (${expr})`;
         break;
       case "S":
-        if (operand) lines.push(`IF ${expr} THEN ${operand} := TRUE; END_IF;`);
+        if (operand) lines.push(`IF ${expr} THEN ${marked} := TRUE; END_IF;`);
         break;
       case "R":
-        if (operand) lines.push(`IF ${expr} THEN ${operand} := FALSE; END_IF;`);
+        if (operand) lines.push(`IF ${expr} THEN ${marked} := FALSE; END_IF;`);
         break;
       case "S1":
       case "R1":
@@ -530,8 +559,8 @@ function convertBlockInstructions(instructions: ILInstruction[]): {
       case "IN":
       case "PT":
         if (operand) {
-          lines.push(`${operand}.${op} := ${expr};`);
-          lines.push(`${operand}();`);
+          lines.push(`${marked}.${op} := ${expr};`);
+          lines.push(`${marked}();`);
         }
         break;
       case "CAL":
@@ -549,13 +578,13 @@ function convertBlockInstructions(instructions: ILInstruction[]): {
       }
       case "FUNC_CALL":
         if (instr.functionName) {
-          expr = `${instr.functionName}(${expr})`;
+          expr = `${markOrigin(instr.functionName, instr.sourceLine)}(${expr})`;
         }
         break;
       default: {
         const stOp = BINARY_OP_MAP[op];
         if (stOp && operand) {
-          expr = `(${expr} ${stOp} ${operand})`;
+          expr = `(${expr} ${stOp} ${marked ?? ""})`;
         } else if (!stOp) {
           errors.push({
             message: `Unsupported IL operator: ${op}`,

@@ -727,9 +727,25 @@ export function generateDebugTable(
     );
   };
 
+  /** The names of the members an instance of `fbSym` holds itself (not its base's). */
+  const ownMemberNames = (fbSym: FunctionBlockSymbol): string[] =>
+    fbSym.libraryName !== undefined
+      ? [
+          ...fbSym.inputs,
+          ...fbSym.outputs,
+          ...fbSym.inouts,
+          ...fbSym.locals,
+        ].map((v) => v.name.toUpperCase())
+      : fbSym.declaration.varBlocks
+          .filter((b) => b.blockType !== "VAR_TEMP")
+          .flatMap((b) => b.declarations.flatMap((d) => d.names))
+          .map((n) => n.toUpperCase());
+
   /**
    * The members of an instance of function block `fbSym` (written `shownName`):
    * those of the block it EXTENDS first, as C++ inherits them, then its own.
+   * A member a derived block declares again (`hiddenBy`) is listed under its
+   * qualified name (`INST.FB_A::Y`, C++ `inst.FB_A::Y`), so each has one entry.
    * `seen` holds the blocks walked already, so a cyclic chain ends.
    */
   const visitFunctionBlock = (
@@ -739,15 +755,29 @@ export function generateDebugTable(
     shownName: string,
     flags: number,
     seen: Set<string>,
+    hiddenBy: ReadonlySet<string> = new Set(),
   ): void => {
     const name = fbSym.name.toUpperCase();
     if (seen.has(name)) return;
     seen.add(name);
+    /** A member's path step and C++ member, qualified when a derived block hides it. */
+    const step = (member: string, cppMember: string): [string, string] =>
+      hiddenBy.has(member)
+        ? [`${name}::${member}`, `${name}::${cppMember}`]
+        : [member, cppMember];
     const base = fbSym.declaration.extends;
     if (base !== undefined) {
       const baseSym = symbolTables.lookupFunctionBlock(base.toUpperCase());
       if (baseSym !== undefined) {
-        visitFunctionBlock(path, cppExpr, baseSym, base, flags, seen);
+        visitFunctionBlock(
+          path,
+          cppExpr,
+          baseSym,
+          base,
+          flags,
+          seen,
+          new Set([...hiddenBy, ...ownMemberNames(fbSym)]),
+        );
       } else {
         skip({
           path,
@@ -763,10 +793,14 @@ export function generateDebugTable(
         // A VAR_IN_OUT refers to the caller's variable (bound per call), so
         // it has no address of its own to list.
         for (const v of [...fbSym.inputs, ...fbSym.outputs]) {
+          const [seg, cpp] = step(
+            v.name.toUpperCase(),
+            libraryMemberCppName(v, name),
+          );
           inDecl(`${name}.${v.name.toUpperCase()}`, () =>
             visitTypeRef(
-              `${path}.${v.name.toUpperCase()}`,
-              `${cppExpr}.${libraryMemberCppName(v, name)}`,
+              `${path}.${seg}`,
+              `${cppExpr}.${cpp}`,
               v.declaration.type,
               flags,
             ),
@@ -791,7 +825,11 @@ export function generateDebugTable(
           ? fbSym.locals
           : fbSym.locals.filter((v) => v.isRetain);
         if (localsToWalk.length > 0 || instanceRetained) {
-          if (instanceRetained && fbSym.locals.length === 0) {
+          if (
+            instanceRetained &&
+            fbSym.locals.length === 0 &&
+            fbSym.localsRecorded !== true
+          ) {
             // An archive whose manifest does not export locals. Retain still
             // covers the visible surface — refusing the build would strand
             // anyone using a third-party .stlib they cannot rebuild — but it
@@ -801,17 +839,21 @@ export function generateDebugTable(
               ...(currentDecl !== undefined ? { decl: currentDecl } : {}),
               path,
               reason:
-                `RETAIN on ${shownName}: this library does not export the ` +
-                `block's internal variables, so only its inputs and outputs ` +
-                `are retained. Rebuild the library with a current STruC++ to ` +
-                `retain the rest.`,
+                `RETAIN on ${shownName}: the archive of library ` +
+                `${fbSym.libraryName ?? "?"} lists no internal variables of the block ` +
+                `(an archive built before they were recorded), so only its inputs ` +
+                `and outputs are retained. Rebuild that library to retain the rest.`,
             });
           }
           for (const v of localsToWalk) {
+            const [seg, cpp] = step(
+              v.name.toUpperCase(),
+              libraryMemberCppName(v, name),
+            );
             inDecl(`${name}.${v.name.toUpperCase()}`, () =>
               visitTypeRef(
-                `${path}.${v.name.toUpperCase()}`,
-                `${cppExpr}.${libraryMemberCppName(v, name)}`,
+                `${path}.${seg}`,
+                `${cppExpr}.${cpp}`,
                 v.declaration.type,
                 v.isRetain ? flags | LEAF_FLAG_RETAIN : flags,
               ),
@@ -833,10 +875,14 @@ export function generateDebugTable(
           const memberFlags = applyBlockFlags(flags, block);
           for (const fieldDecl of block.declarations) {
             for (const fieldName of fieldDecl.names) {
+              const [seg, cpp] = step(
+                fieldName.toUpperCase(),
+                memberCppName(fieldName, fieldDecl.type, name),
+              );
               inDecl(`${name}.${fieldName.toUpperCase()}`, () =>
                 visitTypeRef(
-                  `${path}.${fieldName.toUpperCase()}`,
-                  `${cppExpr}.${memberCppName(fieldName, fieldDecl.type, name)}`,
+                  `${path}.${seg}`,
+                  `${cppExpr}.${cpp}`,
                   fieldDecl.type,
                   memberFlags,
                 ),
@@ -1339,6 +1385,26 @@ export function generateDebugTable(
             applyBlockFlags(0, block),
           );
         }
+      }
+    }
+  }
+
+  // File-level VAR_GLOBALs (GVL files): plain file-scope objects under their
+  // C++ global name, with no GlobalVar wrapper (codegen.ts emitGvlGlobals).
+  for (const block of ast.globalVarBlocks) {
+    for (const decl of block.declarations) {
+      for (const varName of decl.names) {
+        const key = varName.toUpperCase();
+        if (seenGlobals.has(key)) continue;
+        seenGlobals.add(key);
+        inDecl(key, () =>
+          visitTypeRef(
+            key,
+            globalCppName(varName),
+            decl.type,
+            applyBlockFlags(0, block),
+          ),
+        );
       }
     }
   }

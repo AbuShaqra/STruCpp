@@ -3,7 +3,7 @@
 /**
  * A TEST name is a string literal: its `$` escapes (Ed. 3 Table 6) and doubled
  * quotes are decoded, in single and double quotes, and the decoded name is
- * what the test runner prints.
+ * what the test runner prints (C++ trigraphs included).
  */
 import { describe, it, expect } from "vitest";
 import { parseTestFile } from "../../src/index.js";
@@ -41,12 +41,14 @@ describe.skipIf(!hasGpp)("TEST names — g++ e2e", () => {
   it("prints the decoded name", () => {
     const { stdout, exitCode } = runE2ETestPipeline({
       sourceST: `PROGRAM Counter\nVAR count : INT; END_VAR\ncount := count + 1;\nEND_PROGRAM\n`,
-      testST: `TEST 'it$'s $$5 "ok"'\nVAR uut : Counter; END_VAR\nuut();\nASSERT_EQ(uut.count, 1);\nEND_TEST\nTEST "wide $0041 name"\nASSERT_TRUE(TRUE);\nEND_TEST\n`,
+      testST: `TEST 'it$'s $$5 "ok"'\nVAR uut : Counter; END_VAR\nuut();\nASSERT_EQ(uut.count, 1);\nEND_TEST\nTEST "wide $0041 name"\nASSERT_TRUE(TRUE);\nEND_TEST\nTEST 'q??=x ??/'\nASSERT_TRUE(TRUE);\nEND_TEST\n`,
       testFileName: "test_names.st",
       tempDirPrefix: "strucpp-test-names-",
     });
     expect(exitCode).toBe(0);
     expect(stdout).toContain(`[PASS] it's $5 "ok"`);
     expect(stdout).toContain("[PASS] wide A name");
+    // `??=` and `??/` are trigraphs in C++14: the name keeps its characters
+    expect(stdout).toContain("[PASS] q??=x ??/");
   });
 });

@@ -546,6 +546,12 @@ function prepareFile(
   labelErrors: CompileError[];
   stopsOnError: boolean;
   blankedLines: number[];
+  /** The text before IL→ST, when the file has IL: positions moved to IL read it. */
+  ilText?: string;
+  /** IL operands in the generated ST and the IL positions naming them. */
+  operandOrigins: NonNullable<
+    ReturnType<typeof transpileILSource>["operandOrigins"]
+  >;
 } {
   const errors: CompileError[] = [];
   const warnings: CompileError[] = [];
@@ -553,6 +559,9 @@ function prepareFile(
   let out = text;
   let stopsOnError = false;
   let blankedLines: number[] = [];
+  let operandOrigins: NonNullable<
+    ReturnType<typeof transpileILSource>["operandOrigins"]
+  > = [];
   if (prep.enabled) {
     const pragmaResult = applyConditionalPragmas(
       text,
@@ -568,8 +577,10 @@ function prepareFile(
     }
   }
   const ilResult = transpileILSource(out, fileName);
+  const beforeIl = out;
   if (ilResult.hasIL) {
     out = ilResult.stSource;
+    operandOrigins = ilResult.operandOrigins ?? [];
     stopsOnError = true;
     for (const err of ilResult.errors) {
       const entry: CompileError = {
@@ -602,7 +613,40 @@ function prepareFile(
     labelErrors,
     stopsOnError,
     blankedLines,
+    operandOrigins,
+    ...(ilResult.hasIL ? { ilText: beforeIl } : {}),
   };
+}
+
+/** Origins of IL operands by file, as prepareFile gives them. */
+type OperandOrigins = Map<
+  string,
+  ReturnType<typeof prepareFile>["operandOrigins"]
+>;
+
+/**
+ * Each diagnostic at an IL operand of the generated ST moved to the IL line
+ * and column naming that operand; a statement's own diagnostics stay on the
+ * line of the IL instruction that ends it.
+ */
+function moveToIlOperands(
+  diagnostics: CompileError[],
+  origins: OperandOrigins,
+  primaryFile: string,
+): void {
+  if (origins.size === 0) return;
+  for (const d of diagnostics) {
+    const list = origins.get(d.file ?? primaryFile);
+    const o = list?.find(
+      (x) =>
+        x.line === d.line &&
+        d.column >= x.column &&
+        d.column < x.column + x.length,
+    );
+    if (o === undefined) continue;
+    d.line = o.ilLine;
+    d.column = o.ilColumn + (d.column - o.column);
+  }
 }
 
 /**
@@ -920,6 +964,10 @@ function runPipeline(
   let effectiveSource = source;
   /** File name → lines the conditional-pragma pass blanked. */
   const blankedByFile = new Map<string, ReadonlySet<number>>();
+  /** File name → its IL operands in the generated ST. */
+  const ilOrigins: OperandOrigins = new Map();
+  /** File name → its text as written where it differs from the parsed one (IL bodies). */
+  const writtenByFile = new Map<string, string>();
   {
     const prepared = prepareFile(
       source,
@@ -930,6 +978,15 @@ function runPipeline(
       iec3Rules,
     );
     effectiveSource = prepared.text;
+    if (prepared.operandOrigins.length > 0) {
+      ilOrigins.set(
+        mergedOptions.fileName ?? "main.st",
+        prepared.operandOrigins,
+      );
+    }
+    if (prepared.ilText !== undefined) {
+      writtenByFile.set(mergedOptions.fileName ?? "main.st", prepared.ilText);
+    }
     warnings.push(...prepared.warnings);
     if (prepared.blankedLines.length > 0) {
       blankedByFile.set(
@@ -1048,6 +1105,12 @@ function runPipeline(
           iec3Rules,
         );
         const effectiveAddlSource = prepared.text;
+        if (prepared.operandOrigins.length > 0) {
+          ilOrigins.set(addlSource.fileName, prepared.operandOrigins);
+        }
+        if (prepared.ilText !== undefined) {
+          writtenByFile.set(addlSource.fileName, prepared.ilText);
+        }
         warnings.push(...prepared.warnings);
         if (prepared.blankedLines.length > 0) {
           blankedByFile.set(
@@ -1446,11 +1509,14 @@ function runPipeline(
   // right POU tab and remap body-line numbers to the user's view.
   // Skipped silently when no AST is available — the fields remain unset
   // and downstream code falls back to plain (file, line) display.
+  moveToIlOperands(errors, ilOrigins, primaryFile);
+  moveToIlOperands(warnings, ilOrigins, primaryFile);
   if (ast) {
     annotateErrorsWithPouContext(errors, ast, blankedByFile);
     annotateErrorsWithPouContext(warnings, ast, blankedByFile);
-    respellDiagnostics(errors, spellingsOf(ast), sourcesByFile);
-    respellDiagnostics(warnings, spellingsOf(ast), sourcesByFile);
+    const written = new Map([...sourcesByFile, ...writtenByFile]);
+    respellDiagnostics(errors, spellingsOf(ast), written, primaryFile);
+    respellDiagnostics(warnings, spellingsOf(ast), written, primaryFile);
   }
 
   return {

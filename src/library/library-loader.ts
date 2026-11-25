@@ -643,6 +643,7 @@ export function registerLibrarySymbols(
         locals: (fb.locals ?? []).map((l) =>
           makeVarSymbol(l, "local", manifest.stringDefaultLength),
         ),
+        ...(fb.locals !== undefined ? { localsRecorded: true } : {}),
         ...(fb.temps !== undefined
           ? {
               temps: fb.temps.map((t) =>

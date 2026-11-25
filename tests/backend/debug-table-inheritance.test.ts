@@ -114,7 +114,7 @@ ${CFG.replace("PROGRAM P1 WITH T1 : Main;", "PROGRAM P1 WITH T1 : Main;\nPROGRAM
     ]);
     expect(partial[0]).toContain("P1.TS[*], P2.TS[*]");
     expect(partial[0]).toContain(
-      "is retained in part: RETAIN on TON: this library does not export",
+      "is retained in part: RETAIN on TON: the archive of library iec-standard-fb lists no internal variables of the block",
     );
   });
 });
@@ -138,5 +138,112 @@ ${CFG}`,
     expect(debug).toContain(
       "P1.ST is not debuggable: library type SMC_AXIS_STATE is opaque to the debugger: its archive records no layout for it (an enumeration's values, an array's shape).",
     );
+  });
+});
+
+describe("debug table: a member a derived block declares again", () => {
+  const SOURCE = `
+FUNCTION_BLOCK FB_A
+VAR_INPUT x : INT; END_VAR
+VAR y : INT; END_VAR
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_B EXTENDS FB_A
+VAR y : DINT; z : INT; END_VAR
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_T EXTENDS TON
+VAR ET : TIME; END_VAR
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR RETAIN b : FB_B; t : FB_T; END_VAR
+END_PROGRAM
+${CFG}`;
+
+  it("lists the hidden base member once, qualified, and the derived one once", () => {
+    const r = compile(SOURCE, { libraries: libs() });
+    expect(r.errors).toEqual([]);
+    const leaves = r.debugMap!.leaves.map((l) => `${l.path} ${l.type}`);
+    expect(leaves.filter((l) => l.startsWith("P1.B."))).toEqual([
+      "P1.B.X INT",
+      "P1.B.FB_A::Y INT",
+      "P1.B.Y DINT",
+      "P1.B.Z INT",
+    ]);
+    expect(leaves.filter((l) => /^P1\.T\.(TON::)?ET /.test(l))).toEqual([
+      "P1.T.TON::ET TIME",
+      "P1.T.ET TIME",
+    ]);
+    expect(r.debugTableCpp).toContain(".B.FB_A::Y");
+    // Both are retained, each once
+    const retained = (r.debugMap!.retainVars ?? []).map((v) => v.path);
+    expect(new Set(retained).size).toBe(retained.length);
+    expect(retained).toEqual(
+      expect.arrayContaining(["P1.B.FB_A::Y", "P1.B.Y", "P1.T.TON::ET", "P1.T.ET"]),
+    );
+  });
+
+  it("is a warning by default and an error under iec-3 and --strict", () => {
+    const messages = [
+      "'y' of FUNCTION_BLOCK 'FB_B' redeclares the variable 'y' it inherits from 'FB_A', which it hides; rename one of them",
+      "'ET' of FUNCTION_BLOCK 'FB_T' redeclares the variable 'ET' it inherits from 'TON', which it hides; rename one of them",
+    ];
+    const def = compile(SOURCE, { libraries: libs() });
+    expect(def.errors).toEqual([]);
+    expect(
+      def.warnings.map((w) => w.message).filter((m) => m.includes("redeclares")),
+    ).toEqual(messages);
+    for (const opts of [{ strict: true }, { dialect: "iec-3" }]) {
+      const r = compile(SOURCE, { libraries: libs(), ...opts });
+      expect(
+        r.errors.map((e) => e.message).filter((m) => m.includes("redeclares")),
+      ).toEqual(messages);
+    }
+  });
+});
+
+describe("debug table: RETAIN of library blocks without internal variables", () => {
+  it("says nothing when the archive records that the block has none", () => {
+    const r = compile(
+      `FUNCTION_BLOCK FB_Sr EXTENDS SR
+VAR x : INT; END_VAR
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR RETAIN a : FB_Sr; b : SR; c : ARRAY[0..2] OF FB_Sr; END_VAR
+END_PROGRAM
+${CFG}`,
+      { libraries: libs() },
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.map((w) => w.message).join("\n")).not.toMatch(
+      /retained in part/,
+    );
+  });
+});
+
+describe("debug table: file-level VAR_GLOBAL (GVL)", () => {
+  it("lists its globals, RETAIN ones retained", () => {
+    const r = compile(
+      `VAR_GLOBAL RETAIN
+  gi : INT;
+  gt : TON;
+END_VAR
+VAR_GLOBAL
+  gp : BOOL;
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL gi : INT; END_VAR
+gi := gi + 1;
+END_PROGRAM
+${CFG}`,
+      { libraries: libs() },
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.debugMap!.leaves.map((l) => l.path)).toEqual(
+      expect.arrayContaining(["GI", "GT.ET", "GT.START_TIME", "GP"]),
+    );
+    const retained = (r.debugMap!.retainVars ?? []).map((v) => v.path);
+    expect(retained).toContain("GI");
+    expect(retained).toContain("GT.START_TIME");
+    expect(retained).not.toContain("GP");
+    expect(r.debugTableCpp).toContain("GT_");
   });
 });

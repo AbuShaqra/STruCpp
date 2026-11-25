@@ -15,6 +15,7 @@ import type { CompilationUnit, TestFile } from "../frontend/ast.js";
 import { allTokens } from "../frontend/lexer.js";
 import type { CompileError } from "../types.js";
 import { ELEMENTARY_TYPES } from "./type-utils.js";
+import { StdFunctionRegistry } from "./std-function-registry.js";
 import {
   type DeclaredName,
   sourceNameLocator,
@@ -39,12 +40,31 @@ export type DeclaredSpellings = ReadonlyMap<string, string | null>;
 /** The spellings, located in the sources on first use (most runs report no name). */
 export type LazySpellings = () => DeclaredSpellings;
 
-/** The spellings of each compilation unit, set where it is parsed (a function does not clone with it). */
-const byUnit = new WeakMap<CompilationUnit, LazySpellings>();
+/**
+ * What the pass needs of a compilation: the spellings, and whether an
+ * upper-cased name is a library POU or a standard function (a message naming
+ * one speaks of that POU's members, which keep their spelling).
+ */
+export interface SpellingContext {
+  spellings: LazySpellings;
+  isLibraryPou: (upper: string) => boolean;
+}
 
-/** The spellings `declaredSpellings` gave for `unit`, if any. */
-export function spellingsOf(unit: CompilationUnit): LazySpellings | undefined {
+/** The context of each compilation unit, set where it is parsed (a function does not clone with it). */
+const byUnit = new WeakMap<CompilationUnit, SpellingContext>();
+
+/** The context `declaredSpellings` gave for `unit`, if any. */
+export function spellingsOf(
+  unit: CompilationUnit,
+): SpellingContext | undefined {
   return byUnit.get(unit);
+}
+
+let stdRegistry: StdFunctionRegistry | undefined;
+/** A standard function (LEN, MAX…): its parameters are not the user's names. */
+function isStandardFunction(upper: string): boolean {
+  stdRegistry ??= new StdFunctionRegistry();
+  return stdRegistry.isStandardFunction(upper);
 }
 
 /** `compute` run once, on the first call. */
@@ -87,41 +107,60 @@ function addSpellings(
 export function declaredSpellings(
   unit: CompilationUnit,
   sources: ReadonlyMap<string, string>,
-  isLibraryName?: (upper: string) => boolean,
-): LazySpellings {
+  isLibraryName: (upper: string) => boolean = () => false,
+): SpellingContext {
   const names = unitDeclaredNames(unit);
-  const lazy = once(() => {
-    const out = new Map<string, string | null>();
-    addSpellings(names, sources, out, isLibraryName);
-    return out;
-  });
-  byUnit.set(unit, lazy);
-  return lazy;
+  const context: SpellingContext = {
+    spellings: once(() => {
+      const out = new Map<string, string | null>();
+      addSpellings(names, sources, out, isLibraryName);
+      return out;
+    }),
+    isLibraryPou: (upper) => isLibraryName(upper) || isStandardFunction(upper),
+  };
+  byUnit.set(unit, context);
+  return context;
 }
 
 /** The spellings of the names a test file declares, over those of `base`. */
 export function testFileSpellings(
   testFile: TestFile,
-  base: LazySpellings | undefined,
-): LazySpellings {
+  base: SpellingContext | undefined,
+): SpellingContext {
   const names: DeclaredName[] = [];
   varBlockNames(testFile.setup?.varBlocks ?? [], names);
   for (const tc of testFile.testCases) varBlockNames(tc.varBlocks, names);
   const source = testFile.source;
-  return once(() => {
-    const out = new Map(base?.() ?? []);
-    if (source !== undefined) {
-      addSpellings(names, new Map([[testFile.fileName, source]]), out);
-    }
-    return out;
-  });
+  return {
+    spellings: once(() => {
+      const out = new Map(base?.spellings() ?? []);
+      if (source !== undefined) {
+        addSpellings(names, new Map([[testFile.fileName, source]]), out);
+      }
+      return out;
+    }),
+    isLibraryPou: base?.isLibraryPou ?? isStandardFunction,
+  };
 }
 
 /** A quoted name: dotted and indexed paths (`'A.B'`, `'A[1].B'`). */
 const QUOTED_NAME =
-  /'([A-Za-z_][A-Za-z0-9_]*(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|\[[^\]'\n]*\])*)'|(identifier `)([A-Za-z_][A-Za-z0-9_]*)`/g;
+  /'([A-Za-z_][A-Za-z0-9_]*(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|\[[^\]'\n]*\])*)'/g;
 
-/** `message` with each quoted declared name in its declared spelling. */
+/** The first word of each quoted name of `message` that is not inside a literal. */
+function quotedHeads(message: string): string[] {
+  const heads: string[] = [];
+  for (const m of message.matchAll(QUOTED_NAME)) {
+    if (message[m.index - 1] === "#") continue;
+    heads.push(/^[A-Za-z0-9_]+/.exec(m[1]!)![0]);
+  }
+  return heads;
+}
+
+/**
+ * `message` with each quoted declared name in its declared spelling. A quoted
+ * text that is the body of a typed literal (`CHAR#'MOTOR'`) is left as it is.
+ */
 export function withDeclaredSpelling(
   message: string,
   spellings: Pick<DeclaredSpellings, "get">,
@@ -130,30 +169,28 @@ export function withDeclaredSpelling(
     word === word.toUpperCase() ? (spellings.get(word) ?? word) : word;
   return message.replace(
     QUOTED_NAME,
-    (_whole: string, path?: string, lead?: string, ident?: string) => {
-      if (path !== undefined) {
-        // Index expressions inside `[...]` are left as written
-        let out = "";
-        let depth = 0;
-        let word = "";
-        const flush = (): void => {
-          out += depth === 0 ? respell(word) : word;
-          word = "";
-        };
-        for (const ch of path) {
-          if (/[A-Za-z0-9_]/.test(ch)) {
-            word += ch;
-            continue;
-          }
-          flush();
-          if (ch === "[") depth++;
-          if (ch === "]") depth--;
-          out += ch;
+    (whole: string, path: string, offset: number) => {
+      if (message[offset - 1] === "#") return whole;
+      // Index expressions inside `[...]` are left as written
+      let out = "";
+      let depth = 0;
+      let word = "";
+      const flush = (): void => {
+        out += depth === 0 ? respell(word) : word;
+        word = "";
+      };
+      for (const ch of path) {
+        if (/[A-Za-z0-9_]/.test(ch)) {
+          word += ch;
+          continue;
         }
         flush();
-        return `'${out}'`;
+        if (ch === "[") depth++;
+        if (ch === "]") depth--;
+        out += ch;
       }
-      return `${lead ?? ""}${respell(ident ?? "")}\``;
+      flush();
+      return `'${out}'`;
     },
   );
 }
@@ -169,72 +206,120 @@ const NAMED_AT_POSITION = [
   /^Undefined type '/,
 ];
 
+/** The text of each line of a source, its line starts computed once. */
+class SourceLines {
+  private readonly starts = new Map<string, number[]>();
+  constructor(private readonly sources: ReadonlyMap<string, string>) {}
+
+  /** Line `line` (1-based) of `file`, without its line break. */
+  line(file: string, line: number): string | undefined {
+    const text = this.sources.get(file);
+    if (text === undefined || line < 1) return undefined;
+    let starts = this.starts.get(file);
+    if (starts === undefined) {
+      starts = [0];
+      for (let i = text.indexOf("\n"); i >= 0; i = text.indexOf("\n", i + 1)) {
+        starts.push(i + 1);
+      }
+      this.starts.set(file, starts);
+    }
+    const start = starts[line - 1];
+    if (start === undefined) return undefined;
+    const end = starts[line];
+    return text.slice(start, end === undefined ? undefined : end - 1);
+  }
+}
+
 /**
- * The spelling of `upper` as written on `line` of `text`, if it is there:
- * the first occurrence from `column` on, else the first on the line.
+ * The spelling of `upper` as written in `lineText`: the first occurrence from
+ * `column` on, else the first on the line; with `exact`, only one at `column`.
  */
 function writtenOnLine(
   upper: string,
-  text: string | undefined,
-  line: number,
+  lineText: string | undefined,
   column: number,
+  exact = false,
 ): string | undefined {
-  if (text === undefined || line < 1) return undefined;
-  let start = 0;
-  for (let n = 1; n < line && start >= 0; n++) {
-    start = text.indexOf("\n", start);
-    if (start >= 0) start++;
+  if (lineText === undefined) return undefined;
+  // Upper-casing keeps offsets unless a character widens (ß → SS): then ASCII only
+  let upperLine = lineText.toUpperCase();
+  if (upperLine.length !== lineText.length) {
+    upperLine = lineText.replace(/[a-z]/g, (c) => c.toUpperCase());
   }
-  if (start < 0) return undefined;
-  const end = text.indexOf("\n", start);
-  const lineText = text.slice(start, end < 0 ? undefined : end);
-  const re = new RegExp(`(?<![A-Za-z0-9_])${upper}(?![A-Za-z0-9_])`, "gi");
+  const isWord = (ch: string | undefined): boolean =>
+    ch !== undefined && /[A-Za-z0-9_]/.test(ch);
   let first: string | undefined;
-  for (const m of lineText.matchAll(re)) {
-    first ??= m[0];
-    if (m.index + 1 >= column) return m[0];
+  for (
+    let i = upperLine.indexOf(upper);
+    i >= 0;
+    i = upperLine.indexOf(upper, i + 1)
+  ) {
+    if (isWord(lineText[i - 1]) || isWord(lineText[i + upper.length])) continue;
+    const spelled = lineText.slice(i, i + upper.length);
+    if (exact) {
+      if (i + 1 === column) return spelled;
+      continue;
+    }
+    first ??= spelled;
+    if (i + 1 >= column) return spelled;
   }
   return first;
 }
 
 /**
- * Each diagnostic's message with declared spellings, in place; with
- * `sources`, an undeclared name in a message of {@link NAMED_AT_POSITION}
- * as written at the diagnostic.
+ * Each diagnostic's message with declared spellings, in place. With
+ * `sources`, an undeclared name in a message of {@link NAMED_AT_POSITION} is
+ * spelled as written at the diagnostic, and so is a parse error's echo of the
+ * identifier at its position (``identifier `FOO` ``). A message that names a
+ * library POU or a standard function keeps its other names: they are that
+ * POU's members and parameters.
  */
 export function respellDiagnostics(
   diagnostics: CompileError[],
-  lazy: LazySpellings | undefined,
+  context: SpellingContext | undefined,
   sources?: ReadonlyMap<string, string>,
+  /** The file of a diagnostic that names none. */
+  defaultFile?: string,
 ): void {
+  const lines = sources !== undefined ? new SourceLines(sources) : undefined;
   for (const d of diagnostics) {
+    const file = d.file ?? defaultFile;
+    const echo = /identifier `([A-Za-z_][A-Za-z0-9_]*)`/.exec(d.message);
+    if (echo !== null) {
+      const at = file !== undefined ? lines?.line(file, d.line) : undefined;
+      const written = writtenOnLine(echo[1]!, at, d.column, true);
+      if (written !== undefined) {
+        d.message = d.message.replace(
+          `identifier \`${echo[1]!}\``,
+          `identifier \`${written}\``,
+        );
+      }
+      continue;
+    }
     // Only a message quoting a name with a capital reads the spellings
-    if (!/'[^'\n]*[A-Z][^'\n]*'|identifier `/.test(d.message)) continue;
-    const spellings = lazy?.();
-    let local: Pick<DeclaredSpellings, "get"> | undefined = spellings;
+    if (!/'[^'\n]*[A-Z][^'\n]*'/.test(d.message)) continue;
+    const heads = quotedHeads(d.message);
+    const ofLibrary =
+      context !== undefined &&
+      heads.some((h) => h === h.toUpperCase() && context.isLibraryPou(h));
+    const spellings = ofLibrary ? undefined : context?.spellings();
+    const extra = new Map<string, string | null>();
     if (
-      sources !== undefined &&
-      d.file !== undefined &&
+      lines !== undefined &&
+      file !== undefined &&
       NAMED_AT_POSITION.some((re) => re.test(d.message))
     ) {
-      const extra = new Map<string, string | null>();
-      for (const m of d.message.matchAll(/'([A-Za-z_][A-Za-z0-9_]*)'/g)) {
-        const upper = m[1]!;
+      const at = lines.line(file, d.line);
+      for (const upper of heads) {
         if (upper !== upper.toUpperCase()) continue;
-        const written = writtenOnLine(
-          upper,
-          sources.get(d.file),
-          d.line,
-          d.column,
-        );
+        const written = writtenOnLine(upper, at, d.column);
         if (written !== undefined) extra.set(upper, written);
       }
-      local = {
-        get: (upper: string): string | null | undefined =>
-          extra.has(upper) ? extra.get(upper) : spellings?.get(upper),
-      };
     }
-    if (local === undefined) continue;
-    d.message = withDeclaredSpelling(d.message, local);
+    if (spellings === undefined && extra.size === 0) continue;
+    d.message = withDeclaredSpelling(d.message, {
+      get: (upper: string): string | null | undefined =>
+        extra.has(upper) ? extra.get(upper) : spellings?.get(upper),
+    });
   }
 }

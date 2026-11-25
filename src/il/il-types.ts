@@ -161,6 +161,17 @@ export interface ILTranspileResult {
   ilBodies?: Array<{ pou: string; line: number; column: number }>;
   /** Each label an IL body declares, as written, where it is written in the original source. */
   ilLabels?: Array<{ name: string; line: number; column: number }>;
+  /**
+   * Each IL operand in the generated ST (`line`, `column`, `length`) and the
+   * IL line and column that name it: a diagnostic at the operand belongs there.
+   */
+  operandOrigins?: Array<{
+    line: number;
+    column: number;
+    length: number;
+    ilLine: number;
+    ilColumn: number;
+  }>;
   /** Transpilation errors */
   errors: Array<{
     message: string;
