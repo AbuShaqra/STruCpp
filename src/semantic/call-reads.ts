@@ -60,6 +60,8 @@ import {
 export interface CallReads {
   /** The globals read, as `owner` maps them (upper-case). */
   globals: Set<string>;
+  /** The globals stored into by name (an assignment or output capture). */
+  writes?: Set<string>;
   /** The first call met whose code cannot be known, and why. */
   unresolved?: { node: ASTNode; reason: string };
 }
@@ -67,6 +69,7 @@ export interface CallReads {
 /** One body: what it reads itself, and which bodies it runs. */
 interface Unit {
   reads: Set<string>;
+  writes: Set<string>;
   runs: Set<string>;
   unresolved?: { node: ASTNode; reason: string };
 }
@@ -207,7 +210,7 @@ export class CallReadTracer {
     });
     this.units.delete(start);
     const unit = this.unit(start);
-    const out: CallReads = { globals: new Set() };
+    const out: CallReads = { globals: new Set(), writes: new Set(unit.writes) };
     // The value naming itself is not a read through code
     for (const g of unit.reads) {
       if (g !== self) out.globals.add(g);
@@ -216,7 +219,39 @@ export class CallReadTracer {
     for (const key of unit.runs) {
       const reached = this.closure(key);
       for (const g of reached.globals) out.globals.add(g);
+      for (const g of reached.writes ?? []) out.writes!.add(g);
       if (reached.unresolved) out.unresolved ??= reached.unresolved;
+    }
+    return out;
+  }
+
+  /**
+   * What creating the instance of PROGRAM `upper` reads: its members'
+   * initial values and FB members' creation (programKey names it), and the
+   * globals its VAR_EXTERNALs bind by address.
+   */
+  programReads(upper: string): CallReads {
+    const program = this.programs.get(upper);
+    if (program === undefined) return { globals: new Set() };
+    const key = `I:${programKey(upper)}`;
+    if (!this.builders.has(key)) {
+      this.builders.set(key, () => this.instanceUnit(program));
+    }
+    const reached = this.closure(key);
+    const out: CallReads = {
+      globals: new Set(
+        [...reached.globals].filter((g) => g !== programKey(upper)),
+      ),
+      ...(reached.unresolved ? { unresolved: reached.unresolved } : {}),
+    };
+    for (const block of program.varBlocks) {
+      if (block.blockType !== "VAR_EXTERNAL") continue;
+      for (const decl of block.declarations) {
+        for (const name of decl.names) {
+          const g = this.owner.get(name.toUpperCase());
+          if (g !== undefined) out.globals.add(g);
+        }
+      }
     }
     return out;
   }
@@ -225,12 +260,13 @@ export class CallReadTracer {
   private closure(key: string): CallReads {
     const known = this.closures.get(key);
     if (known) return known;
-    const out: CallReads = { globals: new Set() };
+    const out: CallReads = { globals: new Set(), writes: new Set() };
     const seen = new Set<string>([key]);
     const queue = [key];
     for (let i = 0; i < queue.length; i++) {
       const unit = this.unit(queue[i]!);
       for (const g of unit.reads) out.globals.add(g);
+      for (const g of unit.writes) out.writes!.add(g);
       if (unit.unresolved) out.unresolved ??= unit.unresolved;
       for (const next of unit.runs) {
         if (!seen.has(next)) {
@@ -244,7 +280,7 @@ export class CallReadTracer {
   }
 
   private newUnit(): Unit {
-    return { reads: new Set(), runs: new Set() };
+    return { reads: new Set(), writes: new Set(), runs: new Set() };
   }
 
   private unit(key: string): Unit {
@@ -504,6 +540,9 @@ export class CallReadTracer {
     } else {
       const resolved = this.resolve(upper, ctx);
       if (resolved?.global !== undefined) unit.reads.add(resolved.global);
+      if (resolved?.global !== undefined && written) {
+        unit.writes.add(resolved.global);
+      }
       if (resolved !== undefined) {
         // `p^...` reads what p points to; so does any use of a REFERENCE TO
         // other than rebinding or writing it whole
@@ -526,6 +565,7 @@ export class CallReadTracer {
         };
       } else if (this.programs.has(upper)) {
         // A PROGRAM's instance, through its members and methods
+        unit.reads.add(programKey(upper));
         r = this.exactly(this.programs.get(upper)!);
       } else {
         // A property of the function block, read or written bare
@@ -798,7 +838,10 @@ export class CallReadTracer {
       }
       // A PROGRAM called: its body runs on its one instance
       const program = this.programs.get(name);
-      if (program !== undefined) return this.runBody(unit, program);
+      if (program !== undefined) {
+        unit.reads.add(programKey(name));
+        return this.runBody(unit, program);
+      }
       const f = this.functions.get(name);
       if (f !== undefined) this.runFunction(unit, f);
       return;
@@ -834,6 +877,7 @@ export class CallReadTracer {
             "a PROGRAM call that cannot be followed",
           );
         }
+        unit.reads.add(programKey(head));
         r = this.exactly(program);
         for (const name of parts.slice(1, -1)) {
           if (r.ty === undefined || r.ty === UNKNOWN) break;
@@ -1131,6 +1175,14 @@ export class CallReadTracer {
     }
     return undefined;
   }
+}
+
+/**
+ * The name a global's reads give a PROGRAM whose instance its creation uses
+ * (it runs the PROGRAM's code or reads its members): no identifier has a space.
+ */
+export function programKey(name: string): string {
+  return `PROGRAM ${name.toUpperCase()}`;
 }
 
 /** No initial value, NULL, or 0 (an interface holding no instance). */

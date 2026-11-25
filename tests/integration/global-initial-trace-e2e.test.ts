@@ -846,6 +846,157 @@ END_CONFIGURATION
     features: [],
     expected: "10 9",
   },
+  {
+    title: "a PROGRAM's VAR initial values before a global its call reads",
+    source: `PROGRAM Setup
+VAR k : INT := 5; arr : ARRAY[1..2] OF INT := [10, 20]; s : STRING := 'abc'; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+o := k + arr[2] + LEN(s);
+k := k + 1;
+END_PROGRAM
+FUNCTION F : INT
+Setup();
+F := Setup.o;
+END_FUNCTION
+VAR_GLOBAL
+  x : INT := F();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+Setup();
+o1 := x * 100 + Setup.o;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+program_methods"],
+    expected: "2829",
+  },
+  {
+    title: "a PROGRAM's FB member before a global its call reads",
+    source: `FUNCTION_BLOCK FB_K
+VAR n : INT := 6; END_VAR
+METHOD Get : INT
+Get := n;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Setup
+VAR fk : FB_K; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+o := fk.Get();
+END_PROGRAM
+FUNCTION F : INT
+Setup();
+F := Setup.o;
+END_FUNCTION
+VAR_GLOBAL
+  x : INT := F();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+program_methods"],
+    expected: "6",
+  },
+  {
+    title:
+      "a PROGRAM with a CONFIGURATION VAR_EXTERNAL called by a list global",
+    source: `PROGRAM Setup
+VAR_EXTERNAL cg : INT; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+o := cg * 2;
+END_PROGRAM
+FUNCTION F : INT
+Setup();
+F := Setup.o;
+END_FUNCTION
+VAR_GLOBAL x : INT := F(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+CONFIGURATION Cfg
+VAR_GLOBAL cg : INT := 21; END_VAR
+RESOURCE R ON PLC
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+`,
+    main: `static strucpp::Configuration_CFG cfg; cfg.INST.run(); std::cout << (int)cfg.INST.O1 << std::endl;`,
+    features: ["+program_methods"],
+    expected: "42",
+  },
+  {
+    title: "a PROGRAM called from an FB global's method",
+    source: `PROGRAM Setup
+VAR k : INT := 5; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+o := k;
+END_PROGRAM
+FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Setup();
+Get := Setup.o;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  hk : FB_K;
+  x : INT := hk.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+program_methods"],
+    expected: "5",
+  },
+  {
+    title: "two PROGRAMs calling each other while a global is created",
+    source: `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM PA
+VAR_EXTERNAL g2 : INT; END_VAR
+VAR_INPUT n : INT; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+IF n > 0 THEN PB(n := n - 1); o := PB.o; ELSE o := g2; END_IF
+END_PROGRAM
+PROGRAM PB
+VAR_INPUT n : INT; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+PA(n := n);
+o := PA.o + 1;
+END_PROGRAM
+FUNCTION F : INT
+PA(n := 2);
+F := PA.o;
+END_FUNCTION
+VAR_GLOBAL
+  hk : FB_K;
+  x : INT := F();
+  g2 : INT := hk.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+program_methods"],
+    expected: "8",
+  },
 ];
 
 describe.skipIf(!hasGpp)(

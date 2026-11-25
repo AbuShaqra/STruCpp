@@ -51,6 +51,13 @@ export interface GlobalOrder {
    * be followed: the call and why. Their order is not known to be right.
    */
   unresolved: Map<string, { node: ASTNode; reason: string }>;
+  /**
+   * What each global's creation reads (upper-case), through code or in its
+   * initial value: no address taken. A PROGRAM whose instance it uses is
+   * there as its programKey, with that instance's own needs in
+   * `dependencies`.
+   */
+  reads: Map<string, string[]>;
 }
 
 /** Every global of a unit as one graph: a CONFIGURATION's are marked. */
@@ -185,19 +192,72 @@ export function orderGlobalBlocks(
           new Map(items.map((i) => [i.name.toUpperCase(), i.decl])),
         );
   const dependencies = new Map<string, string[]>();
+  const readsOf = new Map<string, string[]>();
   const unresolved = new Map<string, { node: ASTNode; reason: string }>();
+  const programs = new Set<string>();
+  const writesOf = new Map<string, ReadonlySet<string>>();
   for (const item of items) {
     const self = item.name.toUpperCase();
     const named = namedGlobals(item.decl, owner).filter((n) => n !== self);
     if (tracer !== undefined) {
       // Code reading the global itself while creating it is a cycle
       const reads = tracer.globalReads(item.decl, self);
+      readsOf.set(self, [...reads.globals]);
+      writesOf.set(self, reads.writes ?? new Set());
       for (const g of reads.globals) {
+        if (g.startsWith("PROGRAM ")) programs.add(g);
         if (!named.includes(g)) named.push(g);
       }
       if (reads.unresolved) unresolved.set(self, reads.unresolved);
     }
     dependencies.set(self, named);
+  }
+  // Code a global's creation runs storing into a global another, declared
+  // later, reads: the declaration order is kept between the two
+  if (tracer !== undefined) {
+    items.forEach((later, i) => {
+      const self = later.name.toUpperCase();
+      const reads = new Set(readsOf.get(self) ?? []);
+      const deps = dependencies.get(self)!;
+      for (const earlier of items.slice(0, i)) {
+        const name = earlier.name.toUpperCase();
+        if (name === self || deps.includes(name)) continue;
+        if ([...(writesOf.get(name) ?? [])].some((g) => reads.has(g))) {
+          deps.push(name);
+        }
+      }
+    });
+  }
+  // A PROGRAM instance a global's creation uses is created after what it
+  // needs; it is created after every global that does not use one, so it
+  // cannot need one that does (or another PROGRAM instance).
+  for (const key of programs) {
+    dependencies.set(key, [
+      ...tracer!.programReads(key.slice("PROGRAM ".length)).globals,
+    ]);
+  }
+  const usesProgram = new Map<string, boolean>();
+  const uses = (name: string): boolean => {
+    if (name.startsWith("PROGRAM ")) return true;
+    const known = usesProgram.get(name);
+    if (known !== undefined) return known;
+    usesProgram.set(name, false);
+    const result = (dependencies.get(name) ?? []).some(uses);
+    usesProgram.set(name, result);
+    return result;
+  };
+  const unplaceable = new Set(
+    [...programs].filter((key) => (dependencies.get(key) ?? []).some(uses)),
+  );
+  for (const item of items) {
+    const self = item.name.toUpperCase();
+    const key = (readsOf.get(self) ?? []).find((g) => unplaceable.has(g));
+    if (key === undefined || unresolved.has(self)) continue;
+    unresolved.set(self, {
+      node: item.decl.initialValue ?? item.decl,
+      // The reason names the PROGRAM (type-checker.ts words the error)
+      reason: key,
+    });
   }
 
   const order: GlobalItem[] = [];
@@ -220,5 +280,13 @@ export function orderGlobalBlocks(
     if (item) order.push(item);
   };
   for (const item of items) visit(item.name.toUpperCase());
-  return { order, dependencies, cycles, duplicates, unresolved };
+  return {
+    order,
+    dependencies,
+    // A cycle through a PROGRAM instance is reported as that instance
+    cycles: cycles.filter((c) => !c.some((n) => unplaceable.has(n))),
+    duplicates,
+    unresolved,
+    reads: readsOf,
+  };
 }

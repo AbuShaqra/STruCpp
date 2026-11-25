@@ -2452,7 +2452,6 @@ export class CodeGenerator {
 
     // GVL globals that hold a function block, now that its class is complete
     this.emitGlobalSegment(ast, 2);
-    this.emitFbInitGlobals(ast);
 
     // Generate program class declarations
     if (this.projectModel) {
@@ -2488,6 +2487,12 @@ export class CodeGenerator {
         );
       }
     }
+
+    // Globals whose creation uses a PROGRAM instance, now that it exists;
+    // the FB_init of the global instances, called from the PROGRAM
+    // constructors, once every global is declared
+    this.emitGlobalSegment(ast, 3);
+    this.emitFbInitGlobals(ast);
 
     // Generate function declarations
     for (const func of ast.functions) {
@@ -2625,9 +2630,11 @@ export class CodeGenerator {
 
   /**
    * Where each global is created: 0 before the CONFIGURATION storage, 1 with
-   * it (before the FB classes), 2 after the FB classes and late types. A
-   * global holding a function block is 2, a CONFIGURATION global at least 1,
-   * and every global comes no earlier than the globals it depends on.
+   * it (before the FB classes), 2 after the FB classes and late types, 3
+   * after the PROGRAM classes and their shared instances. A global holding a
+   * function block is at least 2, a CONFIGURATION global at least 1, one
+   * whose creation uses a PROGRAM instance 3, and every global comes no
+   * earlier than the globals it depends on.
    */
   private globalPlan?: {
     ast: CompilationUnit;
@@ -2651,7 +2658,8 @@ export class CodeGenerator {
       const upper = item.name.toUpperCase();
       let at = configurationOf.has(upper) ? 1 : holdsFB(item.decl.type) ? 2 : 0;
       for (const d of dependencies.get(upper) ?? []) {
-        at = Math.max(at, segment.get(d) ?? 0);
+        // A PROGRAM instance it uses is created after the PROGRAM classes
+        at = Math.max(at, d.startsWith("PROGRAM ") ? 3 : (segment.get(d) ?? 0));
       }
       segment.set(upper, at);
     }
@@ -10611,9 +10619,15 @@ export class CodeGenerator {
    */
   private emitOutputTempVar(type: TypeReference): string {
     const name = `__output_tmp_${this.tempVarCounter++}`;
-    const cppType = VLA_TYPE_NAME.test(type.name)
-      ? this.mapVarTypeToCpp(type.name)
-      : this.inOutParamType(type);
+    if (VLA_TYPE_NAME.test(type.name)) {
+      // An unbound ARRAY[*] output: an empty view whose faults name it
+      const view = this.mapVarTypeToCpp(type.name);
+      this.emit(
+        `${this.currentStatementIndent}${view} ${name}{strucpp::unbound_output};`,
+      );
+      return name;
+    }
+    const cppType = this.inOutParamType(type);
     this.emit(`${this.currentStatementIndent}${cppType} ${name};`);
     return name;
   }

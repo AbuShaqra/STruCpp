@@ -330,7 +330,10 @@ VAR o1 : INT; END_VAR
 o1 := x;
 END_PROGRAM
 `);
-    expect(orderAllGlobals(ast!).dependencies.get("X")).toEqual(["G2"]);
+    expect(orderAllGlobals(ast!).dependencies.get("X")).toEqual([
+      "PROGRAM SETUP",
+      "G2",
+    ]);
   });
 
   it("refuses a call of a PROGRAM member it cannot follow", () => {
@@ -352,5 +355,167 @@ PROGRAM Main END_PROGRAM
         e.includes("PROGRAM call that cannot be followed"),
       ),
     ).toBe(true);
+  });
+});
+
+describe("a PROGRAM instance used while globals are created", () => {
+  it("is a node: the global comes after it, it after what it needs", () => {
+    const { ast } = parse(`PROGRAM Setup
+VAR_EXTERNAL k : INT; END_VAR
+VAR v : INT := 5; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+o := v + k;
+END_PROGRAM
+FUNCTION F : INT
+Setup();
+F := Setup.o;
+END_FUNCTION
+VAR_GLOBAL x : INT := F(); k : INT := 1; END_VAR
+PROGRAM Main END_PROGRAM
+`);
+    const order = orderAllGlobals(ast!);
+    expect(order.dependencies.get("X")).toEqual(["PROGRAM SETUP", "K"]);
+    expect(order.dependencies.get("PROGRAM SETUP")).toEqual(["K"]);
+    expect(order.reads.get("X")).toContain("PROGRAM SETUP");
+  });
+
+  it("refuses a global whose PROGRAM instance needs it", () => {
+    const r = compile(
+      `PROGRAM Setup
+VAR_EXTERNAL cg : INT; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+o := 3;
+END_PROGRAM
+FUNCTION F : INT
+Setup();
+F := Setup.o;
+END_FUNCTION
+${MAIN.replace("x : INT", "cg : INT").replace("o1 := x", "o1 := cg")}CONFIGURATION Cfg
+VAR_GLOBAL cg : INT := F(); END_VAR
+${CFG_TAIL}`,
+      { features: ["+program_methods"] },
+    );
+    expect(located(r)).toEqual([
+      "16:24 The initial value of global 'cg' runs PROGRAM SETUP, whose instance needs a global that is created after it: the globals cannot be created in a known order; assign 'cg' in a program instead",
+    ]);
+  });
+
+  it("keeps the declaration order of a store and a later read", () => {
+    const { ast } = parse(`FUNCTION SetG : INT
+VAR_EXTERNAL g : INT; END_VAR
+g := 7;
+SetG := 0;
+END_FUNCTION
+FUNCTION GetG : INT
+VAR_EXTERNAL g : INT; END_VAR
+GetG := g;
+END_FUNCTION
+VAR_GLOBAL g : INT; s : INT := SetG(); x : INT := GetG(); END_VAR
+PROGRAM Main END_PROGRAM
+`);
+    expect(orderAllGlobals(ast!).dependencies.get("X")).toEqual(["G", "S"]);
+  });
+});
+
+describe("FB_init and globals read while they are created (feature fb_init)", () => {
+  const FB = `FUNCTION_BLOCK FB_B
+VAR v : INT; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+v := 7;
+END_METHOD
+METHOD GetV : INT
+GetV := v;
+END_METHOD
+END_FUNCTION_BLOCK
+`;
+  it("refuses reading an instance whose FB_init has work", () => {
+    const r = compile(
+      `${FB}VAR_GLOBAL lb : FB_B; lv : INT := lb.GetV(); pb : POINTER TO FB_B := ADR(lb); END_VAR
+PROGRAM Main END_PROGRAM
+`,
+      { features: ["+fb_init"] },
+    );
+    expect(located(r)).toEqual([
+      "11:35 The initial value of global 'lv' reads 'lb' before its FB_init runs (once every global is created); assign 'lv' in a program instead",
+    ]);
+  });
+
+  it("accepts it without the feature (FB_init is then a plain method)", () => {
+    const r = compile(
+      `${FB}VAR_GLOBAL lb : FB_B; lv : INT := lb.GetV(); END_VAR
+PROGRAM Main END_PROGRAM
+`,
+    );
+    expect(r.errors).toEqual([]);
+  });
+});
+
+describe("a VAR_INPUT ARRAY[*]", () => {
+  it.each(MODES)("cannot be stored into (%s)", (_name, options) => {
+    const r = compile(
+      `FUNCTION G : INT
+VAR_OUTPUT o : ARRAY[*] OF INT; END_VAR
+G := 0;
+END_FUNCTION
+FUNCTION F : INT
+VAR_INPUT a : ARRAY[*] OF INT; END_VAR
+VAR t : ARRAY[1..3] OF INT; x : INT; END_VAR
+a := t;
+a[1] := 9;
+x := G(o => a);
+F := a[1];
+END_FUNCTION
+PROGRAM Main END_PROGRAM
+`,
+      options,
+    );
+    const message = (line: number, col: number): string =>
+      `${line}:${col} 'a' is a VAR_INPUT ARRAY[*]: it refers to the caller's array, which an input cannot change; declare it VAR_IN_OUT to write it`;
+    expect(located(r)).toEqual([message(8, 1), message(9, 1), message(10, 13)]);
+  });
+});
+
+describe("a whole-array store into an ARRAY[*] parameter", () => {
+  const source = (decl: string, store: string): string => `FUNCTION F : INT
+VAR_IN_OUT a : ARRAY[*] OF INT; END_VAR
+VAR ${decl} END_VAR
+${store}
+F := 0;
+END_FUNCTION
+PROGRAM Main END_PROGRAM
+`;
+  const refusal = (what: string): string =>
+    `4:6 Cannot store ${what} into 'a', a variable-length ARRAY[*] of rank 1: only an array of that rank, element by element`;
+
+  it.each(MODES)(
+    "refuses an array literal and another rank (%s)",
+    (_n, options) => {
+      expect(located(compile(source("", "a := [1, 2, 3];"), options))).toEqual([
+        refusal("an array literal"),
+      ]);
+      expect(
+        located(
+          compile(source("u : ARRAY[1..3, 1..2] OF INT;", "a := u;"), options),
+        ),
+      ).toEqual([refusal("an array of rank 2")]);
+    },
+  );
+
+  it("checks the elements as scalar stores", () => {
+    const narrowing = source("t : ARRAY[1..3] OF DINT;", "a := t;");
+    expect(compile(narrowing).warnings.map((w) => w.message)).toContain(
+      "Implicit narrowing conversion from DINT to INT",
+    );
+    expect(located(compile(narrowing, { strict: true }))).toEqual([
+      "4:6 Implicit conversion from DINT to INT is not allowed; use DINT_TO_INT",
+    ]);
+    expect(
+      located(
+        compile(source("t : ARRAY[1..3] OF SINT;", "a := t;"), {
+          strict: true,
+        }),
+      ),
+    ).toEqual([]);
   });
 });

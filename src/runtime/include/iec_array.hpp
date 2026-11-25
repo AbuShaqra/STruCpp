@@ -494,22 +494,26 @@ using Array3D = IEC_ARRAY_3D<T, ArrayBounds<L1, U1>, ArrayBounds<L2, U2>, ArrayB
 // Type-erased array views for ARRAY[*] parameters in VAR_IN_OUT
 // =============================================================================
 
+/** Tag: the view of a FUNCTION / METHOD VAR_OUTPUT ARRAY[*] the call leaves unbound. */
+struct unbound_output_t {};
+constexpr unbound_output_t unbound_output{};
+
 namespace detail {
-/** An access through an unbound view raises the NullReference fault. */
+/** An access through an unbound view raises the NullReference fault, naming the parameter kind. */
 template<typename T>
-inline void view_unbound_check(const T* data) {
+inline void view_unbound_check(const T* data, const char* kind = "VAR_IN_OUT") {
     if (data == nullptr) {
 #if STRUCPP_HAS_EXCEPTIONS
-        throw NullReferenceException("VAR_IN_OUT");
+        throw NullReferenceException(kind);
 #else
-        iec_runtime_fault(IecFault::NullReference, "VAR_IN_OUT");
+        iec_runtime_fault(IecFault::NullReference, kind);
 #endif
     }
 }
 /** A whole-array store through a view: the lengths differ (or it is unbound). */
 template<typename T>
-inline void view_length_fault(const T* data) {
-    view_unbound_check(data);
+inline void view_length_fault(const T* data, const char* kind) {
+    view_unbound_check(data, kind);
 #if STRUCPP_HAS_EXCEPTIONS
     throw std::out_of_range("Array lengths differ in a whole-array assignment");
 #else
@@ -524,11 +528,15 @@ class ArrayView1D {
     T* data_;
     int64_t lower_;
     int64_t upper_;
+    const char* kind_ = "VAR_IN_OUT";
 
 public:
     // Unbound: a function-block VAR_IN_OUT before its first call. Empty range;
     // an element access raises the NullReference fault (see at()).
     ArrayView1D() noexcept : data_(nullptr), lower_(0), upper_(-1) {}
+    // An unbound VAR_OUTPUT: its faults name it so.
+    explicit ArrayView1D(unbound_output_t) noexcept
+        : data_(nullptr), lower_(0), upper_(-1), kind_("VAR_OUTPUT") {}
 
     // Construct from any IEC_ARRAY_1D with matching element type
     template<typename Bounds>
@@ -550,7 +558,7 @@ public:
     T& at(int64_t index) {
 #ifndef STRUCPP_NO_BOUNDS_CHECK
         if (index < lower_ || index > upper_) {
-            detail::view_unbound_check(data_);
+            detail::view_unbound_check(data_, kind_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
@@ -564,7 +572,7 @@ public:
     const T& at(int64_t index) const {
 #ifndef STRUCPP_NO_BOUNDS_CHECK
         if (index < lower_ || index > upper_) {
-            detail::view_unbound_check(data_);
+            detail::view_unbound_check(data_, kind_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
@@ -586,11 +594,12 @@ public:
     void assign(const Src& src) {
         const int64_t from = src.lower_bound(1);
         if (src.upper_bound(1) - from != upper_ - lower_) {
-            detail::view_length_fault(data_);
+            detail::view_length_fault(data_, kind_);
             return;
         }
+        // The lengths match, so every index is in bounds
         for (int64_t k = 0; k <= upper_ - lower_; ++k) {
-            data_[k] = src.at(from + k);
+            data_[k] = src[from + k];
         }
     }
 };
@@ -602,11 +611,15 @@ class ArrayView2D {
     int64_t lower1_, upper1_;
     int64_t lower2_, upper2_;
     int64_t dim2_;
+    const char* kind_ = "VAR_IN_OUT";
 
 public:
     // Unbound (see ArrayView1D's default constructor).
     ArrayView2D() noexcept
         : data_(nullptr), lower1_(0), upper1_(-1), lower2_(0), upper2_(-1), dim2_(0) {}
+    explicit ArrayView2D(unbound_output_t) noexcept : ArrayView2D() {
+        kind_ = "VAR_OUTPUT";
+    }
 
     template<typename Bounds1, typename Bounds2>
     ArrayView2D(IEC_ARRAY_2D<T, Bounds1, Bounds2>& arr)
@@ -627,7 +640,7 @@ public:
     T& at(int64_t i, int64_t j) {
 #ifndef STRUCPP_NO_BOUNDS_CHECK
         if (i < lower1_ || i > upper1_ || j < lower2_ || j > upper2_) {
-            detail::view_unbound_check(data_);
+            detail::view_unbound_check(data_, kind_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
@@ -641,7 +654,7 @@ public:
     const T& at(int64_t i, int64_t j) const {
 #ifndef STRUCPP_NO_BOUNDS_CHECK
         if (i < lower1_ || i > upper1_ || j < lower2_ || j > upper2_) {
-            detail::view_unbound_check(data_);
+            detail::view_unbound_check(data_, kind_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else
@@ -662,7 +675,7 @@ public:
         const int64_t f1 = src.lower_bound(1), f2 = src.lower_bound(2);
         if (src.upper_bound(1) - f1 != upper1_ - lower1_ ||
             src.upper_bound(2) - f2 != upper2_ - lower2_) {
-            detail::view_length_fault(data_);
+            detail::view_length_fault(data_, kind_);
             return;
         }
         for (int64_t i = 0; i <= upper1_ - lower1_; ++i) {
@@ -681,12 +694,16 @@ class ArrayView3D {
     int64_t lower2_, upper2_;
     int64_t lower3_, upper3_;
     int64_t dim2_, dim3_;
+    const char* kind_ = "VAR_IN_OUT";
 
 public:
     // Unbound (see ArrayView1D's default constructor).
     ArrayView3D() noexcept
         : data_(nullptr), lower1_(0), upper1_(-1), lower2_(0), upper2_(-1),
           lower3_(0), upper3_(-1), dim2_(0), dim3_(0) {}
+    explicit ArrayView3D(unbound_output_t) noexcept : ArrayView3D() {
+        kind_ = "VAR_OUTPUT";
+    }
 
     template<typename Bounds1, typename Bounds2, typename Bounds3>
     ArrayView3D(IEC_ARRAY_3D<T, Bounds1, Bounds2, Bounds3>& arr)
@@ -732,7 +749,7 @@ public:
         if (src.upper_bound(1) - f1 != upper1_ - lower1_ ||
             src.upper_bound(2) - f2 != upper2_ - lower2_ ||
             src.upper_bound(3) - f3 != upper3_ - lower3_) {
-            detail::view_length_fault(data_);
+            detail::view_length_fault(data_, kind_);
             return;
         }
         for (int64_t i = 0; i <= upper1_ - lower1_; ++i) {
@@ -753,7 +770,7 @@ private:
 #ifndef STRUCPP_NO_BOUNDS_CHECK
         if (i < lower1_ || i > upper1_ || j < lower2_ || j > upper2_ ||
             k < lower3_ || k > upper3_) {
-            detail::view_unbound_check(data_);
+            detail::view_unbound_check(data_, kind_);
 #if STRUCPP_HAS_EXCEPTIONS
             throw std::out_of_range("Array index out of bounds");
 #else

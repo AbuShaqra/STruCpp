@@ -263,6 +263,33 @@ END_PROGRAM
     main: `strucpp::Program_MAIN p; p.run(); std::cout << (int)p.O1 << " " << (int)p.O2 << std::endl;`,
     expected: "3 9",
   },
+  {
+    title: "a whole-array store into a FUNCTION_BLOCK ARRAY[*] in-out",
+    source: `FUNCTION LIT : INT
+VAR_IN_OUT a : ARRAY[*] OF INT; END_VAR
+a[LOWER_BOUND(a, 1)] := 1;
+LIT := a[LOWER_BOUND(a, 1)];
+END_FUNCTION
+FUNCTION_BLOCK FB_V
+VAR_IN_OUT a : ARRAY[*] OF INT; END_VAR
+VAR t : ARRAY[1..3] OF INT := [5, 6, 7]; END_VAR
+a := t;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR
+  x : ARRAY[1..3] OF INT;
+  y : ARRAY[1..3] OF INT;
+  fv : FB_V;
+  o1, o2, o3 : INT;
+END_VAR
+o1 := LIT(a := x) * 10 + x[3];
+fv(a := y); o2 := y[1] * 10 + y[3];
+o3 := 0;
+END_PROGRAM
+`,
+    main: `strucpp::Program_MAIN p; p.run(); std::cout << (int)p.O1 << " " << (int)p.O2 << " " << (int)p.O3 << std::endl;`,
+    expected: "10 57 0",
+  },
 ];
 
 /** A whole-array store of another length into an ARRAY[*] parameter. */
@@ -370,6 +397,38 @@ int main() {
 `,
         }),
       ).toThrow(/Array lengths differ in a whole-array assignment/);
+    });
+
+    it("an unbound output written faults naming VAR_OUTPUT", () => {
+      const r = compile(
+        `FUNCTION F : INT
+VAR_OUTPUT a : ARRAY[*] OF INT; END_VAR
+a[1] := 5;
+F := 0;
+END_FUNCTION
+PROGRAM Main
+VAR o1 : INT; END_VAR
+o1 := F();
+END_PROGRAM
+`,
+        { headerFileName: "generated.hpp" },
+      );
+      expect(r.errors).toEqual([]);
+      expect(() =>
+        compileAndRunStandalone({
+          tempDir,
+          pchPath,
+          headerCode: r.headerCode,
+          cppCode: r.cppCode,
+          testName: "function_output_vla_unbound",
+          mainCode: `#include <iostream>
+int main() {
+  strucpp::Program_MAIN p; p.run(); std::cout << (int)p.O1 << std::endl;
+  return 0;
+}
+`,
+        }),
+      ).toThrow(/Null reference dereference in VAR_OUTPUT/);
     });
 
     it("writes reach a CONFIGURATION global", () => {
