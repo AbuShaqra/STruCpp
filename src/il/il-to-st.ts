@@ -610,13 +610,13 @@ function convertBlockInstructions(instructions: ILInstruction[]): {
 function generateCAL(instr: ILInstruction): string {
   const fbName = instr.operand ?? "";
   if (!instr.callParams || instr.callParams.length === 0) {
-    return `${fbName}();`;
+    return `${markOrigin(fbName, instr.sourceLine)}();`;
   }
 
   const params = instr.callParams.map((p) => {
     const assign = p.isOutput ? "=>" : ":=";
-    return `${p.name} ${assign} ${p.value}`;
+    return `${p.name} ${assign} ${markOrigin(p.value, instr.sourceLine)}`;
   });
 
-  return `${fbName}(${params.join(", ")});`;
+  return `${markOrigin(fbName, instr.sourceLine)}(${params.join(", ")});`;
 }

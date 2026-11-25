@@ -177,7 +177,12 @@ ${CFG}`;
     const retained = (r.debugMap!.retainVars ?? []).map((v) => v.path);
     expect(new Set(retained).size).toBe(retained.length);
     expect(retained).toEqual(
-      expect.arrayContaining(["P1.B.FB_A::Y", "P1.B.Y", "P1.T.TON::ET", "P1.T.ET"]),
+      expect.arrayContaining([
+        "P1.B.FB_A::Y",
+        "P1.B.Y",
+        "P1.T.TON::ET",
+        "P1.T.ET",
+      ]),
     );
   });
 
@@ -189,7 +194,9 @@ ${CFG}`;
     const def = compile(SOURCE, { libraries: libs() });
     expect(def.errors).toEqual([]);
     expect(
-      def.warnings.map((w) => w.message).filter((m) => m.includes("redeclares")),
+      def.warnings
+        .map((w) => w.message)
+        .filter((m) => m.includes("redeclares")),
     ).toEqual(messages);
     for (const opts of [{ strict: true }, { dialect: "iec-3" }]) {
       const r = compile(SOURCE, { libraries: libs(), ...opts });
@@ -267,9 +274,110 @@ ${CFG}`,
     );
     expect(r.errors).toEqual([]);
     expect(
-      r.warnings.map((w) => w.message).filter((m) => m.includes("not debuggable")),
+      r.warnings
+        .map((w) => w.message)
+        .filter((m) => m.includes("not debuggable")),
     ).toEqual([
       "RP is not debuggable: a POINTER TO holds an address, which the debugger cannot show or write.",
     ]);
+  });
+});
+
+describe("debug table: a non-RETAIN file-level global holding RETAIN members", () => {
+  it("warns about a RETAIN member it cannot list, as for a program local", () => {
+    const r = compile(
+      `FUNCTION_BLOCK FB_S
+VAR RETAIN s10 : STRING[10]; k : INT; END_VAR
+VAR q : STRING[5]; END_VAR
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  nfb : FB_S;
+END_VAR
+PROGRAM Main
+VAR x : INT; END_VAR
+x := 1;
+END_PROGRAM
+${CFG}`,
+      { libraries: libs() },
+    );
+    expect(r.errors).toEqual([]);
+    expect(
+      r.warnings
+        .map((w) => w.message)
+        .filter((m) => m.includes("not debuggable")),
+    ).toEqual([
+      "NFB.S10 is not debuggable: declared STRING(10), but the debug dispatch addresses strings as STRING(254). Declare it as a plain STRING to expose it.",
+    ]);
+    expect((r.debugMap!.retainVars ?? []).map((v) => v.path)).toEqual([
+      "NFB.K",
+    ]);
+  });
+});
+
+describe("debug table and redeclarations: VAR_TEMP, VAR_EXTERNAL, EN/ENO", () => {
+  it("qualifies a base member a derived VAR_TEMP hides, and flags the VAR_TEMP", () => {
+    const r = compile(
+      `FUNCTION_BLOCK FB_A
+VAR y : INT; END_VAR
+y := y + 1;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_B EXTENDS FB_A
+VAR_TEMP y : INT; END_VAR
+y := 5;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR b : FB_B; END_VAR
+b();
+END_PROGRAM
+${CFG}`,
+      { strict: true },
+    );
+    expect(r.errors.map((e) => e.message)).toEqual([
+      "'y' of FUNCTION_BLOCK 'FB_B' redeclares the variable 'y' it inherits from 'FB_A', which it hides; rename one of them",
+    ]);
+    const def = compile(
+      `FUNCTION_BLOCK FB_A
+VAR y : INT; END_VAR
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_B EXTENDS FB_A
+VAR_TEMP y : INT; END_VAR
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR b : FB_B; END_VAR
+END_PROGRAM
+${CFG}`,
+    );
+    expect(def.debugMap!.leaves.map((l) => l.path)).toEqual(["P1.B.FB_A::Y"]);
+  });
+
+  it("leaves a VAR_EXTERNAL and EN/ENO declared again alone", () => {
+    for (const opts of [{}, { strict: true }, { dialect: "iec-3" }]) {
+      const r = compile(
+        `VAR_GLOBAL G1 : INT; END_VAR
+FUNCTION_BLOCK FB_A
+VAR_INPUT EN : BOOL := TRUE; END_VAR
+VAR_OUTPUT ENO : BOOL; END_VAR
+VAR_EXTERNAL G1 : INT; END_VAR
+ENO := EN; G1 := 1;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_B EXTENDS FB_A
+VAR_INPUT EN : BOOL := TRUE; END_VAR
+VAR_OUTPUT ENO : BOOL; END_VAR
+VAR_EXTERNAL G1 : INT; END_VAR
+ENO := EN; G1 := 2;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR b : FB_B; END_VAR
+b(EN := TRUE);
+END_PROGRAM
+${CFG}`,
+        opts,
+      );
+      expect(
+        [...r.errors, ...r.warnings]
+          .map((e) => e.message)
+          .filter((m) => m.includes("redeclares")),
+      ).toEqual([]);
+    }
   });
 });

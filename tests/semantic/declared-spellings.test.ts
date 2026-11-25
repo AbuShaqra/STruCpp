@@ -54,7 +54,9 @@ END_PROGRAM
   });
 
   it("re-spells a name in a parse error", () => {
-    const r = compile(`PROGRAM Main\nVAR r2 : INT; END_VAR\nr2 r2;\nEND_PROGRAM\n`);
+    const r = compile(
+      `PROGRAM Main\nVAR r2 : INT; END_VAR\nr2 r2;\nEND_PROGRAM\n`,
+    );
     expect(r.errors.map((e) => e.message).join("\n")).toContain(
       "identifier `r2`",
     );
@@ -85,9 +87,9 @@ END_PROGRAM
     expect(withDeclaredSpelling("'INT' and 'MOTOR.SPEED'", spellings)).toBe(
       "'INT' and 'Motor.SPEED'",
     );
-    expect(
-      withDeclaredSpelling("in 'A[MOTOR].MOTOR'", spellings),
-    ).toBe("in 'A[MOTOR].Motor'");
+    expect(withDeclaredSpelling("in 'A[MOTOR].MOTOR'", spellings)).toBe(
+      "in 'A[MOTOR].Motor'",
+    );
     const r = messages(
       `PROGRAM Main
 VAR ton : INT; t : TON; END_VAR
@@ -134,7 +136,9 @@ END_PROGRAM
   });
 
   it("takes a parse error's identifier from the source at its position", () => {
-    const r = compile(`PROGRAM Main\nVAR Foo : INT; END_VAR\nFoo := 1 FOO;\nEND_PROGRAM\n`);
+    const r = compile(
+      `PROGRAM Main\nVAR Foo : INT; END_VAR\nFoo := 1 FOO;\nEND_PROGRAM\n`,
+    );
     for (const e of r.errors) {
       if (e.message.includes("identifier `")) {
         expect(e.message).toContain("identifier `FOO`");
@@ -145,7 +149,8 @@ END_PROGRAM
   it("takes time in proportion to the diagnostics", () => {
     const n = 40000;
     const lines: string[] = [];
-    for (let i = 0; i < n; i++) lines.push(`x${i} := undeclared_Thing${i} + 1;`);
+    for (let i = 0; i < n; i++)
+      lines.push(`x${i} := undeclared_Thing${i} + 1;`);
     const diags = lines.map((_l, i) => ({
       message: `Undeclared variable 'UNDECLARED_THING${i}'`,
       line: i + 1,
@@ -156,12 +161,46 @@ END_PROGRAM
     const start = performance.now();
     respellDiagnostics(
       diags,
-      { spellings: () => new Map(), isLibraryPou: () => false },
+      { spellings: () => new Map(), isLibraryMember: () => false },
       new Map([["f.st", lines.join("\n")]]),
     );
     expect(performance.now() - start).toBeLessThan(5000);
     expect(diags[n - 1]!.message).toBe(
       `Undeclared variable 'undeclared_Thing${n - 1}'`,
+    );
+  });
+});
+
+describe("names in messages: parse errors on one long line", () => {
+  it("reads each echo in one pass over the line", () => {
+    const parts: string[] = [];
+    for (let i = 0; i < 20000; i++) parts.push(`x${i} := Foo${i} Bar${i};`);
+    const src = parts.join(" ");
+    const diags = parts.map((_p, i) => ({
+      message: `Expected \`Semicolon\`, found identifier \`BAR${i}\`. after identifier \`NOPE${i}\``,
+      line: 1,
+      column: src.length,
+      file: "f.st",
+      severity: "error" as const,
+    }));
+    const start = performance.now();
+    respellDiagnostics(
+      diags,
+      { spellings: () => new Map(), isLibraryMember: () => false },
+      new Map([["f.st", src]]),
+    );
+    expect(performance.now() - start).toBeLessThan(5000);
+    expect(diags[19999]!.message).toBe(
+      "Expected `Semicolon`, found identifier `Bar19999`. after identifier `NOPE19999`",
+    );
+  });
+
+  it("echoes the token before the position as written", () => {
+    const r = compile(
+      `PROGRAM Main VAR x : INT; Aa : INT; Bb : INT; END_VAR x := Aa Bb; END_PROGRAM`,
+    );
+    expect(r.errors.map((e) => e.message)).toContain(
+      "Unexpected identifier `Bb` after identifier `Aa` while parsing a statement.",
     );
   });
 });

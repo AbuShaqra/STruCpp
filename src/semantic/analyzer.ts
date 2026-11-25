@@ -768,7 +768,9 @@ export class SemanticAnalyzer {
   /**
    * A variable of a FUNCTION_BLOCK named like one it inherits (from any base,
    * user or library) hides the inherited one: a warning, an error under iec-3
-   * and --strict. Temporaries are not members, so a VAR_TEMP is left alone.
+   * and --strict. A VAR_TEMP is a member of the block's class too, so it hides
+   * one as well. A VAR_EXTERNAL names a global, not a member, and EN/ENO are
+   * the block's own pins (see validateDeclaredEno): both are left alone.
    */
   private validateInheritedRedeclarations(ast: CompilationUnit): void {
     const strict = this.iec3Rules || this.options.strict === true;
@@ -784,11 +786,15 @@ export class SemanticAnalyzer {
         if (sym === undefined) break;
         const names =
           sym.libraryName !== undefined
-            ? [...sym.inputs, ...sym.outputs, ...sym.inouts, ...sym.locals].map(
-                (v) => v.name,
-              )
+            ? [
+                ...sym.inputs,
+                ...sym.outputs,
+                ...sym.inouts,
+                ...sym.locals,
+                ...(sym.temps ?? []),
+              ].map((v) => v.name)
             : sym.declaration.varBlocks
-                .filter((b) => b.blockType !== "VAR_TEMP")
+                .filter((b) => b.blockType !== "VAR_EXTERNAL")
                 .flatMap((b) => b.declarations.flatMap((d) => d.names));
         for (const n of names) {
           if (!inherited.has(n.toUpperCase())) {
@@ -799,10 +805,12 @@ export class SemanticAnalyzer {
       }
       if (inherited.size === 0) continue;
       for (const vb of fb.varBlocks) {
-        if (vb.blockType === "VAR_TEMP") continue;
+        if (vb.blockType === "VAR_EXTERNAL") continue;
         for (const decl of vb.declarations) {
           decl.names.forEach((n, i) => {
-            const from = inherited.get(n.toUpperCase());
+            const upper = n.toUpperCase();
+            if (upper === "EN" || upper === "ENO") return;
+            const from = inherited.get(upper);
             if (from === undefined) return;
             const at = decl.nameSpans?.[i] ?? decl.sourceSpan;
             const message =

@@ -201,10 +201,7 @@ function takeOrigins(
         const end = line.indexOf(ORIGIN_END, close);
         const ilLine = Number(line.slice(k + 1, close));
         const operand = stripOrigins(line.slice(close + 1, end));
-        const at =
-          sourceLines[ilLine - 1]
-            ?.toUpperCase()
-            .indexOf(operand.toUpperCase()) ?? -1;
+        const at = ilOperandOffset(sourceLines[ilLine - 1] ?? "", operand);
         out.push({
           line: firstLine + i,
           column: text.length + 1 + (i === 0 ? firstColumnOffset : 0),
@@ -218,6 +215,43 @@ function takeOrigins(
       return text;
     })
     .join("\n");
+}
+
+/**
+ * The offset of `operand` in IL source line `line`: after its label and its
+ * operator, on word boundaries, outside comments (an inline function call
+ * names itself as the operator); -1 when it is not there.
+ */
+function ilOperandOffset(line: string, operand: string): number {
+  // Comments blanked, offsets kept
+  const code = line
+    .replace(/\(\*.*?\*\)/g, (c) => " ".repeat(c.length))
+    .replace(/\/\/.*$/, (c) => " ".repeat(c.length))
+    .toUpperCase();
+  const label = /^\s*[A-Z_][A-Z0-9_]*\s*:(?!=)/.exec(code)?.[0].length ?? 0;
+  const operator =
+    /^\s*[A-Z_][A-Z0-9_]*/.exec(code.slice(label))?.[0].length ?? 0;
+  const word = /[A-Za-z0-9_]/;
+  const want = operand.toUpperCase();
+  const find = (from: number): number => {
+    for (
+      let i = code.indexOf(want, from);
+      i >= 0;
+      i = code.indexOf(want, i + 1)
+    ) {
+      const before = code[i - 1] ?? "";
+      const after = code[i + want.length] ?? "";
+      if (
+        !(word.test(want[0]!) && word.test(before)) &&
+        !(word.test(want[want.length - 1]!) && word.test(after))
+      ) {
+        return i;
+      }
+    }
+    return -1;
+  };
+  const afterOperator = find(label + operator);
+  return afterOperator >= 0 ? afterOperator : find(label);
 }
 
 /** The first non-blank character of an IL body, and the POU's name from its header. */

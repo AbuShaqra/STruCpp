@@ -217,15 +217,38 @@ const NAMED_AT_POSITION = [
   /^Undeclared variable '/,
   / has no member '/,
   /^Undefined type '/,
+  /^Undeclared function '/,
 ];
 
-/** The text of each line of a source, its line starts computed once. */
+/** A line of a source and the offsets of each word in it, upper-cased, read once. */
+interface LineText {
+  text: string;
+  words: ReadonlyMap<string, readonly number[]>;
+}
+
+/** `text` with the offsets of its words (identifier-like runs), in order. */
+function lineText(text: string): LineText {
+  const words = new Map<string, number[]>();
+  for (const m of text.matchAll(/[A-Za-z0-9_]+/g)) {
+    const key = m[0].toUpperCase();
+    const at = words.get(key);
+    if (at === undefined) words.set(key, [m.index]);
+    else at.push(m.index);
+  }
+  return { text, words };
+}
+
+/** The lines of each source, split and upper-cased once per line read. */
 class SourceLines {
   private readonly starts = new Map<string, number[]>();
+  private readonly read = new Map<string, LineText>();
   constructor(private readonly sources: ReadonlyMap<string, string>) {}
 
   /** Line `line` (1-based) of `file`, without its line break. */
-  line(file: string, line: number): string | undefined {
+  line(file: string, line: number): LineText | undefined {
+    const key = `${line}\u0000${file}`;
+    const known = this.read.get(key);
+    if (known !== undefined) return known;
     const text = this.sources.get(file);
     if (text === undefined || line < 1) return undefined;
     let starts = this.starts.get(file);
@@ -239,60 +262,47 @@ class SourceLines {
     const start = starts[line - 1];
     if (start === undefined) return undefined;
     const end = starts[line];
-    return text.slice(start, end === undefined ? undefined : end - 1);
+    const result = lineText(
+      text.slice(start, end === undefined ? undefined : end - 1),
+    );
+    this.read.set(key, result);
+    return result;
   }
 }
 
 /**
- * The spelling of `upper` as written in `lineText`: the first occurrence from
+ * The spelling of `upper` as written in `line`: the first occurrence from
  * `column` on, else the first on the line; with `exact`, only one at `column`.
  */
 function writtenOnLine(
   upper: string,
-  lineText: string | undefined,
+  line: LineText | undefined,
   column: number,
   exact = false,
 ): string | undefined {
-  if (lineText === undefined) return undefined;
-  // Upper-casing keeps offsets unless a character widens (ß → SS): then ASCII only
-  let upperLine = lineText.toUpperCase();
-  if (upperLine.length !== lineText.length) {
-    upperLine = lineText.replace(/[a-z]/g, (c) => c.toUpperCase());
-  }
-  const isWord = (ch: string | undefined): boolean =>
-    ch !== undefined && /[A-Za-z0-9_]/.test(ch);
-  let first: string | undefined;
-  for (
-    let i = upperLine.indexOf(upper);
-    i >= 0;
-    i = upperLine.indexOf(upper, i + 1)
-  ) {
-    if (isWord(lineText[i - 1]) || isWord(lineText[i + upper.length])) continue;
-    const spelled = lineText.slice(i, i + upper.length);
-    if (exact) {
-      if (i + 1 === column) return spelled;
-      continue;
-    }
-    first ??= spelled;
-    if (i + 1 >= column) return spelled;
-  }
-  return first;
+  const at = line?.words.get(upper);
+  if (line === undefined || at === undefined) return undefined;
+  const spelled = (i: number): string => line.text.slice(i, i + upper.length);
+  if (exact) return at.includes(column - 1) ? spelled(column - 1) : undefined;
+  return spelled(at.find((i) => i >= column - 1) ?? at[0]!);
 }
 
-/** The spelling of the last `upper` in `lineText` before `column`, if any. */
+/** The spelling of the last `upper` in `line` that ends before `column`, if any. */
 function writtenBefore(
   upper: string,
-  lineText: string | undefined,
+  line: LineText | undefined,
   column: number,
 ): string | undefined {
-  if (lineText === undefined) return undefined;
-  const before = lineText.slice(0, Math.max(0, column - 1));
-  let found: string | undefined;
-  for (let c = 1; c <= before.length; c++) {
-    const w = writtenOnLine(upper, before, c, true);
-    if (w !== undefined) found = w;
+  const at = line?.words.get(upper);
+  if (line === undefined || at === undefined) return undefined;
+  let found: number | undefined;
+  for (const i of at) {
+    if (i + upper.length > column - 1) break;
+    found = i;
   }
-  return found;
+  return found !== undefined
+    ? line.text.slice(found, found + upper.length)
+    : undefined;
 }
 
 /**

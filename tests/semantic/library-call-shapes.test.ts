@@ -69,7 +69,10 @@ const library = (): StlibArchive => {
 
 /** `message` with the parameter it names as the source declares it (lower case): a library keeps its manifest's spelling. */
 const declared = (message: string): string =>
-  message.replace(/'([A-Z][A-Z0-9_]*)'/, (_m, n: string) => `'${n.toLowerCase()}'`);
+  message.replace(
+    /'([A-Z][A-Z0-9_]*)'/,
+    (_m, n: string) => `'${n.toLowerCase()}'`,
+  );
 
 /** The errors of `vars`/`body` declared in the program and against the library. */
 const errors = (vars: string, body: string): string[][] => [

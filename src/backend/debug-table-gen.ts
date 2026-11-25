@@ -544,8 +544,10 @@ export function generateDebugTable(
   };
   /** Leaves left out without a warning (a non-RETAIN file-level global). */
   let silentSkips = false;
+  /** The flags of the leaf being walked: a RETAIN one is warned about even in a silent walk. */
+  let leafFlags = 0;
   const skip = (item: { path: string; reason: string }): void => {
-    if (silentSkips) return;
+    if (silentSkips && (leafFlags & LEAF_FLAG_RETAIN) === 0) return;
     skipped.push(
       currentDecl !== undefined ? { ...item, decl: currentDecl } : item,
     );
@@ -730,7 +732,10 @@ export function generateDebugTable(
     );
   };
 
-  /** The names of the members an instance of `fbSym` holds itself (not its base's). */
+  /**
+   * The names of the members an instance of `fbSym` holds itself (not its
+   * base's), VAR_TEMP included: codegen declares those as class members too.
+   */
   const ownMemberNames = (fbSym: FunctionBlockSymbol): string[] =>
     fbSym.libraryName !== undefined
       ? [
@@ -738,9 +743,10 @@ export function generateDebugTable(
           ...fbSym.outputs,
           ...fbSym.inouts,
           ...fbSym.locals,
+          ...(fbSym.temps ?? []),
         ].map((v) => v.name.toUpperCase())
       : fbSym.declaration.varBlocks
-          .filter((b) => b.blockType !== "VAR_TEMP")
+          .filter((b) => b.blockType !== "VAR_EXTERNAL")
           .flatMap((b) => b.declarations.flatMap((d) => d.names))
           .map((n) => n.toUpperCase());
 
@@ -901,6 +907,21 @@ export function generateDebugTable(
   // → per-element recursion, named user type (struct / FB / elementary alias)
   // → recurse into definition.
   const visitTypeRef = (
+    path: string,
+    cppExpr: string,
+    typeRef: TypeReference,
+    flags: number,
+  ): void => {
+    const outerFlags = leafFlags;
+    leafFlags = flags;
+    try {
+      visitTypeRefOf(path, cppExpr, typeRef, flags);
+    } finally {
+      leafFlags = outerFlags;
+    }
+  };
+
+  const visitTypeRefOf = (
     path: string,
     cppExpr: string,
     typeRef: TypeReference,
@@ -1402,7 +1423,7 @@ export function generateDebugTable(
         seenGlobals.add(key);
         // Listed for the debugger; a leaf it cannot list is only warned about
         // when retained, where leaving it out loses data at a power cycle.
-        silentSkips = !block.isRetain;
+        silentSkips = true;
         try {
           inDecl(key, () =>
             visitTypeRef(

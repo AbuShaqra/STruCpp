@@ -88,6 +88,32 @@ END_FUNCTION_BLOCK
     ]);
   });
 
+  it("places an operand's column after its label and operator, outside comments", () => {
+    const src = `FUNCTION_BLOCK FB_Col
+VAR q : INT; END_VAR
+  LD d
+  ST q
+  LD (* undJ *) undJ
+  ST q
+undK: LD undK
+  ST q
+  CAL undFb(IN := undF)
+  JMP undK
+END_FUNCTION_BLOCK
+`;
+    expect(
+      compile(src, { fileName: "il.st" })
+        .errors.map((e) => `${e.line}:${e.column} ${e.message}`)
+        .sort(),
+    ).toEqual([
+      "3:6 Undeclared variable 'd'",
+      "5:17 Undeclared variable 'undJ'",
+      "7:10 Undeclared variable 'undK'",
+      "9:19 Undeclared variable 'undF'",
+      "9:7 Undeclared function 'undFb'",
+    ]);
+  });
+
   it("keeps each POU's line count", () => {
     for (const il of [STRAIGHT, JUMPS]) {
       const result = transpileILSource(il + AFTER, "il.st");
