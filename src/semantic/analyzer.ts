@@ -6528,6 +6528,26 @@ export class SemanticAnalyzer {
         decl.type.sourceSpan?.file ?? decl.sourceSpan.file,
       );
     };
+    // The views exist for 1 to 3 dimensions (iec_array.hpp)
+    const rankOf = (type: TypeReference): number => {
+      const inline = /^__VLA_(\d+)D_/.exec(type.name.toUpperCase());
+      if (inline) return Number(inline[1]);
+      const def = types.get(type.name.toUpperCase())?.definition;
+      return def?.kind === "ArrayDefinition" &&
+        def.dimensions.some((d) => d.isVariableLength)
+        ? def.dimensions.length
+        : 0;
+    };
+    const refuseRank = (decl: VarDeclaration): void => {
+      const rank = rankOf(decl.type);
+      if (rank <= 3) return;
+      this.addError(
+        `'${decl.names.join(", ").toUpperCase()}' is an ARRAY[*] of ${rank} dimensions: an ARRAY[*] parameter has at most 3`,
+        decl.type.sourceSpan?.startLine ?? decl.sourceSpan.startLine,
+        decl.type.sourceSpan?.startCol ?? decl.sourceSpan.startCol,
+        decl.type.sourceSpan?.file ?? decl.sourceSpan.file,
+      );
+    };
     const blocks = (
       varBlocks: readonly VarBlock[],
       allowed: ReadonlySet<string>,
@@ -6538,6 +6558,9 @@ export class SemanticAnalyzer {
           allowed.has(block.blockType) ||
           block.blockType === "VAR_EXTERNAL"
         ) {
+          if (allowed.has(block.blockType)) {
+            for (const decl of block.declarations) refuseRank(decl);
+          }
           continue;
         }
         for (const decl of block.declarations) {
@@ -6559,6 +6582,11 @@ export class SemanticAnalyzer {
     }
     for (const func of ast.functions) {
       blocks(func.varBlocks, parameters, `FUNCTION ${func.name.toUpperCase()}`);
+    }
+    for (const iface of ast.interfaces) {
+      for (const m of iface.methods) {
+        blocks(m.varBlocks, parameters, `METHOD ${m.name.toUpperCase()}`);
+      }
     }
     for (const fb of ast.functionBlocks) {
       blocks(fb.varBlocks, inOut, `FUNCTION_BLOCK ${fb.name.toUpperCase()}`);

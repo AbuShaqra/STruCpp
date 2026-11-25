@@ -300,6 +300,525 @@ VAR_GLOBAL fa : FB_A; END_VAR`,
   ),
 };
 
+/**
+ * List and CONFIGURATION globals created as one graph (also across two
+ * CONFIGURATIONs and around the FB classes), PROGRAM code a global's
+ * creation runs, and a raw copy through a REFERENCE TO input: each prints
+ * the value a correct creation order gives.
+ */
+const ORDER_CASES: Array<{
+  title: string;
+  source: string;
+  /** The C++ main body; the program Main's O1 by default. */
+  main: string | undefined;
+  features: string[];
+  expected: string;
+}> = [
+  {
+    title:
+      "a CONFIGURATION global reading a list global that reads a CONFIGURATION global",
+    source: `FUNCTION F : INT
+VAR_EXTERNAL cnt : INT; END_VAR
+cnt := cnt + 1;
+F := 7;
+END_FUNCTION
+FUNCTION G : INT
+VAR_EXTERNAL l : INT; END_VAR
+G := l * 10;
+END_FUNCTION
+VAR_GLOBAL l : INT := F(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL c2 : INT; l : INT; END_VAR
+VAR o1, o2 : INT; END_VAR
+o1 := c2; o2 := l;
+END_PROGRAM
+CONFIGURATION Cfg
+VAR_GLOBAL c2 : INT := G(); cnt : INT; END_VAR
+RESOURCE R ON PLC
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+`,
+    main: `static strucpp::Configuration_CFG cfg; cfg.INST.run(); std::cout << (int)cfg.INST.O1 << " " << (int)cfg.INST.O2 << std::endl;`,
+    features: [],
+    expected: "70 7",
+  },
+  {
+    title: "a chain CONFIGURATION, list, CONFIGURATION",
+    source: `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION F : INT
+VAR_EXTERNAL c : INT; END_VAR
+F := c + 1;
+END_FUNCTION
+FUNCTION G : INT
+VAR_EXTERNAL l : INT; END_VAR
+G := l * 10;
+END_FUNCTION
+VAR_GLOBAL l : INT := F(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL c2 : INT; l : INT; END_VAR
+VAR o1, o2 : INT; END_VAR
+o1 := c2; o2 := l;
+END_PROGRAM
+CONFIGURATION Cfg
+VAR_GLOBAL c2 : INT := G(); c : INT := 5; END_VAR
+RESOURCE R ON PLC
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+`,
+    main: `static strucpp::Configuration_CFG cfg; cfg.INST.run(); std::cout << (int)cfg.INST.O1 << " " << (int)cfg.INST.O2 << std::endl;`,
+    features: [],
+    expected: "60 6",
+  },
+  {
+    title: "a CONFIGURATION global naming a list global that reads one",
+    source: `FUNCTION F : INT
+VAR_EXTERNAL dbg : BOOL; END_VAR
+IF dbg THEN F := 1; ELSE F := 7; END_IF
+END_FUNCTION
+VAR_GLOBAL l : INT := F(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL c2 : INT; l : INT; END_VAR
+VAR o1, o2 : INT; END_VAR
+o1 := c2; o2 := l;
+END_PROGRAM
+CONFIGURATION Cfg
+VAR_GLOBAL c2 : INT := l * 10; dbg : BOOL; END_VAR
+RESOURCE R ON PLC
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+`,
+    main: `static strucpp::Configuration_CFG cfg; cfg.INST.run(); std::cout << (int)cfg.INST.O1 << " " << (int)cfg.INST.O2 << std::endl;`,
+    features: [],
+    expected: "70 7",
+  },
+  {
+    title: "a CONFIGURATION global reading a list global after an FB",
+    source: `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION F : INT
+VAR_EXTERNAL lg : INT; END_VAR
+F := lg * 2;
+END_FUNCTION
+VAR_GLOBAL hk : FB_K; lg : INT := hk.Get(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL c : INT; lg : INT; END_VAR
+VAR o1, o2 : INT; END_VAR
+o1 := c; o2 := lg;
+END_PROGRAM
+CONFIGURATION Cfg
+VAR_GLOBAL c : INT := F(); END_VAR
+RESOURCE R ON PLC
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+`,
+    main: `static strucpp::Configuration_CFG cfg; cfg.INST.run(); std::cout << (int)cfg.INST.O1 << " " << (int)cfg.INST.O2 << std::endl;`,
+    features: [],
+    expected: "12 6",
+  },
+  {
+    title: "a CONFIGURATION global calling a method of a list FB",
+    source: `FUNCTION_BLOCK FB_K
+VAR v : INT := 6; END_VAR
+METHOD Get : INT
+Get := v;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION F : INT
+VAR_EXTERNAL lfb : FB_K; END_VAR
+F := lfb.Get();
+END_FUNCTION
+VAR_GLOBAL lfb : FB_K; END_VAR
+PROGRAM Main
+VAR_EXTERNAL c : INT; END_VAR
+VAR o1, o2 : INT; END_VAR
+o1 := c; o2 := 0;
+END_PROGRAM
+CONFIGURATION Cfg
+VAR_GLOBAL c : INT := F(); END_VAR
+RESOURCE R ON PLC
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+`,
+    main: `static strucpp::Configuration_CFG cfg; cfg.INST.run(); std::cout << (int)cfg.INST.O1 << " " << (int)cfg.INST.O2 << std::endl;`,
+    features: [],
+    expected: "6 0",
+  },
+  {
+    title:
+      "a CONFIGURATION global naming a list global created after the FB classes",
+    source: `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL hk : FB_K; lg : INT := hk.Get(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL c : INT; lg : INT; END_VAR
+VAR o1, o2 : INT; END_VAR
+o1 := c; o2 := lg;
+END_PROGRAM
+CONFIGURATION Cfg
+VAR_GLOBAL c : INT := lg; END_VAR
+RESOURCE R ON PLC
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+`,
+    main: `static strucpp::Configuration_CFG cfg; cfg.INST.run(); std::cout << (int)cfg.INST.O1 << " " << (int)cfg.INST.O2 << std::endl;`,
+    features: [],
+    expected: "6 6",
+  },
+  {
+    title: "a CONFIGURATION global calling a list FB's method directly",
+    source: `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL hk : FB_K; lg : INT := hk.Get(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL c : INT; lg : INT; END_VAR
+VAR o1, o2 : INT; END_VAR
+o1 := c; o2 := lg;
+END_PROGRAM
+CONFIGURATION Cfg
+VAR_GLOBAL c : INT := hk.Get(); END_VAR
+RESOURCE R ON PLC
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+`,
+    main: `static strucpp::Configuration_CFG cfg; cfg.INST.run(); std::cout << (int)cfg.INST.O1 << " " << (int)cfg.INST.O2 << std::endl;`,
+    features: [],
+    expected: "6 6",
+  },
+  {
+    title: "a global of one CONFIGURATION reading one of another",
+    source: `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION F : INT
+VAR_EXTERNAL b : INT; END_VAR
+F := b * 2;
+END_FUNCTION
+VAR_GLOBAL hk : FB_K; END_VAR
+PROGRAM Main
+VAR_EXTERNAL a : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := a;
+END_PROGRAM
+PROGRAM Main2
+VAR_EXTERNAL b : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := b;
+END_PROGRAM
+CONFIGURATION CfgA
+VAR_GLOBAL a : INT := F(); END_VAR
+RESOURCE R ON PLC
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+CONFIGURATION CfgB
+VAR_GLOBAL b : INT := 21; END_VAR
+RESOURCE R2 ON PLC
+TASK T2(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst2 WITH T2 : Main2;
+END_RESOURCE
+END_CONFIGURATION
+`,
+    main: `static strucpp::Configuration_CFGA cfg; cfg.INST.run(); std::cout << (int)cfg.INST.O1 << std::endl;`,
+    features: [],
+    expected: "42",
+  },
+  {
+    title: "an interface set by a PROGRAM method an FB method calls",
+    source: `INTERFACE I_X
+METHOD M : INT
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FB_X IMPLEMENTS I_X
+VAR_EXTERNAL g2 : INT; END_VAR
+METHOD M : INT
+M := g2 + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Setup
+VAR_EXTERNAL gi : I_X; fx : FB_X; END_VAR
+METHOD Go : INT
+gi := fx;
+Go := 0;
+END_METHOD
+END_PROGRAM
+FUNCTION_BLOCK FB_S
+METHOD Run : INT
+Run := Setup.Go();
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION F : INT
+VAR_EXTERNAL gi : I_X; END_VAR
+IF gi <> 0 THEN F := gi.M(); ELSE F := 99; END_IF
+END_FUNCTION
+VAR_GLOBAL
+  gi : I_X;
+  fx : FB_X;
+  hk : FB_K;
+  fs : FB_S;
+  s : INT := fs.Run();
+  x : INT := F();
+  g2 : INT := hk.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+Setup();
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+program_methods"],
+    expected: "7",
+  },
+  {
+    title: "an interface set by a PROGRAM method a FUNCTION calls",
+    source: `INTERFACE I_X
+METHOD M : INT
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FB_X IMPLEMENTS I_X
+VAR_EXTERNAL g2 : INT; END_VAR
+METHOD M : INT
+M := g2 + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Setup
+VAR_EXTERNAL gi : I_X; fx : FB_X; END_VAR
+METHOD Go : INT
+gi := fx;
+Go := 0;
+END_METHOD
+END_PROGRAM
+FUNCTION F : INT
+VAR_EXTERNAL gi : I_X; END_VAR
+Setup.Go();
+IF gi <> 0 THEN F := gi.M(); ELSE F := 99; END_IF
+END_FUNCTION
+VAR_GLOBAL
+  gi : I_X;
+  fx : FB_X;
+  hk : FB_K;
+  x : INT := F();
+  g2 : INT := hk.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+Setup();
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+program_methods"],
+    expected: "7",
+  },
+  {
+    title: "an interface set by a PROGRAM body a FUNCTION calls",
+    source: `INTERFACE I_X
+METHOD M : INT
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FB_X IMPLEMENTS I_X
+VAR_EXTERNAL g2 : INT; END_VAR
+METHOD M : INT
+M := g2 + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Setup
+VAR_EXTERNAL gi : I_X; fx : FB_X; END_VAR
+gi := fx;
+END_PROGRAM
+FUNCTION F : INT
+VAR_EXTERNAL gi : I_X; END_VAR
+Setup();
+IF gi <> 0 THEN F := gi.M(); ELSE F := 99; END_IF
+END_FUNCTION
+VAR_GLOBAL
+  gi : I_X;
+  fx : FB_X;
+  hk : FB_K;
+  x : INT := F();
+  g2 : INT := hk.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+program_methods"],
+    expected: "7",
+  },
+  {
+    title: "an interface set by a PROGRAM action a FUNCTION calls",
+    source: `INTERFACE I_X
+METHOD M : INT
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FB_X IMPLEMENTS I_X
+VAR_EXTERNAL g2 : INT; END_VAR
+METHOD M : INT
+M := g2 + 1;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Setup
+VAR_EXTERNAL gi : I_X; fx : FB_X; END_VAR
+ACTION Go:
+gi := fx;
+END_ACTION
+END_PROGRAM
+FUNCTION F : INT
+VAR_EXTERNAL gi : I_X; END_VAR
+Setup.Go();
+IF gi <> 0 THEN F := gi.M(); ELSE F := 99; END_IF
+END_FUNCTION
+VAR_GLOBAL
+  gi : I_X;
+  fx : FB_X;
+  hk : FB_K;
+  x : INT := F();
+  g2 : INT := hk.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+program_methods"],
+    expected: "7",
+  },
+  {
+    title: "a global read by a PROGRAM a FUNCTION calls",
+    source: `FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Setup
+VAR_EXTERNAL g2 : INT; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+o := g2;
+END_PROGRAM
+FUNCTION F : INT
+Setup();
+F := Setup.o;
+END_FUNCTION
+VAR_GLOBAL
+  hk : FB_K;
+  x : INT := F();
+  g2 : INT := hk.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+program_methods"],
+    expected: "6",
+  },
+  {
+    title: "MEMCPY into an FB through a REFERENCE TO input",
+    source: `FUNCTION_BLOCK FB_Y
+VAR_OUTPUT yp : POINTER TO INT; END_VAR
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_Z
+VAR zp : POINTER TO INT; END_VAR
+VAR_EXTERNAL g2 : INT; END_VAR
+METHOD Set : INT
+zp := ADR(g2);
+Set := 0;
+END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION CopyIn : INT
+VAR_INPUT dst : REFERENCE TO FB_Y; END_VAR
+VAR_EXTERNAL fz : FB_Z; END_VAR
+MEMCPY(ADR(dst), ADR(fz), SIZEOF(fz));
+CopyIn := 0;
+END_FUNCTION
+FUNCTION F : INT
+VAR_EXTERNAL fy : FB_Y; fz : FB_Z; END_VAR
+fz.Set();
+CopyIn(fy);
+F := fy.yp^;
+END_FUNCTION
+VAR_GLOBAL fy : FB_Y; fz : FB_Z; END_VAR
+FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL
+  hk : FB_K;
+  x : INT := F();
+  g2 : INT := hk.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`,
+    main: undefined,
+    features: [],
+    expected: "6",
+  },
+];
+
 describe.skipIf(!hasGpp)(
   "global creation traced through code — g++ e2e",
   () => {
@@ -347,6 +866,31 @@ int main() {
     it("a pointer stored into a STRUCT field or an element does not widen another", () => {
       expect(run("gtrace_path_stores", PATH_STORES, false)).toBe("5 50");
     });
+
+    it.each(ORDER_CASES)(
+      "$title",
+      ({ title, source, main, features, expected }) => {
+        const r = compile(source, {
+          headerFileName: "generated.hpp",
+          features,
+        });
+        expect(r.errors).toEqual([]);
+        const out = compileAndRunStandalone({
+          tempDir,
+          pchPath,
+          headerCode: r.headerCode,
+          cppCode: r.cppCode,
+          testName: `gtrace_order_${ORDER_CASES.findIndex((c) => c.title === title)}`,
+          mainCode: `#include <iostream>
+int main() {
+  ${main ?? "strucpp::Program_MAIN p; p.run(); std::cout << (int)p.O1 << std::endl;"}
+  return 0;
+}
+`,
+        });
+        expect(out.trim()).toBe(expected);
+      },
+    );
 
     it.each(Object.entries(POINTER_CASES))(
       "a pointer read through %s orders by what it may point to",

@@ -8,12 +8,13 @@
  * pointer variable (a global, a function block member, a local, a method's,
  * function's or getter's result) is a cell; every assignment to it in the
  * code that can run while globals are created (FUNCTIONs, function blocks
- * with their methods and accessors, initial values) adds the addresses it
- * stores or the cells it copies. Flow-insensitive: the union over all of
- * them. A cell whose value cannot be followed (an input or in/out, a library
- * call, arithmetic on no known pointer, a pointer whose own address is
- * taken) may point to any global whose address is taken anywhere. PROGRAMs
- * run after every global exists, so their assignments are not counted.
+ * with their methods and accessors, initial values, and the PROGRAMs that
+ * code names, creationPrograms) adds the addresses it stores or the cells it
+ * copies. Flow-insensitive: the union over all of them. A cell whose value
+ * cannot be followed (an input or in/out, a library call, arithmetic on no
+ * known pointer, a pointer whose own address is taken) may point to any
+ * global whose address is taken anywhere. A PROGRAM no such code names runs
+ * after every global exists, so its assignments are not counted.
  *
  * An access with a path (`fb.p`, `THIS^.p`, `arr[i].p`, `ps^.p`) is followed
  * through its types: a pointer member of a function block is that member's
@@ -35,6 +36,7 @@ import type {
   FunctionDeclaration,
   MethodCallExpression,
   MethodDeclaration,
+  ProgramDeclaration,
   RefAssignStatement,
   RefExpression,
   StructDefinition,
@@ -116,12 +118,17 @@ export class PointerFlow {
       }
     }
     const scopes: Array<[PointerScope, readonly ASTNode[]]> = [];
+    // A PROGRAM that code run at creation names is one more instance
+    const blocks = [
+      ...ast.functionBlocks,
+      ...creationPrograms(ast).map(programAsBlock),
+    ];
     for (const f of ast.functions) {
       const pou = `FN:${f.name}`;
       this.functions.set(f.name.toUpperCase(), f);
       scopes.push([{ pou, blocks: f.varBlocks, result: f.name }, f.body]);
     }
-    for (const fb of ast.functionBlocks) {
+    for (const fb of blocks) {
       scopes.push([{ fb, blocks: [] }, fb.body]);
       for (const m of fb.methods) {
         const pou = `${fb.name}.${m.name}`;
@@ -156,7 +163,7 @@ export class PointerFlow {
     // Initial values: globals', members', locals'
     const global: PointerScope = { blocks: [] };
     for (const decl of new Set(globals.values())) this.declare(decl, global);
-    for (const fb of ast.functionBlocks) {
+    for (const fb of blocks) {
       for (const block of fb.varBlocks) {
         for (const decl of block.declarations)
           this.declare(decl, { fb, blocks: [] });
@@ -280,6 +287,16 @@ export class PointerFlow {
       const operand = addressOperand(node);
       if (operand !== undefined) {
         this.address(operand, scope);
+      } else if (
+        node.kind === "VariableExpression" &&
+        (node as VariableExpression).name.toUpperCase() === "THIS" &&
+        stepsOf(node as VariableExpression).length === 0 &&
+        (node as VariableExpression).selfCaret !== true
+      ) {
+        // THIS as a value is the instance's address: any type it may have
+        for (const fb of scope.fb ? this.instanceTypes(scope.fb) : []) {
+          this.rawAccess({ name: fb.name.toUpperCase(), refs: [] });
+        }
       } else if (node.kind === "AssignmentStatement") {
         const s = node as AssignmentStatement;
         const cell = this.targetCell(s.target, scope);
@@ -612,6 +629,13 @@ export class PointerFlow {
     return undefined;
   }
 
+  /** `fb` and its project descendants. */
+  private instanceTypes(
+    fb: FunctionBlockDeclaration,
+  ): FunctionBlockDeclaration[] {
+    return [fb, ...(this.descendants.get(fb.name.toUpperCase()) ?? [])];
+  }
+
   private hasProperty(fb: FunctionBlockDeclaration, upper: string): boolean {
     return this.chain(fb).some((owner) =>
       owner.properties.some((p) => p.name.toUpperCase() === upper),
@@ -631,25 +655,29 @@ export class PointerFlow {
     if (cell === undefined && steps.length > 0) this.imprecise = true;
     else if (cell !== undefined && cell !== ANY && cell !== NONE) {
       this.unknown.add(cell);
-    } else {
-      // Raw access through the address (MEMCPY, a cast pointer) may change
-      // the pointer members of any function block held there
-      const decl =
-        steps.length === 0 ? this.declarationOf(upper, scope) : undefined;
+    }
+    // Raw access through the address (MEMCPY, a cast pointer) may change the
+    // pointer members of any function block held there; ADR of a REFERENCE
+    // TO is the address of what it refers to
+    const decl =
+      steps.length === 0 ? this.declarationOf(upper, scope) : undefined;
+    if (steps.length > 0 || decl !== undefined) {
       const ty =
-        steps.length === 0
-          ? decl === undefined
-            ? undefined
-            : this.pathType(decl.type)
+        decl !== undefined
+          ? this.pathType(decl.type)
           : this.placeOf(upper, steps, scope)?.ty;
-      const cells =
-        steps.length === 0 && decl === undefined ? [] : this.memberCellsIn(ty);
-      if (cells === undefined) this.imprecise = true;
-      else for (const c of cells) this.unknown.add(c);
+      this.rawAccess(ty === undefined ? undefined : this.unwrap(ty, true));
     }
     if (steps.some((s) => s.kind === "dereference")) return;
     const g = this.globalOf(upper, scope);
     if (g !== undefined) this.addressed.add(g);
+  }
+
+  /** Code may write a place of type `ty` as raw memory. */
+  private rawAccess(ty: PathType | undefined): void {
+    const cells = this.memberCellsIn(ty);
+    if (cells === undefined) this.imprecise = true;
+    else for (const c of cells) this.unknown.add(c);
   }
 
   /** Whether `value` may be a pointer: anything but numbers and non-pointer variables. */
@@ -949,6 +977,59 @@ export class PointerFlow {
     }
     return out;
   }
+}
+
+/** A PROGRAM as a function block: its one instance's members and methods. */
+export function programAsBlock(
+  program: ProgramDeclaration,
+): FunctionBlockDeclaration {
+  return {
+    kind: "FunctionBlockDeclaration",
+    name: program.name,
+    isAbstract: false,
+    isFinal: true,
+    varBlocks: program.varBlocks,
+    methods: program.methods,
+    properties: [],
+    actions: program.actions,
+    body: program.body,
+    sourceSpan: program.sourceSpan,
+  };
+}
+
+/**
+ * The PROGRAMs the code run while globals are created may run: those named
+ * (called, or a method, action or member of them) in FUNCTIONs, function
+ * blocks, TYPE defaults and global initial values, and those named in turn
+ * in such PROGRAMs. Any name counts, hidden by a local or not.
+ */
+export function creationPrograms(ast: CompilationUnit): ProgramDeclaration[] {
+  const programs = new Map(ast.programs.map((p) => [p.name.toUpperCase(), p]));
+  const found = new Set<ProgramDeclaration>();
+  const queue: ASTNode[] = [
+    ...ast.functions,
+    ...ast.functionBlocks,
+    ...ast.types,
+    ...ast.globalVarBlocks,
+    ...ast.configurations.flatMap((c) => c.varBlocks),
+  ];
+  for (let i = 0; i < queue.length; i++) {
+    walkAST(queue[i]!, (node) => {
+      let name: string | undefined;
+      if (node.kind === "VariableExpression") {
+        name = (node as VariableExpression).name;
+      } else if (node.kind === "FunctionCallExpression") {
+        name = (node as FunctionCallExpression).functionName.split(".")[0];
+      }
+      const program =
+        name === undefined ? undefined : programs.get(name.toUpperCase());
+      if (program !== undefined && !found.has(program)) {
+        found.add(program);
+        queue.push(program);
+      }
+    });
+  }
+  return ast.programs.filter((p) => found.has(p));
 }
 
 /** The operand of `ADR(x)`, `REF(x)` or a REF expression. */

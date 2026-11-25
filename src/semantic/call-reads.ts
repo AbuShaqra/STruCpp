@@ -22,7 +22,9 @@
  * followed. A property read runs its getter, a write its setter. Taking an
  * address is not a read: it orders, but a cycle through it is not reported
  * (global-order.ts). A method called on a call result is reported. Library
- * code cannot read the project's globals, so it is not followed.
+ * code cannot read the project's globals, so it is not followed. A PROGRAM
+ * that code calls (its body, a method or an action) runs on its one
+ * instance, as a function block's code does.
  */
 
 import type {
@@ -47,7 +49,12 @@ import type {
   VariableExpression,
 } from "../frontend/ast.js";
 import { walkAST } from "../ast-utils.js";
-import { PointerFlow, type PointerScope } from "./pointer-flow.js";
+import {
+  PointerFlow,
+  type PointerScope,
+  creationPrograms,
+  programAsBlock,
+} from "./pointer-flow.js";
 
 /** What a global's creation reads. */
 export interface CallReads {
@@ -106,6 +113,8 @@ interface Receiver {
 /** Follows what globals' creation reads through the POUs of `ast`. */
 export class CallReadTracer {
   private readonly fbs = new Map<string, FunctionBlockDeclaration>();
+  /** Each PROGRAM as its one instance (pointer-flow.ts programAsBlock). */
+  private readonly programs = new Map<string, FunctionBlockDeclaration>();
   private readonly functions = new Map<string, FunctionDeclaration>();
   private readonly interfaces = new Map<string, InterfaceDeclaration>();
   private readonly structs = new Map<string, StructDefinition>();
@@ -136,7 +145,7 @@ export class CallReadTracer {
     private readonly globals: ReadonlyMap<string, VarDeclaration>,
   ) {
     this.flow = new PointerFlow(ast, owner, globals);
-    // PROGRAMs run after every global exists
+    // A PROGRAM no such code names runs after every global exists
     this.creationCode.push(
       ...ast.functions,
       ...ast.functionBlocks,
@@ -148,9 +157,14 @@ export class CallReadTracer {
         ]),
       ]),
       ...ast.actions,
+      ...ast.types,
       ...ast.globalVarBlocks,
       ...ast.configurations.flatMap((c) => c.varBlocks),
+      ...creationPrograms(ast),
     );
+    for (const p of ast.programs) {
+      this.programs.set(p.name.toUpperCase(), programAsBlock(p));
+    }
     for (const fb of ast.functionBlocks) {
       this.fbs.set(fb.name.toUpperCase(), fb);
     }
@@ -510,6 +524,9 @@ export class CallReadTracer {
           dynamic: resolved.dynamic,
           ...(resolved.exact ? { exact: resolved.exact } : {}),
         };
+      } else if (this.programs.has(upper)) {
+        // A PROGRAM's instance, through its members and methods
+        r = this.exactly(this.programs.get(upper)!);
       } else {
         // A property of the function block, read or written bare
         const self = ctx.self;
@@ -779,6 +796,9 @@ export class CallReadTracer {
           unit,
         );
       }
+      // A PROGRAM called: its body runs on its one instance
+      const program = this.programs.get(name);
+      if (program !== undefined) return this.runBody(unit, program);
       const f = this.functions.get(name);
       if (f !== undefined) this.runFunction(unit, f);
       return;
@@ -799,6 +819,28 @@ export class CallReadTracer {
       r = this.exactly(ctx.self);
     } else {
       const resolved = this.resolve(head, ctx);
+      const program = this.programs.get(head);
+      if (resolved === undefined && program !== undefined) {
+        // `PRG.M()`, an action, or a member of the PROGRAM's instance
+        const last = parts[parts.length - 1]!;
+        if (
+          parts.length === 2 &&
+          !this.findMethodInChain(program, last) &&
+          !this.findMember(program, last)
+        ) {
+          return this.unresolved(
+            unit,
+            c,
+            "a PROGRAM call that cannot be followed",
+          );
+        }
+        r = this.exactly(program);
+        for (const name of parts.slice(1, -1)) {
+          if (r.ty === undefined || r.ty === UNKNOWN) break;
+          r = this.field(r, name, false, c, unit);
+        }
+        return this.memberCall(r, last, c, unit);
+      }
       if (resolved === undefined) return; // a namespace or library call
       if (resolved.global !== undefined) unit.reads.add(resolved.global);
       r = {
@@ -973,7 +1015,9 @@ export class CallReadTracer {
           if (node.kind === "AssignmentStatement") {
             add((node as AssignmentStatement).target);
           } else if (node.kind === "RefAssignStatement") {
+            // `r REF= g` lets a write through r change g
             add((node as RefAssignStatement).target);
+            add((node as RefAssignStatement).source);
           } else if (node.kind === "Argument") {
             add((node as Argument).value);
           } else if (node.kind === "RefExpression") {

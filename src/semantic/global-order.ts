@@ -10,9 +10,9 @@
  * names, and after those the code its creation runs reads: the methods,
  * functions and accessors it calls, and an FB instance's member initial
  * values (call-reads.ts). Without such a dependency the declaration order is
- * kept. A cycle has no order and is reported. A CONFIGURATION's globals are
- * ordered the same way; the code of either scope may reach the other's
- * globals (VAR_EXTERNAL), and those reads are kept apart (`outerReads`).
+ * kept. A cycle has no order and is reported. The file-level globals and
+ * those of every CONFIGURATION are created as one graph (orderAllGlobals):
+ * the code of either may read the other's globals (VAR_EXTERNAL).
  */
 
 import type {
@@ -51,11 +51,12 @@ export interface GlobalOrder {
    * be followed: the call and why. Their order is not known to be right.
    */
   unresolved: Map<string, { node: ASTNode; reason: string }>;
-  /**
-   * The globals of the other scope (`outer`, upper-case) each global's
-   * creation reads through code; they are not in `dependencies`.
-   */
-  outerReads: Map<string, string[]>;
+}
+
+/** Every global of a unit as one graph: a CONFIGURATION's are marked. */
+export interface AllGlobalsOrder extends GlobalOrder {
+  /** The CONFIGURATION declaring each of its globals (upper-case keys). */
+  configurationOf: Map<string, ConfigurationDeclaration>;
 }
 
 /** The upper-case names of the globals `decl`'s initial value names. */
@@ -84,16 +85,42 @@ function namedGlobals(
   return names;
 }
 
-/**
- * The file-level globals, in creation order. The CONFIGURATION globals are
- * traced too: which of them each global's code reads is `outerReads`.
- */
+/** The file-level globals, each after the globals its initial value names. */
 export function orderGlobals(ast: CompilationUnit): GlobalOrder {
-  return orderGlobalBlocks(
-    ast.globalVarBlocks,
-    ast,
-    ast.configurations.flatMap((c) => configurationBlocks(c)),
-  );
+  return orderGlobalBlocks(ast.globalVarBlocks);
+}
+
+/**
+ * The file-level globals and those of every CONFIGURATION (and RESOURCE) as
+ * one graph, each after the globals its initial value names and those the
+ * code its creation runs reads, through the POUs of `ast`. A CONFIGURATION
+ * global named like a file-level one (an error of its own), or like one of
+ * an earlier CONFIGURATION (the same storage), is left out.
+ */
+export function orderAllGlobals(ast: CompilationUnit): AllGlobalsOrder {
+  const taken = new Set<string>();
+  const configurationOf = new Map<string, ConfigurationDeclaration>();
+  for (const block of ast.globalVarBlocks) {
+    for (const decl of block.declarations) {
+      for (const name of decl.names) taken.add(name.toUpperCase());
+    }
+  }
+  const blocks: VarBlock[] = [...ast.globalVarBlocks];
+  for (const config of ast.configurations) {
+    for (const block of configurationBlocks(config)) {
+      const declarations = block.declarations.filter((d) =>
+        d.names.every((n) => !taken.has(n.toUpperCase())),
+      );
+      for (const decl of declarations) {
+        for (const name of decl.names) {
+          taken.add(name.toUpperCase());
+          configurationOf.set(name.toUpperCase(), config);
+        }
+      }
+      blocks.push({ ...block, declarations });
+    }
+  }
+  return { ...orderGlobalBlocks(blocks, ast), configurationOf };
 }
 
 /** A CONFIGURATION's VAR_GLOBAL blocks, its RESOURCEs' included. */
@@ -103,18 +130,12 @@ function configurationBlocks(config: ConfigurationDeclaration): VarBlock[] {
 
 /**
  * The VAR_GLOBALs of one CONFIGURATION, its RESOURCEs' included, each after
- * the globals of the configuration its initial value names, and after those
- * the code it calls reads (through `pous`, when given).
+ * the globals of the configuration its initial value names.
  */
 export function orderConfigurationGlobals(
   config: ConfigurationDeclaration,
-  pous?: CompilationUnit,
 ): GlobalOrder {
-  return orderGlobalBlocks(
-    configurationBlocks(config),
-    pous,
-    pous?.globalVarBlocks,
-  );
+  return orderGlobalBlocks(configurationBlocks(config));
 }
 
 /** `blocks`' globals, each after the globals of `blocks` its initial value names. */
@@ -122,8 +143,6 @@ export function orderGlobalBlocks(
   blocks: readonly VarBlock[],
   /** The unit whose POUs the initial values' calls are followed into. */
   pous?: CompilationUnit,
-  /** Globals of another scope the code may read, unless `blocks` hide them. */
-  outer: readonly VarBlock[] = [],
 ): GlobalOrder {
   const items: GlobalItem[] = [];
   // Every name a global is reached by (its own, its list aliases) → the global.
@@ -157,41 +176,28 @@ export function orderGlobalBlocks(
       duplicates.add(upper);
     }
   }
-  const decls = new Map(items.map((i) => [i.name.toUpperCase(), i.decl]));
-  // The outer scope's globals the code may reach (VAR_EXTERNAL), unhidden
-  const outerNames = new Set<string>();
-  const reach = new Map(owner);
-  for (const block of outer) {
-    for (const decl of block.declarations) {
-      for (const name of decl.names) {
-        const upper = name.toUpperCase();
-        if (owner.has(upper) || outerNames.has(upper)) continue;
-        outerNames.add(upper);
-        reach.set(upper, upper);
-        decls.set(upper, decl);
-      }
-    }
-  }
   const tracer =
-    pous === undefined ? undefined : new CallReadTracer(pous, reach, decls);
+    pous === undefined
+      ? undefined
+      : new CallReadTracer(
+          pous,
+          owner,
+          new Map(items.map((i) => [i.name.toUpperCase(), i.decl])),
+        );
   const dependencies = new Map<string, string[]>();
-  const outerReads = new Map<string, string[]>();
   const unresolved = new Map<string, { node: ASTNode; reason: string }>();
   for (const item of items) {
     const self = item.name.toUpperCase();
     const named = namedGlobals(item.decl, owner).filter((n) => n !== self);
-    const fromOuter: string[] = [];
     if (tracer !== undefined) {
       // Code reading the global itself while creating it is a cycle
       const reads = tracer.globalReads(item.decl, self);
       for (const g of reads.globals) {
-        if (outerNames.has(g)) fromOuter.push(g);
-        else if (!named.includes(g)) named.push(g);
+        if (!named.includes(g)) named.push(g);
       }
       if (reads.unresolved) unresolved.set(self, reads.unresolved);
     }
     dependencies.set(self, named);
-    if (fromOuter.length > 0) outerReads.set(self, fromOuter);
   }
 
   const order: GlobalItem[] = [];
@@ -214,5 +220,5 @@ export function orderGlobalBlocks(
     if (item) order.push(item);
   };
   for (const item of items) visit(item.name.toUpperCase());
-  return { order, dependencies, cycles, duplicates, unresolved, outerReads };
+  return { order, dependencies, cycles, duplicates, unresolved };
 }

@@ -81,6 +81,7 @@ import {
 import {
   type GlobalItem,
   type GlobalOrder,
+  orderAllGlobals,
   orderConfigurationGlobals,
   orderGlobals,
 } from "./global-order.js";
@@ -6698,19 +6699,20 @@ export class TypeChecker {
    * initial values that depend on each other cannot be created.
    */
   private checkGlobalInitialCycles(ast: CompilationUnit): void {
+    // File-level and CONFIGURATION globals are created as one graph
+    const all = orderAllGlobals(ast);
+    this.reportGlobalInitialCycles(all);
+    this.refuseUnorderedGlobalCalls(all);
+    if (!(this.strict || this.inOutErrors)) return;
     const topLevel = orderGlobals(ast);
     for (const [ordered, outer] of [
       [topLevel, []] as const,
       // A CONFIGURATION global also sees the top-level globals
       ...ast.configurations.map(
-        (c) => [orderConfigurationGlobals(c, ast), topLevel.order] as const,
+        (c) => [orderConfigurationGlobals(c), topLevel.order] as const,
       ),
     ]) {
-      this.reportGlobalInitialCycles(ordered);
-      if (this.strict || this.inOutErrors) {
-        this.refuseDependentGlobalInitials(ordered, outer);
-      }
-      this.refuseUnorderedGlobalCalls(ordered);
+      this.refuseDependentGlobalInitials(ordered, outer);
     }
   }
 
@@ -11317,7 +11319,8 @@ export class TypeChecker {
       boundName === undefined
         ? value.resolvedType
         : this.resolveNamedType(boundName);
-    if (indirect) arg.inOutCopy = true;
+    // An ARRAY[*] output is a view: it binds whatever array the access reaches
+    if (indirect && !param.name.startsWith("__VLA_")) arg.inOutCopy = true;
     if (boundType === undefined) return;
     this.validateAssignment(boundType, paramType, value, {
       kind: "VariableExpression",

@@ -6,10 +6,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { compile, parse } from "../../src/index.js";
-import {
-  orderConfigurationGlobals,
-  orderGlobals,
-} from "../../src/semantic/global-order.js";
+import { orderAllGlobals } from "../../src/semantic/global-order.js";
 
 const located = (r: ReturnType<typeof compile>): string[] =>
   r.errors.map((e) => `${e.line}:${e.column} ${e.message}`);
@@ -50,7 +47,7 @@ END_FUNCTION
         F_READS("gy"),
       ),
     );
-    const order = orderConfigurationGlobals(ast!.configurations[0]!, ast!);
+    const order = orderAllGlobals(ast!);
     expect(order.order.map((i) => i.name.toUpperCase())).toEqual([
       "GY",
       "X",
@@ -70,7 +67,7 @@ END_FUNCTION
 `,
       ),
     );
-    const order = orderConfigurationGlobals(ast!.configurations[0]!, ast!);
+    const order = orderAllGlobals(ast!);
     expect(order.dependencies.get("X")).toEqual(["PK", "K"]);
   });
 
@@ -105,17 +102,68 @@ END_FUNCTION
     ]);
   });
 
-  it("traces a list global's code into the CONFIGURATION globals it reads", () => {
+  it("orders list and CONFIGURATION globals as one graph", () => {
     const { ast } = parse(
-      `${F_READS("gy")}VAR_GLOBAL x : INT := F(); z : INT := 3; END_VAR
+      `${F_READS("gy")}FUNCTION G : INT
+VAR_EXTERNAL x : INT; END_VAR
+G := x + 1;
+END_FUNCTION
+VAR_GLOBAL x : INT := F(); z : INT := 3; END_VAR
 ${MAIN}CONFIGURATION Cfg
-VAR_GLOBAL gy : INT := 5; END_VAR
+VAR_GLOBAL c : INT := G(); gy : INT := 5; END_VAR
 ${CFG_TAIL}`,
     );
-    const order = orderGlobals(ast!);
-    expect(order.outerReads.get("X")).toEqual(["GY"]);
-    expect(order.outerReads.has("Z")).toBe(false);
-    expect(order.dependencies.get("X")).toEqual([]);
+    const order = orderAllGlobals(ast!);
+    expect(order.order.map((i) => i.name.toUpperCase())).toEqual([
+      "GY",
+      "X",
+      "Z",
+      "C",
+    ]);
+    expect(order.dependencies.get("X")).toEqual(["GY"]);
+    expect(order.dependencies.get("C")).toEqual(["X"]);
+    expect([...order.configurationOf.keys()]).toEqual(["C", "GY"]);
+  });
+
+  it.each(MODES)(
+    "refuses a cycle between a list and a CONFIGURATION global (%s)",
+    (_name, options) => {
+      expect(
+        located(
+          compile(
+            `${F_READS("x")}FUNCTION G : INT
+VAR_EXTERNAL c : INT; END_VAR
+G := c + 10;
+END_FUNCTION
+VAR_GLOBAL x : INT := G(); END_VAR
+${MAIN}CONFIGURATION Cfg
+VAR_GLOBAL c : INT := F(); END_VAR
+${CFG_TAIL}`,
+            options,
+          ),
+        ),
+      ).toEqual([
+        "9:12 The initial values of the globals 'X' and 'C' depend on each other (X -> C -> X)",
+      ]);
+    },
+  );
+
+  it("orders a global of one CONFIGURATION after one of another", () => {
+    const { ast } = parse(
+      `${F_READS("b")}${MAIN}PROGRAM Main2 END_PROGRAM
+CONFIGURATION CfgA
+VAR_GLOBAL a : INT := F(); END_VAR
+${CFG_TAIL}CONFIGURATION CfgB
+VAR_GLOBAL b : INT := 21; END_VAR
+RESOURCE R2 ON PLC
+TASK T2(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst2 WITH T2 : Main2;
+END_RESOURCE
+END_CONFIGURATION
+`,
+    );
+    const order = orderAllGlobals(ast!);
+    expect(order.order.map((i) => i.name.toUpperCase())).toEqual(["B", "A"]);
   });
 
   it("emits a list global whose code reads a CONFIGURATION global after the CONFIGURATION globals", () => {
@@ -202,11 +250,107 @@ END_FUNCTION
       "  gi : I_X;\n  pgi : POINTER TO I_X := ADR(gi);",
       "",
     ],
+    [
+      "a reference is bound to it",
+      "  gi : I_X;",
+      `FUNCTION G : INT
+VAR_EXTERNAL gi : I_X; fx : FB_X; END_VAR
+VAR r : REFERENCE TO I_X; END_VAR
+r REF= gi;
+r := fx;
+G := 0;
+END_FUNCTION
+`,
+    ],
+    [
+      "assigned in a PROGRAM a FUNCTION calls",
+      "  gi : I_X;",
+      `PROGRAM Setup
+VAR_EXTERNAL gi : I_X; fx : FB_X; END_VAR
+gi := fx;
+END_PROGRAM
+FUNCTION G : INT
+Setup();
+G := 0;
+END_FUNCTION
+`,
+    ],
+    [
+      "assigned in a PROGRAM's action a FUNCTION calls",
+      "  gi : I_X;",
+      `PROGRAM Setup
+VAR_EXTERNAL gi : I_X; fx : FB_X; END_VAR
+ACTION Go:
+gi := fx;
+END_ACTION
+END_PROGRAM
+FUNCTION G : INT
+Setup.Go();
+G := 0;
+END_FUNCTION
+`,
+    ],
   ])("still reaches its implementers when %s", (_name, gi, extra) => {
-    const errors = located(compile(source(gi, extra)));
+    const errors = located(
+      compile(source(gi, extra), {
+        features: ["+program_methods", "+st_actions"],
+      }),
+    );
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatch(
       /The initial value of global 'X' reads 'X' itself, through the code it calls$/,
     );
+  });
+});
+
+describe("a PROGRAM run while globals are created", () => {
+  it("orders a global after what the PROGRAM it calls reads", () => {
+    const { ast } = parse(`FUNCTION_BLOCK FB_K
+METHOD Get : INT
+Get := 6;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Setup
+VAR_EXTERNAL g2 : INT; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+o := g2;
+END_PROGRAM
+FUNCTION F : INT
+Setup();
+F := Setup.o;
+END_FUNCTION
+VAR_GLOBAL
+  hk : FB_K;
+  x : INT := F();
+  g2 : INT := hk.Get();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; END_VAR
+VAR o1 : INT; END_VAR
+o1 := x;
+END_PROGRAM
+`);
+    expect(orderAllGlobals(ast!).dependencies.get("X")).toEqual(["G2"]);
+  });
+
+  it("refuses a call of a PROGRAM member it cannot follow", () => {
+    const r = compile(
+      `PROGRAM Setup
+VAR_OUTPUT o : INT; END_VAR
+END_PROGRAM
+FUNCTION F : INT
+Setup.Nothing();
+F := 0;
+END_FUNCTION
+VAR_GLOBAL x : INT := F(); END_VAR
+PROGRAM Main END_PROGRAM
+`,
+      { features: ["+program_methods"] },
+    );
+    expect(
+      located(r).some((e) =>
+        e.includes("PROGRAM call that cannot be followed"),
+      ),
+    ).toBe(true);
   });
 });

@@ -197,4 +197,35 @@ ${GLOBALS}`,
       ).toEqual(expected);
     }
   });
+
+  it("takes the pointer members behind a REFERENCE TO, or THIS as a value, as pointing anywhere", () => {
+    for (const [use, expected] of [
+      ["", ["GB"]],
+      ["n := MEMCPY(ADR(rf), ADR(q), 8);", ["GA", "GB"]],
+      ["pa := THIS;", ["GA", "GB"]],
+    ] as const) {
+      expect(
+        targetsOf(
+          `FUNCTION_BLOCK FB_A
+VAR_OUTPUT p : POINTER TO INT; END_VAR
+VAR pa : POINTER TO FB_A; END_VAR
+p := ADR(gb);
+${use.startsWith("pa") ? use : ""}
+END_FUNCTION_BLOCK
+FUNCTION F : INT
+VAR_INPUT rf : REFERENCE TO FB_A; END_VAR
+VAR_EXTERNAL fa : FB_A; END_VAR
+VAR q : POINTER TO INT; n : ULINT; END_VAR
+q := ADR(ga);
+${use.startsWith("pa") ? "" : use}
+gp := fa.p;
+F := 0;
+END_FUNCTION
+VAR_GLOBAL fa : FB_A; END_VAR
+${GLOBALS}`,
+          "GP",
+        ),
+      ).toEqual(expected);
+    }
+  });
 });

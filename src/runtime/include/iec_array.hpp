@@ -506,6 +506,16 @@ inline void view_unbound_check(const T* data) {
 #endif
     }
 }
+/** A whole-array store through a view: the lengths differ (or it is unbound). */
+template<typename T>
+inline void view_length_fault(const T* data) {
+    view_unbound_check(data);
+#if STRUCPP_HAS_EXCEPTIONS
+    throw std::out_of_range("Array lengths differ in a whole-array assignment");
+#else
+    bounds_fault();
+#endif
+}
 }  // namespace detail
 
 // 1D ArrayView - type-erased wrapper for ARRAY[*] OF T
@@ -569,6 +579,20 @@ public:
     int64_t lower_bound(int = 1) const noexcept { return lower_; }
     int64_t upper_bound(int = 1) const noexcept { return upper_; }
     int64_t length() const noexcept { return upper_ - lower_ + 1; }
+
+    // Whole-array store `a := b`: the elements in order into the viewed
+    // array, which keeps its bounds; another length is a bounds fault.
+    template<typename Src>
+    void assign(const Src& src) {
+        const int64_t from = src.lower_bound(1);
+        if (src.upper_bound(1) - from != upper_ - lower_) {
+            detail::view_length_fault(data_);
+            return;
+        }
+        for (int64_t k = 0; k <= upper_ - lower_; ++k) {
+            data_[k] = src.at(from + k);
+        }
+    }
 };
 
 // 2D ArrayView - type-erased wrapper for ARRAY[*, *] OF T
@@ -631,6 +655,114 @@ public:
     static constexpr int rank = 2;
     int64_t lower_bound(int dim) const noexcept { return dim == 1 ? lower1_ : lower2_; }
     int64_t upper_bound(int dim) const noexcept { return dim == 1 ? upper1_ : upper2_; }
+
+    // Whole-array store (see ArrayView1D::assign), row-major.
+    template<typename Src>
+    void assign(const Src& src) {
+        const int64_t f1 = src.lower_bound(1), f2 = src.lower_bound(2);
+        if (src.upper_bound(1) - f1 != upper1_ - lower1_ ||
+            src.upper_bound(2) - f2 != upper2_ - lower2_) {
+            detail::view_length_fault(data_);
+            return;
+        }
+        for (int64_t i = 0; i <= upper1_ - lower1_; ++i) {
+            for (int64_t j = 0; j <= upper2_ - lower2_; ++j) {
+                data_[i * dim2_ + j] = src.at(f1 + i, f2 + j);
+            }
+        }
+    }
+};
+
+// 3D ArrayView - type-erased wrapper for ARRAY[*, *, *] OF T
+template<typename T>
+class ArrayView3D {
+    T* data_;
+    int64_t lower1_, upper1_;
+    int64_t lower2_, upper2_;
+    int64_t lower3_, upper3_;
+    int64_t dim2_, dim3_;
+
+public:
+    // Unbound (see ArrayView1D's default constructor).
+    ArrayView3D() noexcept
+        : data_(nullptr), lower1_(0), upper1_(-1), lower2_(0), upper2_(-1),
+          lower3_(0), upper3_(-1), dim2_(0), dim3_(0) {}
+
+    template<typename Bounds1, typename Bounds2, typename Bounds3>
+    ArrayView3D(IEC_ARRAY_3D<T, Bounds1, Bounds2, Bounds3>& arr)
+        : data_(arr.data())
+        , lower1_(Bounds1::lower), upper1_(Bounds1::upper)
+        , lower2_(Bounds2::lower), upper2_(Bounds2::upper)
+        , lower3_(Bounds3::lower), upper3_(Bounds3::upper)
+        , dim2_(Bounds2::upper - Bounds2::lower + 1)
+        , dim3_(Bounds3::upper - Bounds3::lower + 1) {}
+
+    T& operator()(int64_t i, int64_t j, int64_t k) noexcept {
+        return data_[offset(i, j, k)];
+    }
+
+    const T& operator()(int64_t i, int64_t j, int64_t k) const noexcept {
+        return data_[offset(i, j, k)];
+    }
+
+    // Bounds-checked access — codegen emits .at(i, j, k) for 3D subscripts.
+    T& at(int64_t i, int64_t j, int64_t k) {
+        check(i, j, k);
+        return data_[offset(i, j, k)];
+    }
+
+    const T& at(int64_t i, int64_t j, int64_t k) const {
+        check(i, j, k);
+        return data_[offset(i, j, k)];
+    }
+
+    static constexpr int rank = 3;
+    int64_t lower_bound(int dim) const noexcept {
+        return dim == 1 ? lower1_ : dim == 2 ? lower2_ : lower3_;
+    }
+    int64_t upper_bound(int dim) const noexcept {
+        return dim == 1 ? upper1_ : dim == 2 ? upper2_ : upper3_;
+    }
+
+    // Whole-array store (see ArrayView1D::assign), row-major.
+    template<typename Src>
+    void assign(const Src& src) {
+        const int64_t f1 = src.lower_bound(1), f2 = src.lower_bound(2),
+                      f3 = src.lower_bound(3);
+        if (src.upper_bound(1) - f1 != upper1_ - lower1_ ||
+            src.upper_bound(2) - f2 != upper2_ - lower2_ ||
+            src.upper_bound(3) - f3 != upper3_ - lower3_) {
+            detail::view_length_fault(data_);
+            return;
+        }
+        for (int64_t i = 0; i <= upper1_ - lower1_; ++i) {
+            for (int64_t j = 0; j <= upper2_ - lower2_; ++j) {
+                for (int64_t k = 0; k <= upper3_ - lower3_; ++k) {
+                    data_[(i * dim2_ + j) * dim3_ + k] = src.at(f1 + i, f2 + j, f3 + k);
+                }
+            }
+        }
+    }
+
+private:
+    int64_t offset(int64_t i, int64_t j, int64_t k) const noexcept {
+        return ((i - lower1_) * dim2_ + (j - lower2_)) * dim3_ + (k - lower3_);
+    }
+
+    void check(int64_t i, int64_t j, int64_t k) const {
+#ifndef STRUCPP_NO_BOUNDS_CHECK
+        if (i < lower1_ || i > upper1_ || j < lower2_ || j > upper2_ ||
+            k < lower3_ || k > upper3_) {
+            detail::view_unbound_check(data_);
+#if STRUCPP_HAS_EXCEPTIONS
+            throw std::out_of_range("Array index out of bounds");
+#else
+            detail::bounds_fault();
+#endif
+        }
+#endif
+        (void)i; (void)j; (void)k;
+    }
 };
 
 /**
@@ -692,6 +824,7 @@ inline int64_t checked_bound(const C& c, const D& dim, const char* name, iec_sit
 template<typename V> struct view_element;
 template<typename T> struct view_element<ArrayView1D<T>> { using type = T; };
 template<typename T> struct view_element<ArrayView2D<T>> { using type = T; };
+template<typename T> struct view_element<ArrayView3D<T>> { using type = T; };
 
 /**
  * The array a function block's VAR_IN_OUT ARRAY[*] view of type V refers to
