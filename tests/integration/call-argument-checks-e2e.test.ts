@@ -275,4 +275,53 @@ END_PROGRAM
     );
     expect(stdout).toBe("177771");
   });
+
+  it("keeps an ARRAY of an array TYPE with a default building", () => {
+    const { stdout } = run(
+      `TYPE ROWD : ARRAY[0..1] OF INT := [6, 7]; END_TYPE
+TYPE H : STRUCT aa : ARRAY[0..1] OF ROWD; END_STRUCT END_TYPE
+PROGRAM Main
+VAR aa : ARRAY[0..1] OF ROWD; a3 : ARRAY[0..1, 0..1, 0..1] OF ROWD; h : H; sa : ROWD; r : DINT; END_VAR
+r := sa[1] + aa[1][1] * 0 + a3[1, 1, 1][1] * 0 + h.aa[1][1] * 0;
+END_PROGRAM
+`,
+      "p.R",
+      "argchecks_array_of_array_default",
+    );
+    expect(stdout).toBe("7");
+  });
+
+  it("gives the remaining elements of a partial initializer the element type's default", () => {
+    const { stdout } = run(
+      `TYPE AL2 : INT := 42; END_TYPE
+TYPE EN2 : (A1, A2, A3) := A3; END_TYPE
+TYPE AE : EN2; END_TYPE
+TYPE S : STRUCT a : ARRAY[0..2] OF AL2 := [1]; END_STRUCT END_TYPE
+PROGRAM Main
+VAR a : ARRAY[0..2] OF AL2 := [1]; e : ARRAY[0..2] OF AE := [A1]; s : S; r : DINT; END_VAR
+r := a[0] * 10000 + a[2] * 100 + s.a[2];
+IF e[0] = A1 AND e[2] = A3 THEN r := r + 1000000; END_IF
+END_PROGRAM
+`,
+      "p.R",
+      "argchecks_partial_default",
+    );
+    expect(stdout).toBe("1014242");
+  });
+
+  it("converts a signed LTIME or an LTIME expression into a TIME TYPE default", () => {
+    const { stdout, warnings } = run(
+      `TYPE LT5 : TIME := -LTIME#3s; END_TYPE
+TYPE T6 : TIME := LTIME#1s * 2 + LTIME#500ms; END_TYPE
+PROGRAM Main
+VAR b : LT5; c : T6; x : TIME := -(LTIME#2s); r : DINT; END_VAR
+r := TIME_TO_DINT(b) * 100000 + TIME_TO_DINT(c) * 10 + TIME_TO_DINT(x);
+END_PROGRAM
+`,
+      "p.R",
+      "argchecks_ltime_expressions",
+    );
+    expect(stdout).toBe(String(-3000 * 100000 + 25000 - 2000));
+    expect(warnings).toHaveLength(3);
+  });
 });

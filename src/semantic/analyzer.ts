@@ -1896,6 +1896,9 @@ export class SemanticAnalyzer {
       this.symbolTables.globalScope.getAllSymbols().flatMap((sym) =>
         sym.kind === "type" &&
         sym.resolvedType?.typeKind === "enum" &&
+        // the enumeration itself, not an alias of it
+        (sym.resolvedType as EnumType).name.toUpperCase() ===
+          sym.name.toUpperCase() &&
         !ownTypes.has(sym.name.toUpperCase()) &&
         this.symbolTables.globalScope.definedByLibrary(sym.name)
           ? [
@@ -8161,6 +8164,8 @@ export class SemanticAnalyzer {
           undefined
       ) {
         const enumType = sym.resolvedType as EnumType;
+        // An alias of an enumeration adds no values of its own
+        if (enumType.name.toUpperCase() !== sym.name.toUpperCase()) continue;
         enumDescriptors.push({ name: enumType.name, members: enumType.values });
       }
     }

@@ -104,6 +104,17 @@ export function generateInitializerValue(
     if (value.fill === true && elements.length === 1) {
       return `{strucpp::iec_fill(${elements[0]})}`;
     }
+    // The given values, then the element type's default for the rest
+    if (value.fillRest !== undefined) {
+      const rest = generateInitializerValue(
+        value.fillRest,
+        elementCppType,
+        elementStType,
+        emitter,
+        depth,
+      );
+      return `{strucpp::iec_head(${[rest, ...elements].join(", ")})}`;
+    }
     return `{${elements.join(", ")}}`;
   }
 

@@ -330,6 +330,46 @@ function stringText(shape: ReferenceShape): string {
 }
 
 /**
+ * A constant expression of LTIME literals the checker may not have typed yet:
+ * a literal, signed or in parentheses, a sum or difference of such, or one
+ * times or divided by a number literal (`-LTIME#3s`, `LTIME#1s * 2`).
+ */
+export function isLtimeConstantExpression(expr: Expression): boolean {
+  switch (expr.kind) {
+    case "LiteralExpression":
+      return expr.literalType === "LTIME";
+    case "ParenthesizedExpression":
+      return isLtimeConstantExpression(expr.expression);
+    case "UnaryExpression":
+      return (
+        (expr.operator === "-" || expr.operator === "+") &&
+        isLtimeConstantExpression(expr.operand)
+      );
+    case "BinaryExpression":
+      if (expr.operator === "+" || expr.operator === "-") {
+        return (
+          isLtimeConstantExpression(expr.left) &&
+          isLtimeConstantExpression(expr.right)
+        );
+      }
+      if (expr.operator === "*" || expr.operator === "/") {
+        const number = (e: Expression): boolean =>
+          e.kind === "LiteralExpression" &&
+          (e.literalType === "INT" || e.literalType === "REAL");
+        return (
+          (isLtimeConstantExpression(expr.left) && number(expr.right)) ||
+          (expr.operator === "*" &&
+            number(expr.left) &&
+            isLtimeConstantExpression(expr.right))
+        );
+      }
+      return false;
+    default:
+      return false;
+  }
+}
+
+/**
  * Type checker for IEC 61131-3 programs.
  */
 /** An input or in-out parameter of a call, in declaration order. */
@@ -1954,7 +1994,17 @@ export class TypeChecker {
       return value;
     }
     let inner = value;
-    while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
+    // `(…)` and a sign keep the operand's type (`-LTIME#3s`)
+    while (
+      inner.kind === "ParenthesizedExpression" ||
+      (inner.kind === "UnaryExpression" &&
+        (inner.operator === "-" || inner.operator === "+"))
+    ) {
+      inner =
+        inner.kind === "ParenthesizedExpression"
+          ? inner.expression
+          : inner.operand;
+    }
     // A constant read before the initial value is typed: its type
     const named =
       inner.kind === "VariableExpression" &&
@@ -1978,8 +2028,9 @@ export class TypeChecker {
           ? this.aliasBase((resolved as ElementaryType).name)
           : undefined;
     if (
-      valueType === undefined ||
-      canonicalElementaryName(valueType) !== "LTIME"
+      (valueType === undefined ||
+        canonicalElementaryName(valueType) !== "LTIME") &&
+      !isLtimeConstantExpression(value)
     ) {
       return value;
     }
@@ -2349,6 +2400,12 @@ export class TypeChecker {
           (m) => m.name.toUpperCase() === expr.name.toUpperCase(),
         ),
     );
+    // A library enumeration's value (none of the sources has it)
+    if (owners.length === 0 && symbol.kind === "enumValue") {
+      return this.symbolTables.globalScope.definedByLibrary(expr.name)
+        ? enumNamed(symbol.enumType)
+        : undefined;
+    }
     return owners.length === 1 ? enumNamed(owners[0]!.name) : undefined;
   }
 
@@ -2367,6 +2424,19 @@ export class TypeChecker {
       return this.selfMemberType(expr);
     }
 
+    // A value its context settled as an enumeration's (`u : UE := LK` beside
+    // a library global `LK`)
+    if (
+      expr.enumType !== undefined &&
+      symbol.kind !== "enumValue" &&
+      !this.hasMemberAccess(expr)
+    ) {
+      const settled = this.symbolTables.lookupType(expr.enumType)?.resolvedType;
+      if (settled?.typeKind === "enum") {
+        expr.resolvedType = settled;
+        return settled;
+      }
+    }
     const enumValueType = this.enumValueType(expr, symbol);
     if (enumValueType) return enumValueType;
 
@@ -2776,6 +2846,17 @@ export class TypeChecker {
     expr: BinaryExpression,
     scope: Scope,
   ): IECType | undefined {
+    // `u = LK`: a bare value compared with an enumeration is that enumeration's
+    if (expr.operator === "=" || expr.operator === "<>") {
+      for (const [one, other] of [
+        [expr.left, expr.right],
+        [expr.right, expr.left],
+      ] as const) {
+        const otherType = this.declaredTypeNameOf(other, scope);
+        if (otherType !== undefined)
+          this.settleLibraryEnumValue(one, otherType);
+      }
+    }
     if (expr.operator === "+" || expr.operator === "-") {
       // The operands of a + / - chain are checked with it, as one chain
       for (let side of [expr.left, expr.right]) {
@@ -4754,6 +4835,19 @@ export class TypeChecker {
     scope: Scope,
   ): IECType | undefined {
     this.bindStdFunctionCallArguments(expr, scope);
+    // A bare value of a library enumeration an input's type is: its value
+    // there, before the argument is typed (`LF(Blue)` beside a user `Blue`)
+    if (expr.arguments.some((a) => a.value.kind === "VariableExpression")) {
+      const inputs = this.argumentInputs(expr, scope);
+      if (inputs !== undefined) {
+        stripEnEno([...expr.arguments]).forEach((arg, i) => {
+          if (arg.isOutput) return;
+          const input = boundInput(inputs, arg, i);
+          if (input === undefined || input.inOut) return;
+          this.settleLibraryEnumValue(arg.value, input.type.name);
+        });
+      }
+    }
     // Resolve argument expressions
     for (const arg of expr.arguments) {
       this.resolveExprType(arg.value, scope);
@@ -7710,19 +7804,30 @@ export class TypeChecker {
    * stored as a value, alone or as an operand, has no C++ value. True when
    * refused.
    */
-  private refuseTypeAsValue(value: Expression, scope: Scope): boolean {
+  private refuseTypeAsValue(
+    value: Expression,
+    scope: Scope,
+    /** The declared type of the variable stored in, when known. */
+    targetTypeName?: string,
+  ): boolean {
     let refused = false;
-    const visit = (e: Expression): void => {
+    const visit = (e: Expression, context: string | undefined): void => {
       switch (e.kind) {
         case "ParenthesizedExpression":
-          visit(e.expression);
+          visit(e.expression, context);
           return;
         case "UnaryExpression":
-          visit(e.operand);
+          visit(e.operand, context);
           return;
         case "BinaryExpression":
-          visit(e.left);
-          visit(e.right);
+          // `k = Pump`: each side of a comparison has the other's type as context
+          if (e.operator === "=" || e.operator === "<>") {
+            visit(e.left, this.declaredTypeNameOf(e.right, scope));
+            visit(e.right, this.declaredTypeNameOf(e.left, scope));
+            return;
+          }
+          visit(e.left, context);
+          visit(e.right, context);
           return;
         case "VariableExpression": {
           if (
@@ -7740,7 +7845,14 @@ export class TypeChecker {
           // accessor's property), nor a member of the block being checked,
           // nor the name of an enumeration value (`k := Motor`)
           if (this.symbolTables.globalScope.lookup(e.name) !== sym) return;
-          if (this.isEnumValueName(e.name)) return;
+          // An enumeration value of the name: the one the target's type is,
+          // or one no TYPE or FB of the sources shares its name with
+          if (
+            this.enumValueOfTarget(e.name, context) ||
+            (this.isEnumValueName(e.name) && !this.isSourceTypeName(e.name))
+          ) {
+            return;
+          }
           if (
             this.currentFBName !== undefined &&
             (this.fbMemberNames(this.currentFBName)?.has(
@@ -7763,7 +7875,7 @@ export class TypeChecker {
           return;
       }
     };
-    visit(value);
+    visit(value, targetTypeName);
     return refused;
   }
 
@@ -7795,7 +7907,8 @@ export class TypeChecker {
       if (sym.resolvedType?.typeKind === "enum") {
         const type = sym.resolvedType as EnumType;
         if (
-          this.symbolTables.globalScope.definedByLibrary(type.name) &&
+          (this.symbolTables.globalScope.definedByLibrary(type.name) ||
+            this.isLibraryValueName(upper)) &&
           type.values.some((v) => v.toUpperCase() === upper)
         ) {
           value.enumType = type.name;
@@ -7815,6 +7928,56 @@ export class TypeChecker {
     }
   }
 
+  /** `upper` names a global or constant of a library (`LK` of `VAR_GLOBAL CONSTANT`). */
+  private isLibraryValueName(upper: string): boolean {
+    const sym = this.symbolTables.globalScope.lookup(upper);
+    return (
+      (sym?.kind === "variable" || sym?.kind === "constant") &&
+      this.symbolTables.globalScope.definedByLibrary(upper)
+    );
+  }
+
+  /**
+   * A bare name that is a value of an enumeration of the sources and a
+   * library's global (`LK`), stored where neither an enumeration nor a number
+   * decides it: refused as ambiguous. True when refused.
+   */
+  private refuseAmbiguousEnumGlobal(
+    value: Expression,
+    targetType: IECType | undefined,
+  ): boolean {
+    if (
+      value.kind !== "VariableExpression" ||
+      value.enumType !== undefined ||
+      this.hasMemberAccess(value) ||
+      targetType === undefined
+    ) {
+      return false;
+    }
+    const upper = value.name.toUpperCase();
+    if (!this.isLibraryValueName(upper)) return false;
+    const owners = (this.ast?.types ?? []).filter(
+      (t) =>
+        t.definition.kind === "EnumDefinition" &&
+        t.definition.members.some((m) => m.name.toUpperCase() === upper),
+    );
+    if (owners.length === 0) return false;
+    if (
+      targetType.typeKind === "elementary" &&
+      (_isTypeInCategory(targetType, "ANY_NUM") ||
+        _isTypeInCategory(targetType, "ANY_BIT"))
+    ) {
+      return false;
+    }
+    this.addError(
+      `'${value.name}' is both a value of enumeration ${owners[0]!.name.toUpperCase()} and a library global; write ${owners[0]!.name.toUpperCase()}#${value.name} for the value`,
+      value.sourceSpan.startLine,
+      value.sourceSpan.startCol,
+      value.sourceSpan.file,
+    );
+    return true;
+  }
+
   /** The declared type name of a plain variable `target` (no member access); undefined otherwise. */
   private declaredTypeNameOf(
     target: Expression,
@@ -7827,6 +7990,50 @@ export class TypeChecker {
     return sym?.kind === "variable"
       ? (sym.declaration as VarDeclaration | undefined)?.type.name
       : undefined;
+  }
+
+  /** A TYPE, FB, FUNCTION or PROGRAM of the sources has the name `name`. */
+  private isSourceTypeName(name: string): boolean {
+    const upper = name.toUpperCase();
+    const ast = this.ast;
+    if (ast === undefined) return false;
+    return [
+      ...ast.types,
+      ...ast.functionBlocks,
+      ...ast.functions,
+      ...ast.programs,
+      ...ast.interfaces,
+    ].some((d) => d.name.toUpperCase() === upper);
+  }
+
+  /** `typeName` (through aliases) is an enumeration that has the value `name`. */
+  private enumValueOfTarget(
+    name: string,
+    typeName: string | undefined,
+  ): boolean {
+    if (typeName === undefined) return false;
+    const upper = name.toUpperCase();
+    let current = typeName.toUpperCase();
+    for (let depth = 0; depth < 32; depth++) {
+      const sym = this.symbolTables.lookupType(current);
+      if (sym === undefined) return false;
+      if (sym.resolvedType?.typeKind === "enum") {
+        return (sym.resolvedType as EnumType).values.some(
+          (v) => v.toUpperCase() === upper,
+        );
+      }
+      const def = sym.declaration?.definition;
+      if (
+        def?.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        def.referenceKind !== "none" ||
+        def.name.toUpperCase() === current
+      ) {
+        return false;
+      }
+      current = def.name.toUpperCase();
+    }
+    return false;
   }
 
   /** `name` is a value of an enumeration of this compile or a library. */
@@ -7868,12 +8075,21 @@ export class TypeChecker {
   private checkStatement(stmt: Statement, scope: Scope): void {
     switch (stmt.kind) {
       case "AssignmentStatement": {
-        if (this.refuseTypeAsValue(stmt.value, scope)) break;
+        if (
+          this.refuseTypeAsValue(
+            stmt.value,
+            scope,
+            this.declaredTypeNameOf(stmt.target, scope),
+          )
+        ) {
+          break;
+        }
         this.settleLibraryEnumValue(
           stmt.value,
           this.declaredTypeNameOf(stmt.target, scope),
         );
         let targetType = this.resolveExprType(stmt.target, scope);
+        if (this.refuseAmbiguousEnumGlobal(stmt.value, targetType)) break;
         const valueType = this.resolveExprType(stmt.value, scope);
         this.refuseMisalignedPointerStore(
           this.storeTargetDeclaredType(stmt.target, scope),
@@ -8125,8 +8341,14 @@ export class TypeChecker {
         const selectorChar = this.charTypeOf(
           selectorType ?? this.accessedElementaryType(stmt.selector, scope),
         );
+        const selectorTypeName =
+          selectorType?.typeKind === "enum"
+            ? typeNameUtil(selectorType)
+            : undefined;
         for (const c of stmt.cases) {
           for (const label of c.labels) {
+            // A label of an enumeration selector is that enumeration's value
+            this.settleLibraryEnumValue(label.start, selectorTypeName);
             this.resolveExprType(label.start, scope);
             if (label.end) this.resolveExprType(label.end, scope);
             this.typeNotFromExpected(label.start, selectorType);

@@ -498,6 +498,109 @@ END_PROGRAM
     ).toEqual(["VAR_IN_OUT 'IO' is not assigned in this call"]);
   });
 
+  it("keeps a library constant in an alias default from a consumer's own name", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `VAR_GLOBAL CONSTANT LC : INT := 11; END_VAR
+TYPE LCST : INT := LC; END_TYPE
+`,
+          fileName: "c.st",
+        },
+      ],
+      { name: "lcst", version: "1.0.0", namespace: "lcst" },
+    );
+    expect(lib.errors).toEqual([]);
+    const archive = JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
+    expect(
+      archive.manifest.types.find((t) => t.name === "LCST")?.defaultValue,
+    ).toBe("(11)");
+    const { stdout } = run(
+      `FUNCTION_BLOCK FB
+VAR CONSTANT LC : INT := 77; END_VAR
+VAR_OUTPUT c : LCST; END_VAR
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR LC : INT := 99; c : LCST; f : FB; r : INT; END_VAR
+r := c * 100 + f.c;
+END_PROGRAM
+`,
+      "p.R",
+      "libtypes_alias_constant",
+      [archive],
+    );
+    expect(stdout).toBe("1111");
+  });
+
+  it("settles a FUNCTION or FB argument by the input's library enumeration", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `TYPE LColor : (Red, Green := 5, Blue); END_TYPE
+TYPE LCA : LColor; END_TYPE
+FUNCTION LF : INT
+VAR_INPUT c : LColor; END_VAR
+IF c = Blue THEN LF := 1; ELSIF c = Red THEN LF := 2; END_IF;
+END_FUNCTION
+FUNCTION_BLOCK LFB
+VAR_INPUT c : LColor; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+IF c = Red THEN o := 7; END_IF;
+END_FUNCTION_BLOCK
+`,
+          fileName: "c.st",
+        },
+      ],
+      { name: "lcolor2", version: "1.0.0", namespace: "lcolor2" },
+    );
+    expect(lib.errors).toEqual([]);
+    const { stdout } = run(
+      `TYPE UC : (Red := 20, Pink, Blue := 30); END_TYPE
+PROGRAM Main
+VAR v : INT; f : LFB; u : UC; d : LCA; END_VAR
+f(c := Red);
+u := Blue;
+d := Green;
+v := f.o + LF(c := Blue) * 10 + LF(Blue) * 1000;
+IF u = UC#Blue THEN v := v + 100; END_IF
+IF d = LColor#Green THEN v := v + 10000; END_IF
+END_PROGRAM
+`,
+      "p.V",
+      "libtypes_enum_arguments",
+      [JSON.parse(JSON.stringify(lib.archive)) as StlibArchive],
+    );
+    expect(stdout).toBe("11117");
+  });
+
+  it("reads a user enumeration value named like a library constant by its context", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: "VAR_GLOBAL CONSTANT LK : INT := 5; END_VAR",
+          fileName: "k.st",
+        },
+      ],
+      { name: "lconst2", version: "1.0.0", namespace: "lconst2" },
+    );
+    expect(lib.errors).toEqual([]);
+    const { stdout } = run(
+      `TYPE UE : (LK, X); END_TYPE
+PROGRAM Main
+VAR v : INT; u : UE := LK; w : UE; END_VAR
+v := LK * 10;
+w := LK;
+IF u = LK THEN v := v + 1; END_IF
+CASE w OF LK: v := v + 100; END_CASE
+END_PROGRAM
+`,
+      "p.V",
+      "libtypes_enum_vs_constant",
+      [JSON.parse(JSON.stringify(lib.archive)) as StlibArchive],
+    );
+    expect(stdout).toBe("151");
+  });
+
   it("still loads an archive written before enumeration values and shapes were recorded", () => {
     const old = library();
     for (const t of old.manifest.types) {

@@ -958,6 +958,8 @@ export class CodeGenerator {
   private libraryStructFieldTypes: Map<string, string> = new Map();
   /** Upper-cased names of the types library manifests declare. */
   private libraryTypeNames: Set<string> = new Set();
+  /** Upper-cased names of library globals (VAR_GLOBAL, constants included). */
+  private libraryGlobalNames: Set<string> = new Set();
   /** Upper-cased names of library enumerations (aliases of one included). */
   private libraryEnumTypeNames: Set<string> = new Set();
   /** Each library alias TYPE's base, upper-cased. */
@@ -1917,6 +1919,9 @@ export class CodeGenerator {
       );
       if (archive.manifest.types) {
         this.registerLibraryTypes(archive.manifest.types);
+      }
+      for (const g of archive.manifest.globals ?? []) {
+        this.libraryGlobalNames.add(g.name.toUpperCase());
       }
     }
     this.inheritLibraryInOuts();
@@ -7089,6 +7094,11 @@ export class CodeGenerator {
         if (expr.fill === true && elements.length === 1) {
           return `{strucpp::iec_fill(${elements[0]})}`;
         }
+        // The given values, then the element type's default for the rest
+        if (expr.fillRest !== undefined) {
+          const rest = this.generateExpression(expr.fillRest);
+          return `{strucpp::iec_head(${[rest, ...elements].join(", ")})}`;
+        }
         return `{${elements.join(", ")}}`;
       }
       case "StructInitializerExpression":
@@ -7455,6 +7465,8 @@ export class CodeGenerator {
     if (
       enumEntry?.typeName &&
       !this.currentScopeVarTypes.has(nameUpper) &&
+      // A library's global of the name is read unless the context settled it
+      !this.libraryGlobalNames.has(nameUpper) &&
       !this.isCurrentFunctionResult(nameUpper) &&
       // In a SET body the property's name is the value being set.
       this.currentSetterProperty !== nameUpper &&

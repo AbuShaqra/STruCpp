@@ -603,3 +603,98 @@ END_PROGRAM
     }
   });
 });
+
+describe("a TYPE of the sources named like a library enumeration value", () => {
+  it("is refused as a value unless the target is that enumeration", () => {
+    // plcopen-softmotion has no RUN value; a library of the test declares one
+    const lib = compileStlib(
+      [{ source: "TYPE LMode : (Run, Halt); END_TYPE", fileName: "m.st" }],
+      { name: "lmode", version: "1.0.0", namespace: "lmode" },
+    );
+    expect(lib.errors).toEqual([]);
+    const libs = [
+      ...LIBS,
+      loadStlibArchive(JSON.parse(JSON.stringify(lib.archive))),
+    ];
+    const src = `TYPE Run : INT; END_TYPE
+PROGRAM Main
+VAR v : INT; m : LMode; END_VAR
+v := Run;
+v := Run + 1;
+m := Run;
+END_PROGRAM
+`;
+    expect(diagnostics(src, {}, libs).errors).toEqual([
+      "4: 'RUN' names a type, not a value",
+      "5: 'RUN' names a type, not a value",
+    ]);
+  });
+});
+
+describe("a bare library enumeration value outside its enumeration", () => {
+  it("is typed as that enumeration (refused into an INT)", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: "TYPE LColor : (Red, Green, Blue); END_TYPE",
+          fileName: "c.st",
+        },
+      ],
+      { name: "lcolor", version: "1.0.0", namespace: "lcolor" },
+    );
+    const libs = [
+      ...LIBS,
+      loadStlibArchive(JSON.parse(JSON.stringify(lib.archive))),
+    ];
+    const src = `PROGRAM Main
+VAR i : INT := Red; j : INT; END_VAR
+j := Red;
+END_PROGRAM
+`;
+    for (const options of [{}, IEC, STRICT]) {
+      expect(diagnostics(src, options, libs).errors).toEqual([
+        "2: Cannot assign LCOLOR to INT",
+        "3: Cannot assign LCOLOR to INT",
+      ]);
+    }
+  });
+});
+
+describe("a user enumeration value named like a library global", () => {
+  const lib = compileStlib(
+    [
+      {
+        source: "VAR_GLOBAL CONSTANT LK : INT := 5; END_VAR",
+        fileName: "k.st",
+      },
+    ],
+    { name: "lconst", version: "1.0.0", namespace: "lconst" },
+  );
+  const libs = [
+    ...LIBS,
+    loadStlibArchive(JSON.parse(JSON.stringify(lib.archive))),
+  ];
+  it("is the value where the enumeration is the context, the global in a number", () => {
+    const src = `TYPE UE : (LK, X); END_TYPE
+PROGRAM Main
+VAR v : INT; u : UE := LK; w : UE; END_VAR
+v := LK * 10;
+w := LK;
+IF u = LK THEN v := v + 1; END_IF
+CASE w OF LK: v := v + 100; END_CASE
+END_PROGRAM
+`;
+    expect(diagnostics(src, {}, libs).errors).toEqual([]);
+  });
+  it("is refused as ambiguous where neither decides it", () => {
+    const src = `TYPE UE : (LK, X); END_TYPE
+PROGRAM Main
+VAR s : STRING; END_VAR
+s := LK;
+END_PROGRAM
+`;
+    expect(diagnostics(src, {}, libs).errors).toEqual([
+      "4: 'LK' is both a value of enumeration UE and a library global; write UE#LK for the value",
+    ]);
+  });
+});

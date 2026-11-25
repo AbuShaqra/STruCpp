@@ -1073,6 +1073,11 @@ export interface ArrayLiteralExpression extends TypedNode {
    * element is the value of every element of the array (`iec_fill`).
    */
   fill?: true;
+  /**
+   * Set on an explicit initializer of an ARRAY of a type with a default: the
+   * value every element after the given ones takes (`iec_head`).
+   */
+  fillRest?: Expression;
 }
 
 /**

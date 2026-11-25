@@ -548,12 +548,12 @@ function elementaryOf(
   return undefined;
 }
 
-/** The STRUCT a chain of this library's plain aliases of `t` ends at; undefined otherwise. */
-function structAliasOf(
+/** The STRUCT (or enumeration) a chain of this library's plain aliases of `t` ends at; undefined otherwise. */
+function structAliasOf<T>(
   t: LibraryTypeEntry,
   manifest: LibraryManifest,
-  structTypes: ReadonlyMap<string, StructType>,
-): StructType | undefined {
+  structTypes: ReadonlyMap<string, T>,
+): T | undefined {
   let entry: LibraryTypeEntry | undefined = t;
   for (let depth = 0; entry !== undefined && depth < 32; depth++) {
     if (entry.kind !== "alias" || typeof entry.baseType !== "string") {
@@ -677,20 +677,26 @@ export function registerLibrarySymbols(
     } as StructType);
   }
 
+  // Enumerations that record their values (archives with `members`)
+  const enumTypes = new Map<string, EnumType>();
+  for (const t of manifest.types) {
+    if (t.kind !== "enum" || !Array.isArray(t.members)) continue;
+    enumTypes.set(t.name.toUpperCase(), {
+      typeKind: "enum",
+      name: t.name,
+      values: t.members.map((m) => m.name),
+    } as EnumType);
+  }
+
   // Register types
   for (const t of manifest.types) {
     const resolvedType: IECType =
       structTypes.get(t.name.toUpperCase()) ??
       // An alias of one of this library's STRUCTs is that STRUCT.
       structAliasOf(t, manifest, structTypes) ??
-      // An enumeration that records its values (archives with `members`).
-      (t.kind === "enum" && Array.isArray(t.members)
-        ? ({
-            typeKind: "enum",
-            name: t.name,
-            values: t.members.map((m) => m.name),
-          } as EnumType)
-        : undefined) ??
+      enumTypes.get(t.name.toUpperCase()) ??
+      // An alias of one of its enumerations is that enumeration.
+      structAliasOf(t, manifest, enumTypes) ??
       ELEMENTARY_TYPES[t.name.toUpperCase()] ??
       // An alias of an elementary type is that type (archives with `baseType`).
       elementaryOf(t.name, manifest) ??

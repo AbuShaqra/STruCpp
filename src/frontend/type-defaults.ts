@@ -77,6 +77,21 @@ export function applyTypeDefaults(
     if (node.kind !== "VarDeclaration") return true;
 
     const decl = node as VarDeclaration;
+    // `[1]` for an ARRAY of a type with a default: the other elements take it
+    if (
+      decl.initialValue?.kind === "ArrayLiteralExpression" &&
+      decl.initialValue.fill !== true &&
+      decl.initialValue.fillRest === undefined &&
+      decl.initialValue.elements.length > 0 &&
+      decl.initialValue.elements.every(
+        (e) => e.kind !== "ArrayLiteralExpression",
+      )
+    ) {
+      const rest = arrayOfDefaults(decl, defaults, aliasTargets);
+      if (rest?.kind === "ArrayLiteralExpression" && rest.elements[0]) {
+        decl.initialValue.fillRest = rest.elements[0];
+      }
+    }
     // A reference binds to existing storage — it has no value of its own.
     if (
       decl.initialValue === undefined &&
@@ -112,7 +127,11 @@ function arrayOfDefaults(
   // Up to three dimensions: a deeper array nests arrays of arrays
   if ((t.arrayDimensions?.length ?? 0) > 3) return undefined;
   const element = resolveDefault(t.elementTypeName, defaults, aliasTargets);
-  if (element === undefined) return undefined;
+  // An element that is itself an ARRAY (its default an array literal) keeps
+  // the element type's own initialisation
+  if (element === undefined || element.kind === "ArrayLiteralExpression") {
+    return undefined;
+  }
   return {
     kind: "ArrayLiteralExpression",
     sourceSpan: decl.sourceSpan,

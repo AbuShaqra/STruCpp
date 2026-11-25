@@ -19,6 +19,7 @@ import type { CompileError } from "../types.js";
 import { resolveDialect } from "../dialect.js";
 import { defaultStringLength } from "../semantic/string-default-length.js";
 import { buildChunks } from "./library-chunks.js";
+import { isLtimeConstantExpression } from "../semantic/type-checker.js";
 import { enumDefaultName } from "../backend/type-codegen.js";
 import { stNamespaceOfName } from "../semantic/library-namespaces.js";
 import type { MemberManglingContext } from "../backend/member-mangling.js";
@@ -63,7 +64,11 @@ import type {
  * cover them. Returns undefined for anything it can't faithfully render, so the
  * caller omits the field rather than emit a wrong default.
  */
-function serializeInitialValue(expr: Expression): string | undefined {
+function serializeInitialValue(
+  expr: Expression,
+  /** The text a bare name stands for (a constant's value); the name otherwise. */
+  constant?: (name: string) => string | undefined,
+): string | undefined {
   switch (expr.kind) {
     case "LiteralExpression":
       return expr.rawValue;
@@ -72,22 +77,22 @@ function serializeInitialValue(expr: Expression): string | undefined {
       return expr.subscripts.length === 0 &&
         expr.fieldAccess.length === 0 &&
         !expr.isDereference
-        ? expr.name
+        ? (constant?.(expr.name) ?? expr.name)
         : undefined;
     case "UnaryExpression": {
-      const operand = serializeInitialValue(expr.operand);
+      const operand = serializeInitialValue(expr.operand, constant);
       if (operand === undefined) return undefined;
       return expr.operator === "NOT"
         ? `NOT ${operand}`
         : `${expr.operator}${operand}`;
     }
     case "ParenthesizedExpression": {
-      const inner = serializeInitialValue(expr.expression);
+      const inner = serializeInitialValue(expr.expression, constant);
       return inner === undefined ? undefined : `(${inner})`;
     }
     case "BinaryExpression": {
-      const left = serializeInitialValue(expr.left);
-      const right = serializeInitialValue(expr.right);
+      const left = serializeInitialValue(expr.left, constant);
+      const right = serializeInitialValue(expr.right, constant);
       return left === undefined || right === undefined
         ? undefined
         : `${left} ${expr.operator} ${right}`;
@@ -270,6 +275,31 @@ function aliasBase(
     baseType: def.name,
     ...(maxLength !== undefined ? { maxLength } : {}),
   };
+}
+
+/**
+ * The value of the library's VAR_GLOBAL CONSTANT `name` as ST text, in
+ * parentheses, so a consumer's names cannot capture it; undefined otherwise.
+ */
+function libraryConstantText(
+  name: string,
+  ast: CompilationUnit,
+  depth: number,
+): string | undefined {
+  if (depth > 16) return undefined;
+  const upper = name.toUpperCase();
+  for (const block of ast.globalVarBlocks) {
+    if (!block.isConstant) continue;
+    for (const decl of block.declarations) {
+      if (!decl.names.some((n) => n.toUpperCase() === upper)) continue;
+      if (decl.initialValue === undefined) return undefined;
+      const text = serializeInitialValue(decl.initialValue, (n) =>
+        libraryConstantText(n, ast, depth + 1),
+      );
+      return text === undefined ? undefined : `(${text})`;
+    }
+  }
+  return undefined;
 }
 
 /** The elementary type a chain of the library's aliases from `name` ends at, upper-cased. */
@@ -1158,13 +1188,14 @@ export function compileLibrary(
       if (t.definition.kind === "TypeReference" && t.defaultValue) {
         let text =
           enumAliasDefault(t.definition.name, t.defaultValue, ast) ??
-          serializeInitialValue(t.defaultValue);
+          serializeInitialValue(t.defaultValue, (name) =>
+            libraryConstantText(name, ast, 0),
+          );
         // An LTIME default of a TIME alias is converted, as the library's own
         // variables are
         if (
           text !== undefined &&
-          t.defaultValue.kind === "LiteralExpression" &&
-          t.defaultValue.literalType === "LTIME" &&
+          isLtimeConstantExpression(t.defaultValue) &&
           aliasElementary(t.definition.name, ast) === "TIME"
         ) {
           text = `LTIME_TO_TIME(${text})`;
