@@ -72,7 +72,7 @@ describe("ADR into a POINTER TO POINTER TO", () => {
   const decls =
     "FUNCTION F : INT\nVAR_INPUT pp : POINTER TO POINTER TO INT; END_VAR\nF := pp^^;\nEND_FUNCTION\n";
   const message =
-    "POINTER TO POINTER TO INT holds the address of a POINTER TO INT, not of an INT";
+    "POINTER TO POINTER TO INT holds the address of a POINTER TO INT, not of a value of type INT";
 
   const vars = "i : INT; r : INT; pp : POINTER TO POINTER TO INT;";
   const body = "r := F(ADR(i));\npp := ADR(i);";
@@ -411,5 +411,107 @@ END_FUNCTION
         { strict: true },
       ),
     ).toEqual(clean);
+  });
+});
+
+describe("ADR of a non-pointer into a POINTER TO POINTER TO alias or initial value", () => {
+  const message =
+    "POINTER TO POINTER TO INT holds the address of a POINTER TO INT, not of a value of type INT";
+
+  it("warns through TYPE aliases and in an initial value", () => {
+    expect(
+      run(
+        "TYPE PI : POINTER TO INT; END_TYPE\nTYPE PPI : POINTER TO PI; END_TYPE\n",
+        "i : INT; pp : PPI; pp2 : POINTER TO PI; pp3 : POINTER TO POINTER TO INT := ADR(i);",
+        "pp := ADR(i);\npp2 := ADR(i);",
+      ),
+    ).toEqual({
+      errors: [],
+      warnings: [`0: ${message}`, `1: ${message}`, `2: ${message}`],
+    });
+  });
+});
+
+describe("an integer stored into a REF_TO", () => {
+  const decls = `FUNCTION_BLOCK FB
+VAR_INPUT r : REF_TO INT; END_VAR
+END_FUNCTION_BLOCK
+FUNCTION F : INT
+VAR_INPUT r : REF_TO INT; END_VAR
+F := 0;
+END_FUNCTION
+`;
+  const vars =
+    "i : INT; dw : DWORD; lw : LWORD; r : REF_TO INT; fb : FB; x : INT;";
+  const message =
+    "An integer is not a reference; a REF_TO takes REF(...), another reference or 0";
+  const input =
+    "An integer cannot be passed to the REF_TO input 'R'; pass REF(...) or 0";
+
+  it("refuses a narrow integer or a literal in every mode, and as an input", () => {
+    expect(
+      run(
+        decls,
+        vars,
+        "r := i;\nr := 5;\nr := dw;\nfb(r := i);\nfb(r := 3);\nx := F(i);",
+      ).errors,
+    ).toEqual([
+      `1: ${message}`,
+      `2: ${message}`,
+      `3: ${message}`,
+      `4: ${input}`,
+      `5: ${input}`,
+      `6: ${input}`,
+    ]);
+  });
+
+  it("warns about a 64-bit integer (an error under --strict) and accepts 0", () => {
+    expect(
+      run(decls, vars, "r := lw;\nr := 0;\nfb(r := 0);\nr := 1 - 1;"),
+    ).toEqual({
+      errors: [],
+      warnings: [`1: ${message}`],
+    });
+    expect(run(decls, vars, "r := lw;", { strict: true }).errors).toEqual([
+      `1: ${message}`,
+    ]);
+  });
+
+  it("takes 0 into a REF_TO of a STRUCT, a STRING or an FB as NULL", () => {
+    expect(
+      run(
+        "TYPE S : STRUCT a : INT; END_STRUCT END_TYPE\nTYPE S3 : STRUCT r : REF_TO S; END_STRUCT END_TYPE\n" +
+          decls,
+        "rs : REF_TO S; rstr : REF_TO STRING; rf : REF_TO FB; s3 : S3; ar : ARRAY[0..1] OF REF_TO S;",
+        "rs := 0;\nrstr := 0;\nrf := 0;\ns3.r := 0;\nar[1] := 0;",
+      ),
+    ).toEqual(clean);
+  });
+});
+
+describe("parser recovery around ARRAY in a declaration", () => {
+  const errors = (source: string): string[] =>
+    compile(source).errors.map((e) => e.message);
+
+  it("recovers as before the REFERENCE TO ARRAY form was read", () => {
+    expect(
+      errors("PROGRAM P VAR x : ARRAY; y : INT; END_VAR y := 1; END_PROGRAM"),
+    ).toEqual(["Expected `LBracket`, found `;`."]);
+    expect(
+      errors(
+        "PROGRAM P VAR x : ARRAY INT; y : INT; END_VAR y := 1; END_PROGRAM",
+      ),
+    ).toEqual([
+      "Expected `LBracket`, found identifier `INT`.",
+      "Expected `DoubleDot`, found `;`.",
+    ]);
+    expect(
+      errors(
+        "PROGRAM P VAR x : POINTER TO ARRAY INT; y : INT; END_VAR END_PROGRAM",
+      ),
+    ).toEqual([
+      "Expected `LBracket`, found identifier `INT`.",
+      "Expected `DoubleDot`, found `;`.",
+    ]);
   });
 });

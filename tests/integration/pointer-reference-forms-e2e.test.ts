@@ -306,5 +306,31 @@ END_PROGRAM
         ),
       ).toEqual(["2", "1", "2", "3"]);
     });
+
+    it("takes 0 into a REF_TO in an FB input and VAR default, a REF_TO STRUCT, reversed comparisons and a LINT", () => {
+      expect(
+        runMain(
+          "ref_to_zero_forms",
+          `TYPE S : STRUCT a : INT; END_STRUCT END_TYPE
+TYPE S3 : STRUCT r : REF_TO S := 0; END_STRUCT END_TYPE
+FUNCTION_BLOCK FB
+VAR_INPUT r : REF_TO INT := 0; END_VAR
+VAR q : REF_TO INT := 0; END_VAR
+VAR_OUTPUT o : INT; END_VAR
+IF 0 = r THEN o := -1; ELSE o := r^; END_IF;
+IF NULL <> q THEN o := o + 100; END_IF;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR i : INT := 4; x : LINT; ri : REF_TO INT; rs : REF_TO S; s : S; s3 : S3; ar : ARRAY[0..1] OF REF_TO S; fb : FB;
+  o1, o2 : INT; b1, b2 : BOOL; END_VAR
+fb(); o1 := fb.o; fb(r := REF(i)); o2 := fb.o;
+rs := REF(s); rs := 0; s3.r := 0; ar[1] := 0; b1 := 0 = rs AND s3.r = 0 AND ar[1] = 0;
+x := 0; ri := x; b2 := ri = 0;
+END_PROGRAM
+`,
+          ["O1", "O2", "B1", "B2"],
+        ),
+      ).toEqual(["-1", "4", "1", "1"]);
+    });
   },
 );

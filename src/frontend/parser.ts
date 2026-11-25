@@ -1041,10 +1041,25 @@ export class STParser extends CstParser {
    * `POINTER TO REF_TO INT` keep every level.
    */
   public dataType = this.RULE("dataType", () => {
+    // `REFERENCE TO ARRAY[..]` where no variable is declared (a result, an
+    // element, a TYPE): read after its REFERENCE TO, so ARRAY stays out of
+    // this rule's first tokens, and refused by the analyzer by name.
+    let referenceArray = false;
     this.MANY(() => {
       this.OR([
         { ALT: () => this.CONSUME(tokens.REF_TO) },
-        { ALT: () => this.CONSUME(tokens.REFERENCE_TO) },
+        {
+          ALT: (): void => {
+            this.CONSUME(tokens.REFERENCE_TO);
+            this.OPTION9({
+              GATE: (): boolean => this.LA(1).tokenType === tokens.ARRAY,
+              DEF: (): void => {
+                this.SUBRULE(this.arrayType);
+                if (!this.RECORDING_PHASE) referenceArray = true;
+              },
+            });
+          },
+        },
         {
           ALT: () => {
             this.CONSUME(tokens.POINTER);
@@ -1052,19 +1067,6 @@ export class STParser extends CstParser {
           },
         },
       ]);
-    });
-    // `REFERENCE TO ARRAY[..]` where no variable is declared (a result, an
-    // element, a TYPE): read so the analyzer refuses it by name. The type
-    // name stays a plain CONSUME otherwise, so error recovery is unchanged.
-    let referenceArray = false;
-    this.OPTION9({
-      GATE: (): boolean =>
-        this.LA(0).tokenType === tokens.REFERENCE_TO &&
-        this.LA(1).tokenType === tokens.ARRAY,
-      DEF: (): void => {
-        this.SUBRULE(this.arrayType);
-        if (!this.RECORDING_PHASE) referenceArray = true;
-      },
     });
     const typeNameTok: IToken | undefined =
       this.RECORDING_PHASE || !referenceArray

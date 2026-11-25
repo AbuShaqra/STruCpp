@@ -201,6 +201,11 @@ public:
      */
     IEC_REF_TO(std::nullptr_t) noexcept : ptr_(nullptr) {}
 
+    /** `R(0)` in a constructor's initializer list: NULL (exactly an int, explicit). */
+    template<typename I, typename std::enable_if<std::is_same<I, int>::value, int>::type = 0>
+    explicit IEC_REF_TO(I zero) noexcept
+        : ptr_(reinterpret_cast<pointer_type>(static_cast<std::uintptr_t>(zero))) {}
+
     /**
      * Constructor from an integer address (e.g. a __XWORD temp produced by
      * REF_LINK()). The address is reinterpreted as the wrapped IECVar<T>*;
@@ -327,9 +332,14 @@ public:
         return *this;
     }
 
-    /** The literal `0` (`fb(r := 0)`, a STRUCT member's `:= 0`): NULL, not an ambiguous conversion. */
-    IEC_REF_TO& operator=(int addr) noexcept {
-        set(reinterpret_cast<pointer_type>(static_cast<std::uintptr_t>(addr)));
+    /**
+     * The literal `0` (`r := 0`, `fb(r := 0)`, a STRUCT member's `:= 0`): NULL.
+     * Exactly an int (no conversion from another integer), so `r := lint_var`
+     * still takes the uintptr_t overload unambiguously.
+     */
+    template<typename I, typename std::enable_if<std::is_same<I, int>::value, int>::type = 0>
+    IEC_REF_TO& operator=(I zero) noexcept {
+        set(reinterpret_cast<pointer_type>(static_cast<std::uintptr_t>(zero)));
         return *this;
     }
 
@@ -686,6 +696,12 @@ template<typename T>
 inline std::uintptr_t address_bits(const IEC_Ptr<T>& p) noexcept {
     return p.to_addr();
 }
+
+/** `0 = r`, `NULL <> r`: a REF_TO compared with NULL on the right. */
+template<typename T>
+inline bool operator==(std::nullptr_t, const IEC_REF_TO<T>& r) noexcept { return r.is_null(); }
+template<typename T>
+inline bool operator!=(std::nullptr_t, const IEC_REF_TO<T>& r) noexcept { return !r.is_null(); }
 
 namespace detail {
 /** The address a MEMCPY argument holds: a pointer's, or an integer's value. */

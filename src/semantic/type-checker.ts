@@ -6585,6 +6585,10 @@ export class TypeChecker {
         // `p : POINTER TO T := ADR(x);` takes an address of any target type.
         if (outerKind === "pointer_to" && isAddressOf(decl.initialValue)) {
           this.resolveExprType(decl.initialValue, scope);
+          const shape = referenceShapeOf(decl.type);
+          if (shape) {
+            this.refuseAdrLevelMismatch(shape, decl.initialValue, scope);
+          }
           continue;
         }
         if (
@@ -7656,6 +7660,9 @@ export class TypeChecker {
           break;
         }
         if (this.warnIntegerIntoPointer(stmt.target, stmt.value, scope)) break;
+        if (this.refuseIntegerIntoReference(stmt.target, stmt.value, scope)) {
+          break;
+        }
         const pointerShape = this.declaredReferenceShape(stmt.target, scope);
         if (
           pointerShape !== undefined &&
@@ -11148,10 +11155,12 @@ export class TypeChecker {
       [expr.right, expr.left],
     ] as const) {
       if (!isAddress(a) || isAddress(b)) continue;
-      // A pointer variable on the left compares with an integer as it is (IEC_Ptr's operators).
+      // A POINTER TO variable on the left compares with an integer as it is (IEC_Ptr's operators).
       if (
         a === expr.left &&
-        addressSource(a, user, this.isPointerRead) === undefined
+        addressSource(a, user, this.isPointerRead) === undefined &&
+        (this.declaredReferenceShape(a, scope)?.chain[0] === "pointer_to" ||
+          this.isPointerAliasTarget(a, scope))
       ) {
         continue;
       }
@@ -11191,8 +11200,10 @@ export class TypeChecker {
           ? inputs[i]
           : inputs.find((p) => p.name.toUpperCase() === argName);
       if (!input || input.inOut) return;
+      const level = referenceShapeOf(input.type)?.chain[0];
       if (
-        referenceShapeOf(input.type)?.chain[0] !== "pointer_to" &&
+        level !== "pointer_to" &&
+        level !== "ref_to" &&
         !this.isPointerAlias(input.type)
       ) {
         return;
@@ -11206,7 +11217,9 @@ export class TypeChecker {
         return;
       }
       this.addError(
-        `An integer cannot be passed to the POINTER TO input '${input.name.toUpperCase()}'; pass an address (ADR) or 0`,
+        level === "ref_to"
+          ? `An integer cannot be passed to the REF_TO input '${input.name.toUpperCase()}'; pass REF(...) or 0`
+          : `An integer cannot be passed to the POINTER TO input '${input.name.toUpperCase()}'; pass an address (ADR) or 0`,
         arg.value.sourceSpan.startLine,
         arg.value.sourceSpan.startCol,
         arg.value.sourceSpan.file,
@@ -11305,8 +11318,8 @@ export class TypeChecker {
   }
 
   /**
-   * `p := 0`: the untyped literal 0 stored in a POINTER TO of any target type
-   * is NULL, as it already is for an elementary target.
+   * `p := 0`: the untyped literal 0 stored in a POINTER TO or REF_TO of any
+   * target type is NULL, as it already is for an elementary target.
    */
   private isZeroIntoPointer(
     target: Expression,
@@ -11314,12 +11327,45 @@ export class TypeChecker {
     scope: Scope,
   ): boolean {
     if (!isUntypedZero(value)) return false;
-    if (this.declaredReferenceShape(target, scope)?.chain[0] !== "pointer_to") {
+    const level = this.declaredReferenceShape(target, scope)?.chain[0];
+    if (level !== "pointer_to" && level !== "ref_to") {
       // A POINTER TO alias of this unit: NULL too, checked as before.
       if (this.isPointerAliasTarget(target, scope)) value.asNull = true;
       return false;
     }
     value.asNull = true;
+    return true;
+  }
+
+  /**
+   * `r := i` or `r := 5` into a REF_TO: an integer is no reference. One
+   * narrower than an address, or a literal, makes a reference to no variable
+   * (an error in every mode); a 64-bit one may hold an address (a warning by
+   * default, an error under iec-3 and --strict). True when reported.
+   */
+  private refuseIntegerIntoReference(
+    target: Expression,
+    value: Expression,
+    scope: Scope,
+  ): boolean {
+    const shape = this.declaredReferenceShape(target, scope);
+    if (shape?.chain[0] !== "ref_to" || isUntypedZero(value)) return false;
+    // A constant 0 (`1 - 1`) is NULL too.
+    if (this.foldIntegerConstant(value, scope, 0) === 0n) return false;
+    const integer = this.integerValueBase(value, scope);
+    if (integer === undefined) return false;
+    const span = value.sourceSpan;
+    const message =
+      "An integer is not a reference; a REF_TO takes REF(...), another reference or 0";
+    const wide =
+      unparenthesized(value).kind !== "LiteralExpression" &&
+      (addressFit(integer, []) === "wide" ||
+        ["__XWORD", "XWORD", "__UXINT", "__XINT"].includes(integer));
+    if (wide && !this.strict && !this.inOutErrors) {
+      this.addWarning(message, span.startLine, span.startCol, span.file);
+    } else {
+      this.addError(message, span.startLine, span.startCol, span.file);
+    }
     return true;
   }
 
@@ -11467,6 +11513,26 @@ export class TypeChecker {
     );
   }
 
+  /** `shape` with every TYPE alias of this unit naming reference levels expanded into its chain. */
+  private aliasExpandedShape(shape: ReferenceShape): ReferenceShape {
+    let { chain, base } = shape;
+    for (let depth = 0; depth < 16; depth++) {
+      const upper = base.toUpperCase();
+      const def = this.ast?.types.find(
+        (td) => td.name.toUpperCase() === upper,
+      )?.definition;
+      if (def?.kind !== "TypeReference" || def.arrayDimensions !== undefined) {
+        break;
+      }
+      const levels =
+        def.referenceChain ??
+        ((def.referenceKind ?? "none") === "none" ? [] : [def.referenceKind]);
+      chain = [...chain, ...levels];
+      base = def.name;
+    }
+    return chain === shape.chain ? shape : { chain, base };
+  }
+
   /**
    * `ADR(i)` of a value that is no pointer into a POINTER TO POINTER TO
    * (`pp := ADR(i)`): the INT would be read as an address. A warning by
@@ -11477,6 +11543,8 @@ export class TypeChecker {
     value: Expression,
     scope: Scope,
   ): boolean {
+    // `TYPE PPI : POINTER TO PI` and `POINTER TO PI` are POINTER TO POINTER TO INT.
+    target = this.aliasExpandedShape(target);
     if (target.chain.length < 2 || target.chain[0] !== "pointer_to") {
       return false;
     }
@@ -11502,7 +11570,7 @@ export class TypeChecker {
     }
     const span = value.sourceSpan;
     // It goes wrong only when dereferenced: a warning by default.
-    const message = `${describeReferenceShape(target)} holds the address of ${withArticle(describeReferenceShape({ chain: target.chain.slice(1), base: target.base }))}, not of ${withArticle(shape.base.toUpperCase())}`;
+    const message = `${describeReferenceShape(target)} holds the address of ${withArticle(describeReferenceShape({ chain: target.chain.slice(1), base: target.base }))}, not of a value of type ${shape.base.toUpperCase()}`;
     if (this.strict || this.inOutErrors) {
       this.addError(message, span.startLine, span.startCol, span.file);
     } else {
