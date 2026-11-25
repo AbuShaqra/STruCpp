@@ -142,7 +142,7 @@ TEST 'TON timer fires after preset'
 END_TEST
 ```
 
-`ADVANCE_TIME(nanoseconds)` increments the global scan-cycle time. This lets you simulate the passage of time between FB invocations without real-world delays.
+`ADVANCE_TIME(nanoseconds)` increments the global scan-cycle time. This lets you simulate the passage of time between FB invocations without real-world delays. Its argument is a TIME, an LTIME or an integer number of nanoseconds; a BOOL, REAL or LREAL (taken as nanoseconds) warns, and is an error under `--dialect iec-3`; any other type is an error.
 
 `ADVANCE_TIME` may also stand inside `IF`, `CASE`, `FOR`, `WHILE` or `REPEAT` in a TEST, SETUP or TEARDOWN body, and advances the time every time it runs, so a loop can drive a timer one scan cycle at a time:
 

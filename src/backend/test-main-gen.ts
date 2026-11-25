@@ -481,11 +481,17 @@ class TestFunctionGenerator {
                 decl.type.name,
               )}`
             : "";
+        const ctorArgs =
+          init === ""
+            ? this.testCodegen.programInstanceArgs(decl.type.name)
+            : undefined;
         for (const name of decl.names) {
           lines.push(
             shared !== undefined
               ? `    ${cppType}& ${name} = ${shared};`
-              : `    ${cppType} ${name}${init};`,
+              : ctorArgs !== undefined
+                ? `    ${cppType} ${name}{${ctorArgs}};`
+                : `    ${cppType} ${name}${init};`,
           );
         }
       }
@@ -647,10 +653,13 @@ class TestFunctionGenerator {
     const cppType = this.testCodegen.resolveType(decl.type);
     // A reached PROGRAM has one instance: the test's variable names it.
     const shared = this.testCodegen.sharedInstanceOfType(decl.type.name);
+    const ctorArgs = this.testCodegen.programInstanceArgs(decl.type.name);
 
     for (const name of decl.names) {
       if (shared !== undefined) {
         lines.push(`${this.indent}${cppType}& ${name} = ${shared};`);
+      } else if (ctorArgs !== undefined && !decl.initialValue) {
+        lines.push(`${this.indent}${cppType} ${name}(${ctorArgs});`);
       } else if (decl.initialValue) {
         // A SETUP/TEST var is a declaration, so `p : Point := (x := 1.0)` is the
         // legal form and must go through the initializer lowering — the plain
@@ -828,6 +837,10 @@ class TestFunctionGenerator {
           );
           break;
         }
+        this.testCodegen.adaptAssertCharLiterals(
+          assert.args[0]!,
+          assert.args[1]!,
+        );
         const actualExpr = this.testCodegen.emitExpression(assert.args[0]!);
         const expectedExpr = this.testCodegen.emitExpression(assert.args[1]!);
         const method =

@@ -58,6 +58,7 @@ import {
   GlobalListResolver,
   type GlobalListScope,
   prepareGlobalLists,
+  recoverGlobalLists,
   type GlobalListDiagnostic,
   type GlobalLists,
 } from "./global-lists.js";
@@ -8205,6 +8206,11 @@ export class SemanticAnalyzer {
       typeScope,
     );
 
+    // `LIST.var` in SETUP, TEARDOWN and TEST bodies, as in a POU body
+    if (sourceAst !== undefined) {
+      this.resolveTestGlobalListAccess(testFile, sourceAst, setupScope);
+    }
+
     // Walk SETUP body
     if (testFile.setup) {
       this.checkTestInitialValueNames(
@@ -8393,6 +8399,62 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * Rewrite `LIST.var` in a test file's bodies and initial values to the
+   * global it reaches, with the lists of its sources. A test variable that
+   * hides the global leaves `LIST.var` unreachable (an error).
+   */
+  private resolveTestGlobalListAccess(
+    testFile: TestFile,
+    sourceAst: CompilationUnit,
+    setupScope: Scope,
+  ): void {
+    const lists = recoverGlobalLists(sourceAst);
+    if (lists.lists.size === 0) return;
+    const enabled = this.features.has("named_global_lists");
+    const resolver = new GlobalListResolver(lists, enabled, (d) =>
+      this.reportGlobalList(d),
+    );
+    // A refused access is not reported again as undeclared.
+    this.listRefused = resolver.refused;
+    const globalScope = this.symbolTables.globalScope;
+    const listScope = (scope: Scope): GlobalListScope => ({
+      resolvesOtherwise: (name): boolean => {
+        const upper = name.toUpperCase();
+        return (
+          scope.lookup(upper) !== undefined ||
+          this.stdRegistry.isStandardFunction(name) ||
+          this.enumMemberMap.has(upper)
+        );
+      },
+      hidesGlobal: (name): boolean =>
+        scope.lookup(name.toUpperCase()) !==
+        globalScope.lookup(name.toUpperCase()),
+      defineAlias: (): boolean => false,
+      hiddenBy: "a test variable",
+    });
+    const rewrite = (
+      blocks: VarBlock[],
+      body: TestStatement[],
+      scope: Scope,
+    ): void => {
+      const s = listScope(scope);
+      resolver.rewriteDeclarations(blocks, s);
+      resolver.rewriteStatements(body as Statement[], s);
+    };
+    if (testFile.setup) {
+      rewrite(testFile.setup.varBlocks, testFile.setup.body, setupScope);
+    }
+    if (testFile.teardown) rewrite([], testFile.teardown.body, setupScope);
+    for (const tc of testFile.testCases) {
+      rewrite(
+        tc.varBlocks,
+        tc.body,
+        this.buildTestScope(tc.varBlocks, setupScope),
+      );
+    }
+  }
+
+  /**
    * `ADR` in a test file needs the feature pointer_to, unless the sources
    * declare a FUNCTION named ADR; one refusal per position.
    */
@@ -8528,13 +8590,14 @@ export class SemanticAnalyzer {
       false,
       this.features,
     );
-    this.errors.push(
-      ...checker.checkTestStatementOperands(
-        roots as readonly ASTNode[],
-        scope,
-        sourceAst,
-      ),
+    const found = checker.checkTestStatementOperands(
+      roots as readonly ASTNode[],
+      scope,
+      sourceAst,
+      this.iec3Rules || this.options.strict === true,
     );
+    this.errors.push(...found.errors);
+    this.warnings.push(...found.warnings);
   }
 
   /** `=` and `<>` of two STRUCTs in test bodies, where struct_compare is off. */
@@ -8959,8 +9022,8 @@ export function analyzeTestFile(
     testFile.source !== undefined
       ? new Map([[testFile.fileName, testFile.source]])
       : undefined;
-  respellDiagnostics(result.errors, spellings, sources);
-  respellDiagnostics(result.warnings, spellings, sources);
+  respellDiagnostics(result.errors, spellings, sources, testFile.fileName);
+  respellDiagnostics(result.warnings, spellings, sources, testFile.fileName);
   return result;
 }
 

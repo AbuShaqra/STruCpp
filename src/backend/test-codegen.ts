@@ -24,6 +24,7 @@ import { CodeGenerator } from "./codegen.js";
 import type { CodeGenOptions } from "./codegen.js";
 import { buildEnumMemberMap } from "../semantic/type-utils.js";
 import { programsReachedByName } from "../semantic/program-access.js";
+import { charLiteralUnits } from "../literal-utils.js";
 
 export class TestCodeGenerator extends CodeGenerator {
   private pouMap: Map<string, POUInfo>;
@@ -287,7 +288,36 @@ export class TestCodeGenerator extends CodeGenerator {
     return this.mapTypeRefToCpp(typeOrName);
   }
 
+  /**
+   * ASSERT_EQ / ASSERT_NEQ of a CHAR or WCHAR and a one-character literal:
+   * the literal is that character, as in `c = 'x'` (test bodies are not
+   * type-checked, so the assert adapts it here).
+   */
+  adaptAssertCharLiterals(a: Expression, b: Expression): void {
+    for (const [value, other] of [
+      [a, b],
+      [b, a],
+    ] as const) {
+      const t = this.inferExprType(other);
+      if (t !== "CHAR" && t !== "WCHAR") continue;
+      if (value.kind !== "LiteralExpression") continue;
+      const want = t === "CHAR" ? "STRING" : "WSTRING";
+      if (value.literalType !== want || (value.typePrefix ?? "") !== "") {
+        continue;
+      }
+      const raw = `${t}#${value.rawValue}`;
+      if (charLiteralUnits(raw).units.length !== 1) continue;
+      value.literalType = t;
+      value.rawValue = raw;
+      value.value = raw;
+    }
+  }
+
   // --- Hook overrides ---
+
+  protected override isTestMainCodegen(): boolean {
+    return true;
+  }
 
   protected override resolveVariableBaseName(name: string): string {
     if (this.setupVarNames.has(name)) {
