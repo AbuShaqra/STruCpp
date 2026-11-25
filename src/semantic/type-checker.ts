@@ -8575,26 +8575,18 @@ export class TypeChecker {
     ) {
       return;
     }
-    const global = this.symbolTables.globalScope.lookup(value.name);
-    if (global?.kind !== "variable" && global?.kind !== "constant") return;
-    const declared = (global.declaration as VarDeclaration | undefined)?.type;
+    const global = this.libraryGlobalShape(value.name);
+    if (global === undefined) return;
     if (
-      declared === undefined ||
-      declared.arrayDimensions !== undefined ||
-      (declared.referenceKind ?? "none") !== "none"
-    ) {
-      return;
-    }
-    const own = this.aliasBase(declared.name);
-    const kind = this.symbolTables.lookupType(own)?.resolvedType?.typeKind;
-    if (
-      (kind === "enum" || kind === "struct") &&
-      this.aliasBase(typeName) === own
+      (global.kind === "enum" ||
+        global.kind === "struct" ||
+        global.kind === "functionBlock") &&
+      this.aliasBase(typeName) === global.name
     ) {
       value.libraryGlobal = true;
       return;
     }
-    // An elementary context: not a STRUCT or FB global
+    // An elementary context: not a STRUCT, FB or ARRAY global
     if (
       ELEMENTARY_TYPES[canonicalElementaryName(this.aliasBase(typeName))] !==
       undefined
@@ -8621,19 +8613,49 @@ export class TypeChecker {
     ) {
       return;
     }
-    const global = this.symbolTables.globalScope.lookup(value.name);
-    if (global?.kind !== "variable" && global?.kind !== "constant") return;
-    const declared = (global.declaration as VarDeclaration | undefined)?.type;
-    if (declared === undefined) return;
-    if (declared.arrayDimensions === undefined) {
-      if ((declared.referenceKind ?? "none") !== "none") return;
-      const base = this.aliasBase(declared.name);
-      if (ELEMENTARY_TYPES[canonicalElementaryName(base)] !== undefined) return;
-      const kind = this.symbolTables.lookupType(base)?.resolvedType?.typeKind;
-      if (kind === undefined || kind === "enum") return;
-    }
+    const kind = this.libraryGlobalShape(value.name)?.kind;
+    if (kind === undefined || kind === "elementary" || kind === "enum") return;
     const owner = this.sourceEnumOwning(value.name);
     if (owner !== undefined) value.enumType = owner;
+  }
+
+  /**
+   * The declared type of library global `name` (through aliases) and its
+   * kind: elementary, enum, struct, functionBlock or array; undefined for a
+   * reference or a type not known here.
+   */
+  private libraryGlobalShape(
+    name: string,
+  ): { name: string; kind: string } | undefined {
+    const global = this.symbolTables.globalScope.lookup(name);
+    if (global?.kind !== "variable" && global?.kind !== "constant") {
+      return undefined;
+    }
+    const declared = (global.declaration as VarDeclaration | undefined)?.type;
+    if (declared === undefined) return undefined;
+    // A library manifest names an inline array `__INLINE_ARRAY_<element>`
+    if (
+      declared.arrayDimensions !== undefined ||
+      /^__(INLINE_ARRAY|VLA_\d+D)_/i.test(declared.name)
+    ) {
+      return { name: declared.name.toUpperCase(), kind: "array" };
+    }
+    if ((declared.referenceKind ?? "none") !== "none") return undefined;
+    const base = this.aliasBase(declared.name);
+    if (ELEMENTARY_TYPES[canonicalElementaryName(base)] !== undefined) {
+      return { name: base, kind: "elementary" };
+    }
+    if (this.symbolTables.globalScope.lookup(base)?.kind === "functionBlock") {
+      return { name: base, kind: "functionBlock" };
+    }
+    const resolved = this.symbolTables.lookupType(base)?.resolvedType;
+    if (resolved === undefined) return undefined;
+    // A library ARRAY type (`TYPE LA : ARRAY[..] OF INT`)
+    const def = this.symbolTables.lookupType(base)?.declaration?.definition;
+    if (def?.kind === "TypeReference" && def.arrayDimensions !== undefined) {
+      return { name: base, kind: "array" };
+    }
+    return { name: base, kind: resolved.typeKind };
   }
 
   /**

@@ -1078,16 +1078,25 @@ export class CodeGenerator {
   }> = [];
 
   /**
-   * `<archive>/<chunk>` of each reachable library TYPE whose dependencies,
-   * transitively, are library types only: emitted ahead of this compile's
-   * types (computed when the header is generated).
+   * `<archive>/<chunk>` of each library TYPE whose dependencies, transitively,
+   * are library types only, over every registered archive: such a type can
+   * be emitted ahead of this compile's types, so a type holding it is not late.
    */
+  private earlyCapableLibraryChunks: Set<string> = new Set();
+  /** Upper-cased names of the types in `earlyCapableLibraryChunks`. */
+  private earlyCapableLibraryTypes: Set<string> = new Set();
+  /** The reachable early-capable chunks in dependency order (computed for the header). */
+  private earlyLibraryTypeOrder: Array<{
+    archive: StlibArchive;
+    chunk: LibraryChunk;
+  }> = [];
+  /** `<archive>/<chunk>` of the chunks in `earlyLibraryTypeOrder`. */
   private earlyLibraryTypeChunks: Set<string> = new Set();
 
-  /** Fill `earlyLibraryTypeChunks` from the reachable chunks. */
-  private collectEarlyLibraryTypeChunks(): void {
+  /** Fill `earlyCapableLibraryChunks` from the archives' chunks. */
+  private collectEarlyCapableLibraryTypes(archives: StlibArchive[]): void {
     const chunks = new Map<string, LibraryChunk>();
-    for (const { archive } of this.libraryEmissions) {
+    for (const archive of archives) {
       for (const c of archive.chunks ?? []) {
         chunks.set(`${archive.manifest.name}/${c.name}`, c);
       }
@@ -1107,14 +1116,48 @@ export class CodeGenerator {
       verdict.set(key, ok);
       return ok;
     };
-    for (const { archive, reachable } of this.libraryEmissions) {
+    for (const archive of archives) {
       for (const c of archive.chunks ?? []) {
         const key = `${archive.manifest.name}/${c.name}`;
-        if (reachable.has(c.name) && typesOnly(key, 0)) {
-          this.earlyLibraryTypeChunks.add(key);
+        if (typesOnly(key, 0)) {
+          this.earlyCapableLibraryChunks.add(key);
+          this.earlyCapableLibraryTypes.add(c.name.toUpperCase());
         }
       }
     }
+  }
+
+  /**
+   * Order the reachable early-capable chunks so each follows the chunks it
+   * depends on, across libraries too; ties keep archive and chunk order.
+   */
+  private orderEarlyLibraryTypeChunks(): void {
+    const byKey = new Map<
+      string,
+      { archive: StlibArchive; chunk: LibraryChunk }
+    >();
+    for (const { archive, reachable } of this.libraryEmissions) {
+      for (const chunk of archive.chunks ?? []) {
+        const key = `${archive.manifest.name}/${chunk.name}`;
+        if (
+          reachable.has(chunk.name) &&
+          chunk.header.length > 0 &&
+          this.earlyCapableLibraryChunks.has(key)
+        ) {
+          byKey.set(key, { archive, chunk });
+        }
+      }
+    }
+    const done = new Set<string>();
+    const visit = (key: string): void => {
+      const entry = byKey.get(key);
+      if (entry === undefined || done.has(key)) return;
+      done.add(key);
+      for (const d of entry.chunk.deps) visit(`${d.library}/${d.name}`);
+      this.earlyLibraryTypeOrder.push(entry);
+      this.earlyLibraryTypeChunks.add(key);
+    };
+    for (const key of byKey.keys()) visit(key);
   }
 
   /** Map of UPPER(fbTypeName) → ordered VAR_INPUT parameter names (UPPER case).
@@ -1920,6 +1963,7 @@ export class CodeGenerator {
    * Single entry point used by both compile() and generateTestMain().
    */
   registerLibraryArchives(archives: StlibArchive[]): void {
+    this.collectEarlyCapableLibraryTypes(archives);
     for (const archive of archives) {
       const stringDefault = archive.manifest.stringDefaultLength;
       for (const fn of archive.manifest.functions) {
@@ -2317,13 +2361,15 @@ export class CodeGenerator {
     // sorted and emitted with the FB classes; a late ARRAY or alias is a
     // `using` that instantiates nothing and stays with the other types, where
     // method and interface signatures can name it.
-    // A STRUCT holding a library type by value is late too: the library's
-    // types are emitted after this compile's.
+    // A STRUCT holding a library type by value is late too, unless that type
+    // needs only library types: those are emitted before this compile's.
     this.lateTypeNames = typesHoldingFunctionBlocks(
       ast.types,
       (name) =>
         this.knownFBTypes.has(name) ||
-        (this.libraryTypeNames.has(name) && !ownTypes.has(name)),
+        (this.libraryTypeNames.has(name) &&
+          !ownTypes.has(name) &&
+          !this.earlyCapableLibraryTypes.has(name)),
     );
 
     // Topologically sort FBs and late structs once (used in both header and
@@ -2482,7 +2528,7 @@ export class CodeGenerator {
       this.emitHeader("");
     }
 
-    this.collectEarlyLibraryTypeChunks();
+    this.orderEarlyLibraryTypeChunks();
 
     // Forward-declare the POU classes before the user-defined types.
     //
@@ -2506,20 +2552,16 @@ export class CodeGenerator {
 
     // A library's types that need no FB, function or global come before
     // this compile's: a TYPE of the sources may alias one (`TYPE A : LColor`)
-    for (const { archive, reachable } of this.libraryEmissions) {
-      const early = (archive.chunks ?? []).filter(
-        (c) =>
-          reachable.has(c.name) &&
-          c.header.length > 0 &&
-          this.earlyLibraryTypeChunks.has(`${archive.manifest.name}/${c.name}`),
-      );
-      if (early.length === 0) continue;
-      this.emitHeader(`// Library: ${archive.manifest.name}`);
-      for (const chunk of early) {
-        for (const line of chunk.header.split("\n")) this.emitHeader(line);
+    let earlyArchive: string | undefined;
+    for (const { archive, chunk } of this.earlyLibraryTypeOrder) {
+      if (archive.manifest.name !== earlyArchive) {
+        if (earlyArchive !== undefined) this.emitHeader("");
+        earlyArchive = archive.manifest.name;
+        this.emitHeader(`// Library: ${archive.manifest.name}`);
       }
-      this.emitHeader("");
+      for (const line of chunk.header.split("\n")) this.emitHeader(line);
     }
+    if (earlyArchive !== undefined) this.emitHeader("");
 
     // Generate user-defined types (Phase 2.2). Late structs wait for the FB
     // classes below; the enum lookups cover all types.

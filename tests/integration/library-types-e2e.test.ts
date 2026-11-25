@@ -761,6 +761,136 @@ END_PROGRAM
     expect(stdout).toBe("1111 73737 5655 94491");
   });
 
+  it("orders library types across libraries, in either library order", () => {
+    const la = compileStlib(
+      [
+        {
+          source: `TYPE AE : (A1, A2, A3); END_TYPE
+TYPE AS : STRUCT e : AE := A2; n : INT := 11; END_STRUCT END_TYPE`,
+          fileName: "la.st",
+        },
+      ],
+      { name: "lorder-a", version: "1.0.0", namespace: "lorder_a" },
+    );
+    expect(la.errors).toEqual([]);
+    const a = JSON.parse(JSON.stringify(la.archive)) as StlibArchive;
+    const lb = compileStlib(
+      [
+        {
+          source: `TYPE BS : STRUCT a : AS; arr : ARRAY[0..1] OF AS; m : INT := 3; END_STRUCT END_TYPE
+TYPE BL : ARRAY[0..2] OF BS; END_TYPE`,
+          fileName: "lb.st",
+        },
+      ],
+      {
+        name: "lorder-b",
+        version: "1.0.0",
+        namespace: "lorder_b",
+        dependencies: [...LIBS, loadStlibArchive(a)],
+      },
+    );
+    expect(lb.errors).toEqual([]);
+    const b = JSON.parse(JSON.stringify(lb.archive)) as StlibArchive;
+    const source = `TYPE UT : STRUCT l : BL; e : AE; END_STRUCT END_TYPE
+PROGRAM Main
+VAR l : BL; u : UT; r : LINT; END_VAR
+r := l[2].arr[1].n + l[1].m * 100 + u.l[0].a.n * 1000;
+IF u.l[1].a.e = A2 AND u.e = A1 THEN r := r + 100000; END_IF;
+END_PROGRAM
+`;
+    for (const [order, archives] of [
+      ["a-b", [a, b]],
+      ["b-a", [b, a]],
+    ] as const) {
+      const { stdout } = run(source, "p.R", `libtypes_lib_order_${order}`, [
+        ...archives,
+      ]);
+      expect(stdout).toBe("111311");
+    }
+  });
+
+  it("reads a name of a user enumeration and a library FB or ARRAY global as the value where an elementary value is needed", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `FUNCTION_BLOCK LFB VAR_OUTPUT o : INT := 8; END_VAR o := o + 1; END_FUNCTION_BLOCK
+VAR_GLOBAL GF : LFB; GA : ARRAY[0..2] OF INT := [1, 2, 3]; END_VAR`,
+          fileName: "g.st",
+        },
+      ],
+      { name: "lfbglob", version: "1.0.0", namespace: "lfbglob" },
+    );
+    expect(lib.errors).toEqual([]);
+    const { stdout } = run(
+      `TYPE UE : (A, GF, GA, Z); END_TYPE
+PROGRAM Main
+VAR r1 : LINT; r2 : LINT; r3 : LINT; END_VAR
+r1 := TO_INT(GF) * 100 + INT_TO_LINT(GF) * 10 + TO_INT(GA);
+IF GA = GA THEN r2 := 1; END_IF;
+GF();
+r3 := GF.o + GA[2] * 10;
+END_PROGRAM
+`,
+      'p.R1 << " " << p.R2 << " " << p.R3',
+      "libtypes_user_enum_fb_array_global",
+      [JSON.parse(JSON.stringify(lib.archive)) as StlibArchive],
+    );
+    expect(stdout).toBe("112 1 39");
+  });
+
+  it("emits a CONFIGURATION global of a user STRUCT that holds library types", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `TYPE LColor : (LRed, LGreen, LBlue); END_TYPE
+TYPE LPlain : STRUCT p : LColor := LGreen; q : INT := 9; END_STRUCT END_TYPE`,
+          fileName: "c.st",
+        },
+      ],
+      { name: "lcfg", version: "1.0.0", namespace: "lcfg" },
+    );
+    expect(lib.errors).toEqual([]);
+    const result = compile(
+      `TYPE US : STRUCT c : LColor := LBlue; n : LPlain; k : INT := 3; END_STRUCT END_TYPE
+CONFIGURATION Cfg
+VAR_GLOBAL cg : US; END_VAR
+RESOURCE R ON PLC TASK T(INTERVAL := T#10ms, PRIORITY := 1); PROGRAM P WITH T : Main; END_RESOURCE
+END_CONFIGURATION
+PROGRAM Main
+VAR_EXTERNAL cg : US; END_VAR
+VAR r : LINT; END_VAR
+r := cg.k + cg.n.q * 10;
+IF cg.c = LBlue AND cg.n.p = LGreen THEN r := r + 100; END_IF;
+END_PROGRAM
+`,
+      {
+        headerFileName: "generated.hpp",
+        libraries: [
+          ...LIBS,
+          loadStlibArchive(JSON.parse(JSON.stringify(lib.archive))),
+        ],
+      },
+    );
+    expect(result.errors).toEqual([]);
+    const stdout = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "libtypes_config_global_library_struct",
+      mainCode: `
+#include <iostream>
+strucpp::Configuration_CFG c;
+int main() {
+    c.P.run();
+    std::cout << c.P.R << std::endl;
+    return 0;
+}
+`,
+    });
+    expect(stdout).toBe("193");
+  });
+
   it("still loads an archive written before enumeration values and shapes were recorded", () => {
     const old = library();
     for (const t of old.manifest.types) {
