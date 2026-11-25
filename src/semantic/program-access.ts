@@ -19,6 +19,7 @@
 
 import type {
   Argument,
+  ASTNode,
   CompilationUnit,
   Expression,
   ForStatement,
@@ -447,7 +448,32 @@ export function lowerProgramSelfMembers(ast: CompilationUnit): void {
   }
 }
 
-/** Upper-case names of the PROGRAMs reached by name from another POU. */
+/**
+ * Upper-case names of the PROGRAMs reached by name from another POU, or from
+ * an initial value (a global's, a member's, a TYPE default): those run while
+ * the globals are created need their one instance too.
+ */
 export function programsReachedByName(ast: CompilationUnit): Set<string> {
-  return new Set(findProgramReaches(ast).map((r) => r.program));
+  const reached = new Set(findProgramReaches(ast).map((r) => r.program));
+  const programs = new Set(ast.programs.map((p) => p.name.toUpperCase()));
+  const roots: ASTNode[] = [
+    ...ast.globalVarBlocks,
+    ...ast.configurations.flatMap((c) => c.varBlocks),
+    ...ast.functionBlocks.flatMap((fb) => fb.varBlocks),
+    ...ast.types,
+  ];
+  for (const root of roots) {
+    walkAST(root, (node) => {
+      const name =
+        node.kind === "VariableExpression"
+          ? (node as VariableExpression).name
+          : node.kind === "FunctionCallExpression"
+            ? (node as FunctionCallExpression).functionName.split(".")[0]!
+            : undefined;
+      if (name !== undefined && programs.has(name.toUpperCase())) {
+        reached.add(name.toUpperCase());
+      }
+    });
+  }
+  return reached;
 }

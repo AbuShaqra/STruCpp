@@ -7043,6 +7043,21 @@ export class TypeChecker {
           check((node as RefAssignStatement).target);
         } else if (node.kind === "Argument" && (node as Argument).isOutput) {
           check((node as Argument).value);
+        } else if (node.kind === "RefExpression") {
+          check((node as RefExpression).operand);
+        } else if (node.kind === "FunctionCallExpression") {
+          // ADR(a) / REF(a): writes through the address reach the caller's array
+          const call = node as FunctionCallExpression;
+          const upper = call.functionName.toUpperCase();
+          if (
+            (upper === "ADR" || upper === "REF") &&
+            call.arguments.length === 1
+          ) {
+            check(call.arguments[0]!.value);
+          }
+        }
+        if (node.kind === "RefAssignStatement") {
+          check((node as RefAssignStatement).source);
         }
       });
     }
@@ -7099,12 +7114,14 @@ export class TypeChecker {
       const span = (value ?? item.decl).sourceSpan;
       const reads = all.reads.get(item.name.toUpperCase()) ?? [];
       const read = reads.find((r) => visible(r));
-      const program = reads.find((r) => r.startsWith("PROGRAM "));
       let message: string | undefined;
       if (read !== undefined) {
         message = `The initial value of global '${item.name}' reads '${decls.get(read)!.name}' before its FB_init runs (once every global is created); assign '${item.name}' in a program instead`;
-      } else if (program !== undefined && needsInit(item.name.toUpperCase())) {
-        message = `Global '${item.name}' uses the ${program} instance while it is created, which runs the FB_init of the global instances before '${item.name}' exists; assign it in a program instead`;
+      } else if (
+        all.programUsers.has(item.name.toUpperCase()) &&
+        needsInit(item.name.toUpperCase())
+      ) {
+        message = `Global '${item.name}' is created after a PROGRAM instance its creation needs (directly or through other globals), which runs the FB_init of the global instances before '${item.name}' exists; assign it in a program instead`;
       }
       if (message !== undefined) {
         this.addError(message, span.startLine, span.startCol, span.file);
@@ -7150,6 +7167,17 @@ export class TypeChecker {
           b.declarations.flatMap((d) => d.names.map((n) => n.toUpperCase())),
         ),
       );
+      const referenceLocals = new Set(
+        method.varBlocks.flatMap((b) =>
+          b.declarations
+            .filter(
+              (d) =>
+                (d.type.referenceKind ?? "none") !== "none" ||
+                d.type.referenceChain !== undefined,
+            )
+            .flatMap((d) => d.names.map((n) => n.toUpperCase())),
+        ),
+      );
       for (const statement of method.body) {
         walkAST(statement, (node) => {
           if (
@@ -7164,8 +7192,30 @@ export class TypeChecker {
               : node.kind === "RefAssignStatement"
                 ? (node as RefAssignStatement).target
                 : undefined;
+          // A member bound to a reference (`r REF= n`, REF(n)) may be written through it
+          const bound =
+            node.kind === "RefAssignStatement"
+              ? (node as RefAssignStatement).source
+              : node.kind === "RefExpression"
+                ? (node as RefExpression).operand
+                : undefined;
+          if (bound?.kind === "VariableExpression") {
+            const b = bound.name.toUpperCase();
+            if (b === "THIS" || b === "SUPER") everything = true;
+            else if (!locals.has(b) && members.has(b)) written.add(b);
+          }
           if (target?.kind !== "VariableExpression") return;
           const name = target.name.toUpperCase();
+          // A store through a pointer or reference may reach any member
+          if (
+            target.isDereference ||
+            target.accessChain?.some((st) => st.kind === "dereference") ===
+              true ||
+            (node.kind === "AssignmentStatement" && referenceLocals.has(name))
+          ) {
+            everything = true;
+            return;
+          }
           if (name === "THIS" || name === "SUPER") {
             const first =
               target.accessChain?.find((st) => st.kind === "field") ??
@@ -11174,11 +11224,22 @@ export class TypeChecker {
       (sym.declaration as VarDeclaration | undefined)?.type.referenceKind !==
         "reference_to"
     ) {
-      this.inOutDiagnostic(
-        `VAR_IN_OUT '${input.name}' is bound to the input '${value.name}', which this POU may not modify`,
-        "the callee writes the input",
-        value,
-      );
+      const inputType = (sym.declaration as VarDeclaration | undefined)?.type;
+      if (inputType !== undefined && this.isVariableLengthType(inputType)) {
+        // An ARRAY[*] input is the caller's array: the callee would write it
+        this.addError(
+          `'${value.name}' is a VAR_INPUT ARRAY[*]: it refers to the caller's array, which an input cannot change; declare it VAR_IN_OUT to pass it to VAR_IN_OUT '${input.name}'`,
+          value.sourceSpan.startLine,
+          value.sourceSpan.startCol,
+          value.sourceSpan.file,
+        );
+      } else {
+        this.inOutDiagnostic(
+          `VAR_IN_OUT '${input.name}' is bound to the input '${value.name}', which this POU may not modify`,
+          "the callee writes the input",
+          value,
+        );
+      }
     }
     const declared = sym.declaration as VarDeclaration | undefined;
     if (!declared) return;
@@ -12241,7 +12302,8 @@ export class TypeChecker {
     const actual =
       source === undefined ? undefined : this.bindingShapeOf(source);
     if (actual === undefined) return false;
-    if (actual.kind === "scalar") return refuse(`a ${actual.text}`);
+    // A single value is the ordinary assignment check's to report
+    if (actual.kind === "scalar") return false;
     if (actual.rank !== expected.rank) {
       return refuse(`an array of rank ${actual.rank}`);
     }

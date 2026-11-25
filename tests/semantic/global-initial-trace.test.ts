@@ -519,3 +519,167 @@ PROGRAM Main END_PROGRAM
     ).toEqual([]);
   });
 });
+
+describe("round 4: FB_init, write order and VAR_INPUT views", () => {
+  it("refuses an FB_init global created after a PROGRAM instance through another global", () => {
+    expect(
+      located(
+        compile(
+          `FUNCTION_BLOCK FBG
+VAR_INPUT a : INT; END_VAR
+VAR_OUTPUT v : INT; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+v := 50;
+END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Setup
+VAR_OUTPUT o : INT := 7; END_VAR
+o := o + 1;
+END_PROGRAM
+FUNCTION F : INT
+Setup();
+F := Setup.o;
+END_FUNCTION
+VAR_GLOBAL
+  y : INT := F();
+  gfb : FBG := (a := y);
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL gfb : FBG; END_VAR
+VAR O1 : INT; END_VAR
+O1 := gfb.v;
+END_PROGRAM
+`,
+          { features: ["+fb_init", "+program_methods"] },
+        ),
+      ),
+    ).toEqual([
+      "19:16 Global 'gfb' is created after a PROGRAM instance its creation needs (directly or through other globals), which runs the FB_init of the global instances before 'gfb' exists; assign it in a program instead",
+    ]);
+  });
+
+  it("counts a store through a REFERENCE local in FB_init", () => {
+    expect(
+      located(
+        compile(
+          `FUNCTION_BLOCK FBK
+VAR n : INT := 6; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+VAR r : REFERENCE TO INT; END_VAR
+r REF= n;
+r := 60;
+END_METHOD
+METHOD Get : INT
+Get := n;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL inst : FBK; g : INT := inst.Get(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL g : INT; END_VAR
+VAR O1 : INT; END_VAR
+O1 := g;
+END_PROGRAM
+`,
+          { features: ["+fb_init"] },
+        ),
+      ),
+    ).toEqual([
+      "13:35 The initial value of global 'g' reads 'inst' before its FB_init runs (once every global is created); assign 'g' in a program instead",
+    ]);
+  });
+
+  it("drops a store-before-read edge that would close a cycle", () => {
+    const { ast } = parse(`FUNCTION FE : INT
+VAR_EXTERNAL g : INT; L : INT; END_VAR
+g := 5;
+FE := L;
+END_FUNCTION
+FUNCTION FL : INT
+VAR_EXTERNAL g : INT; END_VAR
+FL := g;
+END_FUNCTION
+VAR_GLOBAL
+  g : INT := 1;
+  E : INT := FE();
+  L : INT := FL();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL E : INT; L : INT; g : INT; END_VAR
+VAR O1 : INT; END_VAR
+O1 := E * 100 + L * 10 + g;
+END_PROGRAM
+`);
+    const order = orderAllGlobals(ast!);
+    expect(order.cycles).toEqual([]);
+    expect(order.order.map((i) => i.name.toUpperCase())).toEqual([
+      "G",
+      "L",
+      "E",
+    ]);
+  });
+
+  it.each(MODES)(
+    "refuses a VAR_INPUT ARRAY[*] passed to a VAR_IN_OUT or given to ADR (%s)",
+    (_name, options) => {
+      const inOut = (col: string): string =>
+        `8:${col} 'a' is a VAR_INPUT ARRAY[*]: it refers to the caller's array, which an input cannot change; declare it VAR_IN_OUT to pass it to VAR_IN_OUT 'b'`;
+      const errors = (source: string): string[] =>
+        located(compile(source, options)).filter((e) =>
+          e.includes("VAR_INPUT ARRAY"),
+        );
+      expect(
+        errors(`FUNCTION Clobber : INT
+VAR_IN_OUT b : ARRAY[*] OF INT; END_VAR
+b[LOWER_BOUND(b, 1)] := 99;
+Clobber := 0;
+END_FUNCTION
+FUNCTION Outer : INT
+VAR_INPUT a : ARRAY[*] OF INT; END_VAR
+Outer := Clobber(a);
+END_FUNCTION
+PROGRAM Main
+VAR d : ARRAY[1..3] OF INT := [1, 2, 3]; O1 : INT; END_VAR
+Outer(d);
+O1 := d[1];
+END_PROGRAM
+`),
+      ).toEqual([inOut("18")]);
+      expect(
+        errors(`FUNCTION_BLOCK FBC
+VAR_IN_OUT b : ARRAY[*] OF INT; END_VAR
+b[LOWER_BOUND(b, 1)] := 99;
+END_FUNCTION_BLOCK
+FUNCTION Outer : INT
+VAR_INPUT a : ARRAY[*] OF INT; END_VAR
+VAR c : FBC; END_VAR
+c(b := a);
+Outer := 0;
+END_FUNCTION
+PROGRAM Main
+VAR d : ARRAY[1..3] OF INT := [1, 2, 3]; O1 : INT; END_VAR
+Outer(d);
+O1 := d[1];
+END_PROGRAM
+`),
+      ).toEqual([inOut("8")]);
+      expect(
+        errors(`FUNCTION Outer : INT
+VAR_INPUT a : ARRAY[*] OF INT; END_VAR
+VAR z : ARRAY[0..2] OF INT := [7,7,7]; END_VAR
+MEMCPY(ADR(a), ADR(z), 2);
+Outer := 0;
+END_FUNCTION
+PROGRAM Main
+VAR d : ARRAY[1..3] OF INT := [1, 2, 3]; O1 : INT; END_VAR
+Outer(d);
+O1 := d[1];
+END_PROGRAM
+`),
+      ).toEqual([
+        "4:12 'a' is a VAR_INPUT ARRAY[*]: it refers to the caller's array, which an input cannot change; declare it VAR_IN_OUT to write it",
+      ]);
+    },
+  );
+});

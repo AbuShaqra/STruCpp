@@ -58,6 +58,11 @@ export interface GlobalOrder {
    * `dependencies`.
    */
   reads: Map<string, string[]>;
+  /**
+   * Globals (upper-case) created after a PROGRAM instance: their creation
+   * uses one, directly or through the globals it needs.
+   */
+  programUsers: Set<string>;
 }
 
 /** Every global of a unit as one graph: a CONFIGURATION's are marked. */
@@ -212,8 +217,29 @@ export function orderGlobalBlocks(
     }
     dependencies.set(self, named);
   }
+  // A PROGRAM instance a global's creation uses is created after what it
+  // needs; it is created after every global that does not use one, so it
+  // cannot need one that does (or another PROGRAM instance).
+  for (const key of programs) {
+    dependencies.set(key, [
+      ...tracer!.programReads(key.slice("PROGRAM ".length)).globals,
+    ]);
+  }
   // Code a global's creation runs storing into a global another, declared
-  // later, reads: the declaration order is kept between the two
+  // later, reads: the declaration order is kept between the two, unless
+  // that would close a cycle (a preference, not a need)
+  const reaches = (from: string, to: string): boolean => {
+    const seen = new Set<string>();
+    const stack = [from];
+    while (stack.length > 0) {
+      const name = stack.pop()!;
+      if (name === to) return true;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      stack.push(...(dependencies.get(name) ?? []));
+    }
+    return false;
+  };
   if (tracer !== undefined) {
     items.forEach((later, i) => {
       const self = later.name.toUpperCase();
@@ -222,19 +248,14 @@ export function orderGlobalBlocks(
       for (const earlier of items.slice(0, i)) {
         const name = earlier.name.toUpperCase();
         if (name === self || deps.includes(name)) continue;
-        if ([...(writesOf.get(name) ?? [])].some((g) => reads.has(g))) {
+        if (
+          [...(writesOf.get(name) ?? [])].some((g) => reads.has(g)) &&
+          !reaches(name, self)
+        ) {
           deps.push(name);
         }
       }
     });
-  }
-  // A PROGRAM instance a global's creation uses is created after what it
-  // needs; it is created after every global that does not use one, so it
-  // cannot need one that does (or another PROGRAM instance).
-  for (const key of programs) {
-    dependencies.set(key, [
-      ...tracer!.programReads(key.slice("PROGRAM ".length)).globals,
-    ]);
   }
   const usesProgram = new Map<string, boolean>();
   const uses = (name: string): boolean => {
@@ -288,5 +309,8 @@ export function orderGlobalBlocks(
     duplicates,
     unresolved,
     reads: readsOf,
+    programUsers: new Set(
+      items.map((i) => i.name.toUpperCase()).filter((n) => uses(n)),
+    ),
   };
 }

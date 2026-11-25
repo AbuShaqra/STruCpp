@@ -997,6 +997,113 @@ END_PROGRAM
     features: ["+program_methods"],
     expected: "8",
   },
+  {
+    title:
+      "a PROGRAM method a global's initial value calls and nothing else names",
+    source: `PROGRAM Setup
+VAR_OUTPUT o : INT := 4; END_VAR
+METHOD Go : INT
+o := o + 1;
+Go := o;
+END_METHOD
+END_PROGRAM
+FUNCTION F : INT
+F := 2;
+END_FUNCTION
+VAR_GLOBAL
+  s : INT := Setup.Go();
+  t : INT := F();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL s : INT; t : INT; END_VAR
+VAR O1 : INT; END_VAR
+O1 := s * 10 + t;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+program_methods"],
+    expected: "52",
+  },
+  {
+    title: "a store-before-read preference that would close a cycle is dropped",
+    source: `FUNCTION FE : INT
+VAR_EXTERNAL g : INT; L : INT; END_VAR
+g := 5;
+FE := L;
+END_FUNCTION
+FUNCTION FL : INT
+VAR_EXTERNAL g : INT; END_VAR
+FL := g;
+END_FUNCTION
+VAR_GLOBAL
+  g : INT := 1;
+  E : INT := FE();
+  L : INT := FL();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL E : INT; L : INT; g : INT; END_VAR
+VAR O1 : INT; END_VAR
+O1 := E * 100 + L * 10 + g;
+END_PROGRAM
+`,
+    main: undefined,
+    features: [],
+    expected: "115",
+  },
+  {
+    title: "an interface global bound to an instance whose FB_init has work",
+    source: `INTERFACE IGet
+METHOD Get : INT
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FBK IMPLEMENTS IGet
+VAR n : INT := 6; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+n := 60;
+END_METHOD
+METHOD Get : INT
+Get := n;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL inst : FBK; itf : IGet := inst; END_VAR
+PROGRAM Main
+VAR_EXTERNAL itf : IGet; END_VAR
+VAR O1 : INT; END_VAR
+O1 := itf.Get();
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+fb_init"],
+    expected: "60",
+  },
+  {
+    title: "an interface bound to an instance with FB_init, read by nothing",
+    source: `INTERFACE IGet
+METHOD Get : INT
+END_METHOD
+END_INTERFACE
+FUNCTION_BLOCK FBK IMPLEMENTS IGet
+VAR n : INT := 6; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+n := 60;
+END_METHOD
+METHOD Get : INT
+Get := n;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL inst : FBK; itf : IGet := inst; g : INT := 1; END_VAR
+PROGRAM Main
+VAR_EXTERNAL g : INT; END_VAR
+VAR O1 : INT; END_VAR
+O1 := g;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+fb_init"],
+    expected: "1",
+  },
 ];
 
 describe.skipIf(!hasGpp)(

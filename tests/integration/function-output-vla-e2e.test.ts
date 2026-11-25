@@ -290,6 +290,58 @@ END_PROGRAM
     main: `strucpp::Program_MAIN p; p.run(); std::cout << (int)p.O1 << " " << (int)p.O2 << " " << (int)p.O3 << std::endl;`,
     expected: "10 57 0",
   },
+  {
+    title: "a whole-array store from one view into another",
+    source: `FUNCTION F : INT
+VAR_IN_OUT a : ARRAY[*] OF INT; b : ARRAY[*] OF INT; END_VAR
+a := b;
+F := 0;
+END_FUNCTION
+PROGRAM Main
+VAR d : ARRAY[1..3] OF INT; e : ARRAY[5..7] OF INT := [7,8,9]; O1 : INT; END_VAR
+F(d, e);
+O1 := d[1]*100+d[2]*10+d[3];
+END_PROGRAM
+`,
+    main: undefined,
+    expected: "789",
+  },
+  {
+    title: "a whole-array store from a STRUCT field",
+    source: `TYPE H : STRUCT arr : ARRAY[0..2] OF INT := [1,2,3]; END_STRUCT END_TYPE
+FUNCTION GetH : H
+END_FUNCTION
+FUNCTION F : INT
+VAR_IN_OUT a : ARRAY[*] OF INT; END_VAR
+VAR h : H; END_VAR
+a := h.arr;
+F := 0;
+END_FUNCTION
+PROGRAM Main
+VAR d : ARRAY[1..3] OF INT; O1 : INT; END_VAR
+F(d);
+O1 := d[1]*100+d[2]*10+d[3];
+END_PROGRAM
+`,
+    main: undefined,
+    expected: "123",
+  },
+  {
+    title: "a whole-array store into a FUNCTION_BLOCK in-out from a member",
+    source: `FUNCTION_BLOCK FBW
+VAR_IN_OUT a : ARRAY[*] OF INT; END_VAR
+VAR src : ARRAY[0..2] OF INT := [4,5,6]; lit : INT; END_VAR
+a := src;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR d : ARRAY[1..3] OF INT; w : FBW; O1 : INT; END_VAR
+w(a := d);
+O1 := d[1]*100+d[2]*10+d[3];
+END_PROGRAM
+`,
+    main: undefined,
+    expected: "456",
+  },
 ];
 
 /** A whole-array store of another length into an ARRAY[*] parameter. */

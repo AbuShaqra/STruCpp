@@ -201,7 +201,13 @@ export class CallReadTracer {
     this.builders.set(start, () => {
       const unit = this.newUnit();
       const ctx: Context = { blocks: [], writes: new Set() };
-      if (decl.initialValue) this.walk(decl.initialValue, ctx, unit);
+      // An interface bound to an instance (`itf : I := inst`) reads nothing
+      if (
+        decl.initialValue &&
+        !this.bindsInterface(this.tyOf(decl.type), decl.initialValue)
+      ) {
+        this.walk(decl.initialValue, ctx, unit);
+      }
       for (const a of decl.fbInitArguments ?? []) this.walk(a.value, ctx, unit);
       for (const key of this.typeUnits(this.tyOf(decl.type))) {
         unit.runs.add(key);
@@ -464,6 +470,20 @@ export class CallReadTracer {
     return unit;
   }
 
+  /** `value` is an instance variable bound whole to a variable of interface type `ty`. */
+  private bindsInterface(ty: Typed, value: Expression): boolean {
+    const base = ty === undefined || ty === UNKNOWN ? ty : this.deAlias(ty);
+    return (
+      base !== undefined &&
+      base !== UNKNOWN &&
+      !("array" in base) &&
+      base.refs.length === 0 &&
+      this.interfaces.has(base.name) &&
+      value.kind === "VariableExpression" &&
+      stepsOf(value).length === 0
+    );
+  }
+
   private walk(root: ASTNode, ctx: Context, unit: Unit): void {
     walkAST(root, (node): boolean | void => {
       if (node.kind === "RefExpression") {
@@ -540,6 +560,7 @@ export class CallReadTracer {
     } else {
       const resolved = this.resolve(upper, ctx);
       if (resolved?.global !== undefined) unit.reads.add(resolved.global);
+      if (resolved?.bound !== undefined) unit.reads.add(resolved.bound);
       if (resolved?.global !== undefined && written) {
         unit.writes.add(resolved.global);
       }
@@ -826,6 +847,7 @@ export class CallReadTracer {
       const resolved = this.resolve(name, ctx);
       if (resolved !== undefined) {
         if (resolved.global !== undefined) unit.reads.add(resolved.global);
+        if (resolved?.bound !== undefined) unit.reads.add(resolved.bound);
         return this.callInstance(
           {
             ty: this.headType(name, resolved.type, ctx, unit),
@@ -887,6 +909,7 @@ export class CallReadTracer {
       }
       if (resolved === undefined) return; // a namespace or library call
       if (resolved.global !== undefined) unit.reads.add(resolved.global);
+      if (resolved?.bound !== undefined) unit.reads.add(resolved.bound);
       r = {
         ty: this.headType(head, resolved.type, ctx, unit),
         dynamic: resolved.dynamic,
@@ -955,6 +978,8 @@ export class CallReadTracer {
         dynamic: boolean;
         global?: string;
         exact?: FunctionBlockDeclaration[];
+        /** The instance global an interface global is bound to. */
+        bound?: string;
       }
     | undefined {
     if (ctx.result?.toUpperCase() === upper) {
@@ -997,6 +1022,7 @@ export class CallReadTracer {
     dynamic: boolean;
     global: string;
     exact?: FunctionBlockDeclaration[];
+    bound?: string;
   } {
     const value = this.globals.get(global)?.initialValue;
     const ty = this.tyOf(type);
@@ -1021,7 +1047,7 @@ export class CallReadTracer {
           ? this.fbs.get(targetTy.name)
           : undefined;
       if (fb !== undefined) {
-        return { type, dynamic: false, global, exact: [fb] };
+        return { type, dynamic: false, global, exact: [fb], bound: target! };
       }
     }
     // An interface global holding NULL while globals are created: a call
