@@ -88,6 +88,8 @@ class Folder {
   fold(expr: Expression, field: string): Expression {
     switch (expr.kind) {
       case "VariableExpression": {
+        const bit = this.bitOfConstant(expr, field);
+        if (bit !== undefined) return bit;
         const name = globalName(expr, this.globals);
         if (name === undefined) return expr;
         if (expr.fieldAccess.length === 0 && this.shadowed.has(name)) {
@@ -145,6 +147,55 @@ class Folder {
     }
   }
 
+  /**
+   * `GC.3` of a global constant: its folded value's bit, as a BOOL literal.
+   * Undefined when `expr` is no bit read of a global constant.
+   */
+  private bitOfConstant(
+    expr: VariableExpression,
+    field: string,
+  ): Expression | undefined {
+    const last = expr.fieldAccess[expr.fieldAccess.length - 1];
+    if (last === undefined || !/^\d+$/.test(last)) return undefined;
+    if (expr.accessChain?.some((s) => s.kind !== "field") === true) {
+      return undefined;
+    }
+    const owner: VariableExpression = {
+      ...expr,
+      fieldAccess: expr.fieldAccess.slice(0, -1),
+    };
+    delete owner.accessChain;
+    const name = globalName(owner, this.globals);
+    if (name === undefined || !this.globals.constants.has(name)) {
+      return undefined;
+    }
+    if (owner.fieldAccess.length === 0 && this.shadowed.has(name)) {
+      return undefined;
+    }
+    const value = this.constant(name, owner, field);
+    const bits = value === undefined ? undefined : integerValue(value);
+    if (bits === undefined) {
+      this.errors.push({
+        message: `The default of STRUCT field '${field}' reads bit ${last} of '${name}', whose value is not an integer literal; use a BOOL constant instead`,
+        line: expr.sourceSpan.startLine,
+        column: expr.sourceSpan.startCol,
+        severity: "error",
+        ...(expr.sourceSpan.file !== undefined
+          ? { file: expr.sourceSpan.file }
+          : {}),
+      });
+      return expr;
+    }
+    const set = ((BigInt.asUintN(64, bits) >> BigInt(last)) & 1n) === 1n;
+    return {
+      kind: "LiteralExpression",
+      sourceSpan: expr.sourceSpan,
+      literalType: "BOOL",
+      value: set,
+      rawValue: set ? "TRUE" : "FALSE",
+    };
+  }
+
   /** The folded value of global `name`; undefined when it is no constant. */
   private constant(
     name: string,
@@ -194,6 +245,34 @@ class Folder {
           : {}),
       });
     }
+    return undefined;
+  }
+}
+
+/** The value of an integer literal, through parentheses and a unary minus. */
+function integerValue(expr: Expression): bigint | undefined {
+  if (expr.kind === "ParenthesizedExpression") {
+    return integerValue(expr.expression);
+  }
+  if (expr.kind === "UnaryExpression" && expr.operator === "-") {
+    const v = integerValue(expr.operand);
+    return v === undefined ? undefined : -v;
+  }
+  if (expr.kind !== "LiteralExpression" || expr.literalType !== "INT") {
+    return undefined;
+  }
+  // `WORD#16#00F0`, `16#F0`, `INT#-5`, `1_000`
+  const parts = expr.rawValue.replace(/_/g, "").split("#");
+  let digits = parts[parts.length - 1] ?? "";
+  const radix = parts.length >= 2 ? parts[parts.length - 2] : undefined;
+  const prefix =
+    radix === "16" ? "0x" : radix === "8" ? "0o" : radix === "2" ? "0b" : "";
+  const negative = digits.startsWith("-");
+  digits = digits.replace(/^[+-]/, "");
+  try {
+    const v = BigInt(`${prefix}${digits}`);
+    return negative ? -v : v;
+  } catch {
     return undefined;
   }
 }

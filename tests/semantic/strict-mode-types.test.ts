@@ -94,7 +94,10 @@ END_FUNCTION
 `;
     expect(msgs(src)).toEqual([`3: ${conv("DINT", "INT")}`]);
     expect(laxMsgs(src)).toEqual([]);
-    expect(laxWarnings(src)).toEqual([]);
+    // Without --strict it warns as a narrowing store into a variable does
+    expect(laxWarnings(src)).toEqual([
+      "3: Implicit narrowing conversion from DINT to INT",
+    ]);
   });
   it("rejects a narrowing initial value", () => {
     const src = `PROGRAM main

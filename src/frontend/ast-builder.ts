@@ -2149,6 +2149,23 @@ export class ASTBuilder {
         getFirstNode(children.functionCallStatement)!,
       );
     }
+    if (children.callSelectorStatement) {
+      const stmtNode = getFirstNode(children.callSelectorStatement)!;
+      const call = this.buildPrimaryExpression(
+        getFirstNode((stmtNode.children as CstChildren).callResultTarget)!,
+      );
+      // The parser's gate lets only a statement ending with a call through.
+      if (
+        call?.kind === "FunctionCallExpression" ||
+        call?.kind === "MethodCallExpression"
+      ) {
+        return {
+          kind: "FunctionCallStatement",
+          sourceSpan: nodeToSourceSpan(stmtNode),
+          call,
+        };
+      }
+    }
     if (children.instanceCallStatement) {
       return this.buildInstanceCallStatement(
         getFirstNode(children.instanceCallStatement)!,
@@ -3003,13 +3020,17 @@ export class ASTBuilder {
 
     // Check for THIS access expression
     if (children.thisAccess) {
-      return this.buildThisAccessExpression(getFirstNode(children.thisAccess)!);
+      return this.selectorsOnSelfCall(
+        this.buildThisAccessExpression(getFirstNode(children.thisAccess)!),
+        node,
+      );
     }
 
     // Check for SUPER access expression
     if (children.superAccess) {
-      return this.buildSuperAccessExpression(
-        getFirstNode(children.superAccess)!,
+      return this.selectorsOnSelfCall(
+        this.buildSuperAccessExpression(getFirstNode(children.superAccess)!),
+        node,
       );
     }
 
@@ -3970,6 +3991,14 @@ export class ASTBuilder {
     };
   }
 
+  /** `THIS^.M().a`, `SUPER.M().N()`: the selectors applied to a THIS/SUPER method call. */
+  private selectorsOnSelfCall(expr: Expression, node: CstNode): Expression {
+    return expr.kind === "FunctionCallExpression" &&
+      expr.functionName.includes(".")
+      ? this.applyCallResultSelectors(expr, node)
+      : expr;
+  }
+
   /**
    * Apply the `callResultSelector`s of a primary expression to its call:
    * `.M(args)` wraps it in a MethodCallExpression, a run of `.member` / `[i]`
@@ -3992,9 +4021,14 @@ export class ASTBuilder {
         access = undefined;
         continue;
       }
-      const opener = getAllTokens(sel.LBracket)[0] ?? getAllTokens(sel.Dot)[0];
+      const opener =
+        getAllTokens(sel.LBracket)[0] ??
+        getAllTokens(sel.Caret)[0] ??
+        getAllTokens(sel.Dot)[0];
       let step: AccessStep;
-      if (sel.LBracket) {
+      if (sel.Caret) {
+        step = { kind: "dereference" };
+      } else if (sel.LBracket) {
         const indices = getAllNodes(sel.expression).flatMap((n) => {
           const built = this.buildExpression(n);
           return built ? [built] : [];
@@ -4263,16 +4297,23 @@ export class ASTBuilder {
       }
     }
 
+    const selfCall: FunctionCallExpression = {
+      kind: "FunctionCallExpression",
+      sourceSpan: nodeToSourceSpan(node),
+      functionName: `THIS.${memberName}`,
+      arguments: args,
+      ...caret,
+    };
+    // `THIS^.M().N();`: the selectors on the method's result, ending with a call
+    const call = this.applyCallResultSelectors(selfCall, node);
     return {
       kind: "FunctionCallStatement",
       sourceSpan: nodeToSourceSpan(node),
-      call: {
-        kind: "FunctionCallExpression",
-        sourceSpan: nodeToSourceSpan(node),
-        functionName: `THIS.${memberName}`,
-        arguments: args,
-        ...caret,
-      },
+      call:
+        call.kind === "FunctionCallExpression" ||
+        call.kind === "MethodCallExpression"
+          ? call
+          : selfCall,
     } as FunctionCallStatement;
   }
 

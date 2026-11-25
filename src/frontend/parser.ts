@@ -1228,6 +1228,11 @@ export class STParser extends CstParser {
           ALT: (): CstNode => this.SUBRULE(this.callResultWriteStatement),
           GATE: (): boolean => this.isCallResultWriteAhead(),
         },
+        // `F().M();`, `fb.M().a.N();`: a call on a call result's selectors.
+        {
+          ALT: (): CstNode => this.SUBRULE(this.callSelectorStatement),
+          GATE: (): boolean => this.isCallSelectorStatementAhead(),
+        },
         // `a.b.M();` — before the THIS/SUPER and assignment alternatives,
         // which would claim the chain's first tokens.
         {
@@ -1355,13 +1360,18 @@ export class STParser extends CstParser {
         },
       },
       {
-        // Method call: THIS.method(args);
+        // Method call: THIS.method(args); or THIS.method(args).N(); on its result
         ALT: () => {
           this.CONSUME(tokens.LParen);
           this.OPTION(() => {
             this.SUBRULE(this.argumentList);
           });
           this.CONSUME(tokens.RParen);
+          this.MANY({
+            GATE: (): boolean =>
+              this.isCallResultSelectorAhead() && this.isCallLastAhead(),
+            DEF: (): CstNode => this.SUBRULE(this.callResultSelector),
+          });
           this.CONSUME2(tokens.Semicolon);
         },
       },
@@ -1952,11 +1962,80 @@ export class STParser extends CstParser {
         if (type === tokens.Assign || type === tokens.RefAssign) {
           return selectorAfterCall;
         }
-        if (callClosed && type === tokens.Dot) selectorAfterCall = true;
+        if (callClosed && (type === tokens.Dot || type === tokens.Caret)) {
+          selectorAfterCall = true;
+        }
       }
     }
     return false;
   }
+
+  /**
+   * A statement that calls a method on a call result through selectors the
+   * other call statements do not take: `F().M();`, `fb.M().a.N();`,
+   * `FP()^.f.M();`. It ends with `)` and has no top-level `:=` or `REF=`.
+   */
+  private isCallSelectorStatementAhead(): boolean {
+    if (this.LA(1).tokenType !== tokens.Identifier) return false;
+    const plainCall = this.LA(2).tokenType === tokens.LParen;
+    let depth = 0;
+    let callClosed = false;
+    let needed = false;
+    for (let i = 1; i <= 200; i++) {
+      const type = this.LA(i).tokenType;
+      if (type === EOF) return false;
+      if (depth === 0 && type === tokens.Semicolon) {
+        return needed && this.LA(i - 1).tokenType === tokens.RParen;
+      }
+      if (type === tokens.LParen || type === tokens.LBracket) {
+        if (depth === 0 && callClosed && type === tokens.LBracket) {
+          needed = true;
+        }
+        depth++;
+        callClosed = false;
+      } else if (type === tokens.RParen || type === tokens.RBracket) {
+        depth--;
+        callClosed = depth === 0 && type === tokens.RParen;
+      } else if (depth === 0) {
+        if (
+          type === tokens.Assign ||
+          type === tokens.RefAssign ||
+          type === tokens.Colon
+        ) {
+          return false;
+        }
+        if (callClosed) {
+          if (type === tokens.Caret) needed = true;
+          else if (type === tokens.Dot) {
+            needed ||= plainCall || this.LA(i + 2).tokenType !== tokens.LParen;
+          }
+        }
+        callClosed = false;
+      }
+    }
+    return false;
+  }
+
+  /** The tokens up to the statement's `;` end with `)`: the statement ends with a call. */
+  private isCallLastAhead(): boolean {
+    let depth = 0;
+    for (let i = 1; i <= 200; i++) {
+      const type = this.LA(i).tokenType;
+      if (type === EOF) return false;
+      if (type === tokens.LParen || type === tokens.LBracket) depth++;
+      else if (type === tokens.RParen || type === tokens.RBracket) depth--;
+      else if (depth === 0 && type === tokens.Semicolon) {
+        return this.LA(i - 1).tokenType === tokens.RParen;
+      }
+    }
+    return false;
+  }
+
+  /** `F().M();`: the call and its selectors, ending with a method call. */
+  public callSelectorStatement = this.RULE("callSelectorStatement", () => {
+    this.SUBRULE(this.callResultTarget);
+    this.CONSUME(tokens.Semicolon);
+  });
 
   /** `F().a := v;`, `F().a REF= v;`: refused by the type checker (a call result is a temporary). */
   public callResultWriteStatement = this.RULE(
@@ -2396,11 +2475,23 @@ export class STParser extends CstParser {
           GATE: () => this.isMemberChainCallAhead(),
         },
         {
-          ALT: () => this.SUBRULE(this.thisAccess),
+          ALT: (): void => {
+            this.SUBRULE(this.thisAccess);
+            this.MANY4({
+              GATE: (): boolean => this.isCallResultSelectorAhead(),
+              DEF: (): CstNode => this.SUBRULE4(this.callResultSelector),
+            });
+          },
           GATE: () => this.LA(1).tokenType === tokens.THIS,
         },
         {
-          ALT: () => this.SUBRULE(this.superAccess),
+          ALT: (): void => {
+            this.SUBRULE(this.superAccess);
+            this.MANY5({
+              GATE: (): boolean => this.isCallResultSelectorAhead(),
+              DEF: (): CstNode => this.SUBRULE5(this.callResultSelector),
+            });
+          },
           GATE: () => this.isSuperAhead(),
         },
         {
@@ -2468,10 +2559,10 @@ export class STParser extends CstParser {
     });
   });
 
-  /** `[`, or `.` and a name or bit number, follows a call: a selector of its result. */
+  /** `[`, `^`, or `.` and a name or bit number, follows a call: a selector of its result. */
   private isCallResultSelectorAhead(): boolean {
     const first = this.LA(1).tokenType;
-    if (first === tokens.LBracket) return true;
+    if (first === tokens.LBracket || first === tokens.Caret) return true;
     if (first !== tokens.Dot) return false;
     const next = this.LA(2).tokenType;
     return next === tokens.IntegerLiteral || NAME_TOKENS.has(next);
@@ -2500,13 +2591,17 @@ export class STParser extends CstParser {
   });
 
   /**
-   * A selector after a call in an expression: `.M(args)`, `.member`, `.0` or
-   * `[i, j]`. Member and subscript need the feature call_result_access (checked
-   * in the analyzer); `.M(args)` is a chained method call.
+   * A selector after a call in an expression: `.M(args)`, `.member`, `.0`,
+   * `[i, j]` or `^`. Member, subscript and `^` need the feature
+   * call_result_access (checked in the analyzer); `.M(args)` is a chained method call.
    */
   public callResultSelector = this.RULE("callResultSelector", () => {
     this.OR({
       DEF: [
+        {
+          GATE: (): boolean => this.LA(1).tokenType === tokens.Caret,
+          ALT: (): IToken => this.CONSUME(tokens.Caret),
+        },
         {
           GATE: (): boolean => this.LA(1).tokenType === tokens.LBracket,
           ALT: (): void => {
@@ -2653,7 +2748,9 @@ export class STParser extends CstParser {
         depth--;
         callClosed = depth === 0 && type === tokens.RParen;
       } else if (depth === 0) {
-        if (callClosed && type === tokens.Dot) return true;
+        if (callClosed && (type === tokens.Dot || type === tokens.Caret)) {
+          return true;
+        }
         callClosed = false;
       }
     }

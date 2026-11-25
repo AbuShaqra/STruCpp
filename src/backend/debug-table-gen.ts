@@ -526,7 +526,24 @@ export function generateDebugTable(
     size: number;
     tagName: TagName | "BIT";
   }> = [];
-  const skipped: Array<{ path: string; reason: string }> = [];
+  const skipped: Array<{ path: string; reason: string; decl?: string }> = [];
+  /** The declaration (`TYPE.MEMBER`, a program's `PROG.VAR` or a global) being walked. */
+  let currentDecl: string | undefined;
+  /** Walk `fn` under declaration `decl`, for grouping its skips. */
+  const inDecl = (decl: string, fn: () => void): void => {
+    const outer = currentDecl;
+    currentDecl = decl;
+    try {
+      fn();
+    } finally {
+      currentDecl = outer;
+    }
+  };
+  const skip = (item: { path: string; reason: string }): void => {
+    skipped.push(
+      currentDecl !== undefined ? { ...item, decl: currentDecl } : item,
+    );
+  };
   /**
    * Retained state the walk could not reach — today only a RETAIN on a library
    * block whose manifest predates exported locals.
@@ -553,7 +570,7 @@ export function generateDebugTable(
   ) => {
     const tagName = IEC_NAME_TO_TAG[iecName.toUpperCase()];
     if (tagName === undefined) {
-      skipped.push({ path, reason: `unknown elementary type: ${iecName}` });
+      skip({ path, reason: `unknown elementary type: ${iecName}` });
       return;
     }
     const size = IEC_NAME_TO_SIZE[iecName.toUpperCase()] ?? 0;
@@ -722,7 +739,7 @@ export function generateDebugTable(
       typeRef.referenceKind !== undefined &&
       typeRef.referenceKind !== "none"
     ) {
-      skipped.push({
+      skip({
         path,
         reason:
           `${REFERENCE_KIND_TEXT[typeRef.referenceKind] ?? "reference"} holds an ` +
@@ -737,7 +754,7 @@ export function generateDebugTable(
         typeRef.elementReferenceChain?.[0] ??
         aliasReferenceKind(typeRef.elementTypeName);
       if (elementKind !== undefined) {
-        skipped.push({ path, reason: arrayOfReferencesReason(elementKind) });
+        skip({ path, reason: arrayOfReferencesReason(elementKind) });
         return;
       }
       const elementLength = {
@@ -753,7 +770,7 @@ export function generateDebugTable(
         elementLength,
       );
       if (stringReason !== undefined) {
-        skipped.push({ path, reason: stringReason });
+        skip({ path, reason: stringReason });
         return;
       }
       walkArrayDims(
@@ -804,7 +821,7 @@ export function generateDebugTable(
           typeRef.defaultLength === true
             ? `${name} without a length holds ${typeRef.maxLength} characters ${defaultLengthPlace()}`
             : `declared ${name}(${lengthText(typeRef.maxLength)})`;
-        skipped.push({
+        skip({
           path,
           reason:
             `${declared}, but the debug dispatch ` +
@@ -821,7 +838,7 @@ export function generateDebugTable(
     // left out like a POINTER TO / REFERENCE TO. Checked before lookupType:
     // interfaces are registered as types without a declaration.
     if (interfaceNames.has(name)) {
-      skipped.push({
+      skip({
         path,
         reason:
           `${REFERENCE_KIND_TEXT.interface} (${typeRef.name}) holds an ` +
@@ -835,7 +852,7 @@ export function generateDebugTable(
     const ts = symbolTables.lookupType(name);
     // A type symbol registered without a declaration has no layout to walk.
     if (ts && (ts.declaration as TypeDeclaration | undefined) === undefined) {
-      skipped.push({
+      skip({
         path,
         reason: `type ${typeRef.name} has no definition the debugger can walk`,
       });
@@ -847,7 +864,7 @@ export function generateDebugTable(
         // A UNION's members are proxies over one plain storage, not IECVar
         // leaves the dispatch could cast, so the UNION is left out whole.
         if (def.isUnion === true) {
-          skipped.push({
+          skip({
             path,
             reason:
               `UNION ${typeRef.name}: its members share one storage, which ` +
@@ -857,10 +874,10 @@ export function generateDebugTable(
         }
         if (symbolTables.globalScope.definedByLibrary(name)) {
           inLibraryType(name, () =>
-            visitStructFields(path, cppExpr, def, flags),
+            visitStructFields(path, cppExpr, def, flags, name),
           );
         } else {
-          visitStructFields(path, cppExpr, def, flags);
+          visitStructFields(path, cppExpr, def, flags, name);
         }
         return;
       }
@@ -871,7 +888,7 @@ export function generateDebugTable(
             ? ownKind
             : aliasReferenceKind(def.elementType.name);
         if (elementKind !== undefined) {
-          skipped.push({ path, reason: arrayOfReferencesReason(elementKind) });
+          skip({ path, reason: arrayOfReferencesReason(elementKind) });
           return;
         }
         // TYPE MyArr: ARRAY[0..9] OF INT; END_TYPE
@@ -882,7 +899,7 @@ export function generateDebugTable(
             end: evalIntConst(d.end),
           }));
         if (dims.some((d) => d.start === undefined || d.end === undefined)) {
-          skipped.push({ path, reason: `array bounds not constant` });
+          skip({ path, reason: `array bounds not constant` });
           return;
         }
         const elementLength = {
@@ -898,7 +915,7 @@ export function generateDebugTable(
           elementLength,
         );
         if (stringReason !== undefined) {
-          skipped.push({ path, reason: stringReason });
+          skip({ path, reason: stringReason });
           return;
         }
         walkArrayDims(
@@ -923,7 +940,7 @@ export function generateDebugTable(
           addLeaf(path, cppExpr, baseName, flags);
           return;
         }
-        skipped.push({ path, reason: `enum base type ${baseName} unknown` });
+        skip({ path, reason: `enum base type ${baseName} unknown` });
         return;
       }
       if (def.kind === "SubrangeDefinition") {
@@ -932,7 +949,7 @@ export function generateDebugTable(
           addLeaf(path, cppExpr, baseName, flags);
           return;
         }
-        skipped.push({ path, reason: `subrange base ${baseName} unknown` });
+        skip({ path, reason: `subrange base ${baseName} unknown` });
         return;
       }
       // TypeReference alias. The library loader registers library types
@@ -944,7 +961,7 @@ export function generateDebugTable(
       // into them, just like it doesn't recurse into library FB locals.
       if (def.kind === "TypeReference") {
         if (def.name.toUpperCase() === name) {
-          skipped.push({
+          skip({
             path,
             reason: `library type ${typeRef.name} is opaque to the debugger`,
           });
@@ -953,7 +970,7 @@ export function generateDebugTable(
         visitTypeRef(path, cppExpr, def, flags);
         return;
       }
-      skipped.push({
+      skip({
         path,
         reason: `unsupported TYPE kind: ${(def as { kind: string }).kind}`,
       });
@@ -994,11 +1011,13 @@ export function generateDebugTable(
           // A VAR_IN_OUT refers to the caller's variable (bound per call), so
           // it has no address of its own to list.
           for (const v of [...fbSym.inputs, ...fbSym.outputs]) {
-            visitTypeRef(
-              `${path}.${v.name.toUpperCase()}`,
-              `${cppExpr}.${libraryMemberCppName(v, name)}`,
-              v.declaration.type,
-              flags,
+            inDecl(`${name}.${v.name.toUpperCase()}`, () =>
+              visitTypeRef(
+                `${path}.${v.name.toUpperCase()}`,
+                `${cppExpr}.${libraryMemberCppName(v, name)}`,
+                v.declaration.type,
+                flags,
+              ),
             );
           }
 
@@ -1036,11 +1055,13 @@ export function generateDebugTable(
               });
             }
             for (const v of localsToWalk) {
-              visitTypeRef(
-                `${path}.${v.name.toUpperCase()}`,
-                `${cppExpr}.${libraryMemberCppName(v, name)}`,
-                v.declaration.type,
-                v.isRetain ? flags | LEAF_FLAG_RETAIN : flags,
+              inDecl(`${name}.${v.name.toUpperCase()}`, () =>
+                visitTypeRef(
+                  `${path}.${v.name.toUpperCase()}`,
+                  `${cppExpr}.${libraryMemberCppName(v, name)}`,
+                  v.declaration.type,
+                  v.isRetain ? flags | LEAF_FLAG_RETAIN : flags,
+                ),
               );
             }
           }
@@ -1059,11 +1080,13 @@ export function generateDebugTable(
             const memberFlags = applyBlockFlags(flags, block);
             for (const fieldDecl of block.declarations) {
               for (const fieldName of fieldDecl.names) {
-                visitTypeRef(
-                  `${path}.${fieldName.toUpperCase()}`,
-                  `${cppExpr}.${memberCppName(fieldName, fieldDecl.type, name)}`,
-                  fieldDecl.type,
-                  memberFlags,
+                inDecl(`${name}.${fieldName.toUpperCase()}`, () =>
+                  visitTypeRef(
+                    `${path}.${fieldName.toUpperCase()}`,
+                    `${cppExpr}.${memberCppName(fieldName, fieldDecl.type, name)}`,
+                    fieldDecl.type,
+                    memberFlags,
+                  ),
                 );
               }
             }
@@ -1073,7 +1096,7 @@ export function generateDebugTable(
       return;
     }
 
-    skipped.push({ path, reason: `unresolved type name: ${typeRef.name}` });
+    skip({ path, reason: `unresolved type name: ${typeRef.name}` });
   };
 
   const visitStructFields = (
@@ -1081,6 +1104,7 @@ export function generateDebugTable(
     cppExpr: string,
     def: StructDefinition,
     flags: number,
+    structName: string,
   ): void => {
     // `flags` passes straight through: IEC puts CONSTANT on a var *block*, and
     // a STRUCT declares fields without blocks, so a struct field can never
@@ -1100,13 +1124,15 @@ export function generateDebugTable(
           );
           continue;
         }
-        visitTypeRef(
-          `${path}.${fieldName.toUpperCase()}`,
-          // No owner: a STRUCT implements no interfaces, so only the
-          // field-name-matches-its-type collision can apply.
-          `${cppExpr}.${memberCppName(fieldName, fieldDecl.type)}`,
-          fieldDecl.type,
-          flags,
+        inDecl(`${structName}.${fieldName.toUpperCase()}`, () =>
+          visitTypeRef(
+            `${path}.${fieldName.toUpperCase()}`,
+            // No owner: a STRUCT implements no interfaces, so only the
+            // field-name-matches-its-type collision can apply.
+            `${cppExpr}.${memberCppName(fieldName, fieldDecl.type)}`,
+            fieldDecl.type,
+            flags,
+          ),
         );
       }
     }
@@ -1311,7 +1337,18 @@ export function generateDebugTable(
             }
             const declFlags = applyBlockFlags(0, block);
             for (const decl of block.declarations) {
-              visitVarDecl(basePath, baseCpp, decl, declFlags);
+              for (const varName of decl.names) {
+                inDecl(
+                  `${prog.name.toUpperCase()}.${varName.toUpperCase()}`,
+                  () =>
+                    visitVarDecl(
+                      basePath,
+                      baseCpp,
+                      { ...decl, names: [varName] },
+                      declFlags,
+                    ),
+                );
+              }
             }
           }
         }
@@ -1369,7 +1406,7 @@ export function generateDebugTable(
   return {
     debugTableCpp,
     debugMap,
-    skipped: collapseElementSkips(skipped),
+    skipped: groupSkipsByDeclaration(collapseElementSkips(skipped)),
     incomplete,
   };
 }
@@ -1379,10 +1416,10 @@ export function generateDebugTable(
  * the same reason, its indices written `[*]` (`I.ARR[*].S`); any other entry
  * as it is, in the order first seen.
  */
-export function collapseElementSkips(
-  skipped: ReadonlyArray<{ path: string; reason: string }>,
-): Array<{ path: string; reason: string }> {
-  const groups = new Map<string, Array<{ path: string; reason: string }>>();
+export function collapseElementSkips<
+  T extends { path: string; reason: string },
+>(skipped: ReadonlyArray<T>): T[] {
+  const groups = new Map<string, T[]>();
   for (const item of skipped) {
     const key = `${item.path.replace(/\[[^\]]*\]/g, "[*]")}\u0000${item.reason}`;
     const group = groups.get(key);
@@ -1393,10 +1430,52 @@ export function collapseElementSkips(
     group.length === 1
       ? group[0]!
       : {
+          ...group[0]!,
           path: group[0]!.path.replace(/\[[^\]]*\]/g, "[*]"),
-          reason: group[0]!.reason,
         },
   );
+}
+
+/**
+ * One entry per declaration left out for the same reason in several places
+ * (each instance of a FB, each program instance): the declaration as its path,
+ * with the first instance paths named; any other entry as it is.
+ */
+export function groupSkipsByDeclaration(
+  skipped: ReadonlyArray<{ path: string; reason: string; decl?: string }>,
+): Array<{ path: string; reason: string }> {
+  const groups = new Map<
+    string,
+    Array<{ path: string; reason: string; decl?: string }>
+  >();
+  const order: Array<{ path: string; reason: string; decl?: string }[]> = [];
+  for (const item of skipped) {
+    const key =
+      item.decl !== undefined
+        ? `${item.decl}\u0000${item.reason}`
+        : `\u0001${order.length}`;
+    let group = groups.get(key);
+    if (group === undefined) {
+      group = [];
+      groups.set(key, group);
+      order.push(group);
+    }
+    group.push(item);
+  }
+  const shown = 2;
+  return order.map((group) => {
+    const first = group[0]!;
+    if (group.length === 1) return { path: first.path, reason: first.reason };
+    const named = group
+      .slice(0, shown)
+      .map((g) => g.path)
+      .join(", ");
+    const more = group.length - shown;
+    return {
+      path: `${first.decl!} (in ${group.length} places: ${named}${more > 0 ? ` and ${more} more` : ""})`,
+      reason: first.reason,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

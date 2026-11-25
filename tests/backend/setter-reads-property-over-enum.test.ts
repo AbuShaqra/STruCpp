@@ -8,14 +8,14 @@ import { compile } from "../../src/index.js";
 
 const SRC = `TYPE Mode : (Idle, Speed, Stop); END_TYPE
 FUNCTION_BLOCK FB
-VAR v : INT; m : Mode; END_VAR
+VAR v : INT; mv : Mode; END_VAR
 PROPERTY Speed : INT
 SET
 v := Speed;
 END_SET
 END_PROPERTY
 METHOD M
-m := Stop;
+mv := Stop;
 END_METHOD
 END_FUNCTION_BLOCK
 PROGRAM Main
@@ -40,7 +40,7 @@ describe("SET body reads its property name", () => {
       expect(r.cppCode).toMatch(
         /void FB::set_SPEED\(IEC_INT SPEED\) \{\n\s*V = SPEED;/,
       );
-      expect(r.cppCode).toMatch(/M = MODE::STOP;/i);
+      expect(r.cppCode).toMatch(/MV = MODE::STOP;/i);
     });
   }
 });
