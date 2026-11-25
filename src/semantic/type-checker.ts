@@ -8558,8 +8558,9 @@ export class TypeChecker {
    * a library enumeration hidden by one of the sources (`c : LColor := Red`),
    * or a name that is both a value of an enumeration of the sources and a
    * library's global (`LK`). The latter is the value where `typeName` is that
-   * enumeration, the global where it is the global's own enumeration or
-   * STRUCT type; anywhere else `reportEnumGlobalNames` refuses it.
+   * enumeration, the global where it is the global's own enumeration, STRUCT,
+   * FB or ARRAY type, the value where an elementary value is needed and the
+   * global is not elementary; anywhere else `reportEnumGlobalNames` refuses it.
    */
   private settleBareValue(
     value: Expression,
@@ -8580,7 +8581,8 @@ export class TypeChecker {
     if (
       (global.kind === "enum" ||
         global.kind === "struct" ||
-        global.kind === "functionBlock") &&
+        global.kind === "functionBlock" ||
+        global.kind === "array") &&
       this.aliasBase(typeName) === global.name
     ) {
       value.libraryGlobal = true;
@@ -8621,8 +8623,8 @@ export class TypeChecker {
 
   /**
    * The declared type of library global `name` (through aliases) and its
-   * kind: elementary, enum, struct, functionBlock or array; undefined for a
-   * reference or a type not known here.
+   * kind: elementary, enum, struct, functionBlock or array (an inline or a
+   * named ARRAY); undefined for a reference or a type not known here.
    */
   private libraryGlobalShape(
     name: string,
@@ -8648,13 +8650,17 @@ export class TypeChecker {
     if (this.symbolTables.globalScope.lookup(base)?.kind === "functionBlock") {
       return { name: base, kind: "functionBlock" };
     }
-    const resolved = this.symbolTables.lookupType(base)?.resolvedType;
-    if (resolved === undefined) return undefined;
-    // A library ARRAY type (`TYPE LA : ARRAY[..] OF INT`)
-    const def = this.symbolTables.lookupType(base)?.declaration?.definition;
-    if (def?.kind === "TypeReference" && def.arrayDimensions !== undefined) {
+    const sym = this.symbolTables.lookupType(base);
+    // A named ARRAY type (`TYPE LA : ARRAY[0..2] OF INT`), also of a library
+    const def = sym?.declaration?.definition;
+    if (
+      def?.kind === "ArrayDefinition" ||
+      (def?.kind === "TypeReference" && def.arrayDimensions !== undefined)
+    ) {
       return { name: base, kind: "array" };
     }
+    const resolved = sym?.resolvedType;
+    if (resolved === undefined) return undefined;
     return { name: base, kind: resolved.typeKind };
   }
 

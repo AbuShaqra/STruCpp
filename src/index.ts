@@ -302,7 +302,12 @@ function shakeLibraryChunks(
   ast: CompilationUnit,
   archives: StlibArchive[],
   shadowed: Set<string>,
-): { byLibrary: Map<string, Set<string>>; conflicts: ShadowConflict[] } {
+): {
+  byLibrary: Map<string, Set<string>>;
+  conflicts: ShadowConflict[];
+  /** A name declared by more than one library that the program needs from each. */
+  clashes: Array<{ name: string; libraries: string[] }>;
+} {
   const conflicts: ShadowConflict[] = [];
 
   // Build symbol→{library, chunk} index across every archive.  Names
@@ -321,7 +326,13 @@ function shakeLibraryChunks(
     const libName = archive.manifest.name;
     for (const chunk of archive.chunks ?? []) {
       const entry = { library: libName, chunk: chunk.name };
-      symbolIndex.set(chunk.name.toUpperCase(), { ...entry, kind: chunk.kind });
+      // A name two libraries declare is the first one's, as it resolves
+      if (!symbolIndex.has(chunk.name.toUpperCase())) {
+        symbolIndex.set(chunk.name.toUpperCase(), {
+          ...entry,
+          kind: chunk.kind,
+        });
+      }
       chunkByKey.set(`${libName}:${chunk.name}`, entry);
     }
   }
@@ -451,7 +462,19 @@ function shakeLibraryChunks(
     set.add(name);
   }
 
-  return { byLibrary, conflicts };
+  // A chunk name reachable in two libraries: one C++ name for both
+  const owners = new Map<string, string[]>();
+  for (const [lib, names] of byLibrary) {
+    for (const name of names) {
+      const upper = name.toUpperCase();
+      owners.set(upper, [...(owners.get(upper) ?? []), lib]);
+    }
+  }
+  const clashes = [...owners]
+    .filter(([, libs]) => libs.length > 1)
+    .map(([name, libs]) => ({ name, libraries: libs }));
+
+  return { byLibrary, conflicts, clashes };
 }
 
 /** `message` with each C++ name of a renamed POU shown as declared. */
@@ -469,6 +492,27 @@ function withDeclaredNames(
  * both would be emitted under one C++ name.
  */
 function libraryShadowErrors(
+  ast: CompilationUnit,
+  archives: StlibArchive[],
+): CompileError[] {
+  // Two libraries' declarations of one name the program needs from both
+  const clashErrors: CompileError[] = shakeLibraryChunks(
+    ast,
+    archives,
+    userDeclaredNames(ast),
+  ).clashes.map((c) => ({
+    message:
+      `'${c.name}' is declared by the libraries ${c.libraries.map((l) => `'${l}'`).join(" and ")}, ` +
+      `and this program needs each one's: they cannot share one C++ name`,
+    line: 0,
+    column: 0,
+    severity: "error" as const,
+  }));
+  return [...clashErrors, ...libraryShadowErrorsOnly(ast, archives)];
+}
+
+/** {@link libraryShadowErrors} for a user declaration shadowing a needed chunk. */
+function libraryShadowErrorsOnly(
   ast: CompilationUnit,
   archives: StlibArchive[],
 ): CompileError[] {

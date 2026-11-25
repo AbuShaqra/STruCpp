@@ -838,6 +838,40 @@ END_PROGRAM
     expect(stdout).toBe("112 1 39");
   });
 
+  it("reads a name of a user enumeration and a library global of a named ARRAY type by its context", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `TYPE LA : ARRAY[0..2] OF INT; END_TYPE
+TYPE LB : LA; END_TYPE
+TYPE LS : STRUCT a : INT := 4; END_STRUCT END_TYPE
+TYPE LAS : ARRAY[0..1] OF LS; END_TYPE
+VAR_GLOBAL GQ : LA := [5, 6, 7]; GB : LB := [1, 2, 3]; GX : LAS; END_VAR`,
+          fileName: "a.st",
+        },
+      ],
+      { name: "larrglob", version: "1.0.0", namespace: "larrglob" },
+    );
+    expect(lib.errors).toEqual([]);
+    const { stdout } = run(
+      `TYPE UE : (A, GQ, GB, GX, Z); END_TYPE
+FUNCTION FA : INT VAR_INPUT a : LA; END_VAR FA := a[0] + a[2]; END_FUNCTION
+FUNCTION FB2 : INT VAR_INPUT a : LB; END_VAR FB2 := a[1]; END_FUNCTION
+FUNCTION FX : INT VAR_INPUT a : LAS; END_VAR FX := a[1].a; END_FUNCTION
+PROGRAM Main
+VAR la : LA; r1 : LINT; r2 : LINT; END_VAR
+r1 := TO_INT(GQ) * 100 + TO_INT(GB) * 10 + TO_INT(GX);
+la := GQ;
+r2 := FA(GQ) + FA(a := GQ) * 100 + FB2(GB) * 10000 + la[2] * 100000 + FX(GX) * 10000000;
+END_PROGRAM
+`,
+      'p.R1 << " " << p.R2',
+      "libtypes_user_enum_named_array_global",
+      [JSON.parse(JSON.stringify(lib.archive)) as StlibArchive],
+    );
+    expect(stdout).toBe("123 40721212");
+  });
+
   it("emits a CONFIGURATION global of a user STRUCT that holds library types", () => {
     const lib = compileStlib(
       [

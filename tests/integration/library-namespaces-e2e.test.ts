@@ -209,4 +209,78 @@ int main() {
     delete old.manifest.stNamespace;
     expect(run(old, "My_Lib", "libns_old")).toBe("566");
   });
+
+  /** Two libraries that declare the same type names, under NA and NB. */
+  const twoLibraries = (): StlibArchive[] =>
+    [
+      `TYPE E_C : (Red, Green, Blue); END_TYPE
+TYPE S_P : STRUCT a : INT := 5; c : E_C := Blue; END_STRUCT END_TYPE
+TYPE A_P : ARRAY[0..1] OF S_P; END_TYPE`,
+      `TYPE S_P : STRUCT z : LINT := 99; END_STRUCT END_TYPE
+TYPE E_C : (Cyan, Magenta); END_TYPE
+FUNCTION FZ : LINT VAR s : S_P; END_VAR FZ := s.z; END_FUNCTION`,
+    ].map((source, i) => {
+      const lib = compileStlib([{ source, fileName: `n${i}.st` }], {
+        name: `nlib${i}`,
+        version: "1.0.0",
+        namespace: `nlib${i}`,
+        stNamespace: i === 0 ? "NA" : "NB",
+      });
+      expect(lib.errors).toEqual([]);
+      return JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
+    });
+
+  it("emits only the reachable one of two libraries' types of one name", () => {
+    const result = compile(
+      `TYPE UW : STRUCT l : NA.S_P; e : NA.E_C := NA.E_C.Green; ar : NA.A_P; END_STRUCT END_TYPE
+TYPE UAl : NA.E_C; END_TYPE
+VAR_GLOBAL g : NA.S_P; END_VAR
+PROGRAM Main VAR w : UW; x : UAl := NA.E_C.Blue; r : LINT; END_VAR
+r := w.l.a + w.ar[1].a * 10 + g.a * 100;
+IF w.e = NA.E_C.Green AND x = NA.E_C.Blue AND w.l.c = NA.E_C.Blue THEN r := r + 1000; END_IF;
+END_PROGRAM
+`,
+      {
+        headerFileName: "generated.hpp",
+        libraries: [...LIBS, ...twoLibraries().map((a) => loadStlibArchive(a))],
+        ...ON,
+      },
+    );
+    expect(result.errors).toEqual([]);
+    expect(
+      compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: "libns_same_type_names",
+        mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    std::cout << p.R << std::endl;
+    return 0;
+}
+`,
+      }),
+    ).toBe("1555");
+  });
+
+  it("refuses a program that needs both libraries' types of one name", () => {
+    const result = compile(
+      `PROGRAM Main VAR l : NA.S_P; r : LINT; END_VAR
+r := NB.FZ() + l.a;
+END_PROGRAM
+`,
+      {
+        headerFileName: "generated.hpp",
+        libraries: [...LIBS, ...twoLibraries().map((a) => loadStlibArchive(a))],
+        ...ON,
+      },
+    );
+    expect(result.errors.map((e) => e.message)).toEqual([
+      "'S_P' is declared by the libraries 'nlib0' and 'nlib1', and this program needs each one's: they cannot share one C++ name",
+    ]);
+  });
 });

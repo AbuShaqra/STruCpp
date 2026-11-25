@@ -995,7 +995,7 @@ export interface VariableExpression extends TypedNode {
   /**
    * Set by the type checker on a bare name that is both a value of an
    * enumeration of the sources and a library's global, read as the global:
-   * its context is the global's own enumeration or STRUCT type.
+   * its context is the global's own enumeration, STRUCT, FB or ARRAY type.
    */
   libraryGlobal?: true;
 }
