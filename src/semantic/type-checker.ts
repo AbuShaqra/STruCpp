@@ -1863,6 +1863,8 @@ export class TypeChecker {
     ) {
       this.checkCharInitialValue(type.name, value);
       this.checkEnumInitialValue(type.name, value);
+      // An array or structure initializer's element that does not fit
+      this.warnConstantOverflow(this.resolveNamedType(type.name), value);
     }
     if (
       value.kind !== "StructInitializerExpression" ||
@@ -3819,11 +3821,12 @@ export class TypeChecker {
   }
 
   /**
-   * An untyped integer constant expression (`200 * 200`) whose value is
-   * outside the integer type it is stored in wraps at run time: a warning, an
-   * error under iec-3 and --strict. A typed or named constant that does not
-   * fit, or a typed subexpression that wraps in its own type, warns under
-   * --strict only.
+   * An integer constant expression (`200 * 200`) whose value is outside the
+   * integer type it is stored in wraps at run time: a warning under --strict,
+   * and also by default (iec-3 too) for an untyped one, unless a narrowing
+   * warning already reports it or it is a based literal whose bit pattern
+   * fits the target (`16#FFFF` into an INT). A typed subexpression that wraps
+   * in its own type warns under --strict only.
    */
   private warnConstantOverflow(
     targetType: IECType | undefined,
@@ -3847,32 +3850,54 @@ export class TypeChecker {
     ).toUpperCase();
     const v = this.constantIntegerValue(value);
     if (v === undefined) return;
-    // Typed or named constants: the --strict warning only
-    if (this.untypedConstantKind(value) !== "INT") {
-      if (this.strict) this.warnOverflowAt(value, v, name);
+    if (this.strict) {
+      this.warnOverflowAt(value, v, name);
       return;
     }
+    if (this.untypedConstantKind(value) !== "INT") return;
     // A negative constant into UDINT or ULINT is refused as an INT already
     if (v < 0n && (name === "UDINT" || name === "ULINT")) return;
-    this.warnOverflowAt(value, v, name, this.strict || this.inOutErrors);
+    if (this.basedLiteralFitsWidth(value, v, name)) return;
+    if (this.warnOverflowAt(value, v, name)) this.wrapWarned.add(value);
+  }
+
+  /** Values given the default-mode wrap warning: no narrowing warning repeats it. */
+  private wrapWarned = new WeakSet<Expression>();
+
+  /** `16#FFFF` into an INT: a based literal whose bit pattern fits the target's width. */
+  private basedLiteralFitsWidth(
+    value: Expression,
+    v: bigint,
+    name: string,
+  ): boolean {
+    let bare = value;
+    while (bare.kind === "ParenthesizedExpression") bare = bare.expression;
+    if (
+      bare.kind !== "LiteralExpression" ||
+      !/^(16|8|2)#/.test(bare.rawValue)
+    ) {
+      return false;
+    }
+    const bits = ELEMENTARY_TYPES[name]?.sizeBits;
+    return bits !== undefined && v >= 0n && v < 1n << BigInt(bits);
   }
 
   /** Values warnConstantOverflow has checked (an argument is checked by two routes). */
   private overflowChecked = new WeakSet<Expression>();
 
-  /** The wrap warning (or error) at `at` when `v` is outside the integer type `name`. */
-  private warnOverflowAt(
-    at: Expression,
-    v: bigint,
-    name: string,
-    asError = false,
-  ): void {
+  /** The wrap warning at `at` when `v` is outside the integer type `name`; true when given. */
+  private warnOverflowAt(at: Expression, v: bigint, name: string): boolean {
     const range = integerTypeRange(name);
-    if (range === undefined || (v >= range.min && v <= range.max)) return;
-    const message = `The constant expression is ${v}, outside ${name} (${range.min}..${range.max}): it wraps`;
-    const { startLine, startCol, file } = at.sourceSpan;
-    if (asError) this.addError(message, startLine, startCol, file);
-    else this.addWarning(message, startLine, startCol, file);
+    if (range === undefined || (v >= range.min && v <= range.max)) {
+      return false;
+    }
+    this.addWarning(
+      `The constant expression is ${v}, outside ${name} (${range.min}..${range.max}): it wraps`,
+      at.sourceSpan.startLine,
+      at.sourceSpan.startCol,
+      at.sourceSpan.file,
+    );
+    return true;
   }
 
   /**
@@ -6287,10 +6312,9 @@ export class TypeChecker {
         ) {
           continue;
         }
-        this.warnConstantOverflow(
-          this.resolveNamedType(field.type.name),
-          value,
-        );
+        const fieldType = this.resolveNamedType(field.type.name);
+        this.warnConstantOverflow(fieldType, value);
+        if (this.isRealTarget(fieldType)) this.markRealPowers(value);
       }
     }
   }
@@ -8024,6 +8048,49 @@ export class TypeChecker {
     }
   }
 
+  /** `type` is REAL or LREAL (an alias of one too). */
+  private isRealTarget(type: IECType | undefined): boolean {
+    if (type?.typeKind !== "elementary") return false;
+    const name = this.aliasBase((type as ElementaryType).name).toUpperCase();
+    return name === "REAL" || name === "LREAL";
+  }
+
+  /**
+   * Marks each integer `**` whose result is stored in a REAL or LREAL
+   * (through parentheses, unary +/- and + - * /) as a real power: computed
+   * with `pow` and not folded as an integer (`2 ** 40 / 3` divides as reals).
+   */
+  private markRealPowers(value: Expression): void {
+    switch (value.kind) {
+      case "ParenthesizedExpression":
+        this.markRealPowers(value.expression);
+        return;
+      case "UnaryExpression":
+        if (value.operator !== "NOT") this.markRealPowers(value.operand);
+        return;
+      case "BinaryExpression":
+        if (value.operator === "**") {
+          // Untyped operands where nothing typed it (a STRUCT field default)
+          if (
+            (value.resolvedType !== undefined &&
+              this.isIntegerType(value.resolvedType)) ||
+            (this.untypedConstantKind(value.left) === "INT" &&
+              this.untypedConstantKind(value.right) === "INT")
+          ) {
+            value.realPower = true;
+          }
+          return;
+        }
+        if (["+", "-", "*", "/"].includes(value.operator)) {
+          this.markRealPowers(value.left);
+          this.markRealPowers(value.right);
+        }
+        return;
+      default:
+        return;
+    }
+  }
+
   /** The wider of the integer types `target` and `own` (`target` on a tie); DINT when both are narrower. */
   private powerComputeType(target: string, own: string): string {
     const bits = (n: string): number => ELEMENTARY_TYPES[n]?.sizeBits ?? 32;
@@ -8052,6 +8119,7 @@ export class TypeChecker {
         this.aliasBase((targetType as ElementaryType).name).toUpperCase(),
       );
     }
+    if (this.isRealTarget(targetType)) this.markRealPowers(value);
     const targetInterface = this.interfaceTypeOf(targetType);
     if (targetInterface !== undefined) {
       this.checkInterfaceValue(targetInterface, valueType, value);
@@ -8139,6 +8207,8 @@ export class TypeChecker {
         if (isNarrowingConversion(tName, vName)) {
           if (argument?.narrowingWarning(tName) === false) return;
           if (this.valueFitsNarrowTarget(value, tName)) return;
+          // The wrap warning already names it (`ui : UINT := -1`)
+          if (this.wrapWarned.has(value)) return;
           this.addWarning(
             `Implicit narrowing conversion from ${vName} to ${tName}`,
             value.sourceSpan.startLine,

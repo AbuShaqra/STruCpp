@@ -209,13 +209,13 @@ export function exactIntegerValue(expr: Expression): bigint | undefined {
  * The exact value of an untyped integer constant expression (untyped literals,
  * parentheses, unary +/- and + - * /, ** by a non-negative exponent), and
  * whether it or any part of it lies outside DINT. Undefined for anything else,
- * a division by 0, or a power outside 64 bits. With `integerPowersOnly`, a
- * `**` counts only when the type checker computes it as an integer (it is
- * stored in one); any other is a real power.
+ * a division by 0, or a power outside 64 bits. With `realPowersExcluded`, a
+ * `**` the type checker marked as a real power (stored in a REAL or LREAL)
+ * is not one.
  */
 export function untypedIntegerConstant(
   expr: Expression,
-  integerPowersOnly = false,
+  realPowersExcluded = false,
 ): { value: bigint; pastDint: boolean } | undefined {
   const outside = (v: bigint): boolean => v > 2147483647n || v < -2147483648n;
   switch (expr.kind) {
@@ -229,24 +229,24 @@ export function untypedIntegerConstant(
         : { value, pastDint: outside(value) };
     }
     case "ParenthesizedExpression":
-      return untypedIntegerConstant(expr.expression, integerPowersOnly);
+      return untypedIntegerConstant(expr.expression, realPowersExcluded);
     case "UnaryExpression": {
       if (expr.operator !== "-" && expr.operator !== "+") return undefined;
-      const inner = untypedIntegerConstant(expr.operand, integerPowersOnly);
+      const inner = untypedIntegerConstant(expr.operand, realPowersExcluded);
       if (inner === undefined) return undefined;
       const value = expr.operator === "-" ? -inner.value : inner.value;
       return { value, pastDint: inner.pastDint || outside(value) };
     }
     case "BinaryExpression": {
       if (
-        integerPowersOnly &&
+        realPowersExcluded &&
         expr.operator === "**" &&
-        expr.integerPower === undefined
+        expr.realPower === true
       ) {
         return undefined;
       }
-      const l = untypedIntegerConstant(expr.left, integerPowersOnly);
-      const r = untypedIntegerConstant(expr.right, integerPowersOnly);
+      const l = untypedIntegerConstant(expr.left, realPowersExcluded);
+      const r = untypedIntegerConstant(expr.right, realPowersExcluded);
       if (l === undefined || r === undefined) return undefined;
       let value: bigint;
       switch (expr.operator) {

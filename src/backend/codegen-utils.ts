@@ -223,8 +223,8 @@ export function formatIntegerLiteral(rawValue: string, value: number): string {
 /**
  * An untyped integer constant expression that leaves DINT anywhere
  * (`2147483647 + 1`): its exact value as a literal (to 64 bits), cut to the
- * declared width only where it is stored, as a literal past the type is; a
- * `**` only when it is computed as an integer. Undefined otherwise, and for
+ * declared width only where it is stored, as a literal past the type is; not
+ * through a `**` stored in a REAL or LREAL. Undefined otherwise, and for
  * `-3000000000`, which stays as written.
  */
 export function pastDintConstantCpp(expr: Expression): string | undefined {

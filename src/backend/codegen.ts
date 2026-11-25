@@ -506,7 +506,8 @@ const TEMPORAL_CPP: Record<
  * (Ed. 3) form on either side the value goes through the long form's unit (ns,
  * days for LDATE): a 32-bit source widens exactly, a 32-bit target is
  * truncated to its unit and taken modulo 2^32. A duration and a date or
- * date-and-time convert as the time since 1970-01-01 (a date by whole days).
+ * date-and-time convert as the time since 1970-01-01, as the runtime's DATE
+ * and DT count it (a date by whole days).
  * Undefined for any other pair.
  */
 function longTemporalConversion(
@@ -519,7 +520,7 @@ function longTemporalConversion(
   if (f === undefined || t === undefined) return undefined;
   const fromLong = LONG_TEMPORAL_NAMES.has(from);
   const toLong = LONG_TEMPORAL_NAMES.has(to);
-  // A duration and a date or date-and-time: the time since 1970-01-01
+  // A duration and a date or date-and-time: the time since 1970, as DATE/DT count
   const sinceEpoch =
     (f === "duration" && (t === "date" || t === "dt")) ||
     (t === "duration" && (f === "date" || f === "dt"));
@@ -1310,8 +1311,8 @@ export class CodeGenerator {
   /**
    * The widest type an integer `**` in `expr` is computed in (through
    * parentheses, unary +/- and + - * / MOD), if it has one; "real" when one
-   * is a real power (`pow`, not stored in an integer), which the arithmetic
-   * around it then is too.
+   * is a real power (stored in a REAL or LREAL), which the arithmetic around
+   * it then is too.
    */
   private widenedPowerType(expr: Expression): string | undefined {
     switch (expr.kind) {
@@ -1324,8 +1325,7 @@ export class CodeGenerator {
       case "BinaryExpression": {
         if (expr.operator === "**") {
           return (
-            expr.integerPower ??
-            (this.isIntegerExpression(expr) ? "real" : undefined)
+            expr.integerPower ?? (expr.realPower === true ? "real" : undefined)
           );
         }
         if (!["+", "-", "*", "/", "MOD"].includes(expr.operator)) {
@@ -5200,6 +5200,7 @@ export class CodeGenerator {
           });
           this.emitEnEnoWrapper(indent, enExpr, enoVar, (bi) => {
             this.emit(`${bi}${callExpr};`);
+            this.flushGlobalCopyOuts(bi);
           });
         } else if (stmt.call.kind === "MethodCallExpression") {
           this.emit(
@@ -5233,6 +5234,7 @@ export class CodeGenerator {
             const callExpr = this.generateFunctionCallExpression(modifiedCall);
             this.emitEnEnoWrapper(indent, enExpr, enoVar, (bi) => {
               this.emit(`${bi}${callExpr};`);
+              this.flushGlobalCopyOuts(bi);
             });
           } else {
             this.emit(`${indent}${this.generateExpression(stmt.call)};`);
@@ -5342,8 +5344,10 @@ export class CodeGenerator {
         ...stmt,
         value: { ...stmt.value, arguments: filteredArgs },
       };
+      // Copy-outs of arguments passed by copy run only with the call
       this.emitEnEnoWrapper(indent, enExpr, enoVar, (bi) => {
         this.generateAssignmentStatement(stripped, bi);
+        this.flushGlobalCopyOuts(bi);
       });
       return;
     }
@@ -5786,7 +5790,7 @@ export class CodeGenerator {
     ) {
       const tmp = `__gbv_${this.tempVarCounter++}`;
       const stored = `(static_cast<uint64_t>(__glk->get()) & ~(1ULL << ${bitIdx})) | ((${tmp} ? 1ULL : 0ULL) << ${bitIdx})`;
-      return `{ const bool ${tmp} = static_cast<bool>(${value}); ${target.name}->with_lock([&](auto* __glk){ __glk->set(static_cast<decltype(__glk->get())>(${stored})); }); }`;
+      return `{ const bool ${tmp} = static_cast<bool>(${value}); ${target.name}->with_lock([&](decltype(${target.name}->read())* __glk){ __glk->set(static_cast<decltype(__glk->get())>(${stored})); }); }`;
     }
     const baseCode = this.generateLvalue(baseVar);
     return `${baseCode} = ${bit(baseCode)};`;

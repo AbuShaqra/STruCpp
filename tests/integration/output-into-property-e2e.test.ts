@@ -3,7 +3,7 @@
 /**
  * E2E: an output captured into a PROPERTY (`o(q => pp.P)`) calls its setter,
  * for a function block, FUNCTION, METHOD and library FUNCTION call; the
- * getter is not called for it.
+ * getter is not called for it. With EN = FALSE the setter is not called.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -49,11 +49,15 @@ q := 9;
 FQ := 0;
 END_FUNCTION
 PROGRAM Main
-VAR o : O; p1 : PP; p2 : PP; p3 : PP; p4 : PP; r : INT; END_VAR
+VAR o : O; p1 : PP; p2 : PP; p3 : PP; p4 : PP; p5 : PP; r : INT; en : BOOL; END_VAR
 o(q => p1.P);
 r := FQ(q => p2.P);
 r := p1.MO(q => p3.P);
 r := LFQ(q => p4.P);
+r := FQ(EN := en, q => p5.P);
+r := p1.MO(EN := en, q => p5.P);
+FQ(EN := en, q => p5.P);
+o(EN := en, q => p5.P);
 END_PROGRAM
 `;
 
@@ -66,7 +70,7 @@ int main() {
               << " " << p.P2.V.get() << "," << p.P2.SETS.get() << "," << p.P2.GETS.get()
               << " " << p.P3.V.get() << "," << p.P3.SETS.get() << "," << p.P3.GETS.get()
               << " " << p.P4.V.get() << "," << p.P4.SETS.get() << "," << p.P4.GETS.get()
-              << std::endl;
+              << " " << p.P5.SETS.get() << std::endl;
     return 0;
 }
 `;
@@ -100,7 +104,7 @@ describe.skipIf(!hasGpp)("output into a property — g++ e2e", () => {
   });
   afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
-  it("calls the setter once on every call form", () => {
+  it("calls the setter once on every call form, and not with EN = FALSE", () => {
     const result = compile(SOURCE, {
       headerFileName: "generated.hpp",
       libraries: [library()],
@@ -114,6 +118,6 @@ describe.skipIf(!hasGpp)("output into a property — g++ e2e", () => {
       testName: "output_into_property",
       mainCode: MAIN,
     });
-    expect(out).toBe("42,1,0 9,1,0 7,1,0 11,1,0");
+    expect(out).toBe("42,1,0 9,1,0 7,1,0 11,1,0 0");
   });
 });

@@ -839,6 +839,8 @@ export interface BinaryExpression extends TypedNode {
   computeAs?: string;
   /** Set by the type checker on an integer `**` stored as an integer: the integer type its exact power is computed in, not `pow`. */
   integerPower?: string;
+  /** Set by the type checker on an integer `**` stored in a REAL or LREAL: a real power (`pow`), not folded as an integer. */
+  realPower?: true;
 }
 
 /**

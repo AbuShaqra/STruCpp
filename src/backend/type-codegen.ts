@@ -22,7 +22,11 @@ import type {
   FunctionCallExpression,
   ElementaryType,
 } from "../frontend/ast.js";
-import { charLiteralUnits, stringBodyBeforeNul } from "../literal-utils.js";
+import {
+  charLiteralUnits,
+  stringBodyBeforeNul,
+  untypedIntegerConstant,
+} from "../literal-utils.js";
 import { TypeRegistry, isElementaryType } from "../semantic/type-registry.js";
 import {
   temporalArithmeticCpp,
@@ -1116,6 +1120,15 @@ export class TypeCodeGenerator {
   private binaryExprToCpp(expr: BinaryExpression): string {
     const left = this.expressionToCpp(expr.left);
     const right = this.expressionToCpp(expr.right);
+    // An integer power stored in a REAL or LREAL (markRealPowers); else a
+    // constant integer power is its exact value
+    if (expr.operator === "**") {
+      const exact =
+        expr.realPower === true ? undefined : untypedIntegerConstant(expr);
+      return exact !== undefined
+        ? formatIntegerLiteral(exact.value.toString(), Number(exact.value))
+        : `std::pow(static_cast<double>(${left}), static_cast<double>(${right}))`;
+    }
     // Date arithmetic in a default goes by days, as in a body.
     const temporal = (e: Expression): string | undefined => {
       const t = e.resolvedType;

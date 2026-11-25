@@ -72,13 +72,8 @@ describe("narrowing of a value that fits", () => {
         n(1, "INT"),
         n(2, "INT"),
         n(3, "DINT"),
-        // -129 does not fit: a warning here, an error under iec-3
-        ...(Object.keys(options).length === 0
-          ? [
-              "4: The constant expression is -129, outside SINT (-128..127): it wraps",
-            ]
-          : []),
-        n(4, "INT"),
+        // -129 does not fit: the wrap warning stands for the narrowing one
+        "4: The constant expression is -129, outside SINT (-128..127): it wraps",
         n(5, "INT"),
         n(6, "INT"),
         n(7, "DINT"),

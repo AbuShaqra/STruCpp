@@ -61,25 +61,13 @@ ${program("s : S; l : LINT;", "l := 2147483647 * 4;")}`,
     ["iec-3", { dialect: "iec-3" }],
     ["strict", { strict: true }],
   ] as const) {
-    it(`takes an untyped integer constant expression into UDINT as a literal (${label})`, () => {
-      // Past UDINT: a warning, an error under iec-3 and --strict, both alike
-      const diagnostics = (r: ReturnType<typeof compile>) => ({
-        errors: r.errors.map((e) => e.message),
-        warnings: r.warnings.map((e) => e.message),
-      });
-      const literal = compile(program("u : UDINT := 4294967296;"), options);
-      const expr = compile(
+    it(`accepts an untyped integer constant expression into UDINT as a literal (${label})`, () => {
+      const literal = compileOk(program("u : UDINT := 4294967296;"), options);
+      const expr = compileOk(
         program("u : UDINT := 4294967295 + 1; v : UDINT := 1 + 1;"),
         options,
       );
-      expect(diagnostics(expr)).toEqual(diagnostics(literal));
-      const wraps =
-        "The constant expression is 4294967296, outside UDINT (0..4294967295): it wraps";
-      expect(diagnostics(literal)).toEqual(
-        label === "no dialect"
-          ? { errors: [], warnings: [wraps] }
-          : { errors: [wraps], warnings: [] },
-      );
+      expect(expr.warnings).toEqual(literal.warnings);
     });
   }
 

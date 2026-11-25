@@ -1,7 +1,7 @@
 /**
- * An untyped integer constant expression that does not fit its target wraps
- * at run time: a warning by default, an error under --strict and iec-3. A
- * typed one warns under --strict only.
+ * An integer constant expression that does not fit its target wraps at run
+ * time: it warns under --strict, and also without it (iec-3 too) when it is
+ * untyped, the warning then standing for the narrowing one.
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
@@ -17,40 +17,33 @@ END_PROGRAM
 `;
 
 describe("constant expression overflow", () => {
-  const untyped = [
-    "2:16 The constant expression is 32768, outside INT (-32768..32767): it wraps",
-    "3:6 The constant expression is 40000, outside INT (-32768..32767): it wraps",
-    "5:6 The constant expression is -1, outside USINT (0..255): it wraps",
-  ];
-  const at = (l: { line: number; column: number; message: string }[]) =>
-    l.map((w) => `${w.line}:${w.column} ${w.message}`);
-
-  it("is an error under --strict and iec-3 for an untyped one", () => {
-    for (const options of [{ strict: true }, { dialect: "iec-3" }]) {
-      const r = compile(SOURCE, options);
-      expect(at(r.errors)).toEqual(untyped);
-      expect(at(r.warnings)).toEqual([
-        "5:6 Implicit narrowing conversion from INT to USINT",
-        // typed: a warning, --strict only
-        ...(options.strict === true
-          ? [
-              "6:6 The constant expression is 32768, outside INT (-32768..32767): it wraps",
-            ]
-          : []),
-      ]);
-    }
-  });
-
-  it("warns by default for an untyped one", () => {
-    const r = compile(SOURCE);
+  it("warns under --strict", () => {
+    const r = compile(SOURCE, { strict: true });
     expect(r.errors).toEqual([]);
-    expect(at(r.warnings)).toEqual([
-      untyped[0],
-      untyped[1],
-      untyped[2],
-      "5:6 Implicit narrowing conversion from INT to USINT",
-    ]);
+    expect(r.warnings.map((w) => `${w.line}:${w.column} ${w.message}`)).toEqual(
+      [
+        "2:16 The constant expression is 32768, outside INT (-32768..32767): it wraps",
+        "3:6 The constant expression is 40000, outside INT (-32768..32767): it wraps",
+        "5:6 The constant expression is -1, outside USINT (0..255): it wraps",
+        "5:6 Implicit narrowing conversion from INT to USINT",
+        "6:6 The constant expression is 32768, outside INT (-32768..32767): it wraps",
+      ],
+    );
   });
+
+  for (const options of [{}, { dialect: "iec-3" }]) {
+    it(`warns on an untyped one without --strict (${JSON.stringify(options)})`, () => {
+      const r = compile(SOURCE, options);
+      expect(r.errors).toEqual([]);
+      expect(
+        r.warnings.map((w) => `${w.line}:${w.column} ${w.message}`),
+      ).toEqual([
+        "2:16 The constant expression is 32768, outside INT (-32768..32767): it wraps",
+        "3:6 The constant expression is 40000, outside INT (-32768..32767): it wraps",
+        "5:6 The constant expression is -1, outside USINT (0..255): it wraps",
+      ]);
+    });
+  }
   it("warns on an untyped literal, a typed expression and a call argument", () => {
     const r = compile(
       `FUNCTION F : INT
@@ -73,19 +66,20 @@ END_PROGRAM
 `,
       { strict: true },
     );
-    const constants = (l: typeof r.errors) =>
-      at(l.filter((w) => w.message.startsWith("The constant")));
-    expect(constants(r.errors)).toEqual([
+    expect(r.errors).toEqual([]);
+    expect(
+      r.warnings
+        .filter((w) => w.message.startsWith("The constant"))
+        .map((w) => `${w.line}:${w.column} ${w.message}`),
+    ).toEqual([
       "9:16 The constant expression is 40000, outside INT (-32768..32767): it wraps",
       "10:6 The constant expression is 200, outside SINT (-128..127): it wraps",
-      "14:13 The constant expression is 40000, outside INT (-32768..32767): it wraps",
-      "15:8 The constant expression is 40000, outside INT (-32768..32767): it wraps",
-      "16:10 The constant expression is 200, outside SINT (-128..127): it wraps",
-    ]);
-    expect(constants(r.warnings)).toEqual([
       "11:6 The constant expression is 32768, outside INT (-32768..32767): it wraps",
       "12:6 The constant expression is 200, outside SINT (-128..127): it wraps",
       "13:6 The constant expression is -1, outside UINT (0..65535): it wraps",
+      "14:13 The constant expression is 40000, outside INT (-32768..32767): it wraps",
+      "15:8 The constant expression is 40000, outside INT (-32768..32767): it wraps",
+      "16:10 The constant expression is 200, outside SINT (-128..127): it wraps",
     ]);
   });
 

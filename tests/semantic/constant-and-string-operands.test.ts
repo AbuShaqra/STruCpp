@@ -7,8 +7,10 @@
  * - an untyped integer constant beside a typed integer takes its type when
  *   it fits (`si + 3` is a SINT), so no narrowing warning follows;
  * - an untyped constant that does not fit its integer target (`s := 200`
- *   into a SINT) warns by default and is an error under iec-3 and --strict:
- *   assignments, initial values, STRUCT field defaults and call arguments.
+ *   into a SINT) warns in every mode, one diagnostic in place of a narrowing
+ *   warning: assignments, initial values, array and STRUCT initializers,
+ *   STRUCT field defaults and call arguments. A based literal whose bit
+ *   pattern fits the target width (`16#FFFF` into an INT) does not.
  */
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
@@ -121,9 +123,10 @@ describe("an untyped constant that does not fit its target", () => {
 VAR_INPUT a : SINT; END_VAR
 FS := a;
 END_FUNCTION
-TYPE ST : STRUCT f : SINT := 300; END_STRUCT END_TYPE
+TYPE ST : STRUCT f : SINT := 300; g : ARRAY[1..2] OF SINT := [300, 1]; END_STRUCT END_TYPE
 PROGRAM Main
 VAR s : SINT; s2 : SINT := 200; u : UINT := 70000; r : SINT; ok : SINT := 127; END_VAR
+VAR ar : ARRAY[1..2] OF SINT := [128, 0]; ui : UINT := -1; END_VAR
 s := 200;
 s := 100 + 100;
 r := FS(200);
@@ -133,28 +136,41 @@ END_PROGRAM
 `;
   const wraps = [
     "5: The constant expression is 300, outside SINT (-128..127): it wraps",
+    "5: The constant expression is 300, outside SINT (-128..127): it wraps",
     "7: The constant expression is 200, outside SINT (-128..127): it wraps",
     "7: The constant expression is 70000, outside UINT (0..65535): it wraps",
-    "8: The constant expression is 200, outside SINT (-128..127): it wraps",
+    "8: The constant expression is 128, outside SINT (-128..127): it wraps",
+    "8: The constant expression is -1, outside UINT (0..65535): it wraps",
     "9: The constant expression is 200, outside SINT (-128..127): it wraps",
     "10: The constant expression is 200, outside SINT (-128..127): it wraps",
+    "11: The constant expression is 200, outside SINT (-128..127): it wraps",
   ];
   const sorted = (l: string[]) => [...l].sort();
 
-  // `100 + 100` is an INT: narrowed into the SINT as before
-  const narrowing = "9: Implicit narrowing conversion from INT to SINT";
-
-  it("warns by default", () => {
-    const d = diagnostics(source);
-    expect(d.errors).toEqual([]);
-    expect(sorted(d.warnings)).toEqual(sorted([...wraps, narrowing]));
-  });
-
-  for (const [label, options] of MODES.slice(1)) {
-    it(`is an error under ${label}`, () => {
+  for (const [label, options] of MODES) {
+    it(`warns, with one diagnostic each (${label})`, () => {
       const d = diagnostics(source, options);
-      expect(sorted(d.errors)).toEqual(sorted(wraps));
-      expect(d.warnings).toEqual([narrowing]);
+      expect(d.errors).toEqual([]);
+      // --strict also keeps its narrowing warning beside the wrap
+      const strictNarrowing =
+        label === "strict"
+          ? [
+              "8: Implicit narrowing conversion from INT to UINT",
+              "10: Implicit narrowing conversion from INT to SINT",
+            ]
+          : [];
+      expect(sorted(d.warnings)).toEqual(
+        sorted([...wraps, ...strictNarrowing]),
+      );
     });
   }
+
+  it("leaves a based literal whose bit pattern fits the target as before", () => {
+    const d = diagnostics(`PROGRAM Main
+VAR i : INT := 16#FFFF; d : DINT := 16#FFFFFFFF; s : SINT := 2#1000_0000; END_VAR
+i := 16#8000;
+END_PROGRAM
+`);
+    expect(d).toEqual({ errors: [], warnings: [] });
+  });
 });

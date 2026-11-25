@@ -59,7 +59,7 @@ describe("bit store into a scalar VAR_EXTERNAL — codegen", () => {
     const result = compile(SOURCE);
     expect(result.errors).toEqual([]);
     expect(result.cppCode).toMatch(
-      /\{ const bool (__gbv_\d+) = static_cast<bool>\(!static_cast<bool>\(\(static_cast<uint64_t>\(W->read\(\)\) >> 1\) & 1\)\); W->with_lock\(\[&\]\(auto\* __glk\)\{ __glk->set\(static_cast<decltype\(__glk->get\(\)\)>\(\(static_cast<uint64_t>\(__glk->get\(\)\) & ~\(1ULL << 1\)\) \| \(\(\1 \? 1ULL : 0ULL\) << 1\)\)\); \}\); \}/,
+      /\{ const bool (__gbv_\d+) = static_cast<bool>\(!static_cast<bool>\(\(static_cast<uint64_t>\(W->read\(\)\) >> 1\) & 1\)\); W->with_lock\(\[&\]\(decltype\(W->read\(\)\)\* __glk\)\{ __glk->set\(static_cast<decltype\(__glk->get\(\)\)>\(\(static_cast<uint64_t>\(__glk->get\(\)\) & ~\(1ULL << 1\)\) \| \(\(\1 \? 1ULL : 0ULL\) << 1\)\)\); \}\); \}/,
     );
     expect(result.cppCode).not.toContain("W->write(");
   });
