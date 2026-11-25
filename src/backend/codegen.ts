@@ -572,6 +572,30 @@ const NUMERIC_OR_BIT_CONVERSION_TARGETS = new Set([
 /**
  * Default code generation options.
  */
+/**
+ * Another task can run at the same time as the program's code: the build is
+ * threaded (STRUCPP_THREADED), or a CONFIGURATION runs more than one task.
+ */
+export function tasksMayRace(
+  model: ProjectModel | undefined,
+  threaded: boolean,
+): boolean {
+  if (threaded) return true;
+  return (
+    model?.configurations.some(
+      (c) => c.resources.reduce((n, r) => n + r.tasks.length, 0) > 1,
+    ) === true
+  );
+}
+
+/** A warning of an access to a shared global that {@link tasksMayRace} makes racy. */
+export function isSharedGlobalRaceWarning(message: string): boolean {
+  return (
+    message.includes("the shared global '") &&
+    message.includes("in a build with STRUCPP_THREADED")
+  );
+}
+
 export const defaultCodeGenOptions: CodeGenOptions = {
   lineDirectives: false,
   sourceComments: true,
@@ -11922,11 +11946,7 @@ export class CodeGenerator {
    * (STRUCPP_THREADED), or a CONFIGURATION runs more than one task.
    */
   private tasksMayRace(): boolean {
-    if (this.options.threaded === true) return true;
-    return (
-      this.projectModel?.configurations.some((c) => this.countTasks(c) > 1) ===
-      true
-    );
+    return tasksMayRace(this.projectModel, this.options.threaded === true);
   }
 
   /**

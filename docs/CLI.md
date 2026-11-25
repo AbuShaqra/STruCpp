@@ -119,6 +119,10 @@ With `--json`, stdout carries exactly one JSON document, also for exit code 2:
 The check runs analysis only. A program that passes it can still fail later: in C++ code generation
 or in `g++` (for example an interface-typed `VAR_INPUT` today).
 
+The check gives the warning a build gives for a VAR_IN_OUT bound to, or an address taken of, a shared
+CONFIGURATION global when tasks may run at the same time: the program has more than one task, or
+`--cxx-flags` defines `STRUCPP_THREADED`.
+
 ### Build
 
 Compile to C++ and produce an interactive REPL binary (see [REPL.md](REPL.md)):
@@ -206,17 +210,17 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 
 ### Compilation
 
-| Flag                  | Description                                                   |
-| --------------------- | ------------------------------------------------------------- |
-| `--build`             | Build interactive REPL binary after compilation               |
-| `--gpp <path>`        | Custom g++ path (default: `g++`)                              |
-| `--cc <path>`         | Custom C compiler path (default: `cc`)                        |
-| `--cxx-flags <flags>` | Extra flags passed to g++ (supports quoted paths); `-DSTRUCPP_THREADED` here marks a `--build`/`--test` build as threaded (below) |
-| `-D NAME[=VALUE]`     | Define a conditional-pragma name (`--define`, `-DNAME`; repeatable; the name is case-sensitive in `defined()`, and `{undefine}` in a source cannot remove it); an integer VALUE also defines a global constant (emits `constexpr size_t`). A name that is not an identifier is a usage error. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
-| `--pragma-define NAME[=VALUE]` | Define a conditional-pragma name only (repeatable): whatever VALUE is, no global constant. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
-| `--file-define <file>=NAME[=VALUE]` | Define a conditional-pragma name for input `<file>` only, on top of the project defines (repeatable; not with `--compile-lib`): seen by `defined()` and `hasvalue()` in that file (over a project define of the same name), not by `project_defined()`. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
-| `-d, --debug`         | Enable debug output                                           |
-| `--strict`            | Reject code that strict IEC compilers (matiec) reject; below  |
+| Flag                                | Description                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--build`                           | Build interactive REPL binary after compilation                                                                                                                                                                                                                                                                                                  |
+| `--gpp <path>`                      | Custom g++ path (default: `g++`)                                                                                                                                                                                                                                                                                                                 |
+| `--cc <path>`                       | Custom C compiler path (default: `cc`)                                                                                                                                                                                                                                                                                                           |
+| `--cxx-flags <flags>`               | Extra flags passed to g++ (supports quoted paths); `-DSTRUCPP_THREADED` here marks a `--build`/`--test` build as threaded (below)                                                                                                                                                                                                                |
+| `-D NAME[=VALUE]`                   | Define a conditional-pragma name (`--define`, `-DNAME`; repeatable; the name is case-sensitive in `defined()`, and `{undefine}` in a source cannot remove it); an integer VALUE also defines a global constant (emits `constexpr size_t`). A name that is not an identifier is a usage error. See [DIALECTS.md](DIALECTS.md#conditional-pragmas) |
+| `--pragma-define NAME[=VALUE]`      | Define a conditional-pragma name only (repeatable): whatever VALUE is, no global constant. See [DIALECTS.md](DIALECTS.md#conditional-pragmas)                                                                                                                                                                                                    |
+| `--file-define <file>=NAME[=VALUE]` | Define a conditional-pragma name for input `<file>` only, on top of the project defines (repeatable; not with `--compile-lib`): seen by `defined()` and `hasvalue()` in that file (over a project define of the same name), not by `project_defined()`. See [DIALECTS.md](DIALECTS.md#conditional-pragmas)                                       |
+| `-d, --debug`                       | Enable debug output                                                                                                                                                                                                                                                                                                                              |
+| `--strict`                          | Reject code that strict IEC compilers (matiec) reject; below                                                                                                                                                                                                                                                                                     |
 
 `--strict` applies in every mode that compiles ST (compile, build, `--test`, `--compile-lib`,
 `--import-lib`) and reports each problem at its ST line. It rejects:
@@ -256,14 +260,14 @@ compiled without threading gets no such warning. API callers pass `threaded: tru
 
 ### Dialects
 
-| Flag                    | Description                                                                             |
-| ----------------------- | --------------------------------------------------------------------------------------- |
-| `--dialect <id>`        | Compile under a profile: built-in `iec-3`, a `--dialect-file`/`--dialect-path` profile  |
+| Flag                    | Description                                                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `--dialect <id>`        | Compile under a profile: built-in `iec-3`, a `--dialect-file`/`--dialect-path` profile                                    |
 | `--dialect-file <path>` | Load a profile file (repeatable); one file and no `--dialect` selects it; several and no `--dialect` warn and select none |
-| `--dialect-path <dir>`  | Load and check every `*.json` profile in a folder (repeatable); one that is not selected and is invalid gives a warning |
-| `--feature <+id\|-id>`  | Enable (`+id` or `id`) or disable (`-id`) a feature after the profile (repeatable)      |
-| `--global-list <f>=<n>` | Name the global variable list of input file `<f>` (default: its stem; repeatable)      |
-| `--print-dialect`       | Print the resolved dialect as JSON (`{"id":...,"features":[...]}`) and exit             |
+| `--dialect-path <dir>`  | Load and check every `*.json` profile in a folder (repeatable); one that is not selected and is invalid gives a warning   |
+| `--feature <+id\|-id>`  | Enable (`+id` or `id`) or disable (`-id`) a feature after the profile (repeatable)                                        |
+| `--global-list <f>=<n>` | Name the global variable list of input file `<f>` (default: its stem; repeatable)                                         |
+| `--print-dialect`       | Print the resolved dialect as JSON (`{"id":...,"features":[...]}`) and exit                                               |
 
 With no `--dialect` and no `--dialect-file` the compiler runs with the default features
 `pointer_to`, `reference_to`, `ref_assign`, `fb_property`, `st_actions`, `bare_self_caret`,
@@ -326,6 +330,41 @@ Warnings are printed when compilation fails too, and in `--test` (the sources' a
 Lexer errors (a character that starts no token) carry the real line and column, and parsing continues
 after them, so the rest of the file is still checked. A file with a lexer error never compiles.
 A syntax error at the end of the file is placed just after the last token.
+
+### Reported in one pass
+
+Compile mode, `--build` and `--check` report every error a file's phases find in one run: a later phase
+runs after an earlier phase's error, so fixing one error does not reveal another the run could have
+shown. Each reported error is its own problem; an error a later phase would only repeat or derive from an
+earlier one is left out:
+
+- an error at the same position as an ARRAY bound, inline type or CONFIGURATION/task error (a negative
+  task `INTERVAL` is reported once, not also as a negative `TIME` literal);
+- at the declaration of a name the lexer read without a refused character, what follows from it (`xä`
+  read as `x`, then `x` declared twice; `ınt` read as an undefined type `NT`);
+- a type error that depends on which declaration of a variable declared twice with two types in one POU,
+  method or the global lists the analysis took: the file is checked again with the other declaration,
+  and only the type errors both checks give are reported (the duplicate itself stays; a global two
+  CONFIGURATIONs declare is not such a variable);
+- `Undeclared variable 'T'` for `T.M` when `T` is reported as an undefined type;
+- a name a global variable list error left unresolved (`GVL.nope` is not also undeclared);
+- the argument count of a standard function call whose named arguments were refused, and missing inputs
+  unless more are missing than arguments were misnamed (each may have been meant for one);
+- an internal failure of analysis on a tree the parser recovered.
+
+On a file with syntax errors the analysis runs on the tree the parser recovered, and every error it finds
+there is reported, also on the line of the syntax error.
+
+Where a later phase cannot run on a broken earlier one, it does not run:
+
+| When                                                                                    | What does not run                                                                                             |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| The dialect does not resolve (`--dialect`, `--dialect-file`, `--feature`)               | Everything: the one error is the dialect's                                                                    |
+| A file's conditional pragmas or IL bodies have an error                                 | Compile mode: analysis of every file (`--check` goes on with the text as prepared)                            |
+| The parser produces no tree, or building or lowering the AST throws (an internal error) | Compile mode: analysis (`--check` analyses what was built)                                                    |
+| A file has syntax errors                                                                | Nothing: analysis runs on the tree the parser recovered                                                       |
+| A semantic pass throws (an internal error, reported as `Semantic analysis failed: ...`) | The semantic passes after it; the errors found before it stay                                                 |
+| Analysis reports an error                                                               | C++ generation and the refusals only it makes (UNION, FB_init, alias `REFERENCE TO` uses); no file is written |
 
 ## Examples
 

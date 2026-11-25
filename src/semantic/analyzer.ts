@@ -361,6 +361,15 @@ export interface SemanticAnalysisResult {
   /** Symbol tables built during analysis */
   symbolTables: SymbolTables;
 
+  /** True when a pass threw: the symbol tables and annotations may be incomplete. */
+  passFailed?: boolean;
+
+  /** The error that reports the pass that threw, when one did. */
+  failure?: CompileError;
+
+  /** The errors the type checker (pass 2) reported. */
+  typeErrors?: ReadonlySet<CompileError>;
+
   /** Errors found during analysis */
   errors: CompileError[];
 
@@ -541,6 +550,10 @@ export class SemanticAnalyzer {
   private globalLists: GlobalLists | undefined;
   /** Internal name of a renamed or aliased list global → `LIST.NAME`. */
   private globalListDisplayNames = new Map<string, string>();
+  /** Type names reported undefined: `T.M` of one is not also an undeclared `T`. */
+  private undefinedTypes = new Set<string>();
+  /** Names a reported global-list error left unresolved: not reported again as undeclared. */
+  private listRefused = new WeakSet<object>();
   /** Global-list diagnostics whose text is final (see displayGlobalListNames). */
   private verbatimDiagnostics = new WeakSet<CompileError>();
 
@@ -586,6 +599,9 @@ export class SemanticAnalyzer {
     this.errors = [];
     this.warnings = [];
     this.locatedVars = [];
+    this.failure = undefined;
+    this.typeErrors = new Set();
+    this.undefinedTypes.clear();
 
     // Use provided symbol tables (with library symbols pre-registered) or create new ones
     if (existingSymbolTables) {
@@ -600,18 +616,73 @@ export class SemanticAnalyzer {
       );
     }
 
-    // A refused EXTENDS is located and gates nothing; the STRUCT is still
-    // flattened, so its members resolve. Flattening precedes the symbol tables.
-    const errorsBeforeStructFeature = this.errors.length;
+    // Each pass runs after the errors of the ones before it, so a file's
+    // errors are reported together. A pass that throws is reported, and the
+    // passes that need its result are skipped; the errors found so far stay.
+    let passed = true;
+    if (
+      this.runPass(() => this.checkDeclarations(ast)) &&
+      this.runPass(() => this.checkTypes(ast))
+    ) {
+      // A literal an earlier error starts at is not reported again.
+      passed = this.runPass(() => {
+        this.markReportedLiterals(ast);
+        this.validateSemantics(ast);
+      });
+    } else {
+      passed = false;
+    }
+    this.literalsReported.clear();
+
+    this.dropRepeatedErrors();
+    this.displayGlobalListNames(this.errors);
+    this.displayGlobalListNames(this.warnings);
+
+    return {
+      success: this.errors.length === 0,
+      symbolTables: this.symbolTables,
+      ...(passed ? {} : { passFailed: true }),
+      ...(this.failure !== undefined ? { failure: this.failure } : {}),
+      typeErrors: this.typeErrors,
+      errors: this.errors,
+      warnings: this.warnings,
+    };
+  }
+
+  /** Run one pass; a throw is reported as an error. False when it threw. */
+  private runPass(pass: () => void): boolean {
+    try {
+      pass();
+      return true;
+    } catch (e) {
+      this.addError(
+        `Semantic analysis failed: ${e instanceof Error ? e.message : String(e)}`,
+        0,
+        0,
+      );
+      this.failure = this.errors[this.errors.length - 1];
+      return false;
+    }
+  }
+
+  /** The error of the pass that threw in this analysis, if one did. */
+  private failure: CompileError | undefined;
+  /** The errors pass 2 reported in this analysis. */
+  private typeErrors = new Set<CompileError>();
+
+  /**
+   * Pass 1: the declaration-level rules and the symbol tables, global lists
+   * first (they may rename globals). Each refusal here is located.
+   */
+  private checkDeclarations(ast: CompilationUnit): void {
+    // A refused EXTENDS is located; the STRUCT is still flattened, so its
+    // members resolve. Flattening precedes the symbol tables.
     this.validateStructExtendsFeature(ast);
     this.validateConfigurationGlobalNames(ast);
     this.validateTypeColonFeature(ast);
     this.flattenStructTypes(ast);
-    // UNION refusals and rules are located and gate nothing either.
     this.validateUnions(ast);
-    // So are the fb_init refusal, warning and FB_init signature rules.
     this.applyFbInitFeature(ast);
-    const structFeatureErrors = this.errors.length - errorsBeforeStructFeature;
 
     // Pass 1: Build symbol tables (global lists first: they may rename globals)
     this.globalListDisplayNames.clear();
@@ -626,15 +697,10 @@ export class SemanticAnalyzer {
     this.prepareGlobalLists(ast);
     this.buildSymbolTables(ast);
 
-    // Reported before the gates below so a type error in any merged source cannot hide
-    // an undefined type — and excluded from them, so the reverse cannot happen either.
-    const errorsBeforeTypeReferences = this.errors.length;
     this.validateTypeReferences(ast);
     this.refuseVariableLengthStorage(ast);
     // Before type checking, so every later pass sees the unqualified form.
-    const globalListErrors = this.resolveGlobalListAccess(ast);
-    // A feature refusal is located and does not gate the passes below either,
-    // so the rest of a refused method is still checked.
+    this.resolveGlobalListAccess(ast);
     this.validateProgramMethodFeature(ast);
     this.validateInterfaceProperties(ast);
     this.validateVendorFormFeatures(ast);
@@ -663,47 +729,33 @@ export class SemanticAnalyzer {
           this.addError(message, span.startLine, span.startCol, span.file),
       );
     }
-    const typeReferenceErrors =
-      this.errors.length -
-      errorsBeforeTypeReferences -
-      globalListErrors +
-      structFeatureErrors;
-
     if (this.options.strict === true) this.validateReservedNames(ast);
+  }
 
-    // Pass 2: Type checking. Its struct_compare refusals are located and gate nothing.
-    let typeRefusals = 0;
-    if (this.errors.length - typeReferenceErrors === 0) {
-      this.typeChecker.nameLocator =
-        this.options.sources !== undefined
-          ? sourceNameLocator(this.options.sources)
-          : undefined;
-      const typeResult = this.typeChecker.check(ast);
-      this.errors.push(...typeResult.errors);
-      this.warnings.push(...typeResult.warnings);
-      typeRefusals = typeResult.refusals;
-    }
+  /**
+   * Pass 2: type checking. A name an earlier pass refused resolves to
+   * nothing here, so it adds no error of its own.
+   */
+  private checkTypes(ast: CompilationUnit): void {
+    this.typeChecker.nameLocator =
+      this.options.sources !== undefined
+        ? sourceNameLocator(this.options.sources)
+        : undefined;
+    const typeResult = this.typeChecker.check(ast);
+    for (const e of typeResult.errors) this.typeErrors.add(e);
+    this.errors.push(...typeResult.errors);
+    this.warnings.push(...typeResult.warnings);
+  }
 
-    // Pass 3: Semantic validation. After an error it does not run, except
-    // its literal checks, which need no resolved type.
-    if (this.errors.length - typeReferenceErrors - typeRefusals === 0) {
-      this.validateSemantics(ast);
-    } else {
-      this.prepareLiteralFallback(ast);
-      this.validateLiteralRanges(ast);
-      this.literalsReported.clear();
-      this.reportEnumDotRefusals(ast);
-    }
-
-    this.displayGlobalListNames(this.errors);
-    this.displayGlobalListNames(this.warnings);
-
-    return {
-      success: this.errors.length === 0,
-      symbolTables: this.symbolTables,
-      errors: this.errors,
-      warnings: this.warnings,
-    };
+  /** Two passes may find the same error (`ADR(3)`): it is reported once. */
+  private dropRepeatedErrors(): void {
+    const seen = new Set<string>();
+    this.errors = this.errors.filter((e) => {
+      const key = `${e.file ?? ""}:${e.line}:${e.column}:${e.message}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   /**
@@ -745,21 +797,20 @@ export class SemanticAnalyzer {
     }
   }
 
-  /** Report a global-list diagnostic; returns true when it must gate the later passes. */
-  private reportGlobalList(d: GlobalListDiagnostic): boolean {
+  /** Report a global-list diagnostic. */
+  private reportGlobalList(d: GlobalListDiagnostic): void {
     if (d.featureRefusal) {
       this.requireFeature(
         "named_global_lists",
         `Global variable list access '${d.access}'`,
         d.span,
       );
-      return false;
+      return;
     }
     this.addError(d.message, d.span.startLine, d.span.startCol, d.span.file);
     // It may name an internal name the program declares: keep it verbatim.
     const added = this.errors[this.errors.length - 1];
     if (added) this.verbatimDiagnostics.add(added);
-    return true;
   }
 
   /**
@@ -785,17 +836,14 @@ export class SemanticAnalyzer {
 
   /**
    * Rewrite `LIST.var` access in every POU body (see global-lists.ts) and
-   * report plain uses of a name two lists declare. Returns how many errors it
-   * added that gate the later passes; a feature refusal does not.
+   * report plain uses of a name two lists declare.
    */
-  private resolveGlobalListAccess(ast: CompilationUnit): number {
+  private resolveGlobalListAccess(ast: CompilationUnit): void {
+    this.listRefused = new WeakSet();
     const lists = this.globalLists;
-    if (!lists || lists.lists.size === 0) return 0;
+    if (!lists || lists.lists.size === 0) return;
     const enabled = this.features.has("named_global_lists");
-    let gating = 0;
-    const report = (d: GlobalListDiagnostic): void => {
-      if (this.reportGlobalList(d)) gating++;
-    };
+    const report = (d: GlobalListDiagnostic): void => this.reportGlobalList(d);
     const globalScope = this.symbolTables.globalScope;
     // A renamed global's symbol shows, and completes, as `LIST.NAME`.
     for (const [internal, display] of this.globalListDisplayNames) {
@@ -806,6 +854,7 @@ export class SemanticAnalyzer {
       }
     }
     const resolver = new GlobalListResolver(lists, enabled, report);
+    this.listRefused = resolver.refused;
     const defineAlias = (name: string, alias: string): boolean => {
       const sym = globalScope.lookupLocal(name);
       if (sym?.kind !== "variable" && sym?.kind !== "constant") return false;
@@ -876,7 +925,6 @@ export class SemanticAnalyzer {
         }
       }
     }
-    return gating;
   }
 
   /** Show `LIST.NAME` in place of the internal name of a list-qualified global. */
@@ -1025,32 +1073,6 @@ export class SemanticAnalyzer {
       name = fb.declaration.extends;
     }
     return false;
-  }
-
-  /**
-   * When an error stops pass 3: its `E.M` refusals (feature enum_dot_qualify),
-   * so a type error hides none. Pass 3's name walk runs with its other
-   * diagnostics dropped; a walk that throws on the unchecked tree reports none.
-   */
-  private reportEnumDotRefusals(ast: CompilationUnit): void {
-    if (this.features.has("enum_dot_qualify")) return;
-    const errorCount = this.errors.length;
-    const warningCount = this.warnings.length;
-    let found: CompileError[] = [];
-    try {
-      this.reachedMemberNodes = new Set();
-      this.validateUndeclaredVariables(ast);
-      found = this.errors
-        .slice(errorCount)
-        .filter((e) =>
-          e.message.includes(" needs the feature enum_dot_qualify"),
-        );
-    } catch {
-      found = [];
-    }
-    this.errors.length = errorCount;
-    this.warnings.length = warningCount;
-    this.errors.push(...found);
   }
 
   /** `E.M` of a global enumeration type E needs the feature enum_dot_qualify. */
@@ -2345,196 +2367,28 @@ export class SemanticAnalyzer {
     });
   }
 
-  /**
-   * Literals a type cannot hold (integer, typed, LTIME, REAL) and STRING
-   * characters outside Windows-1252. Needs no resolved type, so it also runs
-   * when an earlier error stops the type checks.
-   */
   /** Literals an earlier error already reports, left out of the literal checks. */
   private literalsReported = new Set<LiteralExpression>();
 
-  /**
-   * Before the literal checks run without the type checks: leave out a literal
-   * an earlier error starts at (`n := '☃'` refused as STRING into INT), and
-   * take a one-character literal assigned to a CHAR or WCHAR as that
-   * character, as the type checks would.
-   */
-  private prepareLiteralFallback(ast: CompilationUnit): void {
+  /** Leave out of the literal checks a literal an earlier error starts at (`n := '☃'`). */
+  private markReportedLiterals(ast: CompilationUnit): void {
     const at = new Set(
       this.errors.map((e) => `${e.file ?? ""}:${e.line}:${e.column}`),
     );
+    if (at.size === 0) return;
     walkAST(ast, (node) => {
       if (node.kind !== "LiteralExpression") return;
-      const literal = node as LiteralExpression;
-      const span = literal.sourceSpan;
+      const span = (node as LiteralExpression).sourceSpan;
       if (at.has(`${span.file ?? ""}:${span.startLine}:${span.startCol}`)) {
-        this.literalsReported.add(literal);
+        this.literalsReported.add(node as LiteralExpression);
       }
     });
-    const baseOf = (typeName: string): string => {
-      let upper = typeName.toUpperCase();
-      for (let i = 0; i < 32; i++) {
-        const current = upper;
-        const def = ast.types.find(
-          (t) => t.name.toUpperCase() === current,
-        )?.definition;
-        if (
-          def?.kind !== "TypeReference" ||
-          def.arrayDimensions !== undefined
-        ) {
-          return upper;
-        }
-        upper = def.name.toUpperCase();
-      }
-      return upper;
-    };
-    // A STRING literal into a CHAR, WCHAR or WSTRING, settled as the type
-    // checks would: the character it holds, or the error they give.
-    const adapt = (
-      value: Expression,
-      typeName: string | undefined,
-      param?: string,
-    ): void => {
-      if (typeName === undefined || value.kind !== "LiteralExpression") return;
-      if (value.literalType !== "STRING" || (value.typePrefix ?? "") !== "") {
-        return;
-      }
-      const base = baseOf(typeName);
-      if (base !== "CHAR" && base !== "WCHAR" && base !== "WSTRING") return;
-      // The call check takes a STRING literal into a WSTRING input.
-      if (param !== undefined && base === "WSTRING") return;
-      if (base === "CHAR") {
-        const raw = `CHAR#${value.rawValue}`;
-        if (charLiteralUnits(raw).units.length === 1) {
-          value.literalType = "CHAR";
-          value.rawValue = raw;
-          value.value = raw;
-          return;
-        }
-      }
-      const target = typeName.toUpperCase();
-      const span = value.sourceSpan;
-      this.literalsReported.add(value);
-      // The type checks ran and reported it already.
-      if (at.has(`${span.file ?? ""}:${span.startLine}:${span.startCol}`))
-        return;
-      this.addError(
-        param === undefined
-          ? `Cannot assign STRING to ${target}`
-          : `Cannot assign STRING to parameter '${param}' of type ${target}`,
-        span.startLine,
-        span.startCol,
-        span.file,
-      );
-    };
-    // A callable's VAR_INPUT and VAR_IN_OUT in declaration order: the call
-    // check binds the i-th argument to the i-th of them.
-    type Param = { name: string; type: string; input: boolean };
-    const paramsOf = (blocks: readonly VarBlock[]): Param[] =>
-      blocks
-        .filter(
-          (b) => b.blockType === "VAR_INPUT" || b.blockType === "VAR_IN_OUT",
-        )
-        .flatMap((b) =>
-          b.declarations.flatMap((d) =>
-            d.names.map((n) => ({
-              name: n,
-              type: d.type.name,
-              input:
-                b.blockType === "VAR_INPUT" &&
-                d.type.arrayDimensions === undefined &&
-                (d.type.referenceKind ?? "none") === "none",
-            })),
-          ),
-        );
-    const functionParams = new Map<string, Param[]>();
-    for (const f of ast.functions) {
-      functionParams.set(f.name.toUpperCase(), paramsOf(f.varBlocks));
-    }
-    /** The methods a bare call in an FB (its bases' too) or PROGRAM reaches. */
-    const methodsOf = (owner: {
-      methods: readonly { name: string; varBlocks: VarBlock[] }[];
-      extends?: string;
-    }): Map<string, Param[]> => {
-      const out = new Map<string, Param[]>();
-      const seen = new Set<string>();
-      let current: typeof owner | undefined = owner;
-      while (current) {
-        for (const m of current.methods) {
-          const upper = m.name.toUpperCase();
-          if (!out.has(upper)) out.set(upper, paramsOf(m.varBlocks));
-        }
-        const base: string | undefined = current.extends?.toUpperCase();
-        if (base === undefined || seen.has(base)) break;
-        seen.add(base);
-        current = ast.functionBlocks.find((f) => f.name.toUpperCase() === base);
-      }
-      return out;
-    };
-    const visitPou = (
-      blocks: readonly VarBlock[],
-      bodies: readonly Statement[][],
-      methods: ReadonlyMap<string, Param[]> = new Map(),
-    ): void => {
-      const types = new Map<string, string>();
-      for (const b of [...ast.globalVarBlocks, ...blocks]) {
-        for (const d of b.declarations) {
-          for (const n of d.names) types.set(n.toUpperCase(), d.type.name);
-          if (d.initialValue && d.type.arrayDimensions === undefined) {
-            adapt(d.initialValue, d.type.name);
-          }
-        }
-      }
-      for (const body of bodies) {
-        for (const stmt of body) {
-          walkAST(stmt as ASTNode, (n) => {
-            if (n.kind === "FunctionCallExpression") {
-              const call = n as FunctionCallExpression;
-              const upper = call.functionName.toUpperCase();
-              // A variable of the name (an FB instance) is what the call invokes.
-              if (call.instance !== undefined || types.has(upper)) return;
-              const params = methods.get(upper) ?? functionParams.get(upper);
-              if (params === undefined) return;
-              stripEnEno(call.arguments).forEach((arg, i) => {
-                const param =
-                  arg.name === undefined
-                    ? params[i]
-                    : params.find(
-                        (p) => p.name.toUpperCase() === arg.name!.toUpperCase(),
-                      );
-                if (param?.input === true && !arg.isOutput) {
-                  adapt(arg.value, param.type, param.name);
-                }
-              });
-              return;
-            }
-            if (n.kind !== "AssignmentStatement") return;
-            const a = n as AssignmentStatement;
-            if (
-              a.target.kind === "VariableExpression" &&
-              a.target.fieldAccess.length === 0 &&
-              a.target.subscripts.length === 0 &&
-              !a.target.isDereference
-            ) {
-              adapt(a.value, types.get(a.target.name.toUpperCase()));
-            }
-          });
-        }
-      }
-    };
-    for (const p of ast.programs) {
-      visitPou(p.varBlocks, [p.body], methodsOf(p));
-    }
-    for (const f of ast.functions) visitPou(f.varBlocks, [f.body]);
-    for (const fb of ast.functionBlocks) {
-      const own = methodsOf(fb);
-      visitPou(fb.varBlocks, [fb.body], own);
-      for (const m of fb.methods) {
-        visitPou([...fb.varBlocks, ...m.varBlocks], [m.body], own);
-      }
-    }
   }
 
+  /**
+   * Literals a type cannot hold (integer, typed, LTIME, REAL) and STRING
+   * characters outside Windows-1252.
+   */
   private validateLiteralRanges(ast: CompilationUnit): void {
     this.validateStringLiteralNul(ast);
     this.validateStringLiteralLengths(ast);
@@ -5382,6 +5236,8 @@ export class SemanticAnalyzer {
     }
     const userArgs = stripEnEno(expr.arguments);
     const argCount = userArgs.length;
+    // The type checks refused these arguments already; the count says nothing new.
+    const unbound = this.typeChecker.isUnboundStdCall(expr);
 
     // Look up in std function registry; a user or library function named
     // like a typed truncation (TRUNC_INT) keeps its own signature.
@@ -5406,7 +5262,9 @@ export class SemanticAnalyzer {
     ) {
       return;
     }
-    if (desc) {
+    if (unbound) {
+      // Reported by the type checks
+    } else if (desc) {
       if (desc.isVariadic) {
         const minArgs = desc.minArgs ?? desc.params.length;
         if (argCount < minArgs) {
@@ -5448,8 +5306,14 @@ export class SemanticAnalyzer {
       // (the C++ compiler for library functions, or silent zero-fill for
       // user functions). Function-block invocations resolve to a variable,
       // not a function, so their optional inputs never reach this path.
+      // Each misnamed argument (reported by the type checks) may be one missing input.
       if (sym?.kind === "function" && !countsOnly) {
-        this.checkRequiredFunctionInputs(expr, sym, userArgs);
+        this.checkRequiredFunctionInputs(
+          expr,
+          sym,
+          userArgs,
+          this.typeChecker.misnamedArgumentCount(expr),
+        );
       }
     }
     if (countsOnly) return;
@@ -5561,6 +5425,8 @@ export class SemanticAnalyzer {
     expr: FunctionCallExpression,
     sym: FunctionSymbol,
     userArgs: Argument[],
+    /** Misnamed arguments: no more inputs than these missing is reported. */
+    misnamed = 0,
   ): void {
     const inputParams = this.functionInputParams(sym);
     const required = inputParams.filter((p) => !p.optional);
@@ -5585,7 +5451,7 @@ export class SemanticAnalyzer {
     const missing = required
       .filter((p) => !satisfied.has(p.name))
       .map((p) => p.name);
-    if (missing.length > 0) {
+    if (missing.length > misnamed) {
       const implicit = this.implicitParameterNames(sym);
       this.addError(
         `'${expr.functionName.toUpperCase()}' is missing required input${
@@ -6320,6 +6186,7 @@ export class SemanticAnalyzer {
     if (!this.isKnownType(nameToCheck)) {
       // A POU the parser left unnamed is not named in the message.
       const where = context.includes("''") ? "" : context;
+      this.undefinedTypes.add(nameToCheck.toUpperCase());
       this.addError(
         `Undefined type '${nameToCheck}'${where ? " in " + where : ""}`,
         typeRef.sourceSpan.startLine,
@@ -7477,12 +7344,14 @@ export class SemanticAnalyzer {
           this.checkExpressionForUndeclaredVars(stmt.duration, scope, ctx);
           break;
         case "ForStatement":
-          this.checkNameDeclared(
-            stmt.controlVariable,
-            scope,
-            ctx,
-            stmt.sourceSpan,
-          );
+          if (!this.listRefused.has(stmt)) {
+            this.checkNameDeclared(
+              stmt.controlVariable,
+              scope,
+              ctx,
+              stmt.sourceSpan,
+            );
+          }
           this.checkExpressionForUndeclaredVars(stmt.start, scope, ctx);
           this.checkExpressionForUndeclaredVars(stmt.end, scope, ctx);
           if (stmt.step) {
@@ -7527,6 +7396,15 @@ export class SemanticAnalyzer {
   /**
    * Recursively check an expression for undeclared variable usage.
    */
+  /** `T.M` (not `T#M`) of a type T reported undefined: that error is the one to fix. */
+  private qualifiesUndefinedType(expr: VariableExpression): boolean {
+    return (
+      expr.typedLiteral !== true &&
+      (expr.fieldAccess.length > 0 || (expr.accessChain?.length ?? 0) > 0) &&
+      this.undefinedTypes.has(expr.name.toUpperCase())
+    );
+  }
+
   private checkExpressionForUndeclaredVars(
     expr: Expression,
     scope: Scope,
@@ -7535,7 +7413,9 @@ export class SemanticAnalyzer {
     switch (expr.kind) {
       case "VariableExpression":
         if (expr.enumType !== undefined) break;
-        this.checkNameDeclared(expr.name, scope, ctx, expr.sourceSpan);
+        if (!this.listRefused.has(expr) && !this.qualifiesUndefinedType(expr)) {
+          this.checkNameDeclared(expr.name, scope, ctx, expr.sourceSpan);
+        }
         // Reject member access on a type-level symbol (FB / program / type).
         // Resolves the bug where `RED_YELLOW_GREEN.GREENTIME := …` is
         // silently accepted by the analyzer but blows up at C++
@@ -7564,7 +7444,9 @@ export class SemanticAnalyzer {
         break;
       case "FunctionCallExpression":
         // For dotted names (fb.method), check only the object part
-        if (expr.functionName.includes(".")) {
+        if (this.listRefused.has(expr)) {
+          // A global-list error reported the callee already
+        } else if (expr.functionName.includes(".")) {
           const objName = expr.functionName.substring(
             0,
             expr.functionName.indexOf("."),
@@ -7577,7 +7459,11 @@ export class SemanticAnalyzer {
         if (expr.instance) {
           this.checkExpressionForUndeclaredVars(expr.instance, scope, ctx);
         }
-        if (!expr.functionName.includes(".") && !expr.instance) {
+        if (
+          !this.listRefused.has(expr) &&
+          !expr.functionName.includes(".") &&
+          !expr.instance
+        ) {
           this.checkCalleeDeclared(expr.functionName, scope, ctx, expr);
         }
         // `SIZEOF(T)` of a type: its operand is no variable to check
@@ -7826,6 +7712,18 @@ export class SemanticAnalyzer {
           if (parentScope?.lookupLocal(upper)) return true;
           const parentSym = this.symbolTables.globalScope.lookup(parentUpper);
           if (parentSym?.kind !== "functionBlock") break;
+          // A library block has no scope: its members are the symbol's lists
+          if (
+            parentSym.libraryName !== undefined &&
+            [
+              ...parentSym.inputs,
+              ...parentSym.outputs,
+              ...parentSym.inouts,
+              ...parentSym.locals,
+            ].some((v) => v.name.toUpperCase() === upper)
+          ) {
+            return true;
+          }
           if (
             parentSym.declaration.properties.some(
               (p) => p.name.toUpperCase() === upper,

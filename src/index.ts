@@ -26,7 +26,11 @@ import {
   isGlobalListName,
   nameGlobalLists,
 } from "./semantic/global-lists.js";
-import { CodeGenerator } from "./backend/codegen.js";
+import {
+  CodeGenerator,
+  isSharedGlobalRaceWarning,
+  tasksMayRace,
+} from "./backend/codegen.js";
 import {
   generateDebugTable,
   type DebugMapV2,
@@ -40,6 +44,11 @@ import type {
   TypeReference,
   ASTNode,
   VariableExpression,
+  VarBlock,
+  Expression,
+  MethodCallExpression,
+  RefExpression,
+  RefAssignStatement,
 } from "./frontend/ast.js";
 import { mergeCompilationUnits } from "./merge.js";
 import { lowerInlineTypes } from "./frontend/lower-inline-types.js";
@@ -591,6 +600,229 @@ function prepareFile(
   };
 }
 
+/**
+ * True when some POU passes a VAR_EXTERNAL it declares as a call argument
+ * (a VAR_IN_OUT binding, `ADR(g)`, `REF(g)`) or takes its reference: only
+ * then can code generation give a shared-global race warning.
+ */
+function mayBindSharedGlobal(ast: CompilationUnit): boolean {
+  for (const pou of [
+    ...ast.programs,
+    ...ast.functionBlocks,
+    ...ast.functions,
+  ]) {
+    const blocks = [
+      ...pou.varBlocks,
+      ...("methods" in pou ? pou.methods.flatMap((m) => m.varBlocks) : []),
+    ];
+    const externals = new Set(
+      blocks
+        .filter((b) => b.blockType === "VAR_EXTERNAL")
+        .flatMap((b) => b.declarations.flatMap((d) => d.names))
+        .map((n) => n.toUpperCase()),
+    );
+    if (externals.size === 0) continue;
+    const isExternal = (e: Expression | undefined): boolean =>
+      e?.kind === "VariableExpression" && externals.has(e.name.toUpperCase());
+    let found = false;
+    walkAST(pou, (node) => {
+      if (
+        ((node.kind === "FunctionCallExpression" ||
+          node.kind === "MethodCallExpression") &&
+          (
+            node as FunctionCallExpression | MethodCallExpression
+          ).arguments.some((a) => isExternal(a.value))) ||
+        (node.kind === "RefExpression" &&
+          isExternal((node as RefExpression).operand)) ||
+        (node.kind === "RefAssignStatement" &&
+          isExternal((node as RefAssignStatement).source))
+      ) {
+        found = true;
+      }
+      return !found;
+    });
+    if (found) return true;
+  }
+  return false;
+}
+
+/**
+ * The starts (`file:line:column`) of the names in a declaration that the
+ * lexer read without a character it refused, or that are spelled as one
+ * such name: `ıx : INT` is read as `x`, and what analysis says at a
+ * declaration of `x` (declared twice, an undefined type `NT` for `ınt`)
+ * follows from the refused character, which is reported.
+ */
+function refusedNameDeclarations(
+  ast: CompilationUnit,
+  sources: ReadonlyMap<string, string>,
+  lexErrors: ReadonlyMap<string, readonly CompileError[]>,
+): Set<string> {
+  const starts: Array<{ file: string; line: number; col: number }> = [];
+  for (const [file, errs] of lexErrors) {
+    const text = sources.get(file);
+    if (text === undefined) continue;
+    const lineStart = [0];
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === "\n") lineStart.push(i + 1);
+    }
+    const refusedAt = errs.filter((e) => {
+      const code =
+        text.codePointAt((lineStart[e.line - 1] ?? 0) + e.column - 1) ?? 0;
+      return code >= 0x7f || (code < 0x20 && code !== 0x09);
+    });
+    if (refusedAt.length === 0) continue;
+    const names = tokenize(text).tokens.filter(
+      (t) => t.tokenType.name === "Identifier",
+    );
+    // A name read without a refused character, and every other token of
+    // that name: the declaration it now collides with is one of them.
+    const touched = new Set(
+      names
+        .filter((t) => {
+          const start = t.startColumn ?? 0;
+          const end = t.endColumn ?? start;
+          return refusedAt.some(
+            (e) =>
+              t.startLine === e.line &&
+              start <= e.column + 1 &&
+              e.column <= end + 1,
+          );
+        })
+        .map((t) => t.image.toUpperCase()),
+    );
+    for (const t of names) {
+      if (touched.has(t.image.toUpperCase())) {
+        starts.push({ file, line: t.startLine ?? 0, col: t.startColumn ?? 0 });
+      }
+    }
+  }
+  const declared = new Set<string>();
+  if (starts.length === 0) return declared;
+  walkAST(ast, (node) => {
+    if (node.kind !== "VarDeclaration" && node.kind !== "TypeDeclaration") {
+      return;
+    }
+    const span = node.sourceSpan;
+    for (const { file, line: l, col: c } of starts) {
+      if (
+        file === span.file &&
+        (l > span.startLine || (l === span.startLine && c >= span.startCol)) &&
+        (l < span.endLine || (l === span.endLine && c <= span.endCol))
+      ) {
+        declared.add(`${file}:${l}:${c}`);
+      }
+    }
+  });
+  return declared;
+}
+
+/** The declarations of one scope: a POU's, a method's, or the global lists'. */
+function declarationScopes(ast: CompilationUnit): VarBlock[][] {
+  return [
+    ast.globalVarBlocks,
+    ...[...ast.programs, ...ast.functionBlocks].flatMap((pou) => [
+      pou.varBlocks,
+      ...pou.methods.map((m) => m.varBlocks),
+    ]),
+    ...ast.functions.map((f) => f.varBlocks),
+  ];
+}
+
+/**
+ * Each variable one scope declares twice with two types (the symbol table
+ * keeps the first, and its type checks run against that one): its scope's
+ * index in {@link declarationScopes} and its upper-case name. Two
+ * CONFIGURATIONs declaring a global are not one scope and are not listed.
+ */
+function variablesDeclaredTwice(
+  ast: CompilationUnit,
+): Array<{ scope: number; name: string }> {
+  const found: Array<{ scope: number; name: string }> = [];
+  declarationScopes(ast).forEach((blocks, scope) => {
+    const shapes = new Map<string, string[]>();
+    for (const block of blocks) {
+      for (const d of block.declarations) {
+        const shape = `${d.type.name.toUpperCase()}|${d.type.referenceKind ?? ""}|${d.type.arrayDimensions?.length ?? 0}`;
+        for (const n of d.names) {
+          const upper = n.toUpperCase();
+          shapes.set(upper, [...(shapes.get(upper) ?? []), shape]);
+        }
+      }
+    }
+    for (const [name, list] of shapes) {
+      if (new Set(list).size > 1) found.push({ scope, name });
+    }
+  });
+  return found;
+}
+
+/**
+ * The type errors of `result` that depend on which declaration of a doubled
+ * variable the analysis took: `other` (the tree before analysis) is checked
+ * again with the first declaration of each such variable left out, and a
+ * type error it does not give at the same position, with the same text, is
+ * one. The duplicate itself, and every error both checks give, stay.
+ */
+function pickedEchoes(
+  result: { typeErrors?: ReadonlySet<CompileError> },
+  other: CompilationUnit,
+  analyze: (unit: CompilationUnit) => { errors: CompileError[] },
+): Set<CompileError> {
+  const echoes = new Set<CompileError>();
+  const typeErrors = result.typeErrors;
+  if (typeErrors === undefined || typeErrors.size === 0) return echoes;
+  const scopes = declarationScopes(other);
+  for (const { scope, name } of variablesDeclaredTwice(other)) {
+    const blocks = scopes[scope] ?? [];
+    const decl = blocks
+      .flatMap((b) => b.declarations)
+      .find((d) => d.names.some((n) => n.toUpperCase() === name));
+    if (decl === undefined) continue;
+    decl.names = decl.names.filter((n) => n.toUpperCase() !== name);
+    if (decl.names.length === 0) {
+      for (const b of blocks) {
+        b.declarations = b.declarations.filter((d) => d !== decl);
+      }
+    }
+  }
+  const key = (e: CompileError): string =>
+    `${e.file ?? ""}:${e.line}:${e.column}:${e.message}`;
+  let again: Set<string>;
+  try {
+    again = new Set(analyze(other).errors.map(key));
+  } catch {
+    return echoes;
+  }
+  for (const e of typeErrors) if (!again.has(key(e))) echoes.add(e);
+  return echoes;
+}
+
+/**
+ * Drop the diagnostics from `start` on at the position of an error in
+ * `earlier` (lowering and project-model errors): there the later phase finds
+ * the same problem again (a negative task INTERVAL is the task's error, not
+ * also the literal's). The same for a declared name in `refusedNames`.
+ */
+function dropEchoes(
+  diags: CompileError[],
+  start: number,
+  earlier: readonly CompileError[],
+  primaryFile: string,
+  /** Positions of names read without a refused character (refusedNameDeclarations). */
+  refusedNames: ReadonlySet<string>,
+): void {
+  if (earlier.length === 0 && refusedNames.size === 0) return;
+  const at = (d: CompileError): string =>
+    `${d.file ?? primaryFile}:${d.line}:${d.column}`;
+  const taken = new Set([
+    ...earlier.filter((d) => d.line > 0).map(at),
+    ...refusedNames,
+  ]);
+  const kept = diags.slice(start).filter((d) => !taken.has(at(d)));
+  diags.splice(start, diags.length - start, ...kept);
+}
+
 // ---------------------------------------------------------------------------
 // Shared pipeline
 // ---------------------------------------------------------------------------
@@ -607,15 +839,20 @@ interface PipelineResult {
   fbInit: boolean;
   /** The length of a STRING or WSTRING declared without one. */
   stringDefaultLength: number;
+  /** File name → lines the conditional-pragma pass blanked (set once analysis ran). */
+  blankedByFile?: ReadonlyMap<string, ReadonlySet<number>>;
 }
 
 /**
  * Run phases 1-5 of the compilation pipeline (parse → AST → project model →
  * library loading → semantic analysis).
  *
- * @param continueOnError - When true (analyze mode), wraps each phase in
- *   try/catch and never aborts early so partial results are returned.
- *   When false (compile mode), aborts at each phase boundary on errors.
+ * Both modes run every phase the input allows, so a file's errors are
+ * reported together (docs/CLI.md, "Reported in one pass", lists what stops a later phase).
+ *
+ * @param continueOnError - When true (analyze mode), a file whose conditional
+ *   pragmas or IL failed is still parsed, and an AST build that throws leaves
+ *   the phases after it running. When false (compile mode), both stop there.
  */
 function runPipeline(
   source: string,
@@ -625,8 +862,6 @@ function runPipeline(
   const mergedOptions = { ...defaultOptions, ...options };
   validateCompileOptions(mergedOptions);
   const errors: CompileError[] = [];
-  // Ed. 3 spelling and literal-underscore errors: they stop code generation but not the later phases.
-  let spellingErrorCount = 0;
   const warnings: CompileError[] = [];
   let ast: CompilationUnit | undefined;
   let projectModel: import("./project-model.js").ProjectModel | undefined;
@@ -712,7 +947,6 @@ function runPipeline(
       };
     }
     errors.push(...prepared.labelErrors);
-    spellingErrorCount += prepared.labelErrors.length;
   }
 
   // Phase 1: Parse ST source to CST. Lexer errors do not stop the parse,
@@ -734,28 +968,21 @@ function runPipeline(
       mergedOptions.fileName,
     ),
   );
+  /** True when a file's parse recovered: analysis sees a repaired tree. */
+  let recovered = false;
+  /** File name → its lexer and parse errors. */
+  const parseErrorsByFile = new Map<string, CompileError[]>();
+  /** Lowering and project-model errors, which semantic analysis may find again. */
+  const echoed: CompileError[] = [];
   if (parseResult.errors.length > 0) {
-    errors.push(
-      ...withPragmaHint(
-        toCompileErrors(parseResult.errors, mergedOptions.fileName),
-        pragmaHint,
-      ),
+    const parseErrors = toCompileErrors(
+      parseResult.errors,
+      mergedOptions.fileName,
     );
-    // In analyze mode, continue with partial CST from Chevrotain recovery.
-    // In compile mode, abort immediately.
-    if (!continueOnError) {
-      return {
-        ast,
-        projectModel,
-        symbolTables,
-        errors,
-        warnings,
-        allArchives,
-        mergedOptions,
-        fbInit,
-        stringDefaultLength,
-      };
-    }
+    errors.push(...withPragmaHint(parseErrors, pragmaHint));
+    recovered = true;
+    parseErrorsByFile.set(mergedOptions.fileName ?? "main.st", parseErrors);
+    // Both modes go on with the CST Chevrotain recovered.
   }
 
   // Phase 2: Build AST from CST (supports multi-file via additionalSources)
@@ -799,6 +1026,8 @@ function runPipeline(
     // per-POU split of program.st) would reach the ST parser as
     // raw IL and fail with a confusing "expecting Identifier but
     // found 'LD'" error.
+    /** A file whose conditional pragmas or IL failed: compile mode analyses none. */
+    let prepStopped = false;
     if (mergedOptions.additionalSources) {
       for (const addlSource of mergedOptions.additionalSources) {
         const prepared = prepareFile(
@@ -818,11 +1047,13 @@ function runPipeline(
           );
         }
         errors.push(...prepared.errors);
-        if (prepared.stopsOnError && errors.length > 0 && !continueOnError) {
-          continue;
+        if (prepared.stopsOnError && prepared.errors.length > 0) {
+          if (!continueOnError) {
+            prepStopped = true;
+            continue;
+          }
         }
         errors.push(...prepared.labelErrors);
-        spellingErrorCount += prepared.labelErrors.length;
 
         const addlParseResult = parseSource(effectiveAddlSource);
         implicitPragmas.push(
@@ -841,17 +1072,14 @@ function runPipeline(
           ),
         );
         if (addlParseResult.errors.length > 0) {
-          errors.push(
-            ...withPragmaHint(
-              toCompileErrors(addlParseResult.errors, addlSource.fileName),
-              pragmaHint,
-            ),
+          const parseErrors = toCompileErrors(
+            addlParseResult.errors,
+            addlSource.fileName,
           );
-          // In compile mode, skip files with parse errors.
-          // In analyze mode, try to build from the partial CST.
-          if (!continueOnError) {
-            continue;
-          }
+          errors.push(...withPragmaHint(parseErrors, pragmaHint));
+          recovered = true;
+          parseErrorsByFile.set(addlSource.fileName, parseErrors);
+          // Built from the CST Chevrotain recovered, in both modes.
         }
         if (addlParseResult.cst) {
           try {
@@ -879,7 +1107,7 @@ function runPipeline(
       }
     }
 
-    if (!continueOnError && errors.length > spellingErrorCount) {
+    if (prepStopped) {
       return {
         ast,
         projectModel,
@@ -902,7 +1130,6 @@ function runPipeline(
         sourceNameLocator(sourcesByFile),
       );
       errors.push(...spelling);
-      spellingErrorCount += spelling.length;
     }
     // Ed. 3 Table 5: an underscore in a numeric literal stands between two digits.
     if (iec3Rules || mergedOptions.strict === true) {
@@ -913,7 +1140,6 @@ function runPipeline(
           file,
         );
         errors.push(...literal);
-        spellingErrorCount += literal.length;
       }
     }
     // Actions first, so lowerInlineTypes qualifies inline enum members in
@@ -990,19 +1216,7 @@ function runPipeline(
       ),
     );
     errors.push(...loweringErrors);
-    if (!continueOnError && loweringErrors.length > 0) {
-      return {
-        ast,
-        projectModel,
-        symbolTables,
-        errors,
-        warnings,
-        allArchives,
-        mergedOptions,
-        fbInit,
-        stringDefaultLength,
-      };
-    }
+    echoed.push(...loweringErrors);
   } catch (e) {
     errors.push({
       message: `AST building failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -1046,13 +1260,15 @@ function runPipeline(
     const projectModelResult = buildProjectModel(ast);
     projectModel = projectModelResult.model;
     for (const err of projectModelResult.errors) {
-      errors.push({
+      const entry: CompileError = {
         message: err.message,
         line: err.line ?? 0,
         column: err.column ?? 0,
         severity: "error",
         ...(err.file ? { file: err.file } : {}),
-      });
+      };
+      errors.push(entry);
+      echoed.push(entry);
     }
     for (const warn of projectModelResult.warnings) {
       warnings.push({
@@ -1064,60 +1280,19 @@ function runPipeline(
       });
     }
   } catch (e) {
-    if (!continueOnError) {
-      errors.push({
-        message: `Project model failed: ${e instanceof Error ? e.message : String(e)}`,
-        line: 0,
-        column: 0,
-        severity: "error",
-      });
-      return {
-        ast,
-        projectModel,
-        symbolTables,
-        errors,
-        warnings,
-        allArchives,
-        mergedOptions,
-        fbInit,
-        stringDefaultLength,
-      };
-    }
-    // In analyze mode, project model failure is non-fatal
-  }
-
-  if (!continueOnError && errors.length > spellingErrorCount) {
-    return {
-      ast,
-      projectModel,
-      symbolTables,
-      errors,
-      warnings,
-      allArchives,
-      mergedOptions,
-      fbInit,
-      stringDefaultLength,
-    };
+    // Reported; semantic analysis does not need the project model
+    errors.push({
+      message: `Project model failed: ${e instanceof Error ? e.message : String(e)}`,
+      line: 0,
+      column: 0,
+      severity: "error",
+    });
   }
 
   // Phase 4: Library loading.  Archives arrive pre-loaded;
   // fs-based discovery lives in `strucpp/node`.
   // The Table 36 FUNCTIONs of the bundled library give way to another library's name.
   allArchives.push(...withYieldedFunctions(mergedOptions.libraries ?? []));
-
-  if (!continueOnError && errors.length > spellingErrorCount) {
-    return {
-      ast,
-      projectModel,
-      symbolTables,
-      errors,
-      warnings,
-      allArchives,
-      mergedOptions,
-      fbInit,
-      stringDefaultLength,
-    };
-  }
 
   // Auto-merge library globalConstants into effective constants.
   // Library values provide defaults; user-provided values take priority.
@@ -1134,50 +1309,75 @@ function runPipeline(
     }
   }
 
-  // Phase 5: Semantic analysis
-  let semanticSymbolTables: SymbolTables | undefined;
-  if (allArchives.length > 0) {
-    semanticSymbolTables = new SymbolTables();
-    for (const archive of allArchives) {
-      registerLibrarySymbols(archive.manifest, semanticSymbolTables);
-    }
-  }
-
-  // Register global constants in symbol tables
-  if (mergedOptions.globalConstants) {
-    if (!semanticSymbolTables) {
-      semanticSymbolTables = new SymbolTables();
-    }
-    semanticSymbolTables.globalConstants = mergedOptions.globalConstants;
-    for (const name of Object.keys(mergedOptions.globalConstants)) {
-      try {
-        semanticSymbolTables.globalScope.define({
-          name,
-          kind: "constant",
-          declaration:
-            undefined as unknown as import("./frontend/ast.js").VarDeclaration,
-          type: {
-            typeKind: "elementary",
-            name: "ULINT",
-            sizeBits: 64,
-          } as import("./frontend/ast.js").ElementaryType,
-        });
-      } catch {
-        // Ignore duplicate
+  // Phase 5: Semantic analysis. Each run gets its own tables: analysis adds to them.
+  const freshSymbolTables = (): SymbolTables | undefined => {
+    let tables: SymbolTables | undefined;
+    if (allArchives.length > 0) {
+      tables = new SymbolTables();
+      for (const archive of allArchives) {
+        registerLibrarySymbols(archive.manifest, tables);
       }
     }
-  }
-
-  try {
-    const analyzer = new SemanticAnalyzer({
+    // Register global constants in symbol tables
+    if (mergedOptions.globalConstants) {
+      tables ??= new SymbolTables();
+      tables.globalConstants = mergedOptions.globalConstants;
+      for (const name of Object.keys(mergedOptions.globalConstants)) {
+        try {
+          tables.globalScope.define({
+            name,
+            kind: "constant",
+            declaration:
+              undefined as unknown as import("./frontend/ast.js").VarDeclaration,
+            type: {
+              typeKind: "elementary",
+              name: "ULINT",
+              sizeBits: 64,
+            } as import("./frontend/ast.js").ElementaryType,
+          });
+        } catch {
+          // Ignore duplicate
+        }
+      }
+    }
+    return tables;
+  };
+  const newAnalyzer = (): SemanticAnalyzer =>
+    new SemanticAnalyzer({
       strict: mergedOptions.strict === true,
       features: dialect.features,
       dialect,
       sources: sourcesByFile,
     });
-    const semanticResult = analyzer.analyze(ast, semanticSymbolTables);
-    symbolTables = semanticResult.symbolTables;
+  // A variable declared twice with two types: the tree as it is before
+  // analysis, to check it again with the other declaration (pickedEchoes).
+  const doubled = variablesDeclaredTwice(ast);
+  let other: CompilationUnit | undefined;
+  try {
+    other = doubled.length > 0 ? structuredClone(ast) : undefined;
+  } catch {
+    // A tree that does not copy is checked once, as development did
+  }
+
+  // Semantic diagnostics start here; dropEchoes filters them.
+  const earlierErrors = errors.length;
+  const semanticWarnings = warnings.length;
+  try {
+    const semanticResult = newAnalyzer().analyze(ast, freshSymbolTables());
+    const echoes =
+      other === undefined
+        ? new Set<CompileError>()
+        : pickedEchoes(semanticResult, other, (unit) =>
+            newAnalyzer().analyze(unit, freshSymbolTables()),
+          );
+    // Incomplete tables after a pass threw are not handed on (as when it threw out)
+    if (semanticResult.passFailed !== true) {
+      symbolTables = semanticResult.symbolTables;
+    }
     for (const err of semanticResult.errors) {
+      // A pass that threw on a tree the parser repaired says nothing new
+      if (recovered && err === semanticResult.failure) continue;
+      if (echoes.has(err)) continue;
       errors.push({
         message: err.message,
         line: err.line ?? 0,
@@ -1196,18 +1396,24 @@ function runPipeline(
       });
     }
   } catch (e) {
-    if (!continueOnError) {
-      errors.push({
-        message: `Semantic analysis failed: ${e instanceof Error ? e.message : String(e)}`,
-        line: 0,
-        column: 0,
-        severity: "error",
-      });
-    }
-    // In analyze mode, semantic failure is non-fatal — return whatever we have
+    // The analyzer reports a pass that throws itself; this is anything else
+    errors.push({
+      message: `Semantic analysis failed: ${e instanceof Error ? e.message : String(e)}`,
+      line: 0,
+      column: 0,
+      severity: "error",
+    });
   }
 
   errors.push(...libraryShadowErrors(ast, allArchives));
+  const primaryFile = mergedOptions.fileName ?? "main.st";
+  const refusedNames = refusedNameDeclarations(
+    ast,
+    sourcesByFile,
+    parseErrorsByFile,
+  );
+  dropEchoes(errors, earlierErrors, echoed, primaryFile, refusedNames);
+  dropEchoes(warnings, semanticWarnings, echoed, primaryFile, refusedNames);
 
   // Annotate errors/warnings with POU + section context so programmatic
   // consumers (e.g. the OpenPLC Editor) can route diagnostics to the
@@ -1229,6 +1435,7 @@ function runPipeline(
     mergedOptions,
     fbInit,
     stringDefaultLength,
+    blankedByFile,
   };
 }
 
@@ -1548,6 +1755,29 @@ export function analyze(
   options: Partial<CompileOptions> = {},
 ): AnalysisResult {
   const pipeline = runPipeline(source, options, true);
+  // Code generation finds a shared global's in-out or address use; run it
+  // when tasks may race, so the analysis gives the warnings the build would.
+  if (
+    pipeline.errors.length === 0 &&
+    pipeline.ast !== undefined &&
+    tasksMayRace(pipeline.projectModel, options.threaded === true) &&
+    mayBindSharedGlobal(pipeline.ast)
+  ) {
+    let racy: CompileError[] = [];
+    try {
+      racy = compile(source, options).warnings.filter((w) =>
+        isSharedGlobalRaceWarning(w.message),
+      );
+    } catch {
+      // Code generation failing adds nothing the analysis can report
+    }
+    annotateErrorsWithPouContext(
+      racy,
+      pipeline.ast,
+      pipeline.blankedByFile ?? new Map(),
+    );
+    pipeline.warnings.push(...racy);
+  }
 
   return {
     ...(pipeline.ast ? { ast: pipeline.ast } : {}),
