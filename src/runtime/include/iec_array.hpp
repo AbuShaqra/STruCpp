@@ -688,6 +688,40 @@ inline int64_t checked_bound(const C& c, const D& dim, const char* name, iec_sit
 
 }  // namespace detail
 
+/** The element type of an ARRAY[*] view. */
+template<typename V> struct view_element;
+template<typename T> struct view_element<ArrayView1D<T>> { using type = T; };
+template<typename T> struct view_element<ArrayView2D<T>> { using type = T; };
+
+/**
+ * The array a function block's VAR_IN_OUT ARRAY[*] view of type V refers to
+ * for the argument `arr` of type A: `arr` itself when its element type is the
+ * view's, else a copy with the view's element type that copy_back() writes
+ * back (ARRAY OF STRING(80) given to ARRAY[*] OF STRING).
+ */
+template<typename V, typename A,
+         bool Same = std::is_same<typename view_element<V>::type,
+                                  typename A::element_type>::value>
+class ViewArgument {
+    A& arr_;
+
+public:
+    explicit ViewArgument(A& arr) noexcept : arr_(arr) {}
+    A& target() noexcept { return arr_; }
+    void copy_back() noexcept {}
+};
+
+template<typename V, typename A>
+class ViewArgument<V, A, false> {
+    A& arr_;
+    array_rebind_t<A, typename view_element<V>::type> copy_;
+
+public:
+    explicit ViewArgument(A& arr) : arr_(arr) { copy_ = arr_; }
+    array_rebind_t<A, typename view_element<V>::type>& target() noexcept { return copy_; }
+    void copy_back() { arr_ = copy_; }
+};
+
 /** LOWER_BOUND(c, dim): a DIM outside 1..rank is a fault naming it, the POU, line and task. */
 template<typename C, typename D>
 inline int64_t iec_lower_bound(const C& c, const D& dim, iec_site site) {

@@ -932,6 +932,11 @@ export interface Argument extends ASTNode {
    */
   inOutCopy?: true;
   /**
+   * Set by the type checker on a variable of type T bound to a VAR_IN_OUT
+   * REFERENCE TO T: codegen binds a reference to the variable itself.
+   */
+  inOutBindsTarget?: true;
+  /**
    * Set by the type checker on `o => v` capturing a POINTER TO or REF_TO
    * output into a 64-bit integer that is a TYPE alias or subrange, or a
    * REF_TO output into any 64-bit integer: that integer's type name.
