@@ -375,7 +375,8 @@ PROGRAM Main END_PROGRAM
 `);
     const order = orderAllGlobals(ast!);
     expect(order.dependencies.get("X")).toEqual(["PROGRAM SETUP", "K"]);
-    expect(order.dependencies.get("PROGRAM SETUP")).toEqual(["K"]);
+    // A list global through VAR_EXTERNAL is no constructor argument
+    expect(order.dependencies.get("PROGRAM SETUP")).toEqual([]);
     expect(order.reads.get("X")).toContain("PROGRAM SETUP");
   });
 

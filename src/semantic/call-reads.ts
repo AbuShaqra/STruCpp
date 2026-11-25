@@ -116,6 +116,8 @@ interface Receiver {
 /** Follows what globals' creation reads through the POUs of `ast`. */
 export class CallReadTracer {
   private readonly fbs = new Map<string, FunctionBlockDeclaration>();
+  /** The CONFIGURATION (and RESOURCE) globals' names (upper-case). */
+  private readonly configurationNames: string[];
   /** Each PROGRAM as its one instance (pointer-flow.ts programAsBlock). */
   private readonly programs = new Map<string, FunctionBlockDeclaration>();
   private readonly functions = new Map<string, FunctionDeclaration>();
@@ -168,6 +170,11 @@ export class CallReadTracer {
     for (const p of ast.programs) {
       this.programs.set(p.name.toUpperCase(), programAsBlock(p));
     }
+    this.configurationNames = ast.configurations.flatMap((c) =>
+      c.varBlocks.flatMap((b) =>
+        b.declarations.flatMap((d) => d.names.map((n) => n.toUpperCase())),
+      ),
+    );
     for (const fb of ast.functionBlocks) {
       this.fbs.set(fb.name.toUpperCase(), fb);
     }
@@ -250,12 +257,16 @@ export class CallReadTracer {
       ),
       ...(reached.unresolved ? { unresolved: reached.unresolved } : {}),
     };
+    // Its constructor takes the CONFIGURATION globals of its VAR_EXTERNALs by address
+    const configured = new Set(
+      this.configurationNames.filter((n) => this.owner.has(n)),
+    );
     for (const block of program.varBlocks) {
       if (block.blockType !== "VAR_EXTERNAL") continue;
       for (const decl of block.declarations) {
         for (const name of decl.names) {
           const g = this.owner.get(name.toUpperCase());
-          if (g !== undefined) out.globals.add(g);
+          if (g !== undefined && configured.has(g)) out.globals.add(g);
         }
       }
     }

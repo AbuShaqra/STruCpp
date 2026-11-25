@@ -1170,6 +1170,40 @@ END_PROGRAM
     features: ["+fb_init", "+program_methods"],
     expected: "50",
   },
+  {
+    title:
+      "two PROGRAMs used while globals are created, one reading the other's global",
+    source: `PROGRAM PA
+VAR_EXTERNAL y : INT; END_VAR
+VAR_OUTPUT o : INT := 1; END_VAR
+o := o + y;
+END_PROGRAM
+PROGRAM PB
+VAR_OUTPUT o : INT := 10; END_VAR
+o := o + 1;
+END_PROGRAM
+FUNCTION FA : INT
+PA();
+FA := PA.o;
+END_FUNCTION
+FUNCTION FB_ : INT
+PB();
+FB_ := PB.o;
+END_FUNCTION
+VAR_GLOBAL
+  y : INT := FB_();
+  x : INT := FA();
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; y : INT; END_VAR
+VAR O1 : INT; END_VAR
+O1 := x * 100 + y;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+program_methods"],
+    expected: "1211",
+  },
 ];
 
 describe.skipIf(!hasGpp)(
