@@ -284,7 +284,7 @@ profile format and the features are in [DIALECTS.md](DIALECTS.md).
 an input file, for the feature `named_global_lists` (`<name>.var`). Without it a file's list is named by its
 stem (`lists/GVL_A.st` → `GVL_A`). `<file>` is matched against the input files by resolved path and the
 last `=` splits it from `<name>`, which must be an identifier. It works in compile, `--check` and `--test`
-mode. A malformed value, a file that is not an input, or a file given twice is a usage error (exit 2 with
+mode; a test file reaches `<name>.var` as a POU body does. A malformed value, a file that is not an input, or a file given twice is a usage error (exit 2 with
 `--check`, 1 otherwise):
 
 ```bash

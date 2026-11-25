@@ -77,7 +77,12 @@ describe.skipIf(!hasGpp)("MOD by 0 and full-width shifts — g++ e2e", () => {
     ["strict", { strict: true }],
   ] as const) {
     it(`gives 0 for MOD 0 and for a shift past the width (${label})`, () => {
-      const result = compile(SOURCE, {
+      // SHR of a signed INT is refused under iec-3 and --strict (Table 30)
+      const source =
+        label === "no dialect"
+          ? SOURCE
+          : SOURCE.replace("h9 := SHR(i, n32);", "h9 := -1;");
+      const result = compile(source, {
         ...options,
         headerFileName: "generated.hpp",
       });

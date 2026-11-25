@@ -43,8 +43,8 @@ describe("addresses into standard INT inputs", () => {
         "r := LEFT(IN := s, L := ADR(x));",
         "r := LEFT(L := ADR(x), IN := s);",
         "w := LEFT(ws, ADR(x));",
-        "n := SHL(n, ADR(x));",
-        "n := ROR(n, ADR(x));",
+        "lw := SHL(lw, ADR(x));",
+        "lw := ROR(lw, ADR(x));",
       ]) {
         it(`refuses ${call}`, () => {
           expect(errors(call, options)).toEqual([narrow("ADR")]);
@@ -66,7 +66,7 @@ describe("addresses into standard INT inputs", () => {
         expect(errors("r := LEFT(s, p);", options)).toEqual([
           ptr("POINTER TO", "INT"),
         ]);
-        expect(errors("n := SHL(n, p);", options)).toEqual([
+        expect(errors("lw := SHL(lw, p);", options)).toEqual([
           ptr("POINTER TO", "INT"),
         ]);
         expect(errors("r := MID(s, 1, rf);", options)).toEqual([

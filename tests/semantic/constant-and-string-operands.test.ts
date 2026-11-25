@@ -89,13 +89,23 @@ END_PROGRAM
 `;
   for (const [label, options] of MODES) {
     it(`takes the operand's type (${label})`, () => {
-      expect(diagnostics(source, options)).toEqual({
+      // SHL of a signed SINT is refused under iec-3 and --strict (Table 30)
+      const shl = "s2 := SHL(si + 3, 1);\n";
+      expect(diagnostics(source, options).errors).toEqual(
+        label === "default"
+          ? []
+          : [
+              "11: SHL takes a bit string (ANY_BIT, IEC 61131-3 Table 30), not SINT; convert it with SINT_TO_BYTE",
+            ],
+      );
+      const typed = label === "default" ? source : source.replace(shl, "");
+      expect(diagnostics(typed, options)).toEqual({
         errors: [],
         warnings: [],
       });
-      const r = compile(source, options);
+      const r = compile(typed, options);
       const body = r.ast!.programs[0]!.body;
-      const assigned = body[6]!;
+      const assigned = body[label === "default" ? 6 : 5]!;
       expect(assigned.kind).toBe("AssignmentStatement");
       if (assigned.kind === "AssignmentStatement") {
         expect(assigned.value.resolvedType).toMatchObject({ name: "SINT" });

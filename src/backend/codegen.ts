@@ -152,7 +152,11 @@ import {
 } from "./struct-init-codegen.js";
 import { vendorOperatorCpp } from "../semantic/vendor-operators.js";
 import { pointerReadTarget } from "../semantic/address-store.js";
-import { untypedNotCpp, untypedNotTarget } from "../semantic/untyped-not.js";
+import {
+  isUntypedIntegerConstant,
+  untypedNotCpp,
+  untypedNotTarget,
+} from "../semantic/untyped-not.js";
 import { bitPlaceOf, bitRunMemberName } from "./bit-runs.js";
 import type { StructDefinition } from "../frontend/ast.js";
 import { typeDefaultOf } from "../frontend/type-defaults.js";
@@ -508,7 +512,8 @@ const TEMPORAL_CPP: Record<
  * date-and-time is split off (in every form, Table 26), and with a long
  * (Ed. 3) form on either side the value goes through the long form's unit (ns,
  * days for LDATE): a 32-bit source widens exactly, a 32-bit target is
- * truncated to its unit and taken modulo 2^32. A duration and a date or
+ * truncated to its unit and taken modulo 2^32. A time of day and a duration
+ * convert as the time since midnight. A duration and a date or
  * date-and-time convert as the time since 1970-01-01, as the runtime's DATE
  * and DT count it (a date by whole days).
  * Undefined for any other pair.
@@ -545,7 +550,13 @@ function longTemporalConversion(
   const tk = sinceEpoch && t === "duration" ? "dt" : t;
   let long: string;
   if (fk === tk) long = value;
-  else if (fk === "dt" && tk === "date") {
+  // A time of day and a duration: the time since midnight, in ns
+  else if (
+    (fk === "tod" && tk === "duration") ||
+    (fk === "duration" && tk === "tod")
+  ) {
+    long = value;
+  } else if (fk === "dt" && tk === "date") {
     long = `iec_floor_div(${value}, ${NS_PER_DAY})`;
   } else if (f === "dt" && t === "tod") long = `TOD_NORMALIZE(${value})`;
   else if (fk === "date" && tk === "dt") long = `(${value}) * ${NS_PER_DAY}`;
@@ -682,6 +693,14 @@ export interface CodeGenResult {
 // =============================================================================
 
 /** The value range of each integer and bit string type, for literal fitting. */
+/** The bit string of each signed integer's width. */
+const SIGNED_BIT_STRING: Readonly<Record<string, string>> = {
+  SINT: "BYTE",
+  INT: "WORD",
+  DINT: "DWORD",
+  LINT: "LWORD",
+};
+
 const INTEGER_RANGES: Readonly<Record<string, readonly [bigint, bigint]>> = {
   SINT: [-128n, 127n],
   INT: [-32768n, 32767n],
@@ -2456,6 +2475,9 @@ export class CodeGenerator {
       }
     }
 
+    // A user FUNCTION called in a global initial value is declared before the globals.
+    this.emitGlobalInitFunctionPrototypes(ast);
+
     // Generate top-level global variables (GVL files). One that holds a
     // function block waits for the FB classes and late types below.
     this.emitGvlGlobals(ast, false);
@@ -2790,7 +2812,7 @@ export class CodeGenerator {
    * rule the project model applies to PROGRAMs (see `addVarExternal`).
    */
   private collectFBExternals(
-    fb: CompilationUnit["functionBlocks"][0],
+    fb: Pick<CompilationUnit["functionBlocks"][0], "varBlocks">,
   ): Array<{ name: string; typeName: string; cppType: string }> {
     const fileScopeGlobals = this.fileScopeGlobalNames();
     const externals: Array<{
@@ -3208,6 +3230,32 @@ export class CodeGenerator {
   /**
    * Generate header declaration for a function.
    */
+  /**
+   * Prototypes of the user FUNCTIONs called in an initial value of a GVL,
+   * or CONFIGURATION global, whose storage is emitted before the
+   * function declarations. A repeated declaration is legal C++.
+   */
+  private emitGlobalInitFunctionPrototypes(ast: CompilationUnit): void {
+    const blocks: VarBlock[] = [...ast.globalVarBlocks];
+    for (const config of ast.configurations) blocks.push(...config.varBlocks);
+    const called = new Set<string>();
+    for (const block of blocks) {
+      walkAST(block, (node) => {
+        if (node.kind === "FunctionCallExpression") {
+          called.add(
+            (node as FunctionCallExpression).functionName.toUpperCase(),
+          );
+        }
+      });
+    }
+    if (called.size === 0) return;
+    for (const func of ast.functions) {
+      if (called.has(func.name.toUpperCase())) {
+        this.generateFunctionHeaderDeclaration(func);
+      }
+    }
+  }
+
   private generateFunctionHeaderDeclaration(
     func: CompilationUnit["functions"][0],
   ): void {
@@ -4252,6 +4300,27 @@ export class CodeGenerator {
       this.currentFunctionResultType = func.returnType.name;
       this.enterScope(func.varBlocks, func.varBlocks);
 
+      // A VAR_EXTERNAL of a CONFIGURATION global: a local pointer to its GlobalVar, accessed like a PROGRAM's.
+      const externalDecls = this.collectFBExternals(func);
+      if (externalDecls.length > 0) {
+        const ns = this.projectModel
+          ? getProjectNamespace(this.projectModel)
+          : "strucpp";
+        for (const e of externalDecls) {
+          this.emit(
+            `    GlobalVar<${e.cppType}>* const ${e.name} = &${ns}::${globalCppName(e.name)};`,
+          );
+        }
+      }
+      this.programExternals = new Set(
+        externalDecls.map((e) => e.name.toUpperCase()),
+      );
+      this.compositeExternals = new Set(
+        externalDecls
+          .filter((e) => !isElementaryType(e.typeName))
+          .map((e) => e.name.toUpperCase()),
+      );
+
       // Declare local variables (VAR, VAR_TEMP) — same pattern as method locals
       for (const block of func.varBlocks) {
         if (block.blockType === "VAR" || block.blockType === "VAR_TEMP") {
@@ -4277,6 +4346,8 @@ export class CodeGenerator {
         this.emit("    // Empty function body");
       }
       this.exitScope();
+      this.programExternals = new Set();
+      this.compositeExternals = new Set();
       this.currentFunctionName = undefined;
       this.emit(`    return ${funcName}_result;`);
     };
@@ -4465,7 +4536,7 @@ export class CodeGenerator {
       // C++ type the same way the constructor params do (must agree).
       const extTypes = prog.varExternal.map((ext) =>
         this.mapTypeRefToCpp(
-          this.toParamTypeRef(this.projectVarToTypeRef(ext)),
+          this.byRefParamTypeRef(this.projectVarToTypeRef(ext)),
         ),
       );
       this.emitHeader("    // External variables (pointers to shared globals)");
@@ -4502,7 +4573,7 @@ export class CodeGenerator {
       const params = prog.varExternal
         .map((ext) => {
           const cppType = this.mapTypeRefToCpp(
-            this.toParamTypeRef(this.projectVarToTypeRef(ext)),
+            this.byRefParamTypeRef(this.projectVarToTypeRef(ext)),
           );
           return `GlobalVar<${cppType}>* ${ext.name}_ref`;
         })
@@ -4574,7 +4645,7 @@ export class CodeGenerator {
       const params = prog.varExternal
         .map((ext) => {
           const cppType = this.mapTypeRefToCpp(
-            this.toParamTypeRef(this.projectVarToTypeRef(ext)),
+            this.byRefParamTypeRef(this.projectVarToTypeRef(ext)),
           );
           return `GlobalVar<${cppType}>* ${ext.name}_ref`;
         })
@@ -4885,6 +4956,21 @@ export class CodeGenerator {
     return this.reachedPrograms.has(upper)
       ? this.sharedProgramInstance(upper)
       : undefined;
+  }
+
+  /**
+   * Constructor arguments of a PROGRAM instance declared outside a CONFIGURATION
+   * (a test variable): the CONFIGURATION globals its VAR_EXTERNALs reach.
+   */
+  programInstanceArgs(typeName: string): string | undefined {
+    const upper = typeName.toUpperCase();
+    const prog = this.ast?.programs.find((p) => p.name.toUpperCase() === upper);
+    if (!prog) return undefined;
+    const externals = this.collectFBExternals(prog);
+    if (externals.length === 0) return undefined;
+    return externals
+      .map((e) => `&strucpp::${globalCppName(e.name)}`)
+      .join(", ");
   }
 
   /** The reached PROGRAM `name` names when no local variable shadows it. */
@@ -8026,7 +8112,17 @@ export class CodeGenerator {
     if (expr.operator === "**") {
       // An integer power stored as an integer: exact and wrapping, never through double
       if (expr.integerPower !== undefined) {
-        return `strucpp::iec_expt<${expr.integerPower}_t>(${left}, ${right})`;
+        // An exponent that may be negative: 0 to it faults as a division by zero
+        let e = expr.right;
+        while (e.kind === "ParenthesizedExpression") e = e.expression;
+        const nonNegative =
+          e.kind === "LiteralExpression" &&
+          e.literalType === "INT" &&
+          typeof e.value === "number" &&
+          e.value >= 0;
+        return nonNegative
+          ? `strucpp::iec_expt<${expr.integerPower}_t>(${left}, ${right})`
+          : `strucpp::iec_expt<${expr.integerPower}_t>(${left}, ${right}, ${this.faultSite(expr)})`;
       }
       return `std::pow(static_cast<double>(${left}), static_cast<double>(${right}))`;
     }
@@ -8113,6 +8209,21 @@ export class CodeGenerator {
       return expr.operator === "MOD"
         ? `iec_mod(${wl}, ${wr})`
         : `iec_div(${wl}, ${wr}, ${this.faultSite(expr)})`;
+    }
+
+    // LTIME `*` or `/` a REAL: computed in double, wrapped, `/` 0 a fault (as TIME)
+    const isReal = (e: Expression): boolean => {
+      const t = this.inferExprType(e);
+      return t === "REAL" || t === "LREAL";
+    };
+    if (expr.operator === "/" && lk === "LTIME" && isReal(expr.right)) {
+      return `iec_ltime_div_real(${left}, ${right}, ${this.faultSite(expr)})`;
+    }
+    if (expr.operator === "*" && lk === "LTIME" && isReal(expr.right)) {
+      return `iec_ltime_scale(${left}, ${right})`;
+    }
+    if (expr.operator === "*" && rk === "LTIME" && isReal(expr.left)) {
+      return `iec_ltime_scale(${right}, ${left})`;
     }
 
     // LTIME `/` an LTIME or an integer that may be 0: a fault, as for integers
@@ -8557,6 +8668,82 @@ export class CodeGenerator {
   }
 
   /**
+   * The complement of an integer or bit-string `operand` in its type, cut to
+   * that type before and after `~` (C++ promotes a BYTE or WORD expression to
+   * int). Undefined for a BOOL or an operand of no known integer type.
+   */
+  private integerComplement(
+    operand: Expression,
+    operandCpp?: string,
+  ): string | undefined {
+    // An untyped constant is typed from its use (untypedNotTarget), else logical
+    if (isUntypedIntegerConstant(operand)) return undefined;
+    // Without a checked type (a test body, a STRUCT default) only a plain
+    // variable or a typed literal is typed reliably
+    let bare = operand;
+    while (bare.kind === "ParenthesizedExpression") bare = bare.expression;
+    const plain =
+      (bare.kind === "VariableExpression" &&
+        bare.fieldAccess.length === 0 &&
+        bare.subscripts.length === 0 &&
+        !bare.isDereference) ||
+      (bare.kind === "LiteralExpression" && (bare.typePrefix ?? "") !== "");
+    const type =
+      operand.resolvedType !== undefined || plain
+        ? this.elementaryAliasBase(this.inferExprType(operand))
+        : undefined;
+    if (
+      type === undefined ||
+      (INTEGER_RANGES[type] === undefined &&
+        !["BYTE", "WORD", "DWORD", "LWORD"].includes(type))
+    ) {
+      return undefined;
+    }
+    const cpp = operandCpp ?? this.generateExpression(operand);
+    return `static_cast<${type}_t>(~static_cast<${type}_t>(${cpp}))`;
+  }
+
+  /**
+   * A NOT operand the type checker did not type (a test body) and that is
+   * no untyped constant: its C++ type decides (strucpp::iec_not).
+   */
+  private uncheckedNotOperand(operand: Expression): boolean {
+    return (
+      this.isTestMainCodegen() &&
+      operand.resolvedType === undefined &&
+      !isUntypedIntegerConstant(operand)
+    );
+  }
+
+  /** True in the generator of a test main (test bodies are not type-checked). */
+  protected isTestMainCodegen(): boolean {
+    return false;
+  }
+
+  /** An elementary alias (`TYPE MyI : INT`, a subrange of one) followed to its base, upper-case. */
+  private elementaryAliasBase(name: string | undefined): string | undefined {
+    let current = name?.toUpperCase();
+    for (let i = 0; i < 16 && current !== undefined; i++) {
+      const decl = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === current,
+      );
+      const def = decl?.definition;
+      if (
+        def?.kind === "TypeReference" &&
+        (def.referenceKind ?? "none") === "none" &&
+        def.arrayDimensions === undefined
+      ) {
+        current = def.name.toUpperCase();
+      } else if (def?.kind === "SubrangeDefinition") {
+        current = def.baseType.name.toUpperCase();
+      } else {
+        return current;
+      }
+    }
+    return current;
+  }
+
+  /**
    * Generate C++ for a unary expression.
    */
   private generateUnaryExpression(expr: UnaryExpression): string {
@@ -8569,15 +8756,20 @@ export class CodeGenerator {
         if (contextType !== undefined) {
           return untypedNotCpp(contextType, operand);
         }
-        // NOT on non-BOOL ANY_BIT types must use bitwise complement (~)
-        const opType = this.inferExprType(expr.operand);
-        if (opType) {
-          const cat = getTypeCategory(opType.toUpperCase());
-          if (cat === "BIT" && opType.toUpperCase() !== "BOOL") {
-            return `~${operand}`;
-          }
+        // NOT of an integer or bit string: its complement (Table 31); of a BOOL: logical
+        const complement = this.integerComplement(expr.operand, operand);
+        if (complement !== undefined) return complement;
+        // No checked type (a test body): decided by the C++ type
+        if (this.uncheckedNotOperand(expr.operand)) {
+          return `strucpp::iec_not(${operand})`;
         }
-        return `!${operand}`;
+        // An operand typed only by inference: a bit string still complements
+        const opType = this.inferExprType(expr.operand)?.toUpperCase();
+        return opType !== undefined &&
+          opType !== "BOOL" &&
+          getTypeCategory(opType) === "BIT"
+          ? `~${operand}`
+          : `!${operand}`;
       }
       case "-": {
         // Negating a variable wraps like `0 - x`; a literal stays as written
@@ -8772,7 +8964,7 @@ export class CodeGenerator {
    * Lightweight type inference for an expression using the current scope's
    * variable type map. Returns the IEC type name (upper case) or undefined.
    */
-  private inferExprType(expr: Expression): string | undefined {
+  protected inferExprType(expr: Expression): string | undefined {
     // A 0 stored in an interface (interface_zero) is NULL, untyped like it
     if (expr.kind === "LiteralExpression" && expr.asNull === true) {
       return undefined;
@@ -9028,7 +9220,11 @@ export class CodeGenerator {
     }
     const unit = this.temporalConversionUnit(fromTypeUpper);
     if (!unit) return argExpr;
-    return unit.toUnit === undefined ? argExpr : `${unit.toUnit}(${argExpr})`;
+    if (unit.toUnit === undefined) return argExpr;
+    // An LDATE literal is a raw day count: DATE_TO_NS takes the LDATE.
+    return fromTypeUpper === "LDATE"
+      ? `${unit.toUnit}(IEC_LDATE(${argExpr}))`
+      : `${unit.toUnit}(${argExpr})`;
   }
 
   /**
@@ -9106,6 +9302,87 @@ export class CodeGenerator {
   }
 
   /**
+   * SHL/SHR/ROL/ROR of a computed bit string (`ROL(w AND 16#FF, 4)`): C++
+   * promotes it to int, so it is passed as its bit-string type, which picks
+   * the width the shift or rotation works in.
+   */
+  private castComputedShiftOperand(
+    args: string[],
+    expr: FunctionCallExpression,
+    name: string,
+  ): void {
+    const upper = name.toUpperCase();
+    if (!["SHL", "SHR", "ROL", "ROR"].includes(upper)) return;
+    const named = expr.arguments.findIndex(
+      (a) => a.name?.toUpperCase() === "IN",
+    );
+    const i =
+      named >= 0
+        ? named
+        : expr.arguments.findIndex(
+            (a) => !isEnEnoArgument(a) && a.name === undefined,
+          );
+    const arg = expr.arguments[i];
+    if (arg === undefined) return;
+    const type = this.elementaryAliasBase(this.inferExprType(arg.value));
+    // ROL/ROR of a signed integer: rotated as the bit string of its width
+    const rotated = type !== undefined ? SIGNED_BIT_STRING[type] : undefined;
+    if ((upper === "ROL" || upper === "ROR") && rotated !== undefined) {
+      args[i] =
+        `static_cast<IEC_${rotated}>(static_cast<${rotated}_t>(${args[i]}))`;
+      return;
+    }
+    // Only an operator result is promoted; a call returns its own type
+    if (
+      ![
+        "BinaryExpression",
+        "UnaryExpression",
+        "ParenthesizedExpression",
+      ].includes(arg.value.kind) ||
+      type === undefined ||
+      !["BYTE", "WORD", "DWORD", "LWORD"].includes(type)
+    ) {
+      return;
+    }
+    args[i] = `static_cast<IEC_${type}>(${args[i]})`;
+  }
+
+  /**
+   * AND/OR/XOR whose arguments are of different integer or bit-string types:
+   * every argument is passed as the call's type, which the checker gave as the
+   * infix form's (a signed and an unsigned one widen). True when cast.
+   */
+  private castBitwiseCallArgs(
+    args: string[],
+    expr: FunctionCallExpression,
+    name: string,
+  ): boolean {
+    if (!["AND", "OR", "XOR"].includes(name.toUpperCase())) return false;
+    const type = expr.resolvedType;
+    const typeName =
+      type?.typeKind === "elementary" ? typeNameUtil(type).toUpperCase() : "";
+    if (
+      INTEGER_RANGES[typeName] === undefined &&
+      !["BYTE", "WORD", "DWORD", "LWORD"].includes(typeName)
+    ) {
+      return false;
+    }
+    // Literals adapt (harmonizeStdFuncArgs): only the typed arguments decide
+    const values = expr.arguments.map((a) =>
+      isEnEnoArgument(a) || this.isBareLiteral(a.value)
+        ? undefined
+        : this.inferExprType(a.value),
+    );
+    const typed = values.filter((t): t is string => t !== undefined);
+    if (typed.every((t) => t === typeName)) return false;
+    expr.arguments.forEach((a, i) => {
+      if (isEnEnoArgument(a) || a.isOutput) return;
+      args[i] = `static_cast<IEC_${typeName}>(${args[i]})`;
+    });
+    return true;
+  }
+
+  /**
    * For std-lib template functions (like LIMIT, MAX, MIN) where all params
    * share the same generic constraint, harmonize argument types so C++ template
    * deduction succeeds. Casts literals to the dominant variable type, or widens
@@ -9131,10 +9408,12 @@ export class CodeGenerator {
       ((name === "MAX" || name === "MIN") &&
         stripEnEno([...argExprs]).length === 2);
 
-    // Infer types for all arguments
-    const argTypes: (string | undefined)[] = argExprs.map((a) =>
-      this.inferExprType(a.value),
-    );
+    // Infer types for all arguments; a generic result left unrefined (ANY)
+    // names no C++ type.
+    const argTypes: (string | undefined)[] = argExprs.map((a) => {
+      const t = this.inferExprType(a.value);
+      return t !== undefined && t.startsWith("ANY") ? undefined : t;
+    });
 
     // Separate variable types from literal types
     const varTypes: string[] = [];
@@ -9254,8 +9533,16 @@ export class CodeGenerator {
     ) {
       return;
     }
+    // A variable is an IECVar<T>; so is a literal cast to IEC_<T> above where
+    // the two arguments deduce one T (`MOD(a + 1, 5)`, `AND(d + 1, -2)`).
+    const pair = stripEnEno([...argExprs]).length === 2;
     const isVariable = argExprs.map(
-      (a) => !isEnEnoArgument(a) && a.value.kind === "VariableExpression",
+      (a, i) =>
+        !isEnEnoArgument(a) &&
+        (a.value.kind === "VariableExpression" ||
+          (pair &&
+            literalIndices.includes(i) &&
+            (args[i] ?? "").startsWith("static_cast<IEC_"))),
     );
     for (let i = 0; i < args.length && i < argExprs.length; i++) {
       if (
@@ -9497,6 +9784,26 @@ export class CodeGenerator {
         }
         return vendorOperatorCpp(expr.vendorOperator, arg);
       }
+      // MUL/DIV of a TIME or LTIME by a number: built as `*` / `/`
+      if (expr.durationOperator !== undefined) {
+        // EN/ENO are wired around the statement
+        const operands = stripEnEno(expr.arguments);
+        const named = (n: string): Expression | undefined =>
+          operands.find((a) => a.name?.toUpperCase() === n)?.value;
+        const left = named("IN1") ?? operands[0]!.value;
+        const right = named("IN2") ?? operands[1]!.value;
+        const binary: BinaryExpression = {
+          kind: "BinaryExpression",
+          operator: expr.durationOperator,
+          left,
+          right,
+          sourceSpan: expr.sourceSpan,
+          ...(expr.resolvedType !== undefined
+            ? { resolvedType: expr.resolvedType }
+            : {}),
+        };
+        return `(${this.generateExpression(binary)})`;
+      }
       // DIV_TIME(t, n) of a TIME faults on a zero divisor, as `t / n` does
       if (
         nameUpper === "DIV_TIME" &&
@@ -9538,6 +9845,19 @@ export class CodeGenerator {
           notType,
           this.generateExpression(expr.arguments[0]!.value),
         );
+      }
+      // NOT(x) of an integer or bit string: its complement in x's type, as `NOT x`
+      if (nameUpper === "NOT") {
+        const operands = stripEnEno(expr.arguments);
+        const operand = operands[0]?.value;
+        const complement =
+          operands.length === 1 && operand !== undefined
+            ? this.integerComplement(operand)
+            : undefined;
+        if (complement !== undefined) return complement;
+        if (operand !== undefined && this.uncheckedNotOperand(operand)) {
+          return `strucpp::iec_not(${this.generateExpression(operand)})`;
+        }
       }
 
       // 0. ADR(x) → &(x) (CODESYS address-of operator)
@@ -9705,7 +10025,10 @@ export class CodeGenerator {
         // code, and EN/ENO of a nested call not taken as operands.
         const charCall = this.charStdCall(stdFunc, expr, args);
         if (charCall !== undefined) return charCall;
-        this.harmonizeStdFuncArgs(args, expr.arguments, stdFunc);
+        this.castComputedShiftOperand(args, expr, stdFunc.name);
+        if (!this.castBitwiseCallArgs(args, expr, stdFunc.name)) {
+          this.harmonizeStdFuncArgs(args, expr.arguments, stdFunc);
+        }
         // TRUNC's C++ result type follows the C++ argument type, but codegen
         // emits REAL literals/expressions containing one as double.  Pass the
         // argument at its checked ST type so DINT (REAL) / LINT (LREAL) match.

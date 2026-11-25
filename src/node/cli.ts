@@ -1098,6 +1098,7 @@ function runTestMode(options: CLIOptions): void {
         result.symbolTables,
         result.ast,
         testDialect,
+        options.strict,
       );
       if (analysisResult.errors.length > 0) {
         hasTestErrors = true;

@@ -17,6 +17,21 @@ const BIT_STRINGS: ReadonlySet<string> = new Set([
 ]);
 
 /** An untyped integer constant, or NOT/AND/OR/XOR of such constants only. */
+/** NOTs typed by typeUntypedNot (an integer type set elsewhere is no target). */
+const integerTypedNots = new WeakSet<Expression>();
+
+/** Integer targets: NOT of an untyped constant there is its complement in that type. */
+const INTEGERS: ReadonlySet<string> = new Set([
+  "SINT",
+  "INT",
+  "DINT",
+  "LINT",
+  "USINT",
+  "UINT",
+  "UDINT",
+  "ULINT",
+]);
+
 export function isUntypedIntegerConstant(expr: Expression): boolean {
   switch (expr.kind) {
     case "LiteralExpression":
@@ -79,7 +94,7 @@ function selectedValues(expr: Expression): Expression[] {
  * (upper case, aliases resolved) is a bit string other than BOOL.
  */
 export function typeUntypedNot(value: Expression, target: string): void {
-  if (!BIT_STRINGS.has(target)) return;
+  if (!BIT_STRINGS.has(target) && !INTEGERS.has(target)) return;
   const type = ELEMENTARY_TYPES[target];
   if (type === undefined) return;
   const walk = (e: Expression): void => {
@@ -92,6 +107,7 @@ export function typeUntypedNot(value: Expression, target: string): void {
         const operand = notOperand(e);
         if (operand !== undefined && isUntypedIntegerConstant(operand)) {
           e.resolvedType = type;
+          integerTypedNots.add(e);
           walk(operand);
         }
         for (const v of selectedValues(e)) walk(v);
@@ -117,7 +133,9 @@ export function untypedNotTarget(expr: Expression): string | undefined {
   const t = expr.resolvedType;
   if (t?.typeKind !== "elementary" || !("name" in t)) return undefined;
   const name = String(t.name).toUpperCase();
-  return BIT_STRINGS.has(name) && isUntypedIntegerConstant(operand)
+  return (BIT_STRINGS.has(name) ||
+    (INTEGERS.has(name) && integerTypedNots.has(expr))) &&
+    isUntypedIntegerConstant(operand)
     ? name
     : undefined;
 }
