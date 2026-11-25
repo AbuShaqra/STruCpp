@@ -7682,8 +7682,21 @@ export class TypeChecker {
           ) {
             return;
           }
-          const kind = scope.lookup(e.name)?.kind;
+          const sym = scope.lookup(e.name);
+          const kind = sym?.kind;
           if (kind !== "type" && kind !== "functionBlock") return;
+          // Only a POU-level type, not one a POU's own scope declares (an
+          // accessor's property), nor a member of the block being checked
+          if (this.symbolTables.globalScope.lookup(e.name) !== sym) return;
+          if (
+            this.currentFBName !== undefined &&
+            (this.fbMemberNames(this.currentFBName)?.has(
+              e.name.toUpperCase(),
+            ) ??
+              true)
+          ) {
+            return;
+          }
           refused = true;
           this.addError(
             `'${e.name}' names a ${kind === "type" ? "type" : "function block"}, not a value`,

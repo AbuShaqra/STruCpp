@@ -473,6 +473,21 @@ END_PROGRAM
       ]);
     }
   });
+
+  it("leaves a property's name in its own accessor alone", () => {
+    const src = `FUNCTION_BLOCK FB
+VAR _speed : INT; END_VAR
+PROPERTY Speed : INT
+GET Speed := _speed; END_GET
+SET _speed := Speed; END_SET
+END_PROPERTY
+END_FUNCTION_BLOCK
+PROGRAM Main VAR fb : FB; END_VAR
+fb.Speed := 3;
+END_PROGRAM
+`;
+    expect(diagnostics(src).errors).toEqual([]);
+  });
 });
 
 describe("Table 30 MOD in STRUCT defaults and initial values", () => {
