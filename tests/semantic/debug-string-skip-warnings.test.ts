@@ -3,8 +3,9 @@
 /**
  * The "not debuggable" warnings for STRINGs the debug dispatch cannot
  * address: one per member of an array's elements (its indices written
- * `[*]`), not one per element; and for a member a library declares, advice
- * that does not ask the program to redeclare it.
+ * `[*]`), not one per element, and one per declaration reached in several
+ * places; and for a member a library declares, advice that does not ask the
+ * program to redeclare it.
  */
 import { describe, it, expect } from "vitest";
 import { compile, compileStlib, type CompileOptions } from "../../src/index.js";
@@ -34,7 +35,7 @@ const SKIP80 = (path: string): string =>
   `${path} is not debuggable: STRING without a length holds 80 characters here, but the debug dispatch addresses strings as STRING(254). Declare it as STRING(254) to expose it.`;
 
 describe("debug table: one warning per array member", () => {
-  it("warns once per STRING field of an ARRAY OF STRUCT, not once per element", () => {
+  it("warns once per STRING field of a STRUCT, not once per element or variable", () => {
     const messages = skipped(
       `TYPE ST_S : STRUCT a : STRING; b : STRING; n : INT; END_STRUCT; END_TYPE
 PROGRAM Main
@@ -43,13 +44,10 @@ END_PROGRAM
 `,
       { features: ["+string_default_80"] },
     );
+    // One per declaration, naming the first places it is reached by
     expect(messages).toEqual([
-      SKIP80("I.ARR[*].A"),
-      SKIP80("I.ARR[*].B"),
-      SKIP80("I.M[*][*].A"),
-      SKIP80("I.M[*][*].B"),
-      SKIP80("I.ONE.A"),
-      SKIP80("I.ONE.B"),
+      SKIP80("ST_S.A (in 3 places: I.ARR[*].A, I.M[*][*].A and 1 more)"),
+      SKIP80("ST_S.B (in 3 places: I.ARR[*].B, I.M[*][*].B and 1 more)"),
     ]);
   });
 

@@ -17,7 +17,7 @@ TYPE E2A : E2; END_TYPE
 TYPE SRX : INT(3..10); END_TYPE
 TYPE TS : STRING; END_TYPE
 FUNCTION_BLOCK FB
-VAR m : T; END_VAR
+VAR mv : T; END_VAR
 METHOD M : INT
 VAR ml : T2; END_VAR
   M := ml;
@@ -48,7 +48,7 @@ describe("codegen: value-initialised scalar alias variables", () => {
       "T2 X2{};",
       "TT T_{};",
       "SRX R{3};",
-      "T M{};",
+      "T MV{};",
     ]) {
       expect(h).toContain(decl);
     }

@@ -908,6 +908,8 @@ export class CodeGenerator {
 
   /** Library FB field type map: "FBNAME.FIELDNAME" → type name (for field mangling in test codegen) */
   private libraryFBFieldTypes: Map<string, string> = new Map();
+  /** `TYPE.FIELD` → field type name of a library STRUCT, for member chains (`s.f.M()`). */
+  private libraryStructFieldTypes: Map<string, string> = new Map();
 
   /** Extended type metadata for library FB fields (array dims, reference kind) */
   private libraryFBFieldTypeRefs: Map<string, LibraryFieldShape> = new Map();
@@ -1712,10 +1714,20 @@ export class CodeGenerator {
    * struct types for known-type detection). Private — use registerLibraryArchives().
    */
   private registerLibraryTypes(
-    types: Array<{ name: string; kind: string }>,
+    types: Array<{
+      name: string;
+      kind: string;
+      fields?: Array<{ name: string; type: string }>;
+    }>,
   ): void {
     for (const t of types) {
       const nameUpper = t.name.toUpperCase();
+      for (const f of t.kind === "struct" ? (t.fields ?? []) : []) {
+        this.libraryStructFieldTypes.set(
+          `${nameUpper}.${f.name.toUpperCase()}`,
+          f.type,
+        );
+      }
       if (t.kind === "enum") {
         // Members are not available in the manifest, but we only need to
         // know the type IS an enum for :: emission in generateVariableExpression
@@ -2902,7 +2914,11 @@ export class CodeGenerator {
           b.blockType === "VAR_IN_OUT" ||
           b.blockType === "VAR_OUTPUT",
       )
-      .flatMap((b) => b.declarations.flatMap((d) => d.names));
+      .flatMap((b) =>
+        b.declarations.flatMap((d) =>
+          d.names.map((n) => this.paramCppName(n, d.type.name)),
+        ),
+      );
     return `    ${returnType} ${method.name}(${this.generateMethodParamList(method)}) override { return ${owner}::${method.name}(${args.join(", ")}); }`;
   }
 
@@ -3013,6 +3029,17 @@ export class CodeGenerator {
   }
 
   /**
+   * A parameter's C++ name: `MyS_` when it is named like its user type (`MyS : MyS`),
+   * as enterScope renames it in the body; else its name.
+   */
+  private paramCppName(name: string, typeName: string): string {
+    return this.isUserDefinedType(typeName) &&
+      name.toUpperCase() === typeName.toUpperCase()
+      ? `${name}_`
+      : name;
+  }
+
+  /**
    * Generate function parameter list including VAR_INPUT and VAR_IN_OUT.
    * VAR_IN_OUT parameters are passed by reference.
    * VLA types use ArrayView instead of IECVar reference.
@@ -3025,7 +3052,9 @@ export class CodeGenerator {
       if (block.blockType === "VAR_INPUT") {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
-            params.push(`${this.mapTypeRefToCpp(decl.type)} ${name}`);
+            params.push(
+              `${this.mapTypeRefToCpp(decl.type)} ${this.paramCppName(name, decl.type.name)}`,
+            );
           }
         }
       } else if (block.blockType === "VAR_IN_OUT") {
@@ -3033,10 +3062,14 @@ export class CodeGenerator {
           for (const name of decl.names) {
             // VLA types (ArrayView) are already reference-like; others need &
             if (decl.type.name.startsWith("__VLA_")) {
-              params.push(`${this.mapTypeRefToCpp(decl.type)} ${name}`);
+              params.push(
+                `${this.mapTypeRefToCpp(decl.type)} ${this.paramCppName(name, decl.type.name)}`,
+              );
             } else {
               // A STRING(n) keeps its length: the argument binds when it has it.
-              params.push(`${this.inOutParamType(decl.type)}& ${name}`);
+              params.push(
+                `${this.inOutParamType(decl.type)}& ${this.paramCppName(name, decl.type.name)}`,
+              );
             }
           }
         }
@@ -3045,7 +3078,7 @@ export class CodeGenerator {
           for (const name of decl.names) {
             // Same metadata-aware lookup as VAR_IN_OUT — see the comment above.
             params.push(
-              `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${name}`,
+              `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${this.paramCppName(name, decl.type.name)}`,
             );
           }
         }
@@ -3413,7 +3446,9 @@ export class CodeGenerator {
       if (block.blockType === "VAR_INPUT") {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
-            params.push(`${this.mapTypeRefToCpp(decl.type)} ${name}`);
+            params.push(
+              `${this.mapTypeRefToCpp(decl.type)} ${this.paramCppName(name, decl.type.name)}`,
+            );
           }
         }
       } else if (block.blockType === "VAR_IN_OUT") {
@@ -3423,8 +3458,8 @@ export class CodeGenerator {
             // STRING(n) keeps its length: the argument binds when it has it.
             params.push(
               VLA_TYPE_NAME.test(decl.type.name)
-                ? `${this.mapTypeRefToCpp(decl.type)} ${name}`
-                : `${this.inOutParamType(decl.type)}& ${name}`,
+                ? `${this.mapTypeRefToCpp(decl.type)} ${this.paramCppName(name, decl.type.name)}`
+                : `${this.inOutParamType(decl.type)}& ${this.paramCppName(name, decl.type.name)}`,
             );
           }
         }
@@ -3432,7 +3467,7 @@ export class CodeGenerator {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
             params.push(
-              `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${name}`,
+              `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${this.paramCppName(name, decl.type.name)}`,
             );
           }
         }
@@ -5675,6 +5710,12 @@ export class CodeGenerator {
       const read = `${target.name}->read()`;
       return `${target.name}->write(static_cast<decltype(${read})>(${bit(read)}));`;
     }
+    // `fb.P.4 := v`: the property's value read, the bit set, the value written back
+    const propWrite = this.detectPropertyWrite(baseVar);
+    if (propWrite) {
+      const read = this.generateExpression(baseVar);
+      return `${propWrite.objectCode}set_${propWrite.propertyName}(static_cast<decltype(${read})>(${bit(read)}));`;
+    }
     const baseCode = this.generateLvalue(baseVar);
     return `${baseCode} = ${bit(baseCode)};`;
   }
@@ -6772,11 +6813,18 @@ export class CodeGenerator {
   private generateCallResultAccess(expr: CallResultAccessExpression): string {
     const call = this.generateExpression(expr.call);
     const resultType = expr.call.resolvedType;
+    // `FP()^...`: the steps after `^` start at the type the pointer refers to
+    const baseType =
+      resultType?.typeKind === "reference"
+        ? typeNameUtil((resultType as ReferenceType).referencedType)
+        : resultType
+          ? typeNameUtil(resultType)
+          : undefined;
     return this.generateAccessChain(
       `(${call})`,
       expr.accessChain,
       "",
-      resultType ? typeNameUtil(resultType) : undefined,
+      baseType,
       expr.namedBitIndex === true,
       expr,
     );
@@ -6968,7 +7016,9 @@ export class CodeGenerator {
     if (
       (nameUpper === "THIS" ||
         (nameUpper === "SUPER" && this.currentFBExtends !== undefined)) &&
-      expr.accessChain?.some((step) => step.kind !== "field") === true
+      (expr.accessChain?.some((step) => step.kind !== "field") === true ||
+        expr.fieldAccess.some((f) => /^\d+$/.test(f)) ||
+        expr.namedBitIndex === true)
     ) {
       return nameUpper === "THIS"
         ? this.renderAccessTail("(*this)", expr, nameUpper, this.currentFBName)
@@ -7326,12 +7376,18 @@ export class CodeGenerator {
     expr: VariableExpression,
   ): VariableExpression | undefined {
     const upper = expr.name.toUpperCase();
+    // `P.4`: a bit of the property's value
+    const bit =
+      expr.fieldAccess.length === 1 &&
+      this.bitIndexCode(expr.fieldAccess[0]!, expr.namedBitIndex) !== undefined
+        ? expr.fieldAccess[0]!
+        : undefined;
     if (
       this.currentFBName === undefined ||
-      expr.fieldAccess.length > 0 ||
+      (expr.fieldAccess.length > 0 && bit === undefined) ||
       expr.subscripts.length > 0 ||
       expr.isDereference ||
-      (expr.accessChain?.length ?? 0) > 0 ||
+      (expr.accessChain?.length ?? 0) > (bit === undefined ? 0 : 1) ||
       this.currentScopeVarTypes.has(upper) ||
       this.isCurrentFunctionResult(upper) ||
       this.currentSetterProperty === upper ||
@@ -7342,8 +7398,11 @@ export class CodeGenerator {
     return {
       ...expr,
       name: "THIS",
-      fieldAccess: [expr.name],
-      accessChain: [{ kind: "field", name: expr.name }],
+      fieldAccess: bit === undefined ? [expr.name] : [expr.name, bit],
+      accessChain: [
+        { kind: "field", name: expr.name },
+        ...(bit === undefined ? [] : [{ kind: "field" as const, name: bit }]),
+      ],
     };
   }
 
@@ -7408,7 +7467,12 @@ export class CodeGenerator {
           result = `static_cast<bool>((static_cast<uint64_t>(${result}) >> ${bit}) & 1)`;
           continue;
         }
-        if (isLast) {
+        // A property read, also when a bit of its value is read (`fb.P.4`)
+        const bitNext =
+          i === expr.fieldAccess.length - 2 &&
+          this.bitIndexCode(expr.fieldAccess[i + 1]!, expr.namedBitIndex) !==
+            undefined;
+        if (isLast || bitNext) {
           const propName = this.resolvePropertyName(currentType, field);
           if (propName) {
             result = this.propertyRead(result, currentType, propName);
@@ -7512,11 +7576,27 @@ export class CodeGenerator {
             result = `static_cast<bool>((static_cast<uint64_t>(${result}) >> ${bit}) & 1)`;
             continue;
           }
-          // Property access on the last step
-          if (isLast) {
+          // Property access on the last step, before a bit read of its value
+          // (`fb.P.4`) or before `^` on the pointer it returns (`h.P^`)
+          const next = chain[i + 1];
+          const bitNext =
+            i === chain.length - 2 &&
+            next?.kind === "field" &&
+            this.bitIndexCode(next.name, namedBit) !== undefined;
+          if (isLast || bitNext || next?.kind === "dereference") {
             const propName = this.resolvePropertyName(currentType, step.name);
             if (propName) {
-              return this.propertyRead(result, currentType, propName);
+              if (isLast) {
+                return this.propertyRead(result, currentType, propName);
+              }
+              const owner = currentType;
+              result = this.propertyRead(result, owner, propName);
+              currentType =
+                owner !== undefined
+                  ? this.propertyTypeName(owner, propName)
+                  : undefined;
+              bitOwner = currentType;
+              continue;
             }
           }
           const fieldType = this.resolveMemberType(currentType, step.name);
@@ -8266,8 +8346,7 @@ export class CodeGenerator {
         ? this.currentFBName
         : root === "SUPER" && object.fieldAccess.length > 0
           ? this.currentFBExtends
-          : (this.currentScopeVarTypes.get(root) ??
-            this.reachedProgramNamed(root));
+          : (this.rootVariableType(root) ?? this.reachedProgramNamed(root));
     const steps: AccessStep[] = object.accessChain ?? [
       ...(object.subscripts.length > 0
         ? [{ kind: "subscript" as const, indices: object.subscripts }]
@@ -8277,7 +8356,12 @@ export class CodeGenerator {
     for (const step of steps) {
       if (type === undefined) return undefined;
       if (step.kind === "field") {
-        type = this.resolveMemberType(type, step.name);
+        // `j.PJ.M()`: a PROPERTY's value is the receiver
+        type =
+          this.resolveMemberType(type, step.name) ??
+          (this.resolvePropertyName(type, step.name) !== undefined
+            ? this.propertyValueType(type, step.name)
+            : undefined);
       } else if (step.kind === "subscript") {
         type = this.ast
           ? resolveArrayElementTypeUtil(type, this.ast)
@@ -8285,6 +8369,53 @@ export class CodeGenerator {
       }
     }
     return type;
+  }
+
+  /** The plain named type of PROPERTY `prop` of FB or interface `typeName` or a base; undefined otherwise. */
+  private propertyValueType(
+    typeName: string,
+    prop: string,
+  ): string | undefined {
+    const t = this.propertyDeclType(typeName, prop);
+    return t !== undefined &&
+      t.arrayDimensions === undefined &&
+      (t.referenceKind === undefined || t.referenceKind === "none")
+      ? t.name
+      : undefined;
+  }
+
+  /** The type name of PROPERTY `prop` (a POINTER TO's target name), as resolveMemberType gives a member's. */
+  private propertyTypeName(typeName: string, prop: string): string | undefined {
+    return this.propertyDeclType(typeName, prop)?.name;
+  }
+
+  /** The declared type of PROPERTY `prop` of FB or interface `typeName` or a base. */
+  private propertyDeclType(
+    typeName: string,
+    prop: string,
+    depth = 0,
+  ): TypeReference | undefined {
+    if (!this.ast || depth > 32) return undefined;
+    const upper = typeName.toUpperCase();
+    const owner =
+      this.ast.functionBlocks.find((f) => f.name.toUpperCase() === upper) ??
+      this.ast.interfaces.find((i) => i.name.toUpperCase() === upper);
+    if (owner === undefined) return undefined;
+    const found = owner.properties.find(
+      (p) => p.name.toUpperCase() === prop.toUpperCase(),
+    );
+    if (found !== undefined) return found.type;
+    const bases =
+      owner.kind === "InterfaceDeclaration"
+        ? (owner.extends ?? [])
+        : owner.extends !== undefined
+          ? [owner.extends]
+          : [];
+    for (const base of bases) {
+      const t = this.propertyDeclType(base, prop, depth + 1);
+      if (t !== undefined) return t;
+    }
+    return undefined;
   }
 
   /** The type a method returns by value, as the owner of a call on its result; undefined otherwise. */
@@ -8944,7 +9075,8 @@ export class CodeGenerator {
             : reachedProgram !== undefined
               ? this.sharedProgramInstance(reachedProgram)
               : varType !== undefined &&
-                  this.memberMangledNames.has(prefix.toUpperCase())
+                  (this.memberMangledNames.has(prefix.toUpperCase()) ||
+                    this.varInstMangledNames.has(prefix.toUpperCase()))
                 ? instance()
                 : this.currentScopeVarRefKinds.get(prefix.toUpperCase()) ===
                     "reference_to"
@@ -9335,8 +9467,7 @@ export class CodeGenerator {
     }
     if (prefixUpper === "SUPER") return this.currentFBExtends;
     return (
-      this.currentScopeVarTypes.get(prefixUpper) ??
-      this.reachedProgramNamed(prefix)
+      this.rootVariableType(prefixUpper) ?? this.reachedProgramNamed(prefix)
     );
   }
 
@@ -9499,6 +9630,15 @@ export class CodeGenerator {
         (m) => m.name.toUpperCase() === methodUpper,
       );
       if (found) return found;
+      // An interface's bases: it may extend several
+      if (owner.kind === "InterfaceDeclaration") {
+        for (const base of owner.extends ?? []) {
+          if (seen.has(base.toUpperCase())) continue;
+          const inherited = this.findMethodDeclaration(base, methodName);
+          if (inherited) return inherited;
+        }
+        return undefined;
+      }
       current = fb?.extends?.toUpperCase();
     }
     return undefined;
@@ -10156,9 +10296,10 @@ export class CodeGenerator {
       const result = resolveFieldTypeUtil(typeName, memberName, this.ast);
       if (result) return result;
     }
-    // Fallback: check library FB field types
-    return this.libraryFBFieldTypes.get(
-      `${typeName.toUpperCase()}.${memberName.toUpperCase()}`,
+    // Fallback: check library FB field types, then library STRUCT fields
+    const key = `${typeName.toUpperCase()}.${memberName.toUpperCase()}`;
+    return (
+      this.libraryFBFieldTypes.get(key) ?? this.libraryStructFieldTypes.get(key)
     );
   }
 
@@ -10170,6 +10311,14 @@ export class CodeGenerator {
     target: Expression,
   ): { objectCode: string; propertyName: string } | undefined {
     if (target.kind !== "VariableExpression") return undefined;
+    // `h.P^ := v` writes where the property's pointer points
+    const steps = target.accessChain;
+    if (
+      target.isDereference &&
+      (steps === undefined || steps[steps.length - 1]?.kind === "dereference")
+    ) {
+      return undefined;
+    }
     const expr = this.selfPropertyAccess(target) ?? target;
     if (expr.fieldAccess.length === 0) return undefined;
 

@@ -815,9 +815,12 @@ public:
     IEC_ITF(const IEC_ITF&) = default;
     IEC_ITF& operator=(const IEC_ITF&) = default;
 
-    /** Refer to an implementing instance (`itf := fb`). */
+    /**
+     * Refer to an implementing instance (`itf := fb`). A PROPERTY getter is a
+     * const member, so its FB's own members arrive const; the instance is not.
+     */
     template<typename U, if_derived<U> = 0>
-    IEC_ITF(U& obj) noexcept : ptr_(&obj) {}
+    IEC_ITF(U& obj) noexcept : ptr_(const_cast<I*>(static_cast<const I*>(&obj))) {}
 
     /** Take the instance of a variable of an extending interface. */
     template<typename J, if_derived<J> = 0>
@@ -830,7 +833,7 @@ public:
 
     template<typename U, if_derived<U> = 0>
     IEC_ITF& operator=(U& obj) noexcept {
-        ptr_ = &obj;
+        ptr_ = const_cast<I*>(static_cast<const I*>(&obj));
         return *this;
     }
 
@@ -880,6 +883,22 @@ template<typename I, typename J>
 inline bool operator!=(const IEC_ITF<I>& a, const IEC_ITF<J>& b) noexcept {
     return !(a == b);
 }
+
+/** `itf = fb`: TRUE when the interface refers to that implementing instance. */
+template<typename I, typename U,
+         typename std::enable_if<std::is_base_of<I, U>::value, int>::type = 0>
+inline bool operator==(const IEC_ITF<I>& a, const U& obj) noexcept {
+    return detail::itf_identity(a.get()) == dynamic_cast<const void*>(&obj);
+}
+template<typename I, typename U,
+         typename std::enable_if<std::is_base_of<I, U>::value, int>::type = 0>
+inline bool operator==(const U& obj, const IEC_ITF<I>& a) noexcept { return a == obj; }
+template<typename I, typename U,
+         typename std::enable_if<std::is_base_of<I, U>::value, int>::type = 0>
+inline bool operator!=(const IEC_ITF<I>& a, const U& obj) noexcept { return !(a == obj); }
+template<typename I, typename U,
+         typename std::enable_if<std::is_base_of<I, U>::value, int>::type = 0>
+inline bool operator!=(const U& obj, const IEC_ITF<I>& a) noexcept { return !(a == obj); }
 
 template<typename I>
 inline bool operator==(std::nullptr_t, const IEC_ITF<I>& b) noexcept { return b.is_null(); }

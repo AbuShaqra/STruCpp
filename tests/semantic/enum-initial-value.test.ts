@@ -44,7 +44,7 @@ describe("initial value of an enumeration variable", () => {
     const all = compile(
       `${TYPES}VAR_GLOBAL g : E2 := E3#C; END_VAR
 FUNCTION F : INT VAR l : E2 := E3#C; END_VAR END_FUNCTION
-FUNCTION_BLOCK FB VAR m : E2 := E3#C; END_VAR
+FUNCTION_BLOCK FB VAR mv : E2 := E3#C; END_VAR
 METHOD M VAR t : E2 := E3#C; END_VAR END_METHOD
 END_FUNCTION_BLOCK
 TYPE S2 : STRUCT f : E2 := E3#C; END_STRUCT END_TYPE
