@@ -542,7 +542,10 @@ export function generateDebugTable(
       currentDecl = outer;
     }
   };
+  /** Leaves left out without a warning (a non-RETAIN file-level global). */
+  let silentSkips = false;
   const skip = (item: { path: string; reason: string }): void => {
+    if (silentSkips) return;
     skipped.push(
       currentDecl !== undefined ? { ...item, decl: currentDecl } : item,
     );
@@ -1397,14 +1400,21 @@ export function generateDebugTable(
         const key = varName.toUpperCase();
         if (seenGlobals.has(key)) continue;
         seenGlobals.add(key);
-        inDecl(key, () =>
-          visitTypeRef(
-            key,
-            globalCppName(varName),
-            decl.type,
-            applyBlockFlags(0, block),
-          ),
-        );
+        // Listed for the debugger; a leaf it cannot list is only warned about
+        // when retained, where leaving it out loses data at a power cycle.
+        silentSkips = !block.isRetain;
+        try {
+          inDecl(key, () =>
+            visitTypeRef(
+              key,
+              globalCppName(varName),
+              decl.type,
+              applyBlockFlags(0, block),
+            ),
+          );
+        } finally {
+          silentSkips = false;
+        }
       }
     }
   }

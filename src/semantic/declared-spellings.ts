@@ -42,12 +42,13 @@ export type LazySpellings = () => DeclaredSpellings;
 
 /**
  * What the pass needs of a compilation: the spellings, and whether an
- * upper-cased name is a library POU or a standard function (a message naming
- * one speaks of that POU's members, which keep their spelling).
+ * upper-cased name is a member or parameter of a library POU or standard
+ * function (also upper-cased): in a message naming that POU it keeps its
+ * spelling, the POU's and not a user declaration of that name.
  */
 export interface SpellingContext {
   spellings: LazySpellings;
-  isLibraryPou: (upper: string) => boolean;
+  isLibraryMember: (pou: string, member: string) => boolean;
 }
 
 /** The context of each compilation unit, set where it is parsed (a function does not clone with it). */
@@ -61,10 +62,18 @@ export function spellingsOf(
 }
 
 let stdRegistry: StdFunctionRegistry | undefined;
-/** A standard function (LEN, MAX…): its parameters are not the user's names. */
-function isStandardFunction(upper: string): boolean {
+/** `member` is a parameter of standard function `pou` (LEN's IN, MAX's IN1…). */
+function isStandardParameter(pou: string, member: string): boolean {
   stdRegistry ??= new StdFunctionRegistry();
-  return stdRegistry.isStandardFunction(upper);
+  if (!stdRegistry.isStandardFunction(pou)) return false;
+  const params =
+    stdRegistry.lookup(pou)?.params ??
+    stdRegistry.resolveTypedTrunc(pou)?.params ??
+    [];
+  return (
+    params.some((p) => p.name.toUpperCase() === member) ||
+    /^IN\d*$/.test(member)
+  );
 }
 
 /** `compute` run once, on the first call. */
@@ -108,6 +117,8 @@ export function declaredSpellings(
   unit: CompilationUnit,
   sources: ReadonlyMap<string, string>,
   isLibraryName: (upper: string) => boolean = () => false,
+  /** Upper-cased library POU → the upper-cased names of its members and parameters. */
+  libraryMembers: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): SpellingContext {
   const names = unitDeclaredNames(unit);
   const context: SpellingContext = {
@@ -116,7 +127,9 @@ export function declaredSpellings(
       addSpellings(names, sources, out, isLibraryName);
       return out;
     }),
-    isLibraryPou: (upper) => isLibraryName(upper) || isStandardFunction(upper),
+    isLibraryMember: (pou, member) =>
+      libraryMembers.get(pou)?.has(member) === true ||
+      isStandardParameter(pou, member),
   };
   byUnit.set(unit, context);
   return context;
@@ -139,7 +152,7 @@ export function testFileSpellings(
       }
       return out;
     }),
-    isLibraryPou: base?.isLibraryPou ?? isStandardFunction,
+    isLibraryMember: base?.isLibraryMember ?? isStandardParameter,
   };
 }
 
@@ -266,6 +279,22 @@ function writtenOnLine(
   return first;
 }
 
+/** The spelling of the last `upper` in `lineText` before `column`, if any. */
+function writtenBefore(
+  upper: string,
+  lineText: string | undefined,
+  column: number,
+): string | undefined {
+  if (lineText === undefined) return undefined;
+  const before = lineText.slice(0, Math.max(0, column - 1));
+  let found: string | undefined;
+  for (let c = 1; c <= before.length; c++) {
+    const w = writtenOnLine(upper, before, c, true);
+    if (w !== undefined) found = w;
+  }
+  return found;
+}
+
 /**
  * Each diagnostic's message with declared spellings, in place. With
  * `sources`, an undeclared name in a message of {@link NAMED_AT_POSITION} is
@@ -284,26 +313,36 @@ export function respellDiagnostics(
   const lines = sources !== undefined ? new SourceLines(sources) : undefined;
   for (const d of diagnostics) {
     const file = d.file ?? defaultFile;
-    const echo = /identifier `([A-Za-z_][A-Za-z0-9_]*)`/.exec(d.message);
-    if (echo !== null) {
+    if (/identifier `[A-Za-z_]/.test(d.message)) {
+      // A parse error echoes tokens: the one at its position, and the one before it
       const at = file !== undefined ? lines?.line(file, d.line) : undefined;
-      const written = writtenOnLine(echo[1]!, at, d.column, true);
-      if (written !== undefined) {
-        d.message = d.message.replace(
-          `identifier \`${echo[1]!}\``,
-          `identifier \`${written}\``,
-        );
-      }
+      d.message = d.message.replace(
+        /identifier `([A-Za-z_][A-Za-z0-9_]*)`/g,
+        (whole: string, name: string) => {
+          const written =
+            writtenOnLine(name, at, d.column, true) ??
+            writtenBefore(name, at, d.column);
+          return written !== undefined ? `identifier \`${written}\`` : whole;
+        },
+      );
       continue;
     }
     // Only a message quoting a name with a capital reads the spellings
     if (!/'[^'\n]*[A-Z][^'\n]*'/.test(d.message)) continue;
     const heads = quotedHeads(d.message);
-    const ofLibrary =
-      context !== undefined &&
-      heads.some((h) => h === h.toUpperCase() && context.isLibraryPou(h));
-    const spellings = ofLibrary ? undefined : context?.spellings();
+    const spellings = context?.spellings();
     const extra = new Map<string, string | null>();
+    // A member or parameter of a library POU or standard function the message
+    // names keeps that POU's spelling
+    if (context !== undefined) {
+      for (const pou of heads) {
+        for (const member of heads) {
+          if (member !== pou && context.isLibraryMember(pou, member)) {
+            extra.set(member, member);
+          }
+        }
+      }
+    }
     if (
       lines !== undefined &&
       file !== undefined &&

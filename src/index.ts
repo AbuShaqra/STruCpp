@@ -1198,19 +1198,44 @@ function runPipeline(
     markImplicitParameters(ast, implicitPragmas);
     // Before lowering, which adds names of its own: messages name them as declared.
     {
-      // The names a library declares (POUs, types, globals) keep the library's spelling
+      // The names a library declares (POUs, types, globals) keep the library's spelling,
+      // and so do the members and parameters of its POUs where a message names the POU
       const libraryNames = new Set<string>();
+      const libraryMembers = new Map<string, Set<string>>();
+      const members = (pou: string, names: Array<{ name: string }>): void => {
+        const set = libraryMembers.get(pou.toUpperCase()) ?? new Set<string>();
+        for (const n of names) set.add(n.name.toUpperCase());
+        libraryMembers.set(pou.toUpperCase(), set);
+      };
       for (const a of mergedOptions.libraries ?? []) {
+        const m = a.manifest;
         for (const d of [
-          ...a.manifest.functions,
-          ...a.manifest.functionBlocks,
-          ...a.manifest.types,
-          ...(a.manifest.globals ?? []),
+          ...m.functions,
+          ...m.functionBlocks,
+          ...m.types,
+          ...(m.globals ?? []),
         ]) {
           libraryNames.add(d.name.toUpperCase());
         }
+        for (const f of m.functions) members(f.name, f.parameters);
+        for (const fb of m.functionBlocks) {
+          members(fb.name, [
+            ...fb.inputs,
+            ...fb.outputs,
+            ...fb.inouts,
+            ...(fb.locals ?? []),
+            ...(fb.methods ?? []),
+            ...(fb.properties ?? []),
+          ]);
+        }
+        for (const t of m.types) members(t.name, t.fields ?? []);
       }
-      declaredSpellings(ast, sourcesByFile, (upper) => libraryNames.has(upper));
+      declaredSpellings(
+        ast,
+        sourcesByFile,
+        (upper) => libraryNames.has(upper),
+        libraryMembers,
+      );
     }
     // Before lowering, which adds names of its own: only names as written.
     if (iec3Rules) {

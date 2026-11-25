@@ -247,3 +247,29 @@ ${CFG}`,
     expect(r.debugTableCpp).toContain("GT_");
   });
 });
+
+describe("debug table: file-level globals it cannot list", () => {
+  it("are warned about only when RETAIN", () => {
+    const r = compile(
+      `VAR_GLOBAL
+  gp : POINTER TO INT;
+  gs : STRING(10);
+END_VAR
+VAR_GLOBAL RETAIN
+  rp : POINTER TO INT;
+END_VAR
+PROGRAM Main
+VAR x : INT; END_VAR
+x := 1;
+END_PROGRAM
+${CFG}`,
+      { libraries: libs() },
+    );
+    expect(r.errors).toEqual([]);
+    expect(
+      r.warnings.map((w) => w.message).filter((m) => m.includes("not debuggable")),
+    ).toEqual([
+      "RP is not debuggable: a POINTER TO holds an address, which the debugger cannot show or write.",
+    ]);
+  });
+});
