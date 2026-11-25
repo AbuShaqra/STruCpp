@@ -295,7 +295,7 @@ constexpr bool iec_negative(V, std::false_type) noexcept { return false; }
  * `base ** exponent` of integers whose result is an integer of type T: exact,
  * by repeated squaring in the unsigned type of T's computed width, so it wraps
  * instead of overflowing. A negative exponent gives the truncated quotient:
- * 1 for a base of 1, +/-1 for -1, otherwise 0 (0 ** -n included).
+ * 1 for a base of 1, +/-1 for -1, otherwise 0 (0 ** -n faults in the site overload below).
  */
 template<typename T, typename A, typename E>
 inline detail::iec_arith_t<T> iec_expt(const A& base, const E& exponent) noexcept {
@@ -316,6 +316,20 @@ inline detail::iec_arith_t<T> iec_expt(const A& base, const E& exponent) noexcep
         e /= 2;
     }
     return static_cast<R>(result);
+}
+
+/**
+ * iec_expt where the exponent may be negative: 0 to a negative power is a
+ * division by zero, a run-time fault naming the POU and line as for `/`.
+ */
+template<typename T, typename A, typename E>
+inline detail::iec_arith_t<T> iec_expt(const A& base, const E& exponent, iec_site site) {
+    const auto e = iec_unwrap(exponent) + 0;
+    if (detail::iec_negative(e, std::is_signed<decltype(e)>{}) &&
+        static_cast<T>(iec_unwrap(base)) == 0) {
+        iec_site_fault(IecFault::DivideByZero, "Division by zero", site);
+    }
+    return iec_expt<T>(base, exponent);
 }
 
 // =============================================================================
@@ -2097,6 +2111,35 @@ inline auto iec_temporal_div(const A& a, const N& n, iec_site site)
     return iec_unwrap(a) / d;
 }
 
+namespace detail {
+/** A REAL result in ns: truncated toward zero, modulo 2^64 (not finite: 0), as a TIME wraps modulo 2^32. */
+inline int64_t ltime_from_double(double v) noexcept {
+    if (!std::isfinite(v)) return 0;
+    const double t = std::trunc(v);
+    if (t >= -9223372036854775808.0 && t < 9223372036854775808.0) return static_cast<int64_t>(t);
+    const double two64 = 18446744073709551616.0;
+    const double m = std::fmod(t, two64);
+    const double p = m < 0 ? m + two64 : m;
+    if (p >= two64) return 0;
+    return static_cast<int64_t>(static_cast<uint64_t>(p));
+}
+}  // namespace detail
+
+/** An LTIME times a REAL or LREAL (either order): in double, truncated toward zero, modulo 2^64. */
+template<typename A, typename N>
+inline IEC_LTIME iec_ltime_scale(const A& a, const N& n) noexcept {
+    return IEC_LTIME(detail::ltime_from_double(
+        static_cast<double>(iec_unwrap(a)) * static_cast<double>(iec_unwrap(n))));
+}
+
+/** An LTIME divided by a REAL or LREAL: a zero divisor is a run-time fault, as for a TIME. */
+template<typename A, typename N>
+inline IEC_LTIME iec_ltime_div_real(const A& a, const N& n, iec_site site) {
+    const double d = static_cast<double>(iec_unwrap(n));
+    if (d == 0.0) iec_site_fault(IecFault::DivideByZero, "Division by zero", site);
+    return IEC_LTIME(detail::ltime_from_double(static_cast<double>(iec_unwrap(a)) / d));
+}
+
 /** A TIME, DATE, TOD or DT MOD an integer or a duration: unsigned 32-bit; MOD 0 gives 0. */
 template<typename A, typename N>
 inline auto iec_temporal_mod(const A& a, const N& n) -> decltype(iec_unwrap(a) % iec_unwrap(n)) {
@@ -2199,6 +2242,13 @@ inline T XOR(T a, T b) noexcept {
 template<typename T, typename... Args, enable_if_any_bit<T> = 0>
 inline T XOR(T first, T second, Args... rest) noexcept {
     return XOR(T(iec_unwrap(first) ^ iec_unwrap(second)), rest...);
+}
+
+// NOT of a signed integer keeps its logical meaning, as the operator `NOT i`
+// does: 1 for 0, else 0, in the same type.
+template<typename T, std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
+inline T NOT(T value) noexcept {
+    return T(static_cast<iec_underlying_type_t<T>>(!iec_unwrap(value)));
 }
 
 // AND/OR/XOR on a signed integer (CODESYS extension, as for SHL/SHR and the

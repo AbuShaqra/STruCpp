@@ -7962,7 +7962,17 @@ export class CodeGenerator {
     if (expr.operator === "**") {
       // An integer power stored as an integer: exact and wrapping, never through double
       if (expr.integerPower !== undefined) {
-        return `strucpp::iec_expt<${expr.integerPower}_t>(${left}, ${right})`;
+        // An exponent that may be negative: 0 to it faults as a division by zero
+        let e = expr.right;
+        while (e.kind === "ParenthesizedExpression") e = e.expression;
+        const nonNegative =
+          e.kind === "LiteralExpression" &&
+          e.literalType === "INT" &&
+          typeof e.value === "number" &&
+          e.value >= 0;
+        return nonNegative
+          ? `strucpp::iec_expt<${expr.integerPower}_t>(${left}, ${right})`
+          : `strucpp::iec_expt<${expr.integerPower}_t>(${left}, ${right}, ${this.faultSite(expr)})`;
       }
       return `std::pow(static_cast<double>(${left}), static_cast<double>(${right}))`;
     }
@@ -8049,6 +8059,21 @@ export class CodeGenerator {
       return expr.operator === "MOD"
         ? `iec_mod(${wl}, ${wr})`
         : `iec_div(${wl}, ${wr}, ${this.faultSite(expr)})`;
+    }
+
+    // LTIME `*` or `/` a REAL: computed in double, wrapped, `/` 0 a fault (as TIME)
+    const isReal = (e: Expression): boolean => {
+      const t = this.inferExprType(e);
+      return t === "REAL" || t === "LREAL";
+    };
+    if (expr.operator === "/" && lk === "LTIME" && isReal(expr.right)) {
+      return `iec_ltime_div_real(${left}, ${right}, ${this.faultSite(expr)})`;
+    }
+    if (expr.operator === "*" && lk === "LTIME" && isReal(expr.right)) {
+      return `iec_ltime_scale(${left}, ${right})`;
+    }
+    if (expr.operator === "*" && rk === "LTIME" && isReal(expr.left)) {
+      return `iec_ltime_scale(${right}, ${left})`;
     }
 
     // LTIME `/` an LTIME or an integer that may be 0: a fault, as for integers
@@ -9044,6 +9069,41 @@ export class CodeGenerator {
   }
 
   /**
+   * AND/OR/XOR whose arguments are of different integer or bit-string types:
+   * every argument is passed as the call's type, which the checker gave as the
+   * infix form's (a signed and an unsigned one widen). True when cast.
+   */
+  private castBitwiseCallArgs(
+    args: string[],
+    expr: FunctionCallExpression,
+    name: string,
+  ): boolean {
+    if (!["AND", "OR", "XOR"].includes(name.toUpperCase())) return false;
+    const type = expr.resolvedType;
+    const typeName =
+      type?.typeKind === "elementary" ? typeNameUtil(type).toUpperCase() : "";
+    if (
+      INTEGER_RANGES[typeName] === undefined &&
+      !["BYTE", "WORD", "DWORD", "LWORD"].includes(typeName)
+    ) {
+      return false;
+    }
+    // Literals adapt (harmonizeStdFuncArgs): only the typed arguments decide
+    const values = expr.arguments.map((a) =>
+      isEnEnoArgument(a) || this.isBareLiteral(a.value)
+        ? undefined
+        : this.inferExprType(a.value),
+    );
+    const typed = values.filter((t): t is string => t !== undefined);
+    if (typed.every((t) => t === typeName)) return false;
+    expr.arguments.forEach((a, i) => {
+      if (isEnEnoArgument(a) || a.isOutput) return;
+      args[i] = `static_cast<IEC_${typeName}>(${args[i]})`;
+    });
+    return true;
+  }
+
+  /**
    * For std-lib template functions (like LIMIT, MAX, MIN) where all params
    * share the same generic constraint, harmonize argument types so C++ template
    * deduction succeeds. Casts literals to the dominant variable type, or widens
@@ -9430,10 +9490,12 @@ export class CodeGenerator {
       }
       // MUL/DIV of a TIME or LTIME by a number: built as `*` / `/`
       if (expr.durationOperator !== undefined) {
+        // EN/ENO are wired around the statement
+        const operands = stripEnEno(expr.arguments);
         const named = (n: string): Expression | undefined =>
-          expr.arguments.find((a) => a.name?.toUpperCase() === n)?.value;
-        const left = named("IN1") ?? expr.arguments[0]!.value;
-        const right = named("IN2") ?? expr.arguments[1]!.value;
+          operands.find((a) => a.name?.toUpperCase() === n)?.value;
+        const left = named("IN1") ?? operands[0]!.value;
+        const right = named("IN2") ?? operands[1]!.value;
         const binary: BinaryExpression = {
           kind: "BinaryExpression",
           operator: expr.durationOperator,
@@ -9634,7 +9696,9 @@ export class CodeGenerator {
         // code, and EN/ENO of a nested call not taken as operands.
         const charCall = this.charStdCall(stdFunc, expr, args);
         if (charCall !== undefined) return charCall;
-        this.harmonizeStdFuncArgs(args, expr.arguments, stdFunc);
+        if (!this.castBitwiseCallArgs(args, expr, stdFunc.name)) {
+          this.harmonizeStdFuncArgs(args, expr.arguments, stdFunc);
+        }
         // TRUNC's C++ result type follows the C++ argument type, but codegen
         // emits REAL literals/expressions containing one as double.  Pass the
         // argument at its checked ST type so DINT (REAL) / LINT (LREAL) match.

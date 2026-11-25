@@ -63,6 +63,40 @@ lw := INT#3 ** 39;
 END_PROGRAM
 `;
 
+const MIXED = `
+PROGRAM Main
+VAR ui : UINT := 65535; i : INT := -2; d : DINT := -7; ud : UDINT := 4000000000; si : SINT := -1;
+  w : WORD := 16#F0F0; dw : DWORD := 16#0FF0FF;
+  r : ARRAY[1..7] OF LINT; s : ARRAY[1..7] OF LINT; n : INT; m : INT := 0; END_VAR
+r[1] := AND(ui, i);  s[1] := ui AND i;
+r[2] := AND(d, ud);  s[2] := d AND ud;
+r[3] := OR(d, ud);   s[3] := d OR ud;
+r[4] := XOR(ui, i, 5); s[4] := (ui XOR i) XOR 5;
+r[5] := AND(w, dw);  s[5] := w AND dw;
+r[6] := XOR(si, ui); s[6] := si XOR ui;
+r[7] := NOT(d);      s[7] := NOT d;
+n := NOT(m);
+END_PROGRAM
+`;
+
+const MIXED_MAIN = `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    for (int k = 1; k <= 7; ++k) std::cout << p.R[k].get() << "/" << p.S[k].get() << " ";
+    std::cout << p.N.get() << std::endl;
+    return 0;
+}
+`;
+
+const ZERO_POWER = `
+PROGRAM Main
+VAR z : DINT := 0; m : DINT := -1; r : DINT; END_VAR
+r := z ** m;
+END_PROGRAM
+`;
+
 const MAIN = `
 #include <iostream>
 int main() {
@@ -90,6 +124,44 @@ describe.skipIf(!hasGpp)("standard-function forms — g++ e2e", () => {
     pchPath = createPCH(tempDir);
   });
   afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  it("computes mixed-type functional AND/OR/XOR and NOT as the operators do", () => {
+    const result = compile(MIXED, { headerFileName: "generated.hpp" });
+    expect(result.errors).toEqual([]);
+    const out = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "std_function_mixed_bitwise",
+      mainCode: MIXED_MAIN,
+    });
+    expect(out).toBe(
+      "65534/65534 4000000000/4000000000 -7/-7 -65532/-65532 61680/61680 -65536/-65536 0/0 1",
+    );
+  });
+
+  it("faults on 0 to a negative power, as a division by zero", () => {
+    const result = compile(ZERO_POWER, { headerFileName: "generated.hpp" });
+    expect(result.errors).toEqual([]);
+    const out = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "std_function_zero_power",
+      mainCode: `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    try { p.run(); } catch (const std::exception& e) { std::cout << e.what(); return 0; }
+    std::cout << "no fault";
+    return 0;
+}
+`,
+    });
+    expect(out).toContain("Division by zero");
+  });
 
   it("builds and computes each form", () => {
     const result = compile(SOURCE, { headerFileName: "generated.hpp" });

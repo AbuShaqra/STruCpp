@@ -95,13 +95,96 @@ describe("an enumeration where a standard function takes a number", () => {
       );
     for (const [, options] of MODES) {
       expect(diags(src, options).errors).toEqual([
-        "4:10: Argument 'K' of 'MUX' expects INT, got E; an enumeration is not an integer: convert it with TO_INT or the like",
+        "4:10: Argument 'K' of 'MUX' expects INT, got E; an enumeration is no integer: convert it with TO_INT or the like",
       ]);
     }
   });
 });
 
+describe("an enumeration as a selector or a numeric argument (review)", () => {
+  const ENUMS =
+    "TYPE E : (a, b, c); END_TYPE\nTYPE TE : INT (x1 := 1, x2 := 2); END_TYPE\n";
+  it("refuses MUX's K and SEL's G of an enumeration once, with enumeration inputs too", () => {
+    const src =
+      ENUMS +
+      body(
+        "e : E; te : TE; i : INT; x : E;",
+        "e := MUX(e, e, E#a);\nte := MUX(e, te, te);\ni := TO_INT(MUX(e, te, te));\nx := SEL(e, x, x);\ni := SEL(e, 1, 2);",
+      );
+    const k = (at: string): string =>
+      `${at}: Argument 'K' of 'MUX' expects INT, got E; an enumeration is no integer: convert it with TO_INT or the like`;
+    const g = (at: string): string =>
+      `${at}: Argument 'G' of 'SEL' expects BOOL, got E; an enumeration is no BOOL: compare it with one of its values`;
+    for (const [, options] of MODES) {
+      expect(diags(src, options).errors).toEqual([
+        k("5:10"),
+        k("6:11"),
+        k("7:17"),
+        g("8:10"),
+        g("9:10"),
+      ]);
+    }
+  });
+  it("reports one diagnostic for an enumeration argument whose result is stored", () => {
+    const src =
+      ENUMS +
+      body(
+        "te : TE; i : INT; r : REAL;",
+        "i := ADD(te, 1);\ni := ABS(te);\ni := SHL(te, 1);\nr := EXPT(te, 2);",
+      );
+    expect(diags(src).errors).toEqual([
+      "5:10: Argument 'IN1' of 'ADD' expects ANY_NUM, got TE; an enumeration is no number: convert it with TO_INT or the like",
+      "6:10: Argument 'IN' of 'ABS' expects ANY_NUM, got TE; an enumeration is no number: convert it with TO_INT or the like",
+      "7:10: Argument 'IN' of 'SHL' expects ANY_BIT, got TE; an enumeration is no bit string: convert it with TO_INT or the like",
+      "8:11: Argument 'IN1' of 'EXPT' expects ANY_REAL, got TE; an enumeration is no number: convert it with TO_INT or the like",
+    ]);
+  });
+});
+
+describe("functional bitwise forms (review)", () => {
+  it("reports Table 31 once for a nested call under --strict", () => {
+    expect(
+      diags(body("i : INT; r : INT;", "r := AND(AND(i, 1), 2);"), {
+        strict: true,
+      }).errors,
+    ).toEqual([
+      "3:14: AND takes bit strings or BOOL (ANY_BIT, IEC 61131-3 Table 31), not INT; convert it with INT_TO_WORD or the like",
+    ]);
+  });
+  it("types mixed arguments as the infix form and warns where it narrows", () => {
+    const d = diags(
+      body(
+        "d : DINT; li : LINT; ui : UINT; i : INT; r : DINT;",
+        "d := OR(d, li);\nr := AND(ui, i);",
+      ),
+    );
+    expect(d.errors).toEqual([]);
+    expect(d.warnings).toEqual([
+      "3:6: Implicit narrowing conversion from LINT to DINT",
+    ]);
+  });
+});
+
 describe("date and time forms", () => {
+  it("warns on a number minus an L form by default", () => {
+    const d = diags(
+      body("ldt : LDT; r : LDT;", "r := 5 - ldt;\nr := ldt - 5;"),
+    );
+    expect(d.errors).toEqual([]);
+    expect(d.warnings).toEqual([
+      "3:6: INT - LDT subtracts the LDT from a number (in its unit), giving a value of type LDT; refused under iec-3 and --strict",
+    ]);
+  });
+  it("accepts MUL with EN/ENO, and refuses a bit-string factor under --strict as `t * w`", () => {
+    const src = body(
+      "t : TIME; w : WORD; ok : BOOL; b : BOOL;",
+      "t := MUL(EN := b, IN1 := t, IN2 := 2, ENO => ok);\nt := MUL(t, w);",
+    );
+    expect(diags(src).errors).toEqual([]);
+    expect(diags(src, { strict: true }).errors).toEqual([
+      "4:13: Arithmetic on WORD is not allowed; convert it to an integer type first",
+    ]);
+  });
   it("types a number + an L form as the L form; refused under iec-3 and --strict", () => {
     const src = body(
       "ldt : LDT; r : LDT; lt : LTIME; q : LTIME;",
@@ -142,7 +225,7 @@ describe("integer powers", () => {
       { headerFileName: "generated.hpp" },
     );
     expect(r.errors).toEqual([]);
-    expect(r.cppCode).toContain("strucpp::iec_expt<DINT_t>(I, -1)");
+    expect(r.cppCode).toContain("strucpp::iec_expt<DINT_t>(I, -1, strucpp::iec_site{");
     expect(r.cppCode).toContain("W = strucpp::iec_expt<DINT_t>(I, 3)");
     expect(r.cppCode).toContain("strucpp::iec_expt<LWORD_t>(");
     expect(r.cppCode).not.toContain("std::pow");
@@ -152,6 +235,51 @@ describe("integer powers", () => {
       diags(body("u : UDINT;", "u := 2 ** 3;\nu := 1 + 1;"), { strict: true })
         .errors,
     ).toEqual([]);
+  });
+});
+
+describe("a VAR_EXTERNAL STRING of another length (FUNCTION, list global)", () => {
+  it("is refused for a FUNCTION against a CONFIGURATION global", () => {
+    const src = `
+CONFIGURATION C
+VAR_GLOBAL gs : STRING; END_VAR
+RESOURCE R ON PLC
+TASK t(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM p WITH t : Main;
+END_RESOURCE
+END_CONFIGURATION
+FUNCTION F : INT
+VAR_EXTERNAL gs : STRING(5); END_VAR
+F := LEN(gs);
+END_FUNCTION
+PROGRAM Main
+END_PROGRAM
+`;
+    expect(diags(src).errors).toEqual([
+      "10:14: Type mismatch for VAR_EXTERNAL 'GS' in function 'F': expected 'STRING' but found 'STRING(5)'",
+    ]);
+  });
+  it("is refused for a PROGRAM against a list global", () => {
+    const src =
+      "VAR_GLOBAL gs : STRING; END_VAR\nPROGRAM Main\nVAR_EXTERNAL gs : STRING(5); END_VAR\nEND_PROGRAM\n";
+    expect(diags(src).errors).toEqual([
+      "3:14: Type mismatch for VAR_EXTERNAL 'GS' in program 'MAIN': expected 'STRING' but found 'STRING(5)'",
+    ]);
+  });
+});
+
+describe("constant integer powers (review)", () => {
+  it("warns when a constant power does not fit, as a constant product does", () => {
+    const d = diags(
+      body(
+        "i : INT; d : DINT; us : USINT;",
+        "i := 2 ** 15;\nd := 10 ** 10;\nus := 2 ** 3;",
+      ),
+    );
+    expect(d.warnings).toEqual([
+      "3:6: The constant expression is 32768, outside INT (-32768..32767): it wraps",
+      "4:6: The constant expression is 10000000000, outside DINT (-2147483648..2147483647): it wraps",
+    ]);
   });
 });
 
@@ -213,6 +341,34 @@ END_TEST
     const d = testFileDiags(TEST);
     expect(d.errors).toEqual([msg("9:14", "STRING")]);
     expect(d.warnings).toEqual([msg("3:14", "BOOL"), msg("8:14", "REAL")]);
+  });
+  it("refuses all three under --strict", () => {
+    const src = compile("PROGRAM P\nEND_PROGRAM\n");
+    const parsed = parseTestFile(TEST, "t.st");
+    const r = analyzeTestFile(
+      parsed.testFile!,
+      src.symbolTables!,
+      src.ast,
+      undefined,
+      true,
+    );
+    expect(r.errors.map((e) => `${e.line}:${e.column}: ${e.message}`)).toEqual([
+      msg("3:14", "BOOL"),
+      msg("8:14", "REAL"),
+      msg("9:14", "STRING"),
+    ]);
+  });
+  it("refuses an enumeration in every mode", () => {
+    const src = compile("TYPE E : (a, b); END_TYPE\nPROGRAM P\nEND_PROGRAM\n");
+    const parsed = parseTestFile(
+      "TEST 'e'\nVAR e : E; END_VAR\nADVANCE_TIME(e);\nEND_TEST\n",
+      "t.st",
+    );
+    expect(
+      analyzeTestFile(parsed.testFile!, src.symbolTables!, src.ast).errors.map(
+        (e) => `${e.line}:${e.column}: ${e.message}`,
+      ),
+    ).toEqual([msg("3:14", "E")]);
   });
   it("refuses all three under iec-3", () => {
     const d = testFileDiags(TEST, { dialect: "iec-3" });

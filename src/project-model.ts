@@ -520,6 +520,8 @@ export class ProjectModelBuilder {
 
   /** File-level VAR_GLOBALs by upper-case name — see collectFileScopeGlobals. */
   private fileScopeGlobals: Map<string, ProjectVarDeclaration> = new Map();
+  /** Each FUNCTION's VAR_EXTERNAL references to CONFIGURATION globals (validated, not in the model). */
+  private functionExternals: Map<string, VarExternalDeclaration[]> = new Map();
 
   /**
    * Build the project model from an AST.
@@ -529,6 +531,7 @@ export class ProjectModelBuilder {
     this.warnings = [];
     this.programs = new Map();
     this.functions = new Map();
+    this.functionExternals = new Map();
     this.functionBlocks = new Map();
     this.configurations = [];
     this.fileScopeGlobals = collectFileScopeGlobals(ast);
@@ -633,8 +636,20 @@ export class ProjectModelBuilder {
     }
 
     const parameters: ProjectVarDeclaration[] = [];
+    const externals: VarExternalDeclaration[] = [];
 
     for (const block of func.varBlocks) {
+      if (block.blockType === "VAR_EXTERNAL") {
+        for (const decl of block.declarations) {
+          for (const varName of decl.names) {
+            this.addVarExternal(
+              externals,
+              this.convertVarExternal(varName, decl),
+              `function '${func.name}'`,
+            );
+          }
+        }
+      }
       if (block.blockType === "VAR_INPUT") {
         for (const decl of block.declarations) {
           for (const varName of decl.names) {
@@ -649,6 +664,7 @@ export class ProjectModelBuilder {
       returnType: func.returnType.name,
       parameters,
     });
+    this.functionExternals.set(name, externals);
   }
 
   /**
@@ -1073,6 +1089,13 @@ export class ProjectModelBuilder {
         ext.sourceSpan?.startCol ?? 0,
         ext.sourceSpan?.file,
       );
+    } else if (stringLengthsDiffer(fileScope, ext)) {
+      this.addError(
+        `Type mismatch for VAR_EXTERNAL '${ext.name}' in ${ownerLabel}: expected '${stringTypeText(fileScope)}' but found '${stringTypeText(ext)}'`,
+        ext.sourceSpan?.startLine ?? 0,
+        ext.sourceSpan?.startCol ?? 0,
+        ext.sourceSpan?.file,
+      );
     }
   }
 
@@ -1114,9 +1137,8 @@ export class ProjectModelBuilder {
       }
     }
 
-    // Check every POU that may declare VAR_EXTERNAL. IEC 61131-3 allows both
-    // PROGRAMs and FUNCTION_BLOCKs to access globals this way (functions may
-    // not, so they're intentionally not checked here).
+    // Check every POU that may declare VAR_EXTERNAL: IEC 61131-3 allows
+    // PROGRAMs and FUNCTION_BLOCKs to access globals this way; FUNCTIONs below.
     for (const prog of this.programs.values()) {
       this.checkVarExternalReferences(
         prog.varExternal,
@@ -1128,6 +1150,14 @@ export class ProjectModelBuilder {
       this.checkVarExternalReferences(
         fb.varExternal,
         `function block '${fb.name}'`,
+        globalVarMap,
+      );
+    }
+    // A FUNCTION reaching a CONFIGURATION global through VAR_EXTERNAL (a vendor form) is built as a pointer to it too.
+    for (const func of this.functions.values()) {
+      this.checkVarExternalReferences(
+        this.functionExternals.get(func.name.toUpperCase()) ?? [],
+        `function '${func.name}'`,
         globalVarMap,
       );
     }

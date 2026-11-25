@@ -8864,11 +8864,14 @@ export function analyzeTestFile(
   sourceAst?: CompilationUnit,
   /** The run's dialect: its features apply in the test file too. Default: the one the test file was parsed under. */
   dialect?: ResolvedDialect,
+  /** The run is --strict: the test file's strict checks apply. */
+  strict?: boolean,
 ): { errors: CompileError[]; warnings: CompileError[] } {
   const effective = dialect ?? testFile.dialect;
-  const analyzer = new SemanticAnalyzer(
-    effective !== undefined ? { dialect: effective } : {},
-  );
+  const analyzer = new SemanticAnalyzer({
+    ...(effective !== undefined ? { dialect: effective } : {}),
+    ...(strict === true ? { strict: true } : {}),
+  });
   return analyzer.analyzeTestFile(testFile, sourceSymbolTables, sourceAst);
 }
 

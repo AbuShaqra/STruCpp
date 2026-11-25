@@ -68,6 +68,36 @@ lq := DIV(lt, z);
 END_PROGRAM
 `;
 
+const REAL_FORMS = `
+PROGRAM Main
+VAR lt : LTIME := LTIME#10ms; r : LREAL := 3.0; lq : ARRAY[1..5] OF LTIME; END_VAR
+lq[1] := MUL(lt, -1.5);
+lq[2] := r * lt;
+lq[3] := lt / 2.5;
+lq[4] := lt * 1.0E12;
+lq[5] := MUL(lt, 1.0E30);
+END_PROGRAM
+`;
+
+const REAL_FORMS_MAIN = `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    for (int i = 1; i <= 5; ++i) std::cout << p.LQ[i].get() << " ";
+    std::cout << std::endl;
+    return 0;
+}
+`;
+
+/** An LTIME divided by a REAL zero, through the function or the operator. */
+const realZero = (stmt: string): string => `
+PROGRAM Main
+VAR lt : LTIME := LTIME#10ms; rz : REAL := 0.0; lq : LTIME; END_VAR
+${stmt}
+END_PROGRAM
+`;
+
 const ZERO_MAIN = `
 #include <iostream>
 int main() {
@@ -106,6 +136,43 @@ describe.skipIf(!hasGpp)(
         "1 1 10000002 345600000000000 1000000005",
         "2500000000 3250 4000 5000000000 2000000000",
       ]);
+    });
+
+    it("computes an LTIME by a REAL in double, truncated and wrapped as a TIME is", () => {
+      const result = compile(REAL_FORMS, { headerFileName: "generated.hpp" });
+      expect(result.errors).toEqual([]);
+      const out = compileAndRunStandalone({
+        tempDir,
+        pchPath,
+        headerCode: result.headerCode,
+        cppCode: result.cppCode,
+        testName: "ltime_real_forms",
+        mainCode: REAL_FORMS_MAIN,
+      });
+      // 1E19 ns wraps modulo 2^64; 1E37 is a multiple of 2^64
+      expect(out).toBe("-15000000 30000000 4000000 -8446744073709551616 0");
+    });
+
+    it("faults on an LTIME divided by a REAL zero", () => {
+      for (const stmt of [
+        "lq := DIV(lt, rz);",
+        "lq := lt / rz;",
+        "lq := lt / 0.0;",
+      ]) {
+        const result = compile(realZero(stmt), {
+          headerFileName: "generated.hpp",
+        });
+        expect(result.errors).toEqual([]);
+        const out = compileAndRunStandalone({
+          tempDir,
+          pchPath,
+          headerCode: result.headerCode,
+          cppCode: result.cppCode,
+          testName: "ltime_real_zero",
+          mainCode: ZERO_MAIN,
+        });
+        expect(out).toContain("Division by zero");
+      }
     });
 
     it("faults on DIV of an LTIME by zero, as `/` does", () => {

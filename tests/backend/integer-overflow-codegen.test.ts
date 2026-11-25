@@ -139,7 +139,7 @@ describe("integer ** stored as an integer", () => {
     );
     expect(cpp).toContain("strucpp::iec_expt<LINT_t>(D, 40)");
     expect(cpp).toContain("strucpp::iec_expt<ULINT_t>(U2, 40)");
-    expect(cpp).toContain("strucpp::iec_expt<LINT_t>(U, D)");
+    expect(cpp).toContain("strucpp::iec_expt<LINT_t>(U, D, strucpp::iec_site{");
     expect(cpp).toContain("strucpp::iec_expt<LINT_t>(I3, 39)");
     expect(cpp).toContain("strucpp::iec_expt<DINT_t>(2, 7)");
     expect(cpp).toContain("strucpp::iec_expt<DINT_t>(D, 31)");
@@ -162,7 +162,7 @@ describe("integer ** stored as an integer", () => {
     const { cpp } = compileOk(
       program("i : DINT := 2; d : DINT;", "d := i ** -1;"),
     );
-    expect(cpp).toContain("strucpp::iec_expt<DINT_t>(I, -1)");
+    expect(cpp).toContain("strucpp::iec_expt<DINT_t>(I, -1, strucpp::iec_site{");
     expect(cpp).not.toContain("std::pow");
   });
 });
