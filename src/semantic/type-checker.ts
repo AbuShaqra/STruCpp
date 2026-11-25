@@ -1863,8 +1863,10 @@ export class TypeChecker {
     ) {
       this.checkCharInitialValue(type.name, value);
       this.checkEnumInitialValue(type.name, value);
-      // An array or structure initializer's element that does not fit
-      this.warnConstantOverflow(this.resolveNamedType(type.name), value);
+      // An array or structure initializer's element: fit and real powers
+      const elementType = this.resolveNamedType(type.name);
+      this.warnConstantOverflow(elementType, value);
+      if (this.isRealTarget(elementType)) this.markRealPowers(value);
     }
     if (
       value.kind !== "StructInitializerExpression" ||
@@ -2698,6 +2700,11 @@ export class TypeChecker {
 
     if (this.refuseStringOperands(expr, leftType, rightType, scope)) {
       return undefined;
+    }
+    // `lrv < 2 ** 40 / 3`, `x + 2 ** 40 / 3`: beside a REAL, a power is real
+    if (expr.operator !== "**") {
+      if (this.isRealTarget(leftType)) this.markRealPowers(expr.right);
+      if (this.isRealTarget(rightType)) this.markRealPowers(expr.left);
     }
 
     if (
@@ -4517,6 +4524,11 @@ export class TypeChecker {
     }
     this.refuseNarrowAddressArguments(expr, scope);
     this.refuseBitMemberArguments(expr, scope);
+    // `MAX(2 ** 40 / 3, 1.0)`: a REAL compared value makes the others real
+    const compared = this.realPowerOperands(expr);
+    if (compared?.some((a) => this.isRealTarget(a.resolvedType)) === true) {
+      for (const a of compared) this.markRealPowers(a);
+    }
     this.checkCharStdArguments(expr, scope);
     this.checkStringStdArguments(expr, scope);
     this.adaptCharConversionArgument(expr);
@@ -8086,9 +8098,52 @@ export class TypeChecker {
           this.markRealPowers(value.right);
         }
         return;
+      case "FunctionCallExpression":
+        for (const a of this.realPowerOperands(value) ?? []) {
+          this.markRealPowers(a);
+        }
+        return;
       default:
         return;
     }
+  }
+
+  /**
+   * The values a standard generic function returns one of or computes from
+   * (MAX, MIN, LIMIT, SEL and MUX past the selector, ABS, ADD, SUB, MUL,
+   * DIV, MOVE): they take the result's type. Undefined for any other call.
+   */
+  private realPowerOperands(
+    call: FunctionCallExpression,
+  ): Expression[] | undefined {
+    if (
+      call.instance !== undefined ||
+      this.findUserFunction(call.functionName)
+    ) {
+      return undefined;
+    }
+    const name = call.functionName.toUpperCase();
+    const skip =
+      name === "SEL" || name === "MUX"
+        ? 1
+        : [
+              "MAX",
+              "MIN",
+              "LIMIT",
+              "ABS",
+              "ADD",
+              "SUB",
+              "MUL",
+              "DIV",
+              "MOVE",
+            ].includes(name)
+          ? 0
+          : undefined;
+    if (skip === undefined) return undefined;
+    return stripEnEno(call.arguments)
+      .filter((a) => !a.isOutput)
+      .slice(skip)
+      .map((a) => a.value);
   }
 
   /** The wider of the integer types `target` and `own` (`target` on a tie); DINT when both are narrower. */

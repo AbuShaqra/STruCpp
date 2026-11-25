@@ -8,6 +8,10 @@
  * computed in that width too (`l : LINT := d ** 30 * 4 + 1`). A constant
  * power that is not stored in a REAL stays exact wherever it appears: a
  * comparison, a call argument, a STRUCT field, FB input or global default.
+ * In a real context it is a real power, as `**` is EXPT (IEC 61131-3 Ed. 3
+ * Table 71 note b, Table 29 note f): a REAL target, a REAL array or STRUCT
+ * initializer element (nested ones too), beside a REAL operand, and in a
+ * MAX, MIN, LIMIT, SEL, MUX or ABS with a REAL argument or target.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -97,6 +101,53 @@ int main() {
 }
 `;
 
+const REAL_CONTEXTS = `
+TYPE ST2 : STRUCT v : LREAL; END_STRUCT END_TYPE
+TYPE SD : STRUCT
+  arr : ARRAY[1..2] OF LREAL := [2 ** 20 / 3, 2 ** 40 / 3];
+  sub : ST2 := (v := 2 ** 20 / 3);
+END_STRUCT END_TYPE
+VAR_GLOBAL garr : ARRAY[1..2] OF LREAL := [2 ** 20 / 3, 2 ** 40 / 3]; gs : ST2 := (v := 2 ** 40 / 3); END_VAR
+FUNCTION_BLOCK FB1
+VAR_INPUT a : ARRAY[1..2] OF LREAL := [2 ** 40 / 3, 1]; END_VAR
+VAR_OUTPUT o : LREAL; END_VAR
+o := a[1];
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR
+  s : SD; fb : FB1; ls : ST2 := (v := 2 ** 40 / 3);
+  lsa : ARRAY[1..2] OF ST2 := [(v := 2 ** 40 / 3), (v := 2 ** 20 / 3)];
+  lrv : LREAL := 366503875925.3; l : LINT;
+  f : ARRAY[1..14] OF LREAL; b : ARRAY[1..3] OF BOOL;
+END_VAR
+fb();
+f[1] := s.arr[2]; f[2] := s.sub.v; f[3] := garr[2]; f[4] := gs.v; f[5] := ls.v;
+f[6] := lsa[1].v; f[7] := fb.o;
+f[8] := MAX(2 ** 40 / 3, 1.0);
+f[9] := LIMIT(0.0, 2 ** 40 / 3, 1.0E15);
+f[10] := ABS(2 ** 40 / 3);
+f[11] := 2.0 * (2 ** 40 / 3);
+f[12] := MAX(2 ** 40 / 3, 1);
+f[13] := LINT_TO_LREAL(2 ** 40 / 3);
+l := MAX(2 ** 40 / 3, 5); f[14] := LINT_TO_LREAL(l);
+b[1] := lrv < 2 ** 40 / 3;
+b[2] := 2 ** 40 / 3 = 366503875925;
+b[3] := (2 ** 40 / 3) > 366503875925.0;
+END_PROGRAM
+`;
+
+const REAL_CONTEXTS_MAIN = `
+#include <cstdio>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    for (int i = 1; i <= 14; ++i) std::printf("%.3f ", p.F[i].get());
+    for (int i = 1; i <= 3; ++i) std::printf("%d ", (int)p.B[i].get());
+    std::printf("\\n");
+    return 0;
+}
+`;
+
 describe("integer power width — codegen", () => {
   it("folds a power only where it is stored as an integer", () => {
     const result = compile(SOURCE);
@@ -143,6 +194,36 @@ describe.skipIf(!hasGpp)("integer power width — g++ e2e", () => {
         `${(p40 / 3).toFixed(3)} ${(p20 / 3).toFixed(3)} ${(p40 + 1).toFixed(3)} ${((p40 * 3) / 2).toFixed(3)} `,
         `${2 ** 32 + 1} ${2 ** 31 + 1} ${-p40} ${(p20 - 1) * p20} 366503875925 -1474836480`,
       ].join("|"),
+    );
+  });
+
+  it("computes a power as real in a real context", () => {
+    const result = compile(REAL_CONTEXTS, { headerFileName: "generated.hpp" });
+    expect(result.errors).toEqual([]);
+    const out = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "integer_power_real_contexts",
+      mainCode: REAL_CONTEXTS_MAIN,
+    });
+    const third = (2 ** 40 / 3).toFixed(3);
+    expect(out).toBe(
+      [
+        third,
+        (2 ** 20 / 3).toFixed(3),
+        ...Array<string>(8).fill(third),
+        ((2 * 2 ** 40) / 3).toFixed(3),
+        third,
+        // an integer context: LINT_TO_LREAL's input, a LINT target
+        "366503875925.000",
+        "366503875925.000",
+        // REAL beside, integer comparison, REAL beside
+        "1",
+        "1",
+        "1",
+      ].join(" "),
     );
   });
 
