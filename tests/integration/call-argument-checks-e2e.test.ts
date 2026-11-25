@@ -254,4 +254,25 @@ END_PROGRAM
     );
     expect(stdout).toBe("111111");
   });
+
+  it("starts every element of a large ARRAY of a defaulted type at the default", () => {
+    const { stdout } = run(
+      `TYPE E1 : (A1, B1, C1) := B1; END_TYPE
+TYPE AL2 : E1 := C1; END_TYPE
+TYPE AI : INT := 7; END_TYPE
+TYPE S : STRUCT m : ARRAY[0..1, 0..2] OF AL2; n : ARRAY[0..9999] OF AI; END_STRUCT END_TYPE
+VAR_GLOBAL g : ARRAY[1..3] OF AI; END_VAR
+FUNCTION_BLOCK FB VAR_OUTPUT o : ARRAY[0..2] OF AI; END_VAR END_FUNCTION_BLOCK
+PROGRAM Main
+VAR b : ARRAY[0..9999] OF AL2; c : ARRAY[0..1, 0..1, 0..1] OF AI; s : S; fb : FB; r : DINT; END_VAR
+IF b[9999] = E1#C1 AND b[0] = E1#C1 THEN r := 1; END_IF
+r := r + c[1, 1, 1] * 10 + s.n[9999] * 100 + g[3] * 1000 + fb.o[2] * 10000;
+IF s.m[1, 2] = E1#C1 THEN r := r + 100000; END_IF
+END_PROGRAM
+`,
+      "p.R",
+      "argchecks_array_fill",
+    );
+    expect(stdout).toBe("177771");
+  });
 });

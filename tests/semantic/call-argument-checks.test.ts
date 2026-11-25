@@ -549,3 +549,57 @@ END_PROGRAM
     expect(diagnostics(src).errors).toEqual([]);
   });
 });
+
+describe("a user enumeration value a library enumeration also has, outside that enumeration", () => {
+  it("keeps the user enumeration's type, refused into an INT as before", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: "TYPE LColor : (Red, Green, Blue); END_TYPE",
+          fileName: "c.st",
+        },
+      ],
+      { name: "lcolor", version: "1.0.0", namespace: "lcolor" },
+    );
+    expect(lib.errors).toEqual([]);
+    const libs = [
+      ...LIBS,
+      loadStlibArchive(JSON.parse(JSON.stringify(lib.archive))),
+    ];
+    const src = `TYPE U1 : (Red := 20, Pink); END_TYPE
+PROGRAM Main
+VAR i : INT := Red; j : INT; END_VAR
+j := Red;
+END_PROGRAM
+`;
+    for (const options of [{}, IEC, STRICT]) {
+      expect(diagnostics(src, options, libs).errors).toEqual([
+        "3: Cannot assign U1 to INT",
+        "4: Cannot assign U1 to INT",
+      ]);
+    }
+  });
+});
+
+describe("a problem in the default an ARRAY's elements take", () => {
+  it("is reported once, not once per element", () => {
+    const src = `TYPE TA : TIME := LTIME#3s; END_TYPE
+TYPE AI : INT := 70000; END_TYPE
+TYPE S : STRUCT f : ARRAY[0..2] OF TA; END_STRUCT END_TYPE
+PROGRAM Main
+VAR a : ARRAY[0..2] OF TA; c : ARRAY[0..999] OF AI; s : S; END_VAR
+END_PROGRAM
+`;
+    const ltime =
+      "1: Cannot assign LTIME to TA without a conversion; use LTIME_TO_TIME";
+    const wrap =
+      "2: The constant expression is 70000, outside INT (-32768..32767): it wraps";
+    expect(diagnostics(src)).toEqual({ errors: [], warnings: [ltime, wrap] });
+    for (const options of [IEC, STRICT]) {
+      expect(diagnostics(src, options)).toEqual({
+        errors: [ltime],
+        warnings: [wrap],
+      });
+    }
+  });
+});

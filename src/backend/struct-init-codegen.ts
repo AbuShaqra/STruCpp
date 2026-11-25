@@ -100,6 +100,10 @@ export function generateInitializerValue(
         depth,
       ),
     );
+    // One value for every element (an ARRAY of a type with a default)
+    if (value.fill === true && elements.length === 1) {
+      return `{strucpp::iec_fill(${elements[0]})}`;
+    }
     return `{${elements.join(", ")}}`;
   }
 

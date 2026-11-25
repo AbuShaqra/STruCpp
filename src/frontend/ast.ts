@@ -1068,6 +1068,11 @@ export interface NewExpression extends TypedNode {
 export interface ArrayLiteralExpression extends TypedNode {
   kind: "ArrayLiteralExpression";
   elements: Expression[];
+  /**
+   * Set on the initializer an ARRAY of a type with a default gets: its one
+   * element is the value of every element of the array (`iec_fill`).
+   */
+  fill?: true;
 }
 
 /**

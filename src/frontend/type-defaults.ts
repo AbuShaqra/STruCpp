@@ -92,12 +92,10 @@ export function applyTypeDefaults(
   });
 }
 
-/** Most elements an ARRAY gets its element type's default for, one by one. */
-const MAX_DEFAULTED_ELEMENTS = 4096;
-
 /**
  * An inline ARRAY of a type with a default (`ARRAY[0..1] OF AL2`): every
- * element starts at that default. Undefined for other arrays.
+ * element starts at that default, given once (`fill`). Undefined for other
+ * arrays.
  */
 function arrayOfDefaults(
   decl: VarDeclaration,
@@ -111,17 +109,15 @@ function arrayOfDefaults(
   ) {
     return undefined;
   }
+  // Up to three dimensions: a deeper array nests arrays of arrays
+  if ((t.arrayDimensions?.length ?? 0) > 3) return undefined;
   const element = resolveDefault(t.elementTypeName, defaults, aliasTargets);
   if (element === undefined) return undefined;
-  let count = 1;
-  for (const d of t.arrayDimensions ?? []) {
-    count *= d.end - d.start + 1;
-    if (!(count > 0) || count > MAX_DEFAULTED_ELEMENTS) return undefined;
-  }
   return {
     kind: "ArrayLiteralExpression",
     sourceSpan: decl.sourceSpan,
-    elements: Array.from({ length: count }, () => element),
+    elements: [element],
+    fill: true,
   };
 }
 

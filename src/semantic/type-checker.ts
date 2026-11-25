@@ -2029,6 +2029,7 @@ export class TypeChecker {
    */
   private checkEnumInitialValue(typeName: string, value: Expression): void {
     if (this.typeDefaults.has(value)) return;
+    this.settleLibraryEnumValue(value, typeName);
     const target = this.symbolTables.lookupType(typeName)?.resolvedType;
     if (target?.typeKind !== "enum") return;
     const fail = (message: string): void =>
@@ -2348,28 +2349,7 @@ export class TypeChecker {
           (m) => m.name.toUpperCase() === expr.name.toUpperCase(),
         ),
     );
-    // A value a library enumeration also has: its type follows its context
-    // (the analyzer settles `c : LColor := Red`), so none here
-    if (owners.length === 1 && this.isLibraryEnumValueName(expr.name)) {
-      return undefined;
-    }
     return owners.length === 1 ? enumNamed(owners[0]!.name) : undefined;
-  }
-
-  /** `name` is a value of a library enumeration. */
-  private isLibraryEnumValueName(name: string): boolean {
-    const upper = name.toUpperCase();
-    return this.symbolTables.globalScope
-      .getAllSymbols()
-      .some(
-        (sym) =>
-          sym.kind === "type" &&
-          sym.resolvedType?.typeKind === "enum" &&
-          this.symbolTables.globalScope.definedByLibrary(sym.name) &&
-          (sym.resolvedType as EnumType).values.some(
-            (v) => v.toUpperCase() === upper,
-          ),
-      );
   }
 
   /**
@@ -7787,6 +7767,68 @@ export class TypeChecker {
     return refused;
   }
 
+  /**
+   * A bare value of a library enumeration `typeName` is (through aliases),
+   * stored there, that an enumeration of the sources also has (`c : LColor
+   * := Red` beside a user `Red`): it is the library enumeration's.
+   */
+  private settleLibraryEnumValue(
+    value: Expression,
+    typeName: string | undefined,
+  ): void {
+    if (
+      typeName === undefined ||
+      value.kind !== "VariableExpression" ||
+      value.enumType !== undefined ||
+      value.fieldAccess.length > 0 ||
+      value.subscripts.length > 0 ||
+      value.isDereference ||
+      (value.accessChain?.length ?? 0) > 0
+    ) {
+      return;
+    }
+    const upper = value.name.toUpperCase();
+    let current = typeName.toUpperCase();
+    for (let depth = 0; depth < 32; depth++) {
+      const sym = this.symbolTables.lookupType(current);
+      if (sym === undefined) return;
+      if (sym.resolvedType?.typeKind === "enum") {
+        const type = sym.resolvedType as EnumType;
+        if (
+          this.symbolTables.globalScope.definedByLibrary(type.name) &&
+          type.values.some((v) => v.toUpperCase() === upper)
+        ) {
+          value.enumType = type.name;
+        }
+        return;
+      }
+      const def = sym.declaration?.definition;
+      if (
+        def?.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        def.referenceKind !== "none" ||
+        def.name.toUpperCase() === current
+      ) {
+        return;
+      }
+      current = def.name.toUpperCase();
+    }
+  }
+
+  /** The declared type name of a plain variable `target` (no member access); undefined otherwise. */
+  private declaredTypeNameOf(
+    target: Expression,
+    scope: Scope,
+  ): string | undefined {
+    if (target.kind !== "VariableExpression" || this.hasMemberAccess(target)) {
+      return undefined;
+    }
+    const sym = scope.lookup(target.name);
+    return sym?.kind === "variable"
+      ? (sym.declaration as VarDeclaration | undefined)?.type.name
+      : undefined;
+  }
+
   /** `name` is a value of an enumeration of this compile or a library. */
   private isEnumValueName(name: string): boolean {
     const upper = name.toUpperCase();
@@ -7827,6 +7869,10 @@ export class TypeChecker {
     switch (stmt.kind) {
       case "AssignmentStatement": {
         if (this.refuseTypeAsValue(stmt.value, scope)) break;
+        this.settleLibraryEnumValue(
+          stmt.value,
+          this.declaredTypeNameOf(stmt.target, scope),
+        );
         let targetType = this.resolveExprType(stmt.target, scope);
         const valueType = this.resolveExprType(stmt.value, scope);
         this.refuseMisalignedPointerStore(
