@@ -130,11 +130,14 @@ import {
   resolveAccessType,
   resolveArrayElementAccessType,
   resolveFieldDeclaration as resolveFieldDeclarationUtil,
+  undeclaredFbAncestor,
   type AccessLookup,
   resolveArrayElementType as resolveArrayElementTypeUtil,
   resolveArrayShapeByName,
   typeName as typeNameUtil,
   buildEnumMemberMap,
+  sourceNamesOverLibraryEnums,
+  withLibraryEnumMembers,
   type EnumMemberEntry,
   typeNamesHeldByTypeDefinition,
   typeNamesHeldByValue,
@@ -144,7 +147,9 @@ import {
   enumBehindAlias,
 } from "../semantic/type-utils.js";
 import {
+  arrayElementCppType,
   generateInitializerValue,
+  headInitializerCpp,
   isStructInitializerValue,
   type StructInitEmitter,
 } from "./struct-init-codegen.js";
@@ -973,6 +978,14 @@ export class CodeGenerator {
   private libraryFBFieldTypes: Map<string, string> = new Map();
   /** `TYPE.FIELD` → field type name of a library STRUCT, for member chains (`s.f.M()`). */
   private libraryStructFieldTypes: Map<string, string> = new Map();
+  /** Upper-cased names of the types library manifests declare. */
+  private libraryTypeNames: Set<string> = new Set();
+  /** Upper-cased names of library enumerations (aliases of one included). */
+  private libraryEnumTypeNames: Set<string> = new Set();
+  /** Each library alias TYPE's base, upper-cased. */
+  private libraryAliasBases: Map<string, string> = new Map();
+  /** Library enumerations whose manifest records their values. */
+  private libraryEnums: Array<{ name: string; members: string[] }> = [];
 
   /** Extended type metadata for library FB fields (array dims, reference kind) */
   private libraryFBFieldTypeRefs: Map<string, LibraryFieldShape> = new Map();
@@ -1064,6 +1077,89 @@ export class CodeGenerator {
     archive: StlibArchive;
     reachable: Set<string>;
   }> = [];
+
+  /**
+   * `<archive>/<chunk>` of each library TYPE whose dependencies, transitively,
+   * are library types only, over every registered archive: such a type can
+   * be emitted ahead of this compile's types, so a type holding it is not late.
+   */
+  private earlyCapableLibraryChunks: Set<string> = new Set();
+  /** Upper-cased names of the types in `earlyCapableLibraryChunks`. */
+  private earlyCapableLibraryTypes: Set<string> = new Set();
+  /** The reachable early-capable chunks in dependency order (computed for the header). */
+  private earlyLibraryTypeOrder: Array<{
+    archive: StlibArchive;
+    chunk: LibraryChunk;
+  }> = [];
+  /** `<archive>/<chunk>` of the chunks in `earlyLibraryTypeOrder`. */
+  private earlyLibraryTypeChunks: Set<string> = new Set();
+
+  /** Fill `earlyCapableLibraryChunks` from the archives' chunks. */
+  private collectEarlyCapableLibraryTypes(archives: StlibArchive[]): void {
+    const chunks = new Map<string, LibraryChunk>();
+    for (const archive of archives) {
+      for (const c of archive.chunks ?? []) {
+        chunks.set(`${archive.manifest.name}/${c.name}`, c);
+      }
+    }
+    const verdict = new Map<string, boolean>();
+    const typesOnly = (key: string, depth: number): boolean => {
+      const known = verdict.get(key);
+      if (known !== undefined) return known;
+      const chunk = chunks.get(key);
+      if (chunk === undefined || chunk.kind !== "type" || depth > 64) {
+        return false;
+      }
+      verdict.set(key, false); // a cycle is not early
+      const ok = chunk.deps.every((d) =>
+        typesOnly(`${d.library}/${d.name}`, depth + 1),
+      );
+      verdict.set(key, ok);
+      return ok;
+    };
+    for (const archive of archives) {
+      for (const c of archive.chunks ?? []) {
+        const key = `${archive.manifest.name}/${c.name}`;
+        if (typesOnly(key, 0)) {
+          this.earlyCapableLibraryChunks.add(key);
+          this.earlyCapableLibraryTypes.add(c.name.toUpperCase());
+        }
+      }
+    }
+  }
+
+  /**
+   * Order the reachable early-capable chunks so each follows the chunks it
+   * depends on, across libraries too; ties keep archive and chunk order.
+   */
+  private orderEarlyLibraryTypeChunks(): void {
+    const byKey = new Map<
+      string,
+      { archive: StlibArchive; chunk: LibraryChunk }
+    >();
+    for (const { archive, reachable } of this.libraryEmissions) {
+      for (const chunk of archive.chunks ?? []) {
+        const key = `${archive.manifest.name}/${chunk.name}`;
+        if (
+          reachable.has(chunk.name) &&
+          chunk.header.length > 0 &&
+          this.earlyCapableLibraryChunks.has(key)
+        ) {
+          byKey.set(key, { archive, chunk });
+        }
+      }
+    }
+    const done = new Set<string>();
+    const visit = (key: string): void => {
+      const entry = byKey.get(key);
+      if (entry === undefined || done.has(key)) return;
+      done.add(key);
+      for (const d of entry.chunk.deps) visit(`${d.library}/${d.name}`);
+      this.earlyLibraryTypeOrder.push(entry);
+      this.earlyLibraryTypeChunks.add(key);
+    };
+    for (const key of byKey.keys()) visit(key);
+  }
 
   /** Map of UPPER(fbTypeName) → ordered VAR_INPUT parameter names (UPPER case).
    *  Used to resolve positional arguments in FB invocations. */
@@ -1826,6 +1922,8 @@ export class CodeGenerator {
       name: string;
       kind: string;
       fields?: Array<{ name: string; type: string }>;
+      members?: Array<{ name: string }>;
+      baseType?: string;
     }>,
   ): void {
     for (const t of types) {
@@ -1836,14 +1934,28 @@ export class CodeGenerator {
           f.type,
         );
       }
+      if (t.kind === "alias" && typeof t.baseType === "string") {
+        this.libraryAliasBases.set(nameUpper, t.baseType.toUpperCase());
+      }
       if (t.kind === "enum") {
-        // Members are not available in the manifest, but we only need to
-        // know the type IS an enum for :: emission in generateVariableExpression
+        this.libraryEnumTypeNames.add(nameUpper);
+        // Older archives record no members; knowing the type IS an enum is
+        // enough for :: emission in generateVariableExpression
+        const members = Array.isArray(t.members)
+          ? t.members.map((m) => m.name)
+          : [];
         if (!this.enumTypeMembers.has(nameUpper)) {
-          this.enumTypeMembers.set(nameUpper, new Set());
+          this.enumTypeMembers.set(
+            nameUpper,
+            new Set(members.map((m) => m.toUpperCase())),
+          );
+          if (members.length > 0) {
+            this.libraryEnums.push({ name: t.name, members });
+          }
         }
       }
       this.knownStructTypes.add(nameUpper);
+      this.libraryTypeNames.add(nameUpper);
     }
   }
 
@@ -1852,6 +1964,7 @@ export class CodeGenerator {
    * Single entry point used by both compile() and generateTestMain().
    */
   registerLibraryArchives(archives: StlibArchive[]): void {
+    this.collectEarlyCapableLibraryTypes(archives);
     for (const archive of archives) {
       const stringDefault = archive.manifest.stringDefaultLength;
       for (const fn of archive.manifest.functions) {
@@ -1910,6 +2023,56 @@ export class CodeGenerator {
       );
       if (archive.manifest.types) {
         this.registerLibraryTypes(archive.manifest.types);
+      }
+    }
+    this.inheritLibraryInOuts();
+    this.aliasLibraryEnums();
+  }
+
+  /** A library alias of a library enumeration is an enumeration of its members. */
+  private aliasLibraryEnums(): void {
+    for (const alias of this.libraryAliasBases.keys()) {
+      let current: string | undefined = alias;
+      for (let depth = 0; current !== undefined && depth < 32; depth++) {
+        if (this.libraryEnumTypeNames.has(current) && current !== alias) {
+          this.libraryEnumTypeNames.add(alias);
+          this.enumTypeMembers.set(
+            alias,
+            new Set(this.enumTypeMembers.get(current) ?? []),
+          );
+          break;
+        }
+        current = this.libraryAliasBases.get(current);
+      }
+    }
+  }
+
+  /**
+   * A library block's in/outs include those it inherits from its library
+   * bases (the manifest lists a block's own), with their member types.
+   */
+  private inheritLibraryInOuts(): void {
+    for (const [fb, base] of this.libraryFBExtends) {
+      const seen = new Set<string>([fb]);
+      let current: string | undefined = base;
+      while (current !== undefined && !seen.has(current)) {
+        seen.add(current);
+        for (const name of this.fbInoutParams.get(current) ?? []) {
+          const own = this.fbInoutParams.get(fb) ?? new Set<string>();
+          if (own.has(name)) continue;
+          own.add(name);
+          this.fbInoutParams.set(fb, own);
+          if (this.legacyInOutFBs.has(current)) this.legacyInOutFBs.add(fb);
+          const type = this.libraryFBFieldTypes.get(`${current}.${name}`);
+          if (type !== undefined) {
+            this.libraryFBFieldTypes.set(`${fb}.${name}`, type);
+          }
+          const shape = this.libraryFBFieldTypeRefs.get(`${current}.${name}`);
+          if (shape !== undefined) {
+            this.libraryFBFieldTypeRefs.set(`${fb}.${name}`, shape);
+          }
+        }
+        current = this.libraryFBExtends.get(current);
       }
     }
   }
@@ -2155,7 +2318,39 @@ export class CodeGenerator {
         }
       }
     }
-    this.enumMemberToType = buildEnumMemberMap(enumDescriptors);
+    // A library's enumerations, unless this compile declares the name; their
+    // values only where no name of the sources is one
+    const ownTypes = new Set(ast.types.map((t) => t.name.toUpperCase()));
+    // An alias of a library enumeration (`TYPE A : LColor`), through aliases
+    const aliasOf = new Map(
+      ast.types.flatMap((t) =>
+        t.definition.kind === "TypeReference" &&
+        t.definition.arrayDimensions === undefined &&
+        (t.definition.referenceKind ?? "none") === "none"
+          ? [[t.name.toUpperCase(), t.definition.name.toUpperCase()]]
+          : [],
+      ),
+    );
+    for (const td of ast.types) {
+      let name = aliasOf.get(td.name.toUpperCase());
+      for (let depth = 0; name !== undefined && depth < 32; depth++) {
+        if (!ownTypes.has(name)) {
+          const members = this.libraryEnumTypeNames.has(name)
+            ? this.enumTypeMembers.get(name)
+            : undefined;
+          if (members !== undefined) {
+            this.enumTypeMembers.set(td.name.toUpperCase(), new Set(members));
+          }
+          break;
+        }
+        name = aliasOf.get(name);
+      }
+    }
+    this.enumMemberToType = withLibraryEnumMembers(
+      buildEnumMemberMap(enumDescriptors),
+      this.libraryEnums.filter((e) => !ownTypes.has(e.name.toUpperCase())),
+      sourceNamesOverLibraryEnums(ast),
+    );
 
     // Register program names as types (CODESYS allows instantiating PROGRAMs like FBs)
     for (const prog of ast.programs) {
@@ -2167,8 +2362,15 @@ export class CodeGenerator {
     // sorted and emitted with the FB classes; a late ARRAY or alias is a
     // `using` that instantiates nothing and stays with the other types, where
     // method and interface signatures can name it.
-    this.lateTypeNames = typesHoldingFunctionBlocks(ast.types, (name) =>
-      this.knownFBTypes.has(name),
+    // A STRUCT holding a library type by value is late too, unless that type
+    // needs only library types: those are emitted before this compile's.
+    this.lateTypeNames = typesHoldingFunctionBlocks(
+      ast.types,
+      (name) =>
+        this.knownFBTypes.has(name) ||
+        (this.libraryTypeNames.has(name) &&
+          !ownTypes.has(name) &&
+          !this.earlyCapableLibraryTypes.has(name)),
     );
 
     // Topologically sort FBs and late structs once (used in both header and
@@ -2327,6 +2529,8 @@ export class CodeGenerator {
       this.emitHeader("");
     }
 
+    this.orderEarlyLibraryTypeChunks();
+
     // Forward-declare the POU classes before the user-defined types.
     //
     // A TYPE may name a function block — `AccumGrid : ARRAY[0..1,0..1] OF Accum`
@@ -2347,6 +2551,19 @@ export class CodeGenerator {
     for (const name of lateStructs) this.emitHeader(`struct ${name};`);
     if (lateStructs.length > 0) this.emitHeader("");
 
+    // A library's types that need no FB, function or global come before
+    // this compile's: a TYPE of the sources may alias one (`TYPE A : LColor`)
+    let earlyArchive: string | undefined;
+    for (const { archive, chunk } of this.earlyLibraryTypeOrder) {
+      if (archive.manifest.name !== earlyArchive) {
+        if (earlyArchive !== undefined) this.emitHeader("");
+        earlyArchive = archive.manifest.name;
+        this.emitHeader(`// Library: ${archive.manifest.name}`);
+      }
+      for (const line of chunk.header.split("\n")) this.emitHeader(line);
+    }
+    if (earlyArchive !== undefined) this.emitHeader("");
+
     // Generate user-defined types (Phase 2.2). Late structs wait for the FB
     // classes below; the enum lookups cover all types.
     const typeCodeGen = new TypeCodeGenerator({
@@ -2359,6 +2576,12 @@ export class CodeGenerator {
       shadowingNames: this.shadowingNames(),
       isInterfaceType: (t): boolean => this.isInterfaceType(t),
       callToCpp: (call): string => this.generateExpression(call),
+      libraryEnumNames: new Set(
+        [...this.libraryTypeNames].filter(
+          (n) =>
+            this.enumTypeMembers.has(n) && this.libraryEnumTypeNames.has(n),
+        ),
+      ),
     });
     if (ast.types.length > 0) {
       const lateStructNames = new Set(lateStructs.map((n) => n.toUpperCase()));
@@ -2398,6 +2621,14 @@ export class CodeGenerator {
       const reachableChunks: LibraryChunk[] = [];
       for (const chunk of archive.chunks ?? []) {
         if (chunk.header.length === 0) continue;
+        // Emitted before this compile's types
+        if (
+          this.earlyLibraryTypeChunks.has(
+            `${archive.manifest.name}/${chunk.name}`,
+          )
+        ) {
+          continue;
+        }
         if (reachable.has(chunk.name)) reachableChunks.push(chunk);
       }
       if (reachableChunks.length === 0) continue;
@@ -2647,10 +2878,16 @@ export class CodeGenerator {
     ast: CompilationUnit,
   ): NonNullable<typeof this.globalPlan> {
     if (this.globalPlan?.ast === ast) return this.globalPlan;
+    // A library type (emitted after this compile's types) counts as late too.
+    const ownTypes = new Set(ast.types.map((t) => t.name.toUpperCase()));
     const holdsFB = (typeRef: TypeReference): boolean =>
       typeNamesHeldByValue(typeRef).some((n) => {
         const upper = n.toUpperCase();
-        return this.knownFBTypes.has(upper) || this.lateTypeNames.has(upper);
+        return (
+          this.knownFBTypes.has(upper) ||
+          this.lateTypeNames.has(upper) ||
+          (this.libraryTypeNames.has(upper) && !ownTypes.has(upper))
+        );
       });
     const { order, dependencies, configurationOf } = orderAllGlobals(ast);
     const segment = new Map<string, number>();
@@ -6699,12 +6936,22 @@ export class CodeGenerator {
         ? resolveFieldDeclarationUtil(type, field, this.ast)
         : undefined;
       if (local) return local;
-      // A library function block: its member types come from the manifest.
-      const key = `${type.toUpperCase()}.${field.toUpperCase()}`;
-      const name = this.libraryFBFieldTypes.get(key);
-      if (name === undefined) return undefined;
-      const kind = this.libraryFBFieldTypeRefs.get(key)?.referenceKind;
-      return { type: { name, referenceKind: kind ?? "none" } };
+      // A library function block (or the one a block declared here extends)
+      // and its bases: member types come from the manifest.
+      let owner: string | undefined = (
+        (this.ast && undeclaredFbAncestor(type, this.ast)) ??
+        type
+      ).toUpperCase();
+      for (let depth = 0; owner !== undefined && depth < 32; depth++) {
+        const key = `${owner}.${field.toUpperCase()}`;
+        const name = this.libraryFBFieldTypes.get(key);
+        if (name !== undefined) {
+          const kind = this.libraryFBFieldTypeRefs.get(key)?.referenceKind;
+          return { type: { name, referenceKind: kind ?? "none" } };
+        }
+        owner = this.libraryFBExtends.get(owner);
+      }
+      return undefined;
     },
     arrayElement: (type) =>
       this.ast ? resolveArrayElementAccessType(type, this.ast) : undefined,
@@ -7108,6 +7355,15 @@ export class CodeGenerator {
       }
       case "ArrayLiteralExpression": {
         const elements = expr.elements.map((e) => this.generateExpression(e));
+        // One value for every element (an ARRAY of a type with a default)
+        if (expr.fill === true && elements.length === 1) {
+          return `{strucpp::iec_fill(${elements[0]})}`;
+        }
+        // The given values, then the element type's default for the rest
+        if (expr.fillRest !== undefined) {
+          const rest = this.generateExpression(expr.fillRest);
+          return headInitializerCpp(undefined, rest, elements);
+        }
         return `{${elements.join(", ")}}`;
       }
       case "StructInitializerExpression":
@@ -7474,6 +7730,8 @@ export class CodeGenerator {
     if (
       enumEntry?.typeName &&
       !this.currentScopeVarTypes.has(nameUpper) &&
+      // A library's global the checker read the name as
+      expr.libraryGlobal !== true &&
       !this.isCurrentFunctionResult(nameUpper) &&
       // In a SET body the property's name is the value being set.
       this.currentSetterProperty !== nameUpper &&
@@ -8274,7 +8532,9 @@ export class CodeGenerator {
         : undefined;
     }
     const literal = literalTemporalType(e);
-    if (literal !== undefined && e.resolvedType === undefined) return literal;
+    if (literal !== undefined && e.resolvedType === undefined) {
+      return canonicalElementaryName(literal);
+    }
     let t = e.resolvedType;
     if (t?.typeKind === "reference") t = (t as ReferenceType).referencedType;
     let name: string | undefined =
@@ -9855,6 +10115,17 @@ export class CodeGenerator {
           ) {
             return this.addressAsInteger(from, generated);
           }
+          // `LTIME_TO_DINT(t)` of a TIME: the argument becomes the X first
+          const actual = this.temporalBase(arg.value)?.toUpperCase();
+          const asFrom =
+            actual !== undefined &&
+            canonicalElementaryName(actual) !== canonicalElementaryName(from)
+              ? longTemporalConversion(
+                  generated,
+                  canonicalElementaryName(actual),
+                  canonicalElementaryName(from),
+                )
+              : undefined;
           // Type-aware unit scaling, in whichever direction applies — a
           // temporal source going to an integer, or an integer going into a
           // temporal target. See `TEMPORAL_CONVERSION_UNITS` for the units and
@@ -9868,8 +10139,8 @@ export class CodeGenerator {
           // `static_cast<uint16_t>(raw_ns)` and the user sees the low 16 bits of
           // a nanosecond count.
           return this.scaleConversionArg(
-            generated,
-            conversion.fromType.toUpperCase(),
+            asFrom ?? generated,
+            from,
             conversion.toType.toUpperCase(),
           );
         });
@@ -11847,7 +12118,20 @@ export class CodeGenerator {
       for (const arg of filteredArgs) {
         if (arg.name && arg.isOutput) {
           const member = `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`;
-          const source = kindOf(arg.name) === "ref" ? `(*${member})` : member;
+          let source = kindOf(arg.name) === "ref" ? `(*${member})` : member;
+          // An LTIME output captured into a TIME: converted, as by LTIME_TO_TIME
+          const out =
+            fbTypeName === undefined
+              ? undefined
+              : this.accessLookup.field(fbTypeName, arg.name)?.type;
+          if (
+            out !== undefined &&
+            (out.referenceKind ?? "none") === "none" &&
+            this.elementaryThroughAliases(out.name) === "LTIME" &&
+            this.temporalBase(arg.value) === "TIME"
+          ) {
+            source = `LTIME_TO_TIME_VALUE(static_cast<int64_t>(${source}))`;
+          }
           this.emitCaptureToLvalue(
             arg.value,
             arg.addressInto === undefined
@@ -12662,6 +12946,19 @@ export class CodeGenerator {
       value.literalType === "NULL"
     ) {
       return `${cppType}()`;
+    }
+    // `[1, 2]` for an ARRAY of a type with a default: typed by the array's elements
+    if (
+      value.kind === "ArrayLiteralExpression" &&
+      value.fillRest !== undefined &&
+      cppType !== "" &&
+      !isStructInitializerValue(value)
+    ) {
+      return headInitializerCpp(
+        arrayElementCppType(cppType),
+        this.generateExpression(value.fillRest),
+        value.elements.map((e) => this.generateExpression(e)),
+      );
     }
     if (!isStructInitializerValue(value)) {
       return this.generateExpression(value);

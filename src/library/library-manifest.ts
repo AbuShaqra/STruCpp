@@ -27,6 +27,10 @@ export interface LibraryFunctionEntry {
   name: string;
   /** Return type name (concrete IEC type or generic — see above) */
   returnType: string;
+  /** Length of a STRING(n) / WSTRING(n) result; absent in older archives. */
+  returnMaxLength?: number | string;
+  /** A POINTER TO or REF_TO result (`returnType` is its target); absent in older archives. */
+  returnReferenceKind?: "pointer_to" | "ref_to";
   /** Parameter list */
   parameters: Array<{
     name: string;
@@ -276,13 +280,44 @@ export interface LibraryTypeEntry {
   /** The target of an alias of a single-level POINTER TO (`TYPE PINT : POINTER
    *  TO INT`); absent in older archives. */
   pointerTarget?: string;
+  /** The target of an alias of a single-level REF_TO (`TYPE RINT : REF_TO
+   *  INT`); absent in older archives. */
+  refTarget?: string;
+  /** The shape of an alias of an ARRAY (`TYPE A : ARRAY[1..3] OF INT`):
+   *  constant bounds and element type; absent in older archives. */
+  arrayDimensions?: Array<{ start: number; end: number }>;
+  /** Element type of an ARRAY alias (see `arrayDimensions`). */
+  elementTypeName?: string;
+  /** Length of an ARRAY alias's STRING(n) / WSTRING(n) element. */
+  elementMaxLength?: number | string;
+  /** The values of an enumeration in declaration order, each with its
+   *  explicit integer value when written; absent in older archives. */
+  members?: Array<{ name: string; value?: number }>;
+  /** The value an enumeration declares as its default (`:= T2`); absent
+   *  without one and in older archives. */
+  defaultMember?: string;
+  /** The default an alias TYPE declares (`TYPE T : INT := 5`), as ST text;
+   *  absent without one and in older archives. */
+  defaultValue?: string;
   /** Length of an alias of STRING(n) / WSTRING(n) (`baseType` STRING / WSTRING). */
   maxLength?: number | string;
   /** Struct member fields (name + declared type), so a consuming compilation
    *  can type member access on a dependency struct (e.g. `MATH.PI`). Only set
    *  for `kind: "struct"` and `kind: "union"`; optional for backward compatibility.
-   *  `maxLength` is a STRING(n) / WSTRING(n) field's length, absent in older archives. */
-  fields?: Array<{ name: string; type: string; maxLength?: number | string }>;
+   *  `maxLength` is a STRING(n) / WSTRING(n) field's length; the ARRAY and
+   *  reference shape of a field is recorded as for an FB member. Both are
+   *  absent in older archives. */
+  fields?: Array<
+    { name: string; type: string; maxLength?: number | string } & Pick<
+      LibraryVarType,
+      | "arrayDimensions"
+      | "elementTypeName"
+      | "elementReferenceChain"
+      | "elementMaxLength"
+      | "referenceKind"
+      | "referenceChain"
+    >
+  >;
   /** Type-level help text — same lifecycle as `LibraryFBEntry.documentation`,
    *  populated automatically from the structured doc-block slot in CODESYS
    *  imports (typically the type's revision-history comment for OSCAT) and
@@ -352,6 +387,10 @@ export interface LibraryManifest {
   description?: string;
   /** C++ namespace for the library */
   namespace: string;
+  /** The ST name that qualifies the library's POUs, types, globals and
+   *  enumerations (`NS.F()`, feature library_namespaces). Absent in older
+   *  archives: the name with each non-identifier character as `_`. */
+  stNamespace?: string;
   /** Exported functions */
   functions: LibraryFunctionEntry[];
   /** Exported function blocks */

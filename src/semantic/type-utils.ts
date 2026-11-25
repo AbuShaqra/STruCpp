@@ -541,6 +541,29 @@ export function getCommonType(a: IECType, b: IECType): IECType | undefined {
 /**
  * The declaration of a struct, FB or program member, looked up in the AST.
  */
+/**
+ * The first EXTENDS ancestor of function block `typeName` (declared in `ast`)
+ * that `ast` does not declare: a library block it extends. Undefined when
+ * `typeName` is not declared here or its whole chain is.
+ */
+export function undeclaredFbAncestor(
+  typeName: string,
+  ast: CompilationUnit,
+): string | undefined {
+  const seen = new Set<string>();
+  let current: string | undefined = typeName.toUpperCase();
+  let declared = false;
+  while (current !== undefined && !seen.has(current)) {
+    seen.add(current);
+    const upper: string = current;
+    const fb = ast.functionBlocks.find((f) => f.name.toUpperCase() === upper);
+    if (!fb) return declared ? upper : undefined;
+    declared = true;
+    current = fb.extends?.toUpperCase();
+  }
+  return undefined;
+}
+
 export function resolveFieldDeclaration(
   typeName: string,
   fieldName: string,
@@ -970,6 +993,61 @@ export function typeName(type: IECType): string {
 export interface EnumMemberEntry {
   typeName: string | null;
   conflictingTypes: string[];
+}
+
+/**
+ * `own` (the map of this compile's enumerations) with the members of library
+ * enumerations added: only those no name of `taken` (this compile's
+ * declarations and enumeration members) is, each member ambiguous only among
+ * the libraries that declare it. A declaration of the sources always wins.
+ */
+export function withLibraryEnumMembers(
+  own: Map<string, EnumMemberEntry>,
+  libraryEnums: Iterable<{ name: string; members: string[] }>,
+  taken: ReadonlySet<string>,
+): Map<string, EnumMemberEntry> {
+  const library = buildEnumMemberMap(
+    [...libraryEnums].map((e) => ({
+      name: e.name,
+      members: e.members.filter(
+        (m) => !taken.has(m.toUpperCase()) && !own.has(m.toUpperCase()),
+      ),
+    })),
+  );
+  const merged = new Map(own);
+  for (const [name, entry] of library) merged.set(name, entry);
+  return merged;
+}
+
+/**
+ * Upper-cased names a compile declares that a library enumeration value must
+ * not take: globals (CONFIGURATION ones included), POUs, types and the values
+ * of its own enumerations.
+ */
+export function sourceNamesOverLibraryEnums(ast: CompilationUnit): Set<string> {
+  const names = new Set<string>();
+  for (const d of [
+    ...ast.programs,
+    ...ast.functions,
+    ...ast.functionBlocks,
+    ...ast.interfaces,
+    ...ast.types,
+  ]) {
+    names.add(d.name.toUpperCase());
+  }
+  for (const t of ast.types) {
+    if (t.definition.kind !== "EnumDefinition") continue;
+    for (const m of t.definition.members) names.add(m.name.toUpperCase());
+  }
+  for (const b of [
+    ...ast.globalVarBlocks,
+    ...ast.configurations.flatMap((c) => c.varBlocks),
+  ]) {
+    for (const d of b.declarations) {
+      for (const n of d.names) names.add(n.toUpperCase());
+    }
+  }
+  return names;
 }
 
 /**

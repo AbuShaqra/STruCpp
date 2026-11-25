@@ -19,6 +19,9 @@ import type { CompileError } from "../types.js";
 import { resolveDialect } from "../dialect.js";
 import { defaultStringLength } from "../semantic/string-default-length.js";
 import { buildChunks } from "./library-chunks.js";
+import { isLtimeConstantExpression } from "../semantic/type-checker.js";
+import { enumDefaultName } from "../backend/type-codegen.js";
+import { stNamespaceOfName } from "../semantic/library-namespaces.js";
 import type { MemberManglingContext } from "../backend/member-mangling.js";
 import {
   mangledMemberName,
@@ -40,6 +43,9 @@ import type {
   LibraryVarType,
 } from "./library-manifest.js";
 import type {
+  ArrayDefinition,
+  CompilationUnit,
+  EnumDefinition,
   Expression,
   FunctionBlockDeclaration,
   MethodDeclaration,
@@ -58,7 +64,11 @@ import type {
  * cover them. Returns undefined for anything it can't faithfully render, so the
  * caller omits the field rather than emit a wrong default.
  */
-function serializeInitialValue(expr: Expression): string | undefined {
+function serializeInitialValue(
+  expr: Expression,
+  /** The text a bare name stands for (a constant's value); the name otherwise. */
+  constant?: (name: string) => string | undefined,
+): string | undefined {
   switch (expr.kind) {
     case "LiteralExpression":
       return expr.rawValue;
@@ -67,22 +77,22 @@ function serializeInitialValue(expr: Expression): string | undefined {
       return expr.subscripts.length === 0 &&
         expr.fieldAccess.length === 0 &&
         !expr.isDereference
-        ? expr.name
+        ? (constant?.(expr.name) ?? expr.name)
         : undefined;
     case "UnaryExpression": {
-      const operand = serializeInitialValue(expr.operand);
+      const operand = serializeInitialValue(expr.operand, constant);
       if (operand === undefined) return undefined;
       return expr.operator === "NOT"
         ? `NOT ${operand}`
         : `${expr.operator}${operand}`;
     }
     case "ParenthesizedExpression": {
-      const inner = serializeInitialValue(expr.expression);
+      const inner = serializeInitialValue(expr.expression, constant);
       return inner === undefined ? undefined : `(${inner})`;
     }
     case "BinaryExpression": {
-      const left = serializeInitialValue(expr.left);
-      const right = serializeInitialValue(expr.right);
+      const left = serializeInitialValue(expr.left, constant);
+      const right = serializeInitialValue(expr.right, constant);
       return left === undefined || right === undefined
         ? undefined
         : `${left} ${expr.operator} ${right}`;
@@ -235,7 +245,10 @@ function byReferenceStringLength(
  */
 function aliasBase(
   def: TypeDeclaration["definition"],
-): Pick<LibraryTypeEntry, "baseType" | "maxLength" | "pointerTarget"> {
+): Pick<
+  LibraryTypeEntry,
+  "baseType" | "maxLength" | "pointerTarget" | "refTarget"
+> {
   if (def.kind !== "TypeReference") return {};
   if (def.arrayDimensions !== undefined || def.referenceChain !== undefined) {
     return {};
@@ -248,12 +261,200 @@ function aliasBase(
       ...(maxLength !== undefined ? { maxLength } : {}),
     };
   }
+  if (def.referenceKind === "ref_to") {
+    // A single-level REF_TO alias: its target, as for a POINTER TO.
+    const { maxLength } = writtenStringLengths(def);
+    return {
+      refTarget: def.name,
+      ...(maxLength !== undefined ? { maxLength } : {}),
+    };
+  }
   if (def.referenceKind !== "none") return {};
   const { maxLength } = writtenStringLengths(def);
   return {
     baseType: def.name,
     ...(maxLength !== undefined ? { maxLength } : {}),
   };
+}
+
+/**
+ * The value of the library's VAR_GLOBAL CONSTANT `name` as ST text, in
+ * parentheses, so a consumer's names cannot capture it; undefined otherwise.
+ */
+function libraryConstantText(
+  name: string,
+  ast: CompilationUnit,
+  depth: number,
+): string | undefined {
+  if (depth > 16) return undefined;
+  const upper = name.toUpperCase();
+  for (const block of ast.globalVarBlocks) {
+    if (!block.isConstant) continue;
+    for (const decl of block.declarations) {
+      if (!decl.names.some((n) => n.toUpperCase() === upper)) continue;
+      if (decl.initialValue === undefined) return undefined;
+      const text = serializeInitialValue(decl.initialValue, (n) =>
+        libraryConstantText(n, ast, depth + 1),
+      );
+      return text === undefined ? undefined : `(${text})`;
+    }
+  }
+  return undefined;
+}
+
+/** The elementary type a chain of the library's aliases from `name` ends at, upper-cased. */
+function aliasElementary(name: string, ast: CompilationUnit): string {
+  let current = name.toUpperCase();
+  for (let depth = 0; depth < 32; depth++) {
+    const upper = current;
+    const t = ast.types.find((x) => x.name.toUpperCase() === upper);
+    if (t?.definition.kind !== "TypeReference") return upper;
+    current = t.definition.name.toUpperCase();
+  }
+  return current;
+}
+
+/**
+ * The default of an alias of an enumeration (`TYPE LEB : LEA := Q2`) as the
+ * typed value `LEA#Q2`, so a consumer reads it whatever its own names are;
+ * undefined for any other alias or default.
+ */
+function enumAliasDefault(
+  base: string,
+  value: Expression,
+  ast: CompilationUnit,
+): string | undefined {
+  let enumType: TypeDeclaration | undefined;
+  let current = base.toUpperCase();
+  for (let depth = 0; depth < 32 && enumType === undefined; depth++) {
+    const upper = current;
+    const t = ast.types.find((x) => x.name.toUpperCase() === upper);
+    if (t === undefined) return undefined;
+    if (t.definition.kind === "EnumDefinition") enumType = t;
+    else if (t.definition.kind === "TypeReference")
+      current = t.definition.name.toUpperCase();
+    else return undefined;
+  }
+  if (enumType === undefined || value.kind !== "VariableExpression") {
+    return undefined;
+  }
+  const member =
+    value.fieldAccess.length === 0
+      ? value.name
+      : value.fieldAccess.length === 1
+        ? value.fieldAccess[0]
+        : undefined;
+  return member !== undefined && value.subscripts.length === 0
+    ? `${enumType.name}#${member}`
+    : undefined;
+}
+
+/** The STRING length and reference kind of a FUNCTION result, for the manifest. */
+function returnShape(
+  type: TypeReference,
+): Pick<LibraryFunctionEntry, "returnMaxLength" | "returnReferenceKind"> {
+  const { maxLength } = writtenStringLengths(type);
+  const kind = type.referenceChain === undefined ? type.referenceKind : "none";
+  return {
+    ...(maxLength !== undefined ? { returnMaxLength: maxLength } : {}),
+    ...(kind === "pointer_to" || kind === "ref_to"
+      ? { returnReferenceKind: kind }
+      : {}),
+  };
+}
+
+/** An integer constant written as a literal, signed or not; undefined otherwise. */
+function integerLiteralValue(expr: Expression): number | undefined {
+  let e = expr;
+  while (e.kind === "ParenthesizedExpression") e = e.expression;
+  if (
+    e.kind === "UnaryExpression" &&
+    (e.operator === "-" || e.operator === "+")
+  ) {
+    const inner = integerLiteralValue(e.operand);
+    return inner === undefined
+      ? undefined
+      : e.operator === "-"
+        ? -inner
+        : inner;
+  }
+  if (e.kind !== "LiteralExpression" || e.literalType !== "INT")
+    return undefined;
+  const v = Number(e.value);
+  return Number.isSafeInteger(v) ? v : undefined;
+}
+
+/** An enumeration's values for the manifest; undefined when a value is not an integer literal. */
+function enumMembers(
+  def: EnumDefinition,
+): LibraryTypeEntry["members"] | undefined {
+  const members: NonNullable<LibraryTypeEntry["members"]> = [];
+  for (const m of def.members) {
+    if (m.value === undefined) {
+      members.push({ name: m.name });
+      continue;
+    }
+    const value = integerLiteralValue(m.value);
+    if (value === undefined) return undefined;
+    members.push({ name: m.name, value });
+  }
+  return members;
+}
+
+/** The constant bounds and element type of an ARRAY TYPE, for the manifest; empty when a bound is not a constant. */
+function arrayAliasShape(
+  def: ArrayDefinition,
+  ast: CompilationUnit,
+): Pick<
+  LibraryTypeEntry,
+  "arrayDimensions" | "elementTypeName" | "elementMaxLength"
+> {
+  if (
+    (def.elementType.referenceKind ?? "none") !== "none" ||
+    def.elementType.referenceChain !== undefined ||
+    def.elementType.arrayDimensions !== undefined
+  ) {
+    return {};
+  }
+  const dims: Array<{ start: number; end: number }> = [];
+  for (const d of def.dimensions) {
+    if (d.isVariableLength || d.start === undefined || d.end === undefined) {
+      return {};
+    }
+    const start = constantBound(d.start, ast);
+    const end = constantBound(d.end, ast);
+    if (start === undefined || end === undefined) return {};
+    dims.push({ start, end });
+  }
+  const { maxLength } = writtenStringLengths(def.elementType);
+  return {
+    arrayDimensions: dims,
+    elementTypeName: def.elementType.name,
+    ...(maxLength !== undefined ? { elementMaxLength: maxLength } : {}),
+  };
+}
+
+/** A literal bound, or a VAR_GLOBAL CONSTANT the library declares with one. */
+function constantBound(
+  expr: Expression,
+  ast: CompilationUnit,
+): number | undefined {
+  const literal = integerLiteralValue(expr);
+  if (literal !== undefined) return literal;
+  if (expr.kind !== "VariableExpression" || expr.fieldAccess.length > 0) {
+    return undefined;
+  }
+  const upper = expr.name.toUpperCase();
+  for (const block of ast.globalVarBlocks) {
+    if (!block.isConstant) continue;
+    for (const decl of block.declarations) {
+      if (!decl.names.some((n) => n.toUpperCase() === upper)) continue;
+      return decl.initialValue === undefined
+        ? undefined
+        : integerLiteralValue(decl.initialValue);
+    }
+  }
+  return undefined;
 }
 
 /** The parameter direction of a POU var block; undefined for a block of locals. */
@@ -693,6 +894,8 @@ export function compileLibrary(
     name: string;
     version: string;
     namespace: string;
+    /** The ST namespace qualifying the library's symbols (default: from `name`). */
+    stNamespace?: string;
     /** Library archives this library depends on */
     dependencies?: StlibArchive[];
     /** Global constants available during compilation (e.g., STRING_LENGTH) */
@@ -889,12 +1092,14 @@ export function compileLibrary(
     parameterShapes: true,
     stringLengthsRecorded: true,
     namespace: options.namespace,
+    stNamespace: options.stNamespace ?? stNamespaceOfName(options.name),
     functions: ast.functions.map((fn) =>
       tagDocumentation(
         tagCategory(
           {
             name: fn.name,
             returnType: fn.returnType.name,
+            ...returnShape(fn.returnType),
             parameters: fn.varBlocks.flatMap((block) => {
               const direction = parameterDirection(block.blockType);
               // VAR / VAR_TEMP are the function's locals, not parameters.
@@ -961,16 +1166,42 @@ export function compileLibrary(
       // Export struct (and UNION) member fields so consumers can type
       // `x.field` access on a dependency struct.
       if (t.definition.kind === "StructDefinition") {
-        entry.fields = t.definition.fields.flatMap((decl) => {
-          const { maxLength } = writtenStringLengths(decl.type);
-          return decl.names.map((name) => ({
-            name,
-            type: decl.type.name,
-            ...(maxLength !== undefined ? { maxLength } : {}),
-          }));
-        });
+        // Each field with its ARRAY and reference shape, as an FB member's
+        entry.fields = t.definition.fields.flatMap((decl) =>
+          decl.names.map((name) => serializeVarType(name, decl.type)),
+        );
+      }
+      if (t.definition.kind === "EnumDefinition") {
+        const members = enumMembers(t.definition);
+        if (members !== undefined) entry.members = members;
+        const defaultMember = enumDefaultName(t);
+        if (defaultMember !== undefined) entry.defaultMember = defaultMember;
+        if (t.definition.baseType !== undefined) {
+          entry.baseType = t.definition.baseType.name;
+        }
+      }
+      if (t.definition.kind === "ArrayDefinition") {
+        Object.assign(entry, arrayAliasShape(t.definition, ast));
       }
       Object.assign(entry, aliasBase(t.definition));
+      // An alias TYPE's own default, so a consumer's variables start at it
+      if (t.definition.kind === "TypeReference" && t.defaultValue) {
+        let text =
+          enumAliasDefault(t.definition.name, t.defaultValue, ast) ??
+          serializeInitialValue(t.defaultValue, (name) =>
+            libraryConstantText(name, ast, 0),
+          );
+        // An LTIME default of a TIME alias is converted, as the library's own
+        // variables are
+        if (
+          text !== undefined &&
+          isLtimeConstantExpression(t.defaultValue) &&
+          aliasElementary(t.definition.name, ast) === "TIME"
+        ) {
+          text = `LTIME_TO_TIME(${text})`;
+        }
+        if (text !== undefined) entry.defaultValue = text;
+      }
       return tagDocumentation(tagCategory(entry, catByName), docByName);
     }),
     // Exported VAR_GLOBAL variables — their storage is emitted as inlineGlobal
@@ -1055,6 +1286,8 @@ export function compileStlib(
     name: string;
     version: string;
     namespace: string;
+    /** The ST namespace qualifying the library's symbols (default: from `name`). */
+    stNamespace?: string;
     noSource?: boolean;
     /** Mark this library as a built-in runtime library */
     builtin?: boolean;

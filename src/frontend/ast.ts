@@ -992,6 +992,12 @@ export interface VariableExpression extends TypedNode {
   stringElement?: true;
   /** Set by the analyzer on the operand of `SIZEOF(T)` / `XSIZEOF(T)` when it names a type, not a value in scope. */
   namesType?: true;
+  /**
+   * Set by the type checker on a bare name that is both a value of an
+   * enumeration of the sources and a library's global, read as the global:
+   * its context is the global's own enumeration, STRUCT, FB or ARRAY type.
+   */
+  libraryGlobal?: true;
 }
 
 /**
@@ -1070,6 +1076,16 @@ export interface NewExpression extends TypedNode {
 export interface ArrayLiteralExpression extends TypedNode {
   kind: "ArrayLiteralExpression";
   elements: Expression[];
+  /**
+   * Set on the initializer an ARRAY of a type with a default gets: its one
+   * element is the value of every element of the array (`iec_fill`).
+   */
+  fill?: true;
+  /**
+   * Set on an explicit initializer of an ARRAY of a type with a default: the
+   * value every element after the given ones takes (`iec_head`).
+   */
+  fillRest?: Expression;
 }
 
 /**

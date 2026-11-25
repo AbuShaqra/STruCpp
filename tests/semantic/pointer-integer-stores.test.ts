@@ -235,9 +235,9 @@ END_FUNCTION_BLOCK
     ).toEqual([]);
   });
 
-  it("refuses a namespace-qualified library call", () => {
+  it("refuses a namespace-qualified library call without the feature library_namespaces", () => {
     expect(errors("", "n := plib.F_R(REF(x));")).toEqual([
-      "Undeclared variable 'plib'",
+      "Qualifying 'F_R' by the namespace of library plib needs the feature library_namespaces",
     ]);
   });
 });

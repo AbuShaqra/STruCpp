@@ -68,6 +68,9 @@ import {
   markImplicitParameters,
 } from "./semantic/implicit-parameters.js";
 import { lowerPouOperators } from "./semantic/vendor-pou-operators.js";
+import { lowerLibraryNamespaces } from "./semantic/library-namespaces.js";
+import { applyTypeDefaults } from "./frontend/type-defaults.js";
+import { libraryTypeDefault } from "./library/library-methods.js";
 import { lowerBitType } from "./semantic/bit-type.js";
 import { unionLoweringErrors } from "./semantic/union.js";
 import { fbInitLoweringErrors } from "./semantic/fb-init.js";
@@ -299,7 +302,12 @@ function shakeLibraryChunks(
   ast: CompilationUnit,
   archives: StlibArchive[],
   shadowed: Set<string>,
-): { byLibrary: Map<string, Set<string>>; conflicts: ShadowConflict[] } {
+): {
+  byLibrary: Map<string, Set<string>>;
+  conflicts: ShadowConflict[];
+  /** A name declared by more than one library that the program needs from each. */
+  clashes: Array<{ name: string; libraries: string[] }>;
+} {
   const conflicts: ShadowConflict[] = [];
 
   // Build symbol→{library, chunk} index across every archive.  Names
@@ -318,7 +326,13 @@ function shakeLibraryChunks(
     const libName = archive.manifest.name;
     for (const chunk of archive.chunks ?? []) {
       const entry = { library: libName, chunk: chunk.name };
-      symbolIndex.set(chunk.name.toUpperCase(), { ...entry, kind: chunk.kind });
+      // A name two libraries declare is the first one's, as it resolves
+      if (!symbolIndex.has(chunk.name.toUpperCase())) {
+        symbolIndex.set(chunk.name.toUpperCase(), {
+          ...entry,
+          kind: chunk.kind,
+        });
+      }
       chunkByKey.set(`${libName}:${chunk.name}`, entry);
     }
   }
@@ -448,7 +462,19 @@ function shakeLibraryChunks(
     set.add(name);
   }
 
-  return { byLibrary, conflicts };
+  // A chunk name reachable in two libraries: one C++ name for both
+  const owners = new Map<string, string[]>();
+  for (const [lib, names] of byLibrary) {
+    for (const name of names) {
+      const upper = name.toUpperCase();
+      owners.set(upper, [...(owners.get(upper) ?? []), lib]);
+    }
+  }
+  const clashes = [...owners]
+    .filter(([, libs]) => libs.length > 1)
+    .map(([name, libs]) => ({ name, libraries: libs }));
+
+  return { byLibrary, conflicts, clashes };
 }
 
 /** `message` with each C++ name of a renamed POU shown as declared. */
@@ -466,6 +492,27 @@ function withDeclaredNames(
  * both would be emitted under one C++ name.
  */
 function libraryShadowErrors(
+  ast: CompilationUnit,
+  archives: StlibArchive[],
+): CompileError[] {
+  // Two libraries' declarations of one name the program needs from both
+  const clashErrors: CompileError[] = shakeLibraryChunks(
+    ast,
+    archives,
+    userDeclaredNames(ast),
+  ).clashes.map((c) => ({
+    message:
+      `'${c.name}' is declared by the libraries ${c.libraries.map((l) => `'${l}'`).join(" and ")}, ` +
+      `and this program needs each one's: they cannot share one C++ name`,
+    line: 0,
+    column: 0,
+    severity: "error" as const,
+  }));
+  return [...clashErrors, ...libraryShadowErrorsOnly(ast, archives)];
+}
+
+/** {@link libraryShadowErrors} for a user declaration shadowing a needed chunk. */
+function libraryShadowErrorsOnly(
   ast: CompilationUnit,
   archives: StlibArchive[],
 ): CompileError[] {
@@ -1259,6 +1306,17 @@ function runPipeline(
     // Actions first, so lowerInlineTypes qualifies inline enum members in
     // action bodies as it does in the owner's methods.
     const loweringErrors = [
+      // First: a qualified library name is its bare name for every pass after.
+      ...lowerLibraryNamespaces(ast, mergedOptions.libraries ?? [], {
+        enabled: dialect.features.has("library_namespaces"),
+        featureMessage: (construct) => {
+          const message = `${construct} needs the feature library_namespaces`;
+          const profiles = profilesWithFeature(dialect, "library_namespaces");
+          return profiles.length > 0
+            ? `${message} (profiles: ${profiles.join(", ")})`
+            : message;
+        },
+      }),
       ...(dialect.features.has("vendor_operators")
         ? lowerPouOperators(ast, {
             sources: sourcesByFile,
@@ -1329,6 +1387,8 @@ function runPipeline(
         profilesWithFeature(dialect, "bit_type"),
       ),
     );
+    // A library alias TYPE's default, onto this compile's declarations of it
+    applyTypeDefaults(ast, libraryTypeDefaults(mergedOptions.libraries ?? []));
     errors.push(...loweringErrors);
     echoed.push(...loweringErrors);
   } catch (e) {
@@ -1585,6 +1645,28 @@ function runPipeline(
  * console.log(result.lineMap);
  * ```
  */
+/** The defaults and alias targets the library archives record for their alias TYPEs. */
+function libraryTypeDefaults(archives: readonly StlibArchive[]): {
+  defaults: Map<string, Expression>;
+  aliasTargets: Map<string, string>;
+} {
+  const defaults = new Map<string, Expression>();
+  const aliasTargets = new Map<string, string>();
+  for (const archive of archives) {
+    for (const t of archive.manifest.types) {
+      const key = t.name.toUpperCase();
+      if (t.kind !== "alias" || typeof t.baseType !== "string") continue;
+      if (!aliasTargets.has(key)) {
+        aliasTargets.set(key, t.baseType.toUpperCase());
+      }
+      if (typeof t.defaultValue !== "string" || defaults.has(key)) continue;
+      const value = libraryTypeDefault(t.name, t.baseType, t.defaultValue);
+      if (value !== undefined) defaults.set(key, value);
+    }
+  }
+  return { defaults, aliasTargets };
+}
+
 export function compile(
   source: string,
   options: Partial<CompileOptions> = {},

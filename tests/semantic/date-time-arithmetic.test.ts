@@ -168,11 +168,12 @@ describe("date/time arithmetic type rules", () => {
         "LDATE#2000-01-02 - D#2000-01-01",
       ]) {
         expect(compileBody("r : LTIME ;", `r := ${expr} ;`).errors).toEqual([]);
-        expect(
-          compileBody("r : TIME ;", `r := ${expr} ;`).errors.map(
-            (e) => e.message,
-          ),
-        ).toEqual(["Cannot assign LTIME to TIME"]);
+        // Converted as LTIME_TO_TIME: a warning by default
+        const narrowed = compileBody("r : TIME ;", `r := ${expr} ;`);
+        expect(narrowed.errors).toEqual([]);
+        expect(narrowed.warnings.map((w) => w.message)).toEqual([
+          "Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+        ]);
       }
     });
 

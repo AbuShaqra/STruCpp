@@ -64,12 +64,21 @@ describe("LTIME", () => {
         expect(
           errors("a := t;\nb := t + a;\nb := a - t;\nx := t < a;", options),
         ).toEqual([]);
-        expect(errors("t := a;", options)).toEqual([
-          "Cannot assign LTIME to TIME",
-        ]);
-        expect(errors("t := a - a;", options)).toEqual([
-          "Cannot assign LTIME to TIME",
-        ]);
+        // Converted as LTIME_TO_TIME: a warning by default
+        expect(errors("t := a;", options)).toEqual(
+          label === "no dialect"
+            ? []
+            : [
+                "Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+              ],
+        );
+        expect(errors("t := a - a;", options)).toEqual(
+          label === "no dialect"
+            ? []
+            : [
+                "Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+              ],
+        );
       });
 
       it("has explicit conversions in both directions", () => {
