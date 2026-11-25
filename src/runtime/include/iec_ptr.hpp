@@ -285,7 +285,36 @@ public:
     bool operator!=(IECVar<U> other) const noexcept {
         return reinterpret_cast<uintptr_t>(ptr_) != static_cast<uintptr_t>(other.get());
     }
+
+    // Ordering against a computed integer (`FOR p := ADR(x) TO n + 1`)
+    template<typename N, std::enable_if_t<std::is_integral<N>::value, int> = 0>
+    bool operator<(N n) const noexcept { return to_addr() < static_cast<uintptr_t>(n); }
+    template<typename N, std::enable_if_t<std::is_integral<N>::value, int> = 0>
+    bool operator>(N n) const noexcept { return to_addr() > static_cast<uintptr_t>(n); }
+    template<typename N, std::enable_if_t<std::is_integral<N>::value, int> = 0>
+    bool operator<=(N n) const noexcept { return to_addr() <= static_cast<uintptr_t>(n); }
+    template<typename N, std::enable_if_t<std::is_integral<N>::value, int> = 0>
+    bool operator>=(N n) const noexcept { return to_addr() >= static_cast<uintptr_t>(n); }
+
+    // A step held in an integer variable (`FOR p := ... BY n`), in bytes
+    template<typename U, std::enable_if_t<std::is_integral<U>::value, int> = 0>
+    IEC_Ptr& operator+=(const IECVar<U>& n) noexcept {
+        ptr_ = bytes(static_cast<std::ptrdiff_t>(n.get()));
+        return *this;
+    }
+    template<typename U, std::enable_if_t<std::is_integral<U>::value, int> = 0>
+    IEC_Ptr& operator-=(const IECVar<U>& n) noexcept {
+        ptr_ = bytes(-static_cast<std::ptrdiff_t>(n.get()));
+        return *this;
+    }
 };
+
+// A STRUCT member POINTER TO is an IEC_Ptr: it must lay out as the raw pointer it replaced.
+static_assert(sizeof(IEC_Ptr<int>) == sizeof(void*) &&
+                  alignof(IEC_Ptr<int>) == alignof(void*) &&
+                  std::is_standard_layout<IEC_Ptr<int>>::value &&
+                  std::is_trivially_copyable<IEC_Ptr<int>>::value,
+              "IEC_Ptr must be a pointer-sized, trivially copyable wrapper");
 
 /**
  * After a function block is copied: when `src` (of `other`) points into

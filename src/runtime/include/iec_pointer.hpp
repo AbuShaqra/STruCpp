@@ -47,7 +47,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstring>
 #include <type_traits>
+#include <utility>
 #include "iec_fault.hpp"
 #if STRUCPP_HAS_EXCEPTIONS
 #include <stdexcept>
@@ -187,9 +189,22 @@ public:
     explicit IEC_REF_TO(pointer_type p) noexcept : ptr_(p) {}
 
     /**
+     * `ADR(x)` passed to a REF_TO input: exactly a pointer_type converts
+     * implicitly, so a literal 0 still reaches only the nullptr constructor.
+     */
+    template<typename P,
+             typename std::enable_if<std::is_same<P, pointer_type>::value, int>::type = 0>
+    IEC_REF_TO(P p) noexcept : ptr_(p) {}
+
+    /**
      * Constructor from nullptr (NULL)
      */
     IEC_REF_TO(std::nullptr_t) noexcept : ptr_(nullptr) {}
+
+    /** `R(0)` in a constructor's initializer list: NULL (exactly an int, explicit). */
+    template<typename I, typename std::enable_if<std::is_same<I, int>::value, int>::type = 0>
+    explicit IEC_REF_TO(I zero) noexcept
+        : ptr_(reinterpret_cast<pointer_type>(static_cast<std::uintptr_t>(zero))) {}
 
     /**
      * Constructor from an integer address (e.g. a __XWORD temp produced by
@@ -318,6 +333,17 @@ public:
     }
 
     /**
+     * The literal `0` (`r := 0`, `fb(r := 0)`, a STRUCT member's `:= 0`): NULL.
+     * Exactly an int (no conversion from another integer), so `r := lint_var`
+     * still takes the uintptr_t overload unambiguously.
+     */
+    template<typename I, typename std::enable_if<std::is_same<I, int>::value, int>::type = 0>
+    IEC_REF_TO& operator=(I zero) noexcept {
+        set(reinterpret_cast<pointer_type>(static_cast<std::uintptr_t>(zero)));
+        return *this;
+    }
+
+    /**
      * Dereference operator (*) - same as deref()
      */
     target_type& operator*() {
@@ -405,8 +431,8 @@ template<typename T>
 class IEC_REFERENCE_TO {
 public:
     using value_type = T;
-    /** What the reference is bound to: IECVar<T>, or a STRUCT / function block itself. */
-    using target_type = typename detail::value_target<T>::type;
+    /** What the reference is bound to: IECVar<T>, a STRUCT / function block itself, or a pointer variable itself. */
+    using target_type = typename detail::ref_target<T>::type;
     using pointer_type = target_type*;
 
 private:
@@ -457,13 +483,13 @@ public:
     /**
      * Implicit value access (get) - reads from target
      */
-    T get() const { return bound().get(); }
+    T get() const { return read(holds_itself{}); }
 
     /**
      * Implicit value assignment (set) - writes to target
      * Writes the target, as any write does
      */
-    void set(const T& value) { bound().set(value); }
+    void set(const T& value) { write(value, holds_itself{}); }
 
     /**
      * Get underlying IECVar reference
@@ -472,6 +498,13 @@ public:
     const target_type& target() const { return bound(); }
 
 private:
+    /** The target is the T itself (a pointer, STRUCT or FB), not an IECVar<T> around it. */
+    using holds_itself = std::is_same<target_type, T>;
+    T read(std::true_type) const { return bound(); }
+    T read(std::false_type) const { return bound().get(); }
+    void write(const T& value, std::true_type) { bound() = value; }
+    void write(const T& value, std::false_type) { bound().set(value); }
+
     /**
      * The bound target; an unbound reference raises the NullReference fault
      */
@@ -506,6 +539,22 @@ public:
      * Implicit conversion to value type for reading
      */
     operator T() const { return get(); }
+
+    /**
+     * A REFERENCE TO a pointer (`REFERENCE TO POINTER TO INT`): `r^` reaches
+     * the target of the pointer the reference is bound to, and `!r` tests that
+     * pointer for NULL (an unbound reference faults first).
+     */
+    template<typename U = target_type>
+    auto operator*() const -> decltype(*std::declval<U&>()) { return *bound(); }
+    template<typename U = target_type>
+    auto operator!() const -> decltype(!std::declval<U&>()) { return !bound(); }
+
+    /** An element of the ARRAY the reference is bound to (`s.ra[i]` through a STRUCT member). */
+    template<typename U = target_type, typename... I>
+    auto at(I... idx) const -> decltype(std::declval<U&>().at(idx...)) {
+        return bound().at(idx...);
+    }
 
     // Arithmetic compound assignment operators (write through to target)
     IEC_REFERENCE_TO& operator+=(const T& v) {
@@ -646,6 +695,39 @@ inline std::uintptr_t address_bits(const IEC_REF_TO<T>& r) noexcept {
 template<typename T>
 inline std::uintptr_t address_bits(const IEC_Ptr<T>& p) noexcept {
     return p.to_addr();
+}
+
+/** `0 = r`, `NULL <> r`: a REF_TO compared with NULL on the right. */
+template<typename T>
+inline bool operator==(std::nullptr_t, const IEC_REF_TO<T>& r) noexcept { return r.is_null(); }
+template<typename T>
+inline bool operator!=(std::nullptr_t, const IEC_REF_TO<T>& r) noexcept { return !r.is_null(); }
+
+namespace detail {
+/** The address a MEMCPY argument holds: a pointer's, or an integer's value. */
+template<typename T>
+inline auto mem_address(const T& x, int) noexcept -> decltype(address_bits(x)) {
+    return address_bits(x);
+}
+template<typename T>
+inline std::uintptr_t mem_address(const T& x, long) noexcept {
+    return static_cast<std::uintptr_t>(x);
+}
+}  // namespace detail
+
+/**
+ * MEMCPY(dest, src, n) with a POINTER TO, REF_TO or address argument (`q`,
+ * `ADR(x)`): each is taken as the address it holds. Two ULINTs take the
+ * overload in iec_std_lib.hpp.
+ */
+template<typename D, typename S,
+         typename std::enable_if<!(std::is_same<D, IEC_ULINT>::value &&
+                                   std::is_same<S, IEC_ULINT>::value), int>::type = 0>
+inline IEC_ULINT MEMCPY(const D& dest, const S& src, std::size_t n) {
+    const std::uintptr_t d = detail::mem_address(dest, 0);
+    std::memcpy(reinterpret_cast<void*>(d),
+                reinterpret_cast<const void*>(detail::mem_address(src, 0)), n);
+    return IEC_ULINT(static_cast<ULINT_t>(d));
 }
 
 /**
@@ -924,6 +1006,21 @@ inline IEC_REFERENCE_TO<T> ref_bind(IECVar<T>& var) noexcept {
 template<typename T>
 inline IEC_REFERENCE_TO<T> ref_bind(const IEC_REFERENCE_TO<T>& ref) noexcept {
     return ref;
+}
+namespace detail {
+/** T is bound by a REFERENCE TO as itself: a STRUCT, ARRAY, FB, POINTER TO or REF_TO variable. */
+template<typename T> struct binds_itself
+    : std::is_same<typename ref_target<T>::type, T> {};
+template<typename U> struct binds_itself<IEC_REFERENCE_TO<U>> : std::false_type {};
+}  // namespace detail
+template<typename T,
+         typename std::enable_if<detail::binds_itself<T>::value, int>::type = 0>
+inline IEC_REFERENCE_TO<T> ref_bind(T& var) noexcept {
+    return IEC_REFERENCE_TO<T>(var);
+}
+template<typename E>
+inline IEC_REFERENCE_TO<E> ref_bind(IEC_ENUM_Var<E>& var) noexcept {
+    return IEC_REFERENCE_TO<E>(var);
 }
 template<size_t N>
 inline IEC_REFERENCE_TO<IECString<N>> ref_bind(IECStringVar<N>& var) noexcept {

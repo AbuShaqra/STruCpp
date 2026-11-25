@@ -160,6 +160,12 @@ pointer fields is acceptable; unifying the struct **pointer** representation
 onto `IEC_Ptr<T>` is a separate, larger cleanup that should not block
 reference‑field support.
 
+Update: that cleanup is done. A struct (and UNION) **pointer** field is now the
+`IEC_Ptr<T>` a variable gets, so `q.p := ADR(udi)`, `q.p := pd` and `__NEW`
+into a field build as they do for a variable. `IEC_Ptr<T>` is pointer-sized,
+standard-layout and trivially copyable (a `static_assert` in `iec_ptr.hpp`),
+so the struct's size, alignment and field offsets are unchanged.
+
 ## Edge cases / open questions
 
 - **Nested structs and arrays of reference fields** — the element‑type
