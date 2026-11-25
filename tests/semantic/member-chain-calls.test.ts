@@ -219,19 +219,19 @@ describe("member-chain method calls report errors at the right place", () => {
   for (const mode of MODES) {
     it(`unknown method on the chain's FB (${mode.name})`, () => {
       expect(messages(program("x := mid.leaf.Nope(1);"), mode.options)).toEqual(
-        [`${BODY_LINE}:15 Function block 'FB_LEAF' has no method 'NOPE'`],
+        [`${BODY_LINE}:15 Function block 'FB_Leaf' has no method 'NOPE'`],
       );
     });
 
     it(`calling a method on a non-FB member (${mode.name})`, () => {
       expect(messages(program("x := mid.v.Add(1);"), mode.options)).toEqual([
-        `${BODY_LINE}:6 Cannot call method 'ADD' on 'MID.V': it is not a function block instance`,
+        `${BODY_LINE}:6 Cannot call method 'Add' on 'mid.v': it is not a function block instance`,
       ]);
     });
 
     it(`calling a method on a struct (${mode.name})`, () => {
       expect(messages(program("  mid.h.Add(1);"), mode.options)).toEqual([
-        `${BODY_LINE}:3 Cannot call method 'ADD' on 'MID.H': it is not a function block instance`,
+        `${BODY_LINE}:3 Cannot call method 'Add' on 'mid.h': it is not a function block instance`,
       ]);
     });
 
@@ -239,7 +239,7 @@ describe("member-chain method calls report errors at the right place", () => {
       expect(
         messages(program("x := mid.leaf.Add(k := 1, q := 2);"), mode.options),
       ).toEqual([
-        `${BODY_LINE}:27 Method 'ADD' of 'FB_LEAF' has no parameter named 'Q'`,
+        `${BODY_LINE}:27 Method 'Add' of 'FB_Leaf' has no parameter named 'Q'`,
       ]);
     });
 
@@ -247,7 +247,7 @@ describe("member-chain method calls report errors at the right place", () => {
       expect(
         messages(program("x := mid.leaf.Add(1, d, 3);"), mode.options),
       ).toEqual([
-        `${BODY_LINE}:25 Method 'ADD' of 'FB_LEAF' takes 2 arguments, got 3`,
+        `${BODY_LINE}:25 Method 'Add' of 'FB_Leaf' takes 2 arguments, got 3`,
       ]);
     });
 
@@ -255,7 +255,7 @@ describe("member-chain method calls report errors at the right place", () => {
       expect(
         messages(program("x := mid.derived.Nope();"), mode.options),
       ).toEqual([
-        `${BODY_LINE}:18 Function block 'FB_LEAFX' has no method 'NOPE'`,
+        `${BODY_LINE}:18 Function block 'FB_LeafX' has no method 'NOPE'`,
       ]);
     });
 
@@ -282,9 +282,9 @@ VAR box : FB_Box; x : INT; END_VAR
 END_PROGRAM
 `;
       expect(messages(src, mode.options).sort()).toEqual([
-        "14:8 Cannot call PROTECTED method 'GUARDED' of 'FB_SECRET' from 'FB_KID'.",
-        "18:8 Cannot call PRIVATE method 'HIDDEN' of 'FB_SECRET' from outside 'FB_SECRET'.",
-        "19:8 Cannot call PROTECTED method 'GUARDED' of 'FB_SECRET' from 'PROGRAM'.",
+        "14:8 Cannot call PROTECTED method 'Guarded' of 'FB_Secret' from 'FB_Kid'.",
+        "18:8 Cannot call PRIVATE method 'Hidden' of 'FB_Secret' from outside 'FB_Secret'.",
+        "19:8 Cannot call PROTECTED method 'Guarded' of 'FB_Secret' from 'PROGRAM'.",
       ]);
     });
 
@@ -294,7 +294,7 @@ END_PROGRAM
 
     it(`calling a non-FB member through a chain is refused clearly (${mode.name})`, () => {
       expect(messages(program("  mid.h.v();"), mode.options)).toEqual([
-        `${BODY_LINE}:9 'MID.H.V' is a member that is not a function block instance, not a method`,
+        `${BODY_LINE}:9 'mid.h.v' is a member that is not a function block instance, not a method`,
       ]);
     });
 

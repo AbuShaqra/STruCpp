@@ -65,7 +65,7 @@ o := THIS.a.b + THIS.arr[2] + SUPER.s.b + SUPER.arrB[1] + THIS.xs[1].q + SUPER.i
 
       it("applies the member access rule at every step", () => {
         const msg =
-          "'V' is an internal variable of FUNCTION_BLOCK 'FB_X' and cannot be accessed from outside";
+          "'v' is an internal variable of FUNCTION_BLOCK 'FB_X' and cannot be accessed from outside";
         expect(
           compileDerived(
             "o := THIS.xs[1].v;\no := SUPER.inner.v;",

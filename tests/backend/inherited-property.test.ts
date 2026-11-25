@@ -119,7 +119,7 @@ describe("PROPERTY inherited from a base FB", () => {
       END_METHOD
       END_FUNCTION_BLOCK`);
     expect(r.errors.map((e) => e.message)).toContain(
-      "Undeclared variable 'NOPE'",
+      "Undeclared variable 'Nope'",
     );
   });
 });

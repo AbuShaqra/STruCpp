@@ -55,7 +55,7 @@ describeIfGpp("interface method signatures", () => {
     const result = compile(SOURCE, { headerFileName: "generated.hpp" });
     expect(result.errors).toEqual([]);
     expect(result.warnings.map((w) => w.message)).toContain(
-      "Parameter 1 'B' of method 'N' of FUNCTION_BLOCK 'FB' is named 'A' in interface 'I': a call with named arguments through the FB differs from one through the interface",
+      "Parameter 1 'b' of method 'N' of FUNCTION_BLOCK 'FB' is named 'a' in interface 'I': a call with named arguments through the FB differs from one through the interface",
     );
     const out = compileAndRunStandalone({
       tempDir,

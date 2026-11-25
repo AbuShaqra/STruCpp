@@ -130,6 +130,8 @@ export interface FunctionBlockSymbol extends BaseSymbol {
    * not exist.
    */
   libraryName?: string;
+  /** The archive lists the library FB's own VAR members (`locals`), none included. */
+  localsRecorded?: boolean;
   /** A library FB's `VAR_TEMP` members, from archives that list them. */
   temps?: VariableSymbol[];
   /**

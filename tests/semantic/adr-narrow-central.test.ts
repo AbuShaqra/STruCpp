@@ -160,7 +160,7 @@ fb(o => u);
 END_PROGRAM
 `),
     ).toEqual([
-      `6:9: The output 'O' gives a 64-bit address, which UDINT cannot hold; ${TAIL}`,
+      `6:9: The output 'o' gives a 64-bit address, which UDINT cannot hold; ${TAIL}`,
     ]);
   });
 

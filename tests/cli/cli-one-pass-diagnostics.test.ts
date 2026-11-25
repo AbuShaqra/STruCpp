@@ -106,7 +106,7 @@ describe("one-pass diagnostics through the CLI", () => {
         diagnostics: { line: number; severity: string; message: string }[];
       };
       return report.diagnostics
-        .filter((d) => d.message.includes("the shared global 'G'"))
+        .filter((d) => d.message.includes("the shared global 'g'"))
         .map((d) => `${d.line}:${d.severity}`);
     };
     expect(shared([two])).toEqual(["8:warning"]);

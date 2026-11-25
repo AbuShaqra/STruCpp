@@ -380,11 +380,11 @@ END_PROGRAM
         options,
       );
       expect(r.errors.map((e) => `${e.line}: ${e.message}`)).toEqual([
-        "12: Cannot pass an address to input 'A', which takes an ARRAY",
-        "13: Cannot pass an address to input 'S', which takes a STRUCT",
-        "14: Cannot pass an address to input 'A', which takes an ARRAY",
-        "15: Cannot pass a value of type INT to input 'S', which takes a STRUCT",
-        "16: Cannot pass a value of type INT to input 'A', which takes an ARRAY",
+        "12: Cannot pass an address to input 'a', which takes an ARRAY",
+        "13: Cannot pass an address to input 's', which takes a STRUCT",
+        "14: Cannot pass an address to input 'a', which takes an ARRAY",
+        "15: Cannot pass a value of type INT to input 's', which takes a STRUCT",
+        "16: Cannot pass a value of type INT to input 'a', which takes an ARRAY",
       ]);
     });
 
@@ -430,10 +430,10 @@ END_FUNCTION
         options,
       );
       expect(r.errors).toEqual([
-        "1: Cannot pass a value of type INT to input 'A', which takes an ARRAY",
-        "2: Cannot pass a value of type INT to input 'A', which takes an ARRAY",
-        "3: Cannot pass an address to input 'A', which takes an ARRAY",
-        "4: Cannot pass a value of type INT to input 'A', which takes an ARRAY",
+        "1: Cannot pass a value of type INT to input 'a', which takes an ARRAY",
+        "2: Cannot pass a value of type INT to input 'a', which takes an ARRAY",
+        "3: Cannot pass an address to input 'a', which takes an ARRAY",
+        "4: Cannot pass a value of type INT to input 'a', which takes an ARRAY",
       ]);
     }
   });

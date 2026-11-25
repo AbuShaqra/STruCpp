@@ -56,14 +56,14 @@ describe("enumeration misuse", () => {
 
       it("refuses an enumeration bound to an integer input, and the reverse", () => {
         expect(errors("i := FI(c) + FI(k := ca);", options)).toEqual([
-          "Cannot assign COL to parameter 'K' of type INT",
-          "Cannot assign COL to parameter 'K' of type INT",
+          "Cannot assign COL to parameter 'k' of type INT",
+          "Cannot assign COL to parameter 'k' of type INT",
         ]);
         expect(errors("f(k := c);", options)).toEqual([
-          "Cannot assign COL to parameter 'K' of type INT",
+          "Cannot assign COL to parameter 'k' of type INT",
         ]);
         expect(errors("i := FE(ez);", options)).toEqual([
-          "Cannot assign E2 to parameter 'K' of type COL",
+          "Cannot assign E2 to parameter 'k' of type COL",
         ]);
       });
 

@@ -183,9 +183,9 @@ END_PROGRAM
 `),
     ).toEqual([
       "11:9 Cannot assign U_B to parameter 'P' of type U_A",
-      "11:17 Cannot assign U_B to parameter 'Q' of type U_A",
+      "11:17 Cannot assign U_B to parameter 'q' of type U_A",
       "12:9 Cannot assign INT to parameter 'P' of type U_A",
-      "12:17 Cannot assign U_A to parameter 'N' of type DWORD",
+      "12:17 Cannot assign U_A to parameter 'n' of type DWORD",
     ]);
   });
 
@@ -223,7 +223,7 @@ describe("UNION rules", () => {
         "TYPE U_A : UNION f : REAL := 1.0; d : DWORD; END_UNION END_TYPE\n",
       ),
     ).toEqual([
-      "1:30 Member 'F' of UNION 'U_A' has an initial value: initial values in a UNION are not supported yet",
+      "1:30 Member 'f' of UNION 'U_A' has an initial value: initial values in a UNION are not supported yet",
     ]);
   });
 
@@ -267,10 +267,10 @@ INTERFACE I_X END_INTERFACE
 FUNCTION_BLOCK FB_X END_FUNCTION_BLOCK
 `),
     ).toEqual([
-      "4:10 Member 'FB' of UNION 'U_F' is of FUNCTION_BLOCK type 'FB_X': a UNION member must be data, not a function block, interface or program instance",
-      "4:20 Member 'H' of UNION 'U_F' is of type 'ST_H', which holds FUNCTION_BLOCK type 'FB_X': a UNION member must be data, not a function block, interface or program instance",
-      "4:30 Member 'I' of UNION 'U_F' is of INTERFACE type 'I_X': a UNION member must be data, not a function block, interface or program instance",
-      "4:41 Member 'ARR' of UNION 'U_F' is of FUNCTION_BLOCK type 'FB_X': a UNION member must be data, not a function block, interface or program instance",
+      "4:10 Member 'fb' of UNION 'U_F' is of FUNCTION_BLOCK type 'FB_X': a UNION member must be data, not a function block, interface or program instance",
+      "4:20 Member 'h' of UNION 'U_F' is of type 'ST_H', which holds FUNCTION_BLOCK type 'FB_X': a UNION member must be data, not a function block, interface or program instance",
+      "4:30 Member 'i' of UNION 'U_F' is of INTERFACE type 'I_X': a UNION member must be data, not a function block, interface or program instance",
+      "4:41 Member 'arr' of UNION 'U_F' is of FUNCTION_BLOCK type 'FB_X': a UNION member must be data, not a function block, interface or program instance",
       "4:67 Undefined type 'FB_L' in UNION 'U_F'",
     ]);
   });
@@ -283,7 +283,7 @@ FUNCTION_BLOCK FB_X END_FUNCTION_BLOCK
 END_TYPE
 `).filter((m) => m.includes("UNION")),
     ).toEqual([
-      "3:19 Member 'V' of UNION 'U_A' is a variable-length ARRAY[*]: the members of a UNION share one storage, so each must have a fixed size",
+      "3:19 Member 'v' of UNION 'U_A' is a variable-length ARRAY[*]: the members of a UNION share one storage, so each must have a fixed size",
     ]);
   });
 
@@ -345,7 +345,7 @@ END_PROGRAM
 `),
     ).toEqual([
       "9:14 The initial value for UNION 'U_A' names 2 members: a UNION initial value sets one member",
-      "10:14 UNION 'U_A' has no member 'ZZ'",
+      "10:14 UNION 'U_A' has no member 'zz'",
       "11:14 An initial value for UNION 'U_A' is not supported yet: name one member, as in (F := value)",
       "12:24 The initial value for UNION 'U_A' names 2 members: a UNION initial value sets one member",
       "13:29 The initial value for UNION 'U_A' names 2 members: a UNION initial value sets one member",
@@ -360,7 +360,7 @@ END_PROGRAM
 PROGRAM P VAR u : U_A; END_VAR END_PROGRAM
 `),
     ).toEqual([
-      "1:30 Member 'F' of UNION 'U_A' has an initial value: initial values in a UNION are not supported yet",
+      "1:30 Member 'f' of UNION 'U_A' has an initial value: initial values in a UNION are not supported yet",
     ]);
   });
 });

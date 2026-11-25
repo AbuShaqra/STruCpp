@@ -41,7 +41,7 @@ describe("undeclared name in an initial value", () => {
       PROGRAM Main
       VAR x : INT := zz6 + 1; END_VAR
       END_PROGRAM`).sort(),
-    ).toEqual([1, 2, 3, 4, 5, 6].map((n) => `Undeclared variable 'ZZ${n}'`));
+    ).toEqual([1, 2, 3, 4, 5, 6].map((n) => `Undeclared variable 'zz${n}'`));
   });
 
   it("refuses inside structure initializers and array literals", () => {
@@ -51,7 +51,7 @@ describe("undeclared name in an initial value", () => {
       VAR s : ST_P := (a := zz1); arr : ARRAY[0..1] OF INT := [1, zz2];
         sa : ARRAY[0..1] OF ST_P := [(b := zz3), (a := 1)]; END_VAR
       END_PROGRAM`),
-    ).toEqual([1, 2, 3].map((n) => `Undeclared variable 'ZZ${n}'`));
+    ).toEqual([1, 2, 3].map((n) => `Undeclared variable 'zz${n}'`));
   });
 
   it("refuses under iec-3 too", () => {
@@ -62,7 +62,7 @@ describe("undeclared name in an initial value", () => {
         END_PROGRAM`,
         "iec-3",
       ),
-    ).toEqual(["Undeclared variable 'ZZ'"]);
+    ).toEqual(["Undeclared variable 'zz'"]);
   });
 
   it("accepts constants, enum values, variables and sibling fields", () => {

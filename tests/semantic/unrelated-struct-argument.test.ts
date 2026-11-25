@@ -46,18 +46,18 @@ describe("argument of an unrelated plain STRUCT", () => {
         "r := F(b); r := F(p := b); r := G(b); f1(p := b, q := a); f1(p := a, q := b); r := f1.M(b);",
       ),
     ).toEqual([
-      "Cannot assign ST_B to parameter 'P' of type ST_A",
-      "Cannot assign ST_B to parameter 'P' of type ST_A",
-      "Cannot assign ST_B to parameter 'P' of type T_A",
-      "Cannot assign ST_B to parameter 'P' of type ST_A",
-      "Cannot assign ST_B to parameter 'Q' of type ST_A",
-      "Cannot assign ST_B to parameter 'P2' of type ST_A",
+      "Cannot assign ST_B to parameter 'p' of type ST_A",
+      "Cannot assign ST_B to parameter 'p' of type ST_A",
+      "Cannot assign ST_B to parameter 'p' of type T_A",
+      "Cannot assign ST_B to parameter 'p' of type ST_A",
+      "Cannot assign ST_B to parameter 'q' of type ST_A",
+      "Cannot assign ST_B to parameter 'p2' of type ST_A",
     ]);
   });
 
   it("refuses under iec-3 too", () => {
     expect(errorsIn("r := F(b);", "iec-3")).toEqual([
-      "Cannot assign ST_B to parameter 'P' of type ST_A",
+      "Cannot assign ST_B to parameter 'p' of type ST_A",
     ]);
   });
 

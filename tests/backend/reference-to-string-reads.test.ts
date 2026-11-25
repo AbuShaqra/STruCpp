@@ -52,12 +52,12 @@ describe("REFERENCE TO STRING reads", () => {
 
       it("refuses '^' on a REFERENCE TO", () => {
         expect(run("i := ri^;", options).errors.map((e) => e.message)).toEqual([
-          "'RI' is a REFERENCE TO, dereferenced implicitly: '^' does not apply to it",
+          "'ri' is a REFERENCE TO, dereferenced implicitly: '^' does not apply to it",
         ]);
         expect(
           run("i := LEN(rr^);", options).errors.map((e) => e.message),
         ).toEqual([
-          "'RR' is a REFERENCE TO, dereferenced implicitly: '^' does not apply to it",
+          "'rr' is a REFERENCE TO, dereferenced implicitly: '^' does not apply to it",
         ]);
       });
     });

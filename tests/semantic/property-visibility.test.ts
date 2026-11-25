@@ -41,7 +41,7 @@ END_PROGRAM
   ).errors.map((e) => e.message);
 
 const PRIV =
-  "Cannot access PRIVATE property 'PV' of 'FB_A' from outside 'FB_A'.";
+  "Cannot access PRIVATE property 'Pv' of 'FB_A' from outside 'FB_A'.";
 
 describe("property visibility", () => {
   for (const [label, options] of MODES) {
@@ -50,7 +50,7 @@ describe("property visibility", () => {
         expect(errors("", "a := f.Pv;", options)).toEqual([PRIV]);
         expect(errors("", "f.Pv := 1;", options)).toEqual([PRIV]);
         expect(errors("", "a := f.Pt;", options)).toEqual([
-          "Cannot access PROTECTED property 'PT' of 'FB_A' from 'PROGRAM'.",
+          "Cannot access PROTECTED property 'Pt' of 'FB_A' from 'PROGRAM'.",
         ]);
         expect(errors("", "a := f.Pub;", options)).toEqual([]);
       });

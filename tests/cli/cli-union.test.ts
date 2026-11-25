@@ -132,7 +132,7 @@ describe("--check with UNION", () => {
     expect(checkJson(["libfb.st", "--feature", "+union"])).toEqual({
       status: 1,
       diags: [
-        "1:22 Member 'T' of UNION 'U_T' is of FUNCTION_BLOCK type 'TON': a UNION member must be data, not a function block, interface or program instance",
+        "1:22 Member 't' of UNION 'U_T' is of FUNCTION_BLOCK type 'TON': a UNION member must be data, not a function block, interface or program instance",
       ],
     });
   });
@@ -156,7 +156,7 @@ describe("compiling UNION", () => {
     const r = run(["retain.st", "--feature", "+union", "-o", out]);
     expect(r.status).toBe(1);
     expect(r.err + r.out).toContain(
-      "retain.st:3:12: error: RETAIN of a UNION is not supported yet: 'U' is or holds UNION 'U_A'",
+      "retain.st:3:12: error: RETAIN of a UNION is not supported yet: 'u' is or holds UNION 'U_A'",
     );
     expect(existsSync(out)).toBe(false);
   });

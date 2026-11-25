@@ -20,6 +20,7 @@ import {
 import type { TestFile } from "./test-model.js";
 import type { CompileError, CompileOptions, SourceSpan } from "../types.js";
 import { tokenizeTest } from "../frontend/lexer.js";
+import { literalUnderscoreErrors } from "../semantic/iec3-rules.js";
 import {
   DialectError,
   profilesWithFeature,
@@ -147,6 +148,12 @@ export function parseTestFile(
     }
     testFile.dialect = dialect;
     testFile.source = text;
+    // From the parser's tokens: declarations (STRING lengths, ARRAY bounds) included
+    testFile.literalUnderscoreErrors = literalUnderscoreErrors(
+      text,
+      parseResult.tokens,
+      fileName,
+    );
     return { testFile, errors };
   } catch (e) {
     errors.push({

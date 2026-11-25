@@ -117,7 +117,7 @@ VAR pl : POINTER TO INT := ADR(l); l : INT; END_VAR
   F := pl^;
 END_FUNCTION`),
     ).toEqual([
-      "The initial value of 'PL' takes the address of 'L', which is declared after it; declare 'L' first or assign 'PL' in the body",
+      "The initial value of 'pl' takes the address of 'l', which is declared after it; declare 'l' first or assign 'pl' in the body",
     ]);
     expect(
       errorsFor(`FUNCTION_BLOCK FB
@@ -128,7 +128,7 @@ END_METHOD
 END_FUNCTION_BLOCK
 TYPE ST : STRUCT x : INT; END_STRUCT END_TYPE`),
     ).toEqual([
-      "The initial value of 'PM' takes the address of 'T', which is declared after it; declare 'T' first or assign 'PM' in the body",
+      "The initial value of 'pm' takes the address of 't', which is declared after it; declare 't' first or assign 'pm' in the body",
     ]);
   });
 
@@ -153,7 +153,7 @@ PROGRAM Main END_PROGRAM`,
 VAR pp : POINTER TO POINTER TO INT := ADR(pp); END_VAR
 END_FUNCTION`),
     ).toEqual([
-      "The initial value of 'PP' takes the address of 'PP', which is declared after it; declare 'PP' first or assign 'PP' in the body",
+      "The initial value of 'pp' takes the address of 'pp', which is declared after it; declare 'pp' first or assign 'pp' in the body",
     ]);
   });
 
@@ -163,10 +163,10 @@ END_FUNCTION`),
         `PROGRAM Main\nVAR x : INT; q : POINTER TO INT; ${d} END_VAR\nEND_PROGRAM`,
       );
     expect(decl("r : REF_TO INT := REF(x);")).toEqual([
-      "REF_TO initializers are not supported; assign 'R' in the body instead",
+      "REF_TO initializers are not supported; assign 'r' in the body instead",
     ]);
     expect(decl("p : POINTER TO INT := q;")).toEqual([
-      "POINTER TO initializers are not supported; assign 'P' in the body instead",
+      "POINTER TO initializers are not supported; assign 'p' in the body instead",
     ]);
   });
 
@@ -175,7 +175,7 @@ END_FUNCTION`),
       errorsFor(
         `PROGRAM Main\nVAR p : POINTER TO INT := ADR(nope); END_VAR\nEND_PROGRAM`,
       ),
-    ).toEqual(["Undeclared variable 'NOPE'"]);
+    ).toEqual(["Undeclared variable 'nope'"]);
   });
 });
 

@@ -7,7 +7,7 @@
  * The AST is produced by the CST visitor from the parser output.
  */
 
-import type { SourceSpan } from "../types.js";
+import type { CompileError, SourceSpan } from "../types.js";
 import type { ResolvedDialect } from "../dialect.js";
 
 // =============================================================================
@@ -1115,6 +1115,8 @@ export interface TestFile {
   dialect?: ResolvedDialect;
   /** The text parsed (conditional pragmas resolved): locates and spells a declared name. */
   source?: string;
+  /** Its numeric literals whose underscores Ed. 3 refuses; reported under iec-3 and --strict. */
+  literalUnderscoreErrors?: CompileError[];
 }
 
 /**

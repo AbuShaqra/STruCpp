@@ -145,19 +145,19 @@ describe("the feature call_result_access", () => {
 describe("type checking an access on a call result", () => {
   it("reports a member the STRUCT does not have", () => {
     expect(messages("x := F(1).nope;")).toEqual([
-      "STRUCT 'ST_R' has no member 'NOPE'",
+      "STRUCT 'ST_R' has no member 'nope'",
     ]);
   });
 
   it("reports a member of an elementary result", () => {
     expect(messages("x := F(1).nCode.foo;")).toEqual([
-      "A value of type 'INT' has no member 'FOO'",
+      "A value of type 'INT' has no member 'foo'",
     ]);
   });
 
   it("refuses an internal variable of a function block result", () => {
     expect(messages("x := b.Self().hidden;")).toEqual([
-      "'HIDDEN' is an internal variable of FUNCTION_BLOCK 'FB_B' and cannot be accessed from outside",
+      "'hidden' is an internal variable of FUNCTION_BLOCK 'FB_B' and cannot be accessed from outside",
     ]);
   });
 
@@ -210,13 +210,13 @@ describe("a call result is never written", () => {
     [
       "VAR_IN_OUT argument",
       "o(io := F(1).nCode, ri := x);",
-      ["VAR_IN_OUT 'IO' must be bound to a variable, not an expression"],
+      ["VAR_IN_OUT 'io' must be bound to a variable, not an expression"],
     ],
     [
       "REFERENCE TO input",
       "o(io := x, ri := F(1).nCode);",
       [
-        "REFERENCE TO input 'RI' needs a variable to refer to, not an expression",
+        "REFERENCE TO input 'ri' needs a variable to refer to, not an expression",
       ],
     ],
     [
@@ -279,22 +279,22 @@ VAR x : INT; f : FB_W; END_VAR
     [
       "a REFERENCE TO result",
       "x := RF().Run(1);",
-      "Cannot call method 'RUN' on 'RF()': its result is a REFERENCE TO or POINTER TO; assign the result to a variable first",
+      "Cannot call method 'Run' on 'RF()': its result is a REFERENCE TO or POINTER TO; assign the result to a variable first",
     ],
     [
       "a POINTER TO result",
       "x := PF().Run(1);",
-      "Cannot call method 'RUN' on 'PF()': its result is a REFERENCE TO or POINTER TO; assign the result to a variable first",
+      "Cannot call method 'Run' on 'PF()': its result is a REFERENCE TO or POINTER TO; assign the result to a variable first",
     ],
     [
       "a STRUCT result",
       "x := FS().Run(1);",
-      "Cannot call method 'RUN' on 'FS()': it is not a function block instance",
+      "Cannot call method 'Run' on 'FS()': it is not a function block instance",
     ],
     [
       "an INT result",
       "x := FI().Run(1);",
-      "Cannot call method 'RUN' on 'FI()': it is not a function block instance",
+      "Cannot call method 'Run' on 'FI()': it is not a function block instance",
     ],
     [
       "a method the block does not have",
@@ -304,12 +304,12 @@ VAR x : INT; f : FB_W; END_VAR
     [
       "a parameter the method does not have",
       "x := FW().Run(n := 1, b := 2);",
-      "Method 'RUN' of 'FB_W' has no parameter named 'B'",
+      "Method 'Run' of 'FB_W' has no parameter named 'B'",
     ],
     [
       "too many arguments",
       "x := FW().Run(1, 2);",
-      "Method 'RUN' of 'FB_W' takes 1 argument, got 2",
+      "Method 'Run' of 'FB_W' takes 1 argument, got 2",
     ],
     [
       "a method's function block result",
@@ -319,7 +319,7 @@ VAR x : INT; f : FB_W; END_VAR
     [
       "a chained method's result",
       "x := f.Me().Me().Run(1, 2);",
-      "Method 'RUN' of 'FB_W' takes 1 argument, got 2",
+      "Method 'Run' of 'FB_W' takes 1 argument, got 2",
     ],
   ])("refuses %s", (_name, body, message) => {
     expect(errors(body)).toEqual([message]);

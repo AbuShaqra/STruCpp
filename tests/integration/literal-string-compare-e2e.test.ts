@@ -45,7 +45,7 @@ describe.skipIf(!hasGpp)("literal STRING comparison — g++ e2e", () => {
       "FUNCTION Twice : INT VAR_INPUT x : INT; END_VAR Twice := x * 2; END_FUNCTION\nTYPE ST : STRUCT a : INT := Twice(3); END_STRUCT END_TYPE\nPROGRAM Main VAR s : ST; END_VAR END_PROGRAM\n",
     );
     expect(r.errors.map((e) => e.message)).toEqual([
-      "The default of STRUCT field 'ST.A' must be a constant expression: 'TWICE' is a FUNCTION call",
+      "The default of STRUCT field 'ST.a' must be a constant expression: 'Twice' is a FUNCTION call",
     ]);
   });
 

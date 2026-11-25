@@ -193,7 +193,7 @@ d := BITADR();
 END_PROGRAM
 `;
     expect(diag(src, ON).errors).toEqual([
-      "3:13: BITADR needs a located variable (declared AT %I, %Q or %M); 'PLAIN' is not one",
+      "3:13: BITADR needs a located variable (declared AT %I, %Q or %M); 'plain' is not one",
       "4:13: BITADR needs a located variable (declared AT %I, %Q or %M); write it by name",
       "5:6: BITADR takes one argument, got 0",
     ]);

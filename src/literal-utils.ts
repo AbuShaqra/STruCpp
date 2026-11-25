@@ -287,3 +287,52 @@ export function untypedIntegerConstant(
       return undefined;
   }
 }
+
+/** The `$` escapes of Ed. 3 Table 6 that name one character. */
+const STRING_ESCAPES: Readonly<Record<string, string>> = {
+  $: "$",
+  "'": "'",
+  '"': '"',
+  L: "\n",
+  N: "\n",
+  P: "\f",
+  R: "\r",
+  T: "\t",
+};
+
+/**
+ * The text of a quoted string literal (`'it$'s'`, `"a$Nb"`) with its `$`
+ * escapes (Ed. 3 Table 6) and doubled quotes decoded: `$hh` in single quotes,
+ * `$hhhh` in double quotes. An escape that is none of these stays as written.
+ */
+export function decodeStringLiteral(image: string): string {
+  const quote = image[0] ?? "";
+  if ((quote !== "'" && quote !== '"') || image.length < 2) return image;
+  const inner = image.slice(1, -1);
+  const hexLen = quote === '"' ? 4 : 2;
+  let out = "";
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i]!;
+    if (ch === "$" && i + 1 < inner.length) {
+      const hex = inner.substring(i + 1, i + 1 + hexLen);
+      if (hex.length === hexLen && /^[0-9A-Fa-f]+$/.test(hex)) {
+        out += String.fromCharCode(parseInt(hex, 16));
+        i += hexLen;
+        continue;
+      }
+      const named = STRING_ESCAPES[inner[i + 1]!.toUpperCase()];
+      if (named !== undefined) {
+        out += named;
+        i++;
+        continue;
+      }
+    }
+    if (ch === quote && inner[i + 1] === quote) {
+      out += quote;
+      i++;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}

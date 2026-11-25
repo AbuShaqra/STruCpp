@@ -292,7 +292,7 @@ END_PROGRAM
     expect(
       result.warnings.map((w) => `${w.line}:${w.column} ${w.message}`),
     ).toEqual([
-      "29:60 PROBE's FB_init runs before FB_OUTER.FB_init, so 'SEEN' still has its initial value here",
+      "29:60 PROBE's FB_init runs before FB_OUTER.FB_init, so 'seen' still has its initial value here",
     ]);
     const stdout = compileAndRunStandalone({
       tempDir,

@@ -83,7 +83,7 @@ describe("arguments of VAR_IN_OUT parameters", () => {
         "a constant",
         "END_VAR VAR CONSTANT c : INT := 1;",
         "f(x := c);",
-        "not the constant 'C'",
+        "not the constant 'c'",
       ],
       ["a literal (function)", "", "r := FN(x := 5);", "not a literal"],
     ];
@@ -92,7 +92,7 @@ describe("arguments of VAR_IN_OUT parameters", () => {
         it(`${what} (${JSON.stringify(options)})`, () => {
           const d = diagnostics(program(vars, body), options);
           expect(d.errors).toEqual([
-            `1: VAR_IN_OUT 'X' must be bound to a variable, ${text}`,
+            `1: VAR_IN_OUT 'x' must be bound to a variable, ${text}`,
           ]);
         });
       }
@@ -110,14 +110,14 @@ describe("arguments of VAR_IN_OUT parameters", () => {
       what: "another elementary type",
       vars: "b : SINT;",
       body: "f(x := b);",
-      error: "VAR_IN_OUT 'X' of type INT is bound to a variable of type SINT",
+      error: "VAR_IN_OUT 'x' of type INT is bound to a variable of type SINT",
       fallback: "it is passed by copy-in / copy-out, not by reference",
     },
     {
       what: "an alias of the parameter's type",
       vars: "b : T_AL;",
       body: "f(x := b);",
-      error: "VAR_IN_OUT 'X' of type INT is bound to a variable of type T_AL",
+      error: "VAR_IN_OUT 'x' of type INT is bound to a variable of type T_AL",
       fallback: "it is passed by copy-in / copy-out, not by reference",
     },
     {
@@ -125,28 +125,28 @@ describe("arguments of VAR_IN_OUT parameters", () => {
       vars: "s : STRING(10);",
       body: "fs(s := s);",
       error:
-        "VAR_IN_OUT 'S' of type STRING is bound to a variable of type STRING(10)",
+        "VAR_IN_OUT 's' of type STRING is bound to a variable of type STRING(10)",
       fallback: "it is passed by copy-in / copy-out, not by reference",
     },
     {
       what: "another type (function)",
       vars: "b : DINT;",
       body: "r := FN(x := b);",
-      error: "VAR_IN_OUT 'X' of type INT is bound to a variable of type DINT",
+      error: "VAR_IN_OUT 'x' of type INT is bound to a variable of type DINT",
       fallback: "it is passed by copy-in / copy-out, not by reference",
     },
     {
       what: "an omitted in-out of a function block",
       vars: "",
       body: "f();",
-      error: "VAR_IN_OUT 'X' is not assigned in this call",
+      error: "VAR_IN_OUT 'x' is not assigned in this call",
       fallback: "the call keeps the binding of the previous call",
     },
     {
       what: "an omitted in-out of a function",
       vars: "",
       body: "r := FN();",
-      error: "VAR_IN_OUT 'X' is not assigned in this call",
+      error: "VAR_IN_OUT 'x' is not assigned in this call",
       fallback: "a temporary is passed in its place",
     },
   ];
@@ -174,7 +174,7 @@ describe("arguments of VAR_IN_OUT parameters", () => {
 
   it("refuses reading or writing an instance's in-out from outside, in every dialect", () => {
     const message =
-      "'X' is a VAR_IN_OUT of FUNCTION_BLOCK 'FB_I'; from outside it is bound in the call, not accessed through the instance";
+      "'x' is a VAR_IN_OUT of FUNCTION_BLOCK 'FB_I'; from outside it is bound in the call, not accessed through the instance";
     for (const options of [...LENIENT.map((m) => m.options), IEC]) {
       for (const body of ["f(x := a); f.x := 3;", "f(x := a); a := f.x;"]) {
         const d = diagnostics(program("a : INT;", body), options);
@@ -191,7 +191,7 @@ VAR f : FB_I; END_VAR
 END_FUNCTION_BLOCK
 `;
     const message =
-      "VAR_IN_OUT 'X' is bound to the input 'I', which this POU may not modify";
+      "VAR_IN_OUT 'x' is bound to the input 'i', which this POU may not modify";
     for (const mode of LENIENT) {
       expect(
         analyze(source, mode.options).warnings.map((w) => w.message),
@@ -237,7 +237,7 @@ VAR d : FB_D; END_VAR
 END_PROGRAM
 `;
     expect(analyze(source, IEC).errors.map((e) => e.message)).toEqual([
-      "VAR_IN_OUT 'X' is not assigned in this call",
+      "VAR_IN_OUT 'x' is not assigned in this call",
     ]);
   });
 });

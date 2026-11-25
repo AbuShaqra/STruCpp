@@ -139,7 +139,7 @@ describe("library FB properties", () => {
 
       it("refuses a member or method the block does not have", () => {
         expect(errors("a := d.Nope;", options)).toEqual([
-          "Function block 'FB_DER' has no member 'NOPE'",
+          "Function block 'FB_DER' has no member 'Nope'",
         ]);
         expect(errors("a := p.Nope();", options)).toEqual([
           "Function block 'FB_PROP' has no method 'NOPE'",

@@ -72,34 +72,34 @@ describe("function block member access from outside", () => {
 
       it("refuses reading an input and writing an output", () => {
         expect(errors("x := f.i;", options)).toEqual([
-          `'I' is a VAR_INPUT of ${fb}; from outside it can be written, not read`,
+          `'i' is a VAR_INPUT of ${fb}; from outside it can be written, not read`,
         ]);
         expect(errors("f.o := 1;", options)).toEqual([
-          `'O' is a VAR_OUTPUT of ${fb}; from outside it can be read, not written`,
+          `'o' is a VAR_OUTPUT of ${fb}; from outside it can be read, not written`,
         ]);
       });
 
       it("refuses an in-out through the instance", () => {
-        const msg = `'IO' is a VAR_IN_OUT of ${fb}; from outside it is bound in the call, not accessed through the instance`;
+        const msg = `'io' is a VAR_IN_OUT of ${fb}; from outside it is bound in the call, not accessed through the instance`;
         expect(errors("x := f.io;", options)).toEqual([msg]);
         expect(errors("f.io := 1;", options)).toEqual([msg]);
       });
 
       it("refuses VAR, VAR_TEMP, PROTECTED, INTERNAL and PRIVATE sections", () => {
-        expect(errors("x := f.v;", options)).toEqual([INTERNAL("V")]);
-        expect(errors("f.v := 1;", options)).toEqual([INTERNAL("V")]);
-        expect(errors("x := f.t;", options)).toEqual([INTERNAL("T")]);
-        expect(errors("x := f.prot;", options)).toEqual([INTERNAL("PROT")]);
-        expect(errors("x := f.intl;", options)).toEqual([INTERNAL("INTL")]);
-        expect(errors("x := d.v;", options)).toEqual([INTERNAL("V")]);
+        expect(errors("x := f.v;", options)).toEqual([INTERNAL("v")]);
+        expect(errors("f.v := 1;", options)).toEqual([INTERNAL("v")]);
+        expect(errors("x := f.t;", options)).toEqual([INTERNAL("t")]);
+        expect(errors("x := f.prot;", options)).toEqual([INTERNAL("prot")]);
+        expect(errors("x := f.intl;", options)).toEqual([INTERNAL("intl")]);
+        expect(errors("x := d.v;", options)).toEqual([INTERNAL("v")]);
         expect(errors("x := f.priv;", options)).toEqual([
-          `'PRIV' is a PRIVATE variable of ${fb}; only 'FB_A' itself can access it`,
+          `'priv' is a PRIVATE variable of ${fb}; only 'FB_A' itself can access it`,
         ]);
       });
 
       it("refuses a VAR_EXTERNAL through the instance", () => {
         expect(errors("x := f.g;", options)).toEqual([
-          `'G' is a VAR_EXTERNAL of ${fb}, not a member it exposes, and cannot be accessed from outside`,
+          `'g' is a VAR_EXTERNAL of ${fb}, not a member it exposes, and cannot be accessed from outside`,
         ]);
       });
 
@@ -110,13 +110,13 @@ describe("function block member access from outside", () => {
             options,
             "PROGRAM P2\nVAR h : FB_A := (v := 3, i := 1); END_VAR\nEND_PROGRAM\n",
           ),
-        ).toEqual([INTERNAL("V")]);
+        ).toEqual([INTERNAL("v")]);
       });
 
       it("refuses a derived block reaching a base's PRIVATE section", () => {
         const derived = (body: string): string =>
           `FUNCTION_BLOCK FB_E EXTENDS FB_A\nMETHOD M : INT\n  M := ${body};\nEND_METHOD\nEND_FUNCTION_BLOCK\n`;
-        const msg = `'PRIV' is a PRIVATE variable of ${fb}; only 'FB_A' itself can access it`;
+        const msg = `'priv' is a PRIVATE variable of ${fb}; only 'FB_A' itself can access it`;
         expect(errors("", options, derived("priv"))).toEqual([msg]);
         expect(errors("", options, derived("THIS.priv"))).toEqual([msg]);
         expect(errors("", options, derived("SUPER.priv"))).toEqual([msg]);
@@ -134,7 +134,7 @@ VAR h : FB_O; r : INT; END_VAR
 END_FUNCTION_BLOCK
 `;
         const msg =
-          "'INNER' is an internal variable of FUNCTION_BLOCK 'FB_O' and cannot be accessed from outside";
+          "'inner' is an internal variable of FUNCTION_BLOCK 'FB_O' and cannot be accessed from outside";
         expect(
           errors(
             "",

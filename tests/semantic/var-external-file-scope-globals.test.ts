@@ -118,7 +118,7 @@ describe("VAR_EXTERNAL against a file-level VAR_GLOBAL", () => {
     `);
     expect(result.success).toBe(false);
     expect(errorMessages(result)).toContain(
-      "Type mismatch for VAR_EXTERNAL 'GX' in program 'MAIN': expected 'REAL' but found 'INT'",
+      "Type mismatch for VAR_EXTERNAL 'gx' in program 'Main': expected 'REAL' but found 'INT'",
     );
   });
 
@@ -134,7 +134,7 @@ describe("VAR_EXTERNAL against a file-level VAR_GLOBAL", () => {
     `);
     expect(result.success).toBe(false);
     expect(errorMessages(result)).toContain(
-      "Type mismatch for VAR_EXTERNAL 'GX' in function block 'FB': expected 'REAL' but found 'INT'",
+      "Type mismatch for VAR_EXTERNAL 'gx' in function block 'FB': expected 'REAL' but found 'INT'",
     );
   });
 
@@ -150,7 +150,7 @@ describe("VAR_EXTERNAL against a file-level VAR_GLOBAL", () => {
     `);
     expect(result.success).toBe(false);
     expect(errorMessages(result)).toContain(
-      "VAR_EXTERNAL 'MISSING' in program 'MAIN' has no matching VAR_GLOBAL declaration",
+      "VAR_EXTERNAL 'missing' in program 'Main' has no matching VAR_GLOBAL declaration",
     );
   });
 

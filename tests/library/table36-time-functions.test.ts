@@ -187,7 +187,7 @@ END_PROGRAM
         { ...options, libraries: noOscat },
       );
       expect(r.errors.map((e) => e.message)).toEqual([
-        "Cannot assign to CONSTANT variable 'C'",
+        "Cannot assign to CONSTANT variable 'c'",
       ]);
     });
   }
