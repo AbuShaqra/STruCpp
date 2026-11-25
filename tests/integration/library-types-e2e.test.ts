@@ -13,7 +13,11 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { compile, compileStlib } from "../../src/index.js";
-import { loadStlibArchive } from "../../src/library/library-loader.js";
+import {
+  loadStlibArchive,
+  registerLibrarySymbols,
+} from "../../src/library/library-loader.js";
+import { SymbolTables } from "../../src/semantic/symbol-table.js";
 import { discoverStlibs } from "../../src/node/library-loader.js";
 import type { StlibArchive } from "../../src/library/library-manifest.js";
 import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
@@ -115,6 +119,31 @@ describe("library types from a consumer", () => {
     ]);
     expect(m.functions.find((f) => f.name === "F_R5")?.returnMaxLength).toBe(5);
     expect(m.stNamespace).toBe("ltypes");
+  });
+});
+
+describe("library enumeration values in the symbol table", () => {
+  it("record each value, one after an explicit value counting on from it", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: "TYPE E_X : (X1 := 5, X2, X3 := 10, X4); END_TYPE",
+          fileName: "e.st",
+        },
+      ],
+      { name: "lval", version: "1.0.0", namespace: "lval" },
+    );
+    expect(lib.errors).toEqual([]);
+    const tables = new SymbolTables();
+    registerLibrarySymbols(
+      loadStlibArchive(JSON.parse(JSON.stringify(lib.archive))).manifest,
+      tables,
+    );
+    const value = (n: string): number | undefined => {
+      const sym = tables.globalScope.lookup(n);
+      return sym?.kind === "enumValue" ? sym.value : undefined;
+    };
+    expect(["X1", "X2", "X3", "X4"].map(value)).toEqual([5, 6, 10, 11]);
   });
 });
 
@@ -256,6 +285,112 @@ END_PROGRAM
       "libtypes_ton",
     );
     expect(stdout).toBe("1500");
+  });
+
+  it("lets the sources' globals, constants and enumeration values win over a library's enumeration values", () => {
+    // plcopen-softmotion's SMC_AXIS_STATE has STOPPING, HOMING, POWER_OFF, STANDSTILL
+    const { stdout } = run(
+      `VAR_GLOBAL STOPPING : BOOL := TRUE; Red : INT := 3; END_VAR
+VAR_GLOBAL CONSTANT HOMING : INT := 7; END_VAR
+TYPE E_State : (IDLE, POWER_OFF, RUNNING); END_TYPE
+PROGRAM Main
+VAR r : INT; e : E_State; ax : SMC_AXIS_STATE; c : E_C; END_VAR
+IF STOPPING THEN r := HOMING + Red; END_IF
+e := POWER_OFF;
+IF e = E_State#POWER_OFF THEN r := r + 10; END_IF
+ax := STANDSTILL;
+IF ax = SMC_AXIS_STATE#STANDSTILL THEN r := r + 100; END_IF
+c := Green;
+IF c = E_C#Green THEN r := r + 1000; END_IF
+END_PROGRAM
+`,
+      "p.R",
+      "libtypes_names_win",
+    );
+    expect(stdout).toBe("1120");
+  });
+
+  it("starts a library enumeration at its declared default or first value, in every kind of variable", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `TYPE E_T : INT (T1 := 1, T2 := 4) := T2; END_TYPE
+TYPE E_X : (X1 := 5, X2, X3 := 10, X4); END_TYPE
+TYPE S_L : STRUCT x : E_X; END_STRUCT END_TYPE
+FUNCTION_BLOCK FB_L VAR_OUTPUT o : E_X; t : E_T; END_VAR END_FUNCTION_BLOCK
+`,
+          fileName: "e.st",
+        },
+      ],
+      { name: "ldef", version: "1.0.0", namespace: "ldef" },
+    );
+    expect(lib.errors).toEqual([]);
+    const archive = JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
+    expect(
+      archive.manifest.types.find((t) => t.name === "E_T")?.defaultMember,
+    ).toBe("T2");
+    const { stdout } = run(
+      `TYPE S_U : STRUCT x : E_X; t : E_T; END_STRUCT END_TYPE
+PROGRAM Main
+VAR r : DINT; t : E_T; x : E_X; sl : S_L; su : S_U; a : ARRAY[1..2] OF E_X; fb : FB_L; END_VAR
+IF t = E_T#T2 THEN r := 1; END_IF
+IF x = E_X#X1 THEN r := r + 10; END_IF
+IF sl.x = E_X#X1 THEN r := r + 100; END_IF
+IF su.x = E_X#X1 THEN r := r + 1000; END_IF
+IF su.t = E_T#T2 THEN r := r + 10000; END_IF
+IF a[2] = E_X#X1 THEN r := r + 100000; END_IF
+IF fb.o = E_X#X1 THEN r := r + 1000000; END_IF
+IF fb.t = E_T#T2 THEN r := r + 10000000; END_IF
+x := X4;
+IF x = E_X#X4 THEN r := r + 100000000; END_IF
+END_PROGRAM
+`,
+      "p.R",
+      "libtypes_enum_default",
+      [archive],
+    );
+    expect(stdout).toBe("111111111");
+  });
+
+  it("binds a VAR_IN_OUT a library block inherits from its library base", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `FUNCTION_BLOCK FB_BASE
+VAR_INPUT a : INT; END_VAR
+VAR_OUTPUT q : INT; END_VAR
+VAR_IN_OUT io : INT; END_VAR
+q := a + io;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_DER EXTENDS FB_BASE
+VAR_INPUT b : INT; END_VAR
+q := a + b + io;
+io := io + 1;
+END_FUNCTION_BLOCK
+`,
+          fileName: "fb.st",
+        },
+      ],
+      { name: "linh", version: "1.0.0", namespace: "linh" },
+    );
+    expect(lib.errors).toEqual([]);
+    const { stdout } = run(
+      `FUNCTION_BLOCK FB_U EXTENDS FB_DER
+VAR_INPUT u : INT; END_VAR
+q := a + b + u + io;
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR f : FB_DER; g : FB_U; q1 : INT; s : INT; x : INT := 100; r : DINT; END_VAR
+f(a := 1, b := 2, io := x, q => q1);
+g(a := 1, b := 2, u := 3, io := x, q => s);
+r := q1 * 1000 + s + x;
+END_PROGRAM
+`,
+      "p.R",
+      "libtypes_inherited_inout",
+      [JSON.parse(JSON.stringify(lib.archive)) as StlibArchive],
+    );
+    expect(stdout).toBe(String(103 * 1000 + 107 + 101));
   });
 
   it("still loads an archive written before enumeration values and shapes were recorded", () => {

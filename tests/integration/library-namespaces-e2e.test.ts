@@ -104,6 +104,49 @@ END_PROGRAM
     ]);
   });
 
+  it("never takes an inherited member, a property or a library global for a namespace", () => {
+    const named = (name: string): StlibArchive => {
+      const lib = compileStlib(
+        [
+          {
+            source: `TYPE ST : STRUCT x : INT; END_STRUCT END_TYPE
+VAR_GLOBAL gst : ST; END_VAR
+FUNCTION F_R : INT VAR_INPUT x : INT; END_VAR F_R := x; END_FUNCTION`,
+            fileName: "l.st",
+          },
+        ],
+        { name, version: "1.0.0", namespace: name },
+      );
+      expect(lib.errors).toEqual([]);
+      return JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
+    };
+    const src = `FUNCTION_BLOCK FB_A
+VAR cfg : ST; END_VAR
+PROPERTY pp : ST GET pp := cfg; END_GET END_PROPERTY
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_B EXTENDS FB_A
+VAR_OUTPUT o : INT; END_VAR
+cfg.x := 4;
+o := cfg.x;
+END_FUNCTION_BLOCK
+PROGRAM Main VAR r : INT; END_VAR
+gst.x := 3;
+r := gst.x;
+END_PROGRAM
+`;
+    for (const options of [{}, ON]) {
+      for (const lib of [named("cfg"), named("gst"), named("pp")]) {
+        expect(
+          compile(src, {
+            headerFileName: "g.hpp",
+            libraries: [...LIBS, loadStlibArchive(lib)],
+            ...options,
+          }).errors,
+        ).toEqual([]);
+      }
+    }
+  });
+
   it("leaves a variable named like a namespace alone", () => {
     expect(
       errorsOf(

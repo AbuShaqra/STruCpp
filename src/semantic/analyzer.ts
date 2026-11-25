@@ -93,6 +93,8 @@ import {
   resolveArrayElementType,
   resolveFieldDeclaration,
   buildEnumMemberMap,
+  sourceNamesOverLibraryEnums,
+  withLibraryEnumMembers,
   describeType,
   resolveArrayShape,
   resolveArrayShapeByName,
@@ -1838,7 +1840,13 @@ export class SemanticAnalyzer {
           typeDecl.inline?.owner === undefined
         ) {
           typeDecl.definition.members.forEach((member, index) => {
-            if (this.symbolTables.globalScope.hasLocal(member.name)) return;
+            // A library enumeration's value of the name gives way
+            if (
+              this.symbolTables.globalScope.hasLocal(member.name) &&
+              !this.symbolTables.globalScope.definedByLibrary(member.name)
+            ) {
+              return;
+            }
             this.symbolTables.globalScope.defineOrReplace({
               name: member.name,
               kind: "enumValue",
@@ -1862,24 +1870,26 @@ export class SemanticAnalyzer {
       }
     }
 
-    // Build reverse lookup map: enum member name → owning enum type
-    // (a library's enumerations that record their values included)
+    // Build reverse lookup map: enum member name → owning enum type; a
+    // library enumeration's values only where no name of the sources is one
     const ownTypes = new Set(ast.types.map((t) => t.name.toUpperCase()));
-    this.enumMemberMap = buildEnumMemberMap([
-      ...ast.types
-        .filter(
-          (t) =>
-            t.definition.kind === "EnumDefinition" &&
-            t.inline?.owner === undefined,
-        )
-        .map((t) => ({
-          name: t.name,
-          members:
-            t.definition.kind === "EnumDefinition"
-              ? t.definition.members.map((m) => m.name)
-              : [],
-        })),
-      ...this.symbolTables.globalScope.getAllSymbols().flatMap((sym) =>
+    this.enumMemberMap = withLibraryEnumMembers(
+      buildEnumMemberMap(
+        ast.types
+          .filter(
+            (t) =>
+              t.definition.kind === "EnumDefinition" &&
+              t.inline?.owner === undefined,
+          )
+          .map((t) => ({
+            name: t.name,
+            members:
+              t.definition.kind === "EnumDefinition"
+                ? t.definition.members.map((m) => m.name)
+                : [],
+          })),
+      ),
+      this.symbolTables.globalScope.getAllSymbols().flatMap((sym) =>
         sym.kind === "type" &&
         sym.resolvedType?.typeKind === "enum" &&
         !ownTypes.has(sym.name.toUpperCase()) &&
@@ -1892,7 +1902,8 @@ export class SemanticAnalyzer {
             ]
           : [],
       ),
-    ]);
+      sourceNamesOverLibraryEnums(ast),
+    );
 
     // Register function declarations
     for (const funcDecl of ast.functions) {

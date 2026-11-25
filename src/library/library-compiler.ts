@@ -19,6 +19,7 @@ import type { CompileError } from "../types.js";
 import { resolveDialect } from "../dialect.js";
 import { defaultStringLength } from "../semantic/string-default-length.js";
 import { buildChunks } from "./library-chunks.js";
+import { enumDefaultName } from "../backend/type-codegen.js";
 import { stNamespaceOfName } from "../semantic/library-namespaces.js";
 import type { MemberManglingContext } from "../backend/member-mangling.js";
 import {
@@ -1096,6 +1097,8 @@ export function compileLibrary(
       if (t.definition.kind === "EnumDefinition") {
         const members = enumMembers(t.definition);
         if (members !== undefined) entry.members = members;
+        const defaultMember = enumDefaultName(t);
+        if (defaultMember !== undefined) entry.defaultMember = defaultMember;
         if (t.definition.baseType !== undefined) {
           entry.baseType = t.definition.baseType.name;
         }

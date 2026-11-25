@@ -92,6 +92,8 @@ export interface TypeCodeGenOptions {
   shadowingNames?: ReadonlySet<string> | undefined;
   /** Whether a type name is an INTERFACE: a field or element of one holds a reference (`IEC_ITF`). */
   isInterfaceType?: ((typeName: string) => boolean) | undefined;
+  /** Upper-cased names of library enumerations: a field of one gets its `IEC_` wrapper. */
+  libraryEnumNames?: ReadonlySet<string> | undefined;
   /** The C++ of a call in a STRUCT default, as a body would emit it (`INT_TO_REAL(3)` as `TO_REAL(3)`). */
   callToCpp?: ((call: FunctionCallExpression) => string) | undefined;
 }
@@ -99,6 +101,21 @@ export interface TypeCodeGenOptions {
 /**
  * Default type code generation options
  */
+/** The member an enumeration TYPE names as its default (`:= B`, `:= E#B`, `:= E.B`); undefined without one. */
+export function enumDefaultName(type: TypeDeclaration): string | undefined {
+  if (type.definition.kind !== "EnumDefinition") return undefined;
+  if (type.definition.defaultValue !== undefined) {
+    return type.definition.defaultValue;
+  }
+  const v = type.defaultValue;
+  if (v?.kind !== "VariableExpression" || v.subscripts.length > 0) {
+    return undefined;
+  }
+  return v.fieldAccess.length === 0
+    ? v.name
+    : v.fieldAccess[v.fieldAccess.length - 1];
+}
+
 export const defaultTypeCodeGenOptions: TypeCodeGenOptions = {
   indent: "    ",
   lineEnding: "\n",
@@ -296,11 +313,13 @@ export class TypeCodeGenerator {
   useTypeScope(types: readonly TypeDeclaration[]): void {
     const enums = types.filter((t) => t.definition.kind === "EnumDefinition");
     // An alias of an enumeration is declared with the enumeration's wrapper.
-    this.knownEnumNames = new Set(
-      types
+    const own = new Set(types.map((t) => t.name.toUpperCase()));
+    this.knownEnumNames = new Set([
+      ...types
         .filter((t) => enumBehindAlias(types, t) !== undefined)
         .map((t) => t.name.toUpperCase()),
-    );
+      ...[...(this.options.libraryEnumNames ?? [])].filter((n) => !own.has(n)),
+    ]);
     this.enumMemberToType = buildEnumMemberMap(
       enums
         .filter((t) => t.inline?.owner === undefined)
@@ -488,7 +507,7 @@ export class TypeCodeGenerator {
         }
         break;
       case "EnumDefinition":
-        this.generateEnumType(type.name, def);
+        this.generateEnumType(type.name, def, enumDefaultName(type));
         // Generate IEC_ wrapper for enum variables using IEC_ENUM
         this.emit(`using IEC_${type.name} = IEC_ENUM<${type.name}>;`);
         this.emit("");
@@ -709,7 +728,11 @@ export class TypeCodeGenerator {
    * C++:
    *   enum class State : INT_t { IDLE = 0, RUNNING = 1, STOPPED = 2 };
    */
-  private generateEnumType(name: string, def: EnumDefinition): void {
+  private generateEnumType(
+    name: string,
+    def: EnumDefinition,
+    defaultName: string | undefined,
+  ): void {
     // No declared base: INT (DINT when the values need it), as the debug
     // table assumes; C++ would otherwise pick a 4-byte int.
     const baseType = ` : ${this.mapTypeToCpp(
@@ -725,9 +748,23 @@ export class TypeCodeGenerator {
     });
 
     this.emit(`enum class ${name}${baseType} { ${members.join(", ")} };`);
-    // Not 0 first: variables without an initial value start at the first member
+    // Variables without an initial value start at the type's default
+    // (`(A, B) := B`), else at the first member, when that is not 0
     const first = def.members[0];
-    if (first?.value !== undefined && !this.isZeroConstant(first.value)) {
+    const initial =
+      defaultName !== undefined
+        ? def.members.find(
+            (m) => m.name.toUpperCase() === defaultName.toUpperCase(),
+          )
+        : undefined;
+    if (initial !== undefined && initial !== first) {
+      this.emit(
+        `constexpr ${name} iec_enum_first(const ${name}*) noexcept { return ${name}::${initial.name}; }`,
+      );
+    } else if (
+      first?.value !== undefined &&
+      !this.isZeroConstant(first.value)
+    ) {
       this.emit(
         `constexpr ${name} iec_enum_first(const ${name}*) noexcept { return ${name}::${first.name}; }`,
       );
@@ -1194,6 +1231,23 @@ export class TypeCodeGenerator {
       const l = isComparisonExpr(expr.left) ? `(${left})` : left;
       const r = isComparisonExpr(expr.right) ? `(${right})` : right;
       return `${l} ${cppOp} ${r}`;
+    }
+    if (expr.operator === "MOD") {
+      // A TOD or DT MOD a TIME: the time within that period; a TIME, DATE,
+      // TOD or DT MOD a number or duration: unsigned (as in a body)
+      const lk = literalTemporalType(expr.left);
+      const rk = literalTemporalType(expr.right);
+      if ((lk === "TIME_OF_DAY" || lk === "DATE_AND_TIME") && rk === "TIME") {
+        return `iec_temporal_mod_period(${left}, ${right})`;
+      }
+      if (
+        lk === "TIME" ||
+        lk === "DATE" ||
+        lk === "TIME_OF_DAY" ||
+        lk === "DATE_AND_TIME"
+      ) {
+        return `iec_temporal_mod(${left}, ${right})`;
+      }
     }
     // MOD by a divisor that may be 0 gives 0 (Table 29, note e)
     if (expr.operator === "MOD" && !isNonZeroIntegerLiteral(expr.right)) {

@@ -13,12 +13,16 @@
 import type {
   ASTNode,
   CompilationUnit,
+  FunctionBlockDeclaration,
   FunctionCallExpression,
   TypeReference,
   VariableExpression,
   VarBlock,
 } from "../frontend/ast.js";
-import type { StlibArchive } from "../library/library-manifest.js";
+import type {
+  LibraryFBEntry,
+  StlibArchive,
+} from "../library/library-manifest.js";
 import type { CompileError, SourceSpan } from "../types.js";
 import { walkAST } from "../ast-utils.js";
 
@@ -93,7 +97,9 @@ export function lowerLibraryNamespaces(
   }
   if (namespaces.size === 0) return [];
 
+  // Names a qualifier could otherwise be: the sources' and every library's
   const declared = sourceDeclaredNames(ast);
+  const taken = new Set([...declared, ...owner.keys()]);
   const errors: CompileError[] = [];
   const report = (message: string, span: SourceSpan): void => {
     errors.push({
@@ -117,7 +123,7 @@ export function lowerLibraryNamespaces(
   ): string | undefined => {
     const nsUpper = ns.toUpperCase();
     const info = namespaces.get(nsUpper);
-    if (info === undefined || locals.has(nsUpper) || declared.has(nsUpper)) {
+    if (info === undefined || locals.has(nsUpper) || taken.has(nsUpper)) {
       return undefined;
     }
     const upper = name.toUpperCase();
@@ -218,7 +224,7 @@ export function lowerLibraryNamespaces(
   for (const p of ast.programs) lowerNode(p, variableNames(p.varBlocks, p));
   for (const f of ast.functions) lowerNode(f, variableNames(f.varBlocks, f));
   for (const fb of ast.functionBlocks) {
-    lowerNode(fb, variableNames(fb.varBlocks, fb));
+    lowerNode(fb, blockMemberNames(fb, ast, archives));
   }
   for (const a of ast.actions) lowerNode(a, none);
   for (const i of ast.interfaces) lowerNode(i, none);
@@ -226,6 +232,54 @@ export function lowerLibraryNamespaces(
   for (const b of ast.globalVarBlocks) lowerNode(b, none);
   for (const c of ast.configurations) lowerNode(c, none);
   return errors;
+}
+
+/**
+ * Upper-cased names a function block reaches as members: its variables,
+ * methods, properties and actions and those of each EXTENDS base, a
+ * library block's included.
+ */
+function blockMemberNames(
+  fb: FunctionBlockDeclaration,
+  ast: CompilationUnit,
+  archives: readonly StlibArchive[],
+): Set<string> {
+  const names = variableNames(fb.varBlocks, fb);
+  const seen = new Set<string>();
+  let current: string | undefined = fb.name.toUpperCase();
+  while (current !== undefined && !seen.has(current)) {
+    seen.add(current);
+    const upper: string = current;
+    const own = ast.functionBlocks.find((f) => f.name.toUpperCase() === upper);
+    if (own !== undefined) {
+      for (const n of variableNames(own.varBlocks, own)) names.add(n);
+      for (const m of [...own.methods, ...own.properties, ...own.actions]) {
+        names.add(m.name.toUpperCase());
+      }
+      current = own.extends?.toUpperCase();
+      continue;
+    }
+    let lib: LibraryFBEntry | undefined;
+    for (const a of archives) {
+      lib = a.manifest.functionBlocks.find(
+        (f) => f.name.toUpperCase() === upper,
+      );
+      if (lib !== undefined) break;
+    }
+    if (lib === undefined) break;
+    for (const m of [
+      ...lib.inputs,
+      ...lib.outputs,
+      ...lib.inouts,
+      ...(lib.locals ?? []),
+      ...(lib.methods ?? []),
+      ...(lib.properties ?? []),
+    ]) {
+      names.add(m.name.toUpperCase());
+    }
+    current = lib.extends?.toUpperCase();
+  }
+  return names;
 }
 
 /** Upper-cased names of the variables of `blocks` and of every block nested in `pou` (methods, accessors). */

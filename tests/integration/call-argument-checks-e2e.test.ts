@@ -163,4 +163,39 @@ END_PROGRAM
       "Cannot store ARRAY[1..3] OF DINT in input 'A' of type ARRAY[1..3] OF INT",
     ]);
   });
+
+  it("converts an LTIME initial value or assignment of a TIME (a warning)", () => {
+    const { stdout, warnings } = run(
+      `TYPE MyT : TIME; END_TYPE
+TYPE S_T2 : STRUCT t : TIME := LTIME#3s; m : MyT := LTIME#4s; END_STRUCT END_TYPE
+VAR_GLOBAL g : TIME := LTIME#5s; END_VAR
+PROGRAM Main
+VAR lt : LTIME := LTIME#2s; t2 : TIME := LTIME#1s; ma : MyT := LTIME#6s; s : S_T2;
+  t3 : TIME; r : DINT; END_VAR
+t3 := lt;
+r := TIME_TO_DINT(t2) + TIME_TO_DINT(t3) + TIME_TO_DINT(s.t) + TIME_TO_DINT(s.m)
+  + TIME_TO_DINT(g) + TIME_TO_DINT(ma);
+END_PROGRAM
+`,
+      "p.R",
+      "argchecks_ltime_scalar",
+    );
+    expect(stdout).toBe("21000");
+    expect(warnings).toHaveLength(6);
+  });
+
+  it("computes TOD, DT and TIME MOD a TIME in STRUCT defaults and initial values", () => {
+    const { stdout } = run(
+      `TYPE S_M : STRUCT a : TOD := TOD#01:30:00 MOD T#1h; b : TIME := T#90m MOD T#1h; END_STRUCT END_TYPE
+PROGRAM Main
+VAR s : S_M; u : S_M := (a := TOD#02:10:00 MOD T#1h); v : TOD := TOD#03:20:00 MOD T#1h;
+  r : DINT; END_VAR
+r := TOD_TO_DINT(s.a) + TIME_TO_DINT(s.b) + TOD_TO_DINT(u.a) + TOD_TO_DINT(v);
+END_PROGRAM
+`,
+      "p.R",
+      "argchecks_mod_defaults",
+    );
+    expect(stdout).toBe(String((30 + 30 + 10 + 20) * 60000));
+  });
 });

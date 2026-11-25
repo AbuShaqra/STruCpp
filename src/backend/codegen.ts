@@ -135,6 +135,8 @@ import {
   resolveArrayShapeByName,
   typeName as typeNameUtil,
   buildEnumMemberMap,
+  sourceNamesOverLibraryEnums,
+  withLibraryEnumMembers,
   type EnumMemberEntry,
   typeNamesHeldByTypeDefinition,
   typeNamesHeldByValue,
@@ -945,6 +947,8 @@ export class CodeGenerator {
   private libraryStructFieldTypes: Map<string, string> = new Map();
   /** Upper-cased names of the types library manifests declare. */
   private libraryTypeNames: Set<string> = new Set();
+  /** Upper-cased names of library enumerations. */
+  private libraryEnumTypeNames: Set<string> = new Set();
   /** Library enumerations whose manifest records their values. */
   private libraryEnums: Array<{ name: string; members: string[] }> = [];
 
@@ -1812,6 +1816,7 @@ export class CodeGenerator {
         );
       }
       if (t.kind === "enum") {
+        this.libraryEnumTypeNames.add(nameUpper);
         // Older archives record no members; knowing the type IS an enum is
         // enough for :: emission in generateVariableExpression
         const members = Array.isArray(t.members)
@@ -1895,6 +1900,37 @@ export class CodeGenerator {
       );
       if (archive.manifest.types) {
         this.registerLibraryTypes(archive.manifest.types);
+      }
+    }
+    this.inheritLibraryInOuts();
+  }
+
+  /**
+   * A library block's in/outs include those it inherits from its library
+   * bases (the manifest lists a block's own), with their member types.
+   */
+  private inheritLibraryInOuts(): void {
+    for (const [fb, base] of this.libraryFBExtends) {
+      const seen = new Set<string>([fb]);
+      let current: string | undefined = base;
+      while (current !== undefined && !seen.has(current)) {
+        seen.add(current);
+        for (const name of this.fbInoutParams.get(current) ?? []) {
+          const own = this.fbInoutParams.get(fb) ?? new Set<string>();
+          if (own.has(name)) continue;
+          own.add(name);
+          this.fbInoutParams.set(fb, own);
+          if (this.legacyInOutFBs.has(current)) this.legacyInOutFBs.add(fb);
+          const type = this.libraryFBFieldTypes.get(`${current}.${name}`);
+          if (type !== undefined) {
+            this.libraryFBFieldTypes.set(`${fb}.${name}`, type);
+          }
+          const shape = this.libraryFBFieldTypeRefs.get(`${current}.${name}`);
+          if (shape !== undefined) {
+            this.libraryFBFieldTypeRefs.set(`${fb}.${name}`, shape);
+          }
+        }
+        current = this.libraryFBExtends.get(current);
       }
     }
   }
@@ -2140,12 +2176,14 @@ export class CodeGenerator {
         }
       }
     }
-    // A library's enumerations, unless this compile declares the name
+    // A library's enumerations, unless this compile declares the name; their
+    // values only where no name of the sources is one
     const ownTypes = new Set(ast.types.map((t) => t.name.toUpperCase()));
-    for (const e of this.libraryEnums) {
-      if (!ownTypes.has(e.name.toUpperCase())) enumDescriptors.push(e);
-    }
-    this.enumMemberToType = buildEnumMemberMap(enumDescriptors);
+    this.enumMemberToType = withLibraryEnumMembers(
+      buildEnumMemberMap(enumDescriptors),
+      this.libraryEnums.filter((e) => !ownTypes.has(e.name.toUpperCase())),
+      sourceNamesOverLibraryEnums(ast),
+    );
 
     // Register program names as types (CODESYS allows instantiating PROGRAMs like FBs)
     for (const prog of ast.programs) {
@@ -2354,6 +2392,12 @@ export class CodeGenerator {
       shadowingNames: this.shadowingNames(),
       isInterfaceType: (t): boolean => this.isInterfaceType(t),
       callToCpp: (call): string => this.generateExpression(call),
+      libraryEnumNames: new Set(
+        [...this.libraryTypeNames].filter(
+          (n) =>
+            this.enumTypeMembers.has(n) && this.libraryEnumTypeNames.has(n),
+        ),
+      ),
     });
     if (ast.types.length > 0) {
       const lateStructNames = new Set(lateStructs.map((n) => n.toUpperCase()));
@@ -8146,7 +8190,9 @@ export class CodeGenerator {
         : undefined;
     }
     const literal = literalTemporalType(e);
-    if (literal !== undefined && e.resolvedType === undefined) return literal;
+    if (literal !== undefined && e.resolvedType === undefined) {
+      return canonicalElementaryName(literal);
+    }
     let t = e.resolvedType;
     if (t?.typeKind === "reference") t = (t as ReferenceType).referencedType;
     let name: string | undefined =

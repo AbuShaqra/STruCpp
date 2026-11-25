@@ -1792,11 +1792,6 @@ export class TypeChecker {
     // Declarations of a function block, with the block as the context of
     // its initializers, then every other declaration.
     const seen = new Set<VarDeclaration>();
-    const fields = new Set<VarDeclaration>(
-      ast.types.flatMap((t) =>
-        t.definition.kind === "StructDefinition" ? t.definition.fields : [],
-      ),
-    );
     const visit = (root: ASTNode, context: string | undefined): void =>
       walkAST(root, (node) => {
         if (node.kind !== "VarDeclaration") return;
@@ -1805,7 +1800,11 @@ export class TypeChecker {
         seen.add(decl);
         if (decl.initialValue) {
           this.checkInitializerElements(decl.type, decl.initialValue, context);
-          this.refuseLtimeTimeDefault(decl, fields.has(decl));
+          // An LTIME initial value of a TIME: converted, a warning by default
+          decl.initialValue = this.ltimeElementIntoTime(
+            decl.type,
+            decl.initialValue,
+          );
           this.typeInitializerNots(decl.type, decl.initialValue);
         }
       });
@@ -1822,51 +1821,6 @@ export class TypeChecker {
         );
       }
     }
-  }
-
-  /**
-   * An LTIME as the initial value of a TIME declared through an alias, or of
-   * a TIME STRUCT field, is refused as `x : TIME := LTIME#3ms` is (a plain
-   * TIME variable is refused by the elementary initial value check).
-   */
-  private refuseLtimeTimeDefault(
-    decl: VarDeclaration,
-    structField: boolean,
-  ): void {
-    const value = decl.initialValue;
-    const type = decl.type;
-    if (
-      value === undefined ||
-      (type.referenceKind ?? "none") !== "none" ||
-      type.referenceChain !== undefined ||
-      type.arrayDimensions !== undefined ||
-      this.reportedCharValues.has(value) ||
-      canonicalElementaryName(this.aliasBase(type.name)) !== "TIME" ||
-      (!structField && ELEMENTARY_TYPES[type.name.toUpperCase()] !== undefined)
-    ) {
-      return;
-    }
-    let inner = value;
-    while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
-    const valueType =
-      inner.kind === "LiteralExpression"
-        ? inner.literalType
-        : inner.resolvedType?.typeKind === "elementary"
-          ? this.aliasBase((inner.resolvedType as ElementaryType).name)
-          : undefined;
-    if (
-      valueType === undefined ||
-      canonicalElementaryName(valueType) !== "LTIME"
-    ) {
-      return;
-    }
-    this.reportedCharValues.add(value);
-    this.addError(
-      `Cannot assign LTIME to ${type.name.toUpperCase()}`,
-      value.sourceSpan.startLine,
-      value.sourceSpan.startCol,
-      value.sourceSpan.file,
-    );
   }
 
   /**
@@ -1992,14 +1946,26 @@ export class TypeChecker {
       return value;
     }
     this.addWarning(message, span.startLine, span.startCol, span.file);
-    return {
+    // The node itself becomes the call, so every holder of it (the project
+    // model's copy of a declaration included) sees the conversion
+    const original = { ...value } as Expression;
+    const node = value as unknown as Record<string, unknown>;
+    for (const key of Object.keys(node)) delete node[key];
+    const call: FunctionCallExpression = {
       kind: "FunctionCallExpression",
       sourceSpan: span,
       functionName: "LTIME_TO_TIME",
       arguments: [
-        { kind: "Argument", sourceSpan: span, isOutput: false, value },
+        {
+          kind: "Argument",
+          sourceSpan: span,
+          isOutput: false,
+          value: original,
+        },
       ],
     };
+    Object.assign(node, call);
+    return value;
   }
 
   /**
@@ -7590,6 +7556,53 @@ export class TypeChecker {
     }
   }
 
+  /**
+   * `r := ST;`: a type or function block name (of the sources or a library)
+   * stored as a value, alone or as an operand, has no C++ value. True when
+   * refused.
+   */
+  private refuseTypeAsValue(value: Expression, scope: Scope): boolean {
+    let refused = false;
+    const visit = (e: Expression): void => {
+      switch (e.kind) {
+        case "ParenthesizedExpression":
+          visit(e.expression);
+          return;
+        case "UnaryExpression":
+          visit(e.operand);
+          return;
+        case "BinaryExpression":
+          visit(e.left);
+          visit(e.right);
+          return;
+        case "VariableExpression": {
+          if (
+            e.fieldAccess.length > 0 ||
+            e.subscripts.length > 0 ||
+            e.isDereference ||
+            (e.accessChain?.length ?? 0) > 0
+          ) {
+            return;
+          }
+          const kind = scope.lookup(e.name)?.kind;
+          if (kind !== "type" && kind !== "functionBlock") return;
+          refused = true;
+          this.addError(
+            `'${e.name}' names a ${kind === "type" ? "type" : "function block"}, not a value`,
+            e.sourceSpan.startLine,
+            e.sourceSpan.startCol,
+            e.sourceSpan.file,
+          );
+          return;
+        }
+        default:
+          return;
+      }
+    };
+    visit(value);
+    return refused;
+  }
+
   /** Nesting depth of FOR/WHILE/REPEAT bodies (for CONTINUE). */
   private loopDepth = 0;
 
@@ -7605,6 +7618,7 @@ export class TypeChecker {
   private checkStatement(stmt: Statement, scope: Scope): void {
     switch (stmt.kind) {
       case "AssignmentStatement": {
+        if (this.refuseTypeAsValue(stmt.value, scope)) break;
         let targetType = this.resolveExprType(stmt.target, scope);
         const valueType = this.resolveExprType(stmt.value, scope);
         this.refuseMisalignedPointerStore(
@@ -8494,6 +8508,24 @@ export class TypeChecker {
 
       const tName = typeNameUtil(targetType);
       const vName = typeNameUtil(valueType);
+      // An LTIME stored in a TIME is converted (LTIME_TO_TIME): a warning by
+      // default, an error under iec-3 and --strict
+      if (
+        argument === undefined &&
+        targetType.typeKind === "elementary" &&
+        valueType.typeKind === "elementary" &&
+        this.elementaryAliasName(tName) === "TIME" &&
+        this.elementaryAliasName(vName) === "LTIME"
+      ) {
+        const message = `Cannot assign LTIME to ${tName} without a conversion; use LTIME_TO_TIME`;
+        const span = value.sourceSpan;
+        if (this.strict || this.inOutErrors) {
+          this.addError(message, span.startLine, span.startCol, span.file);
+        } else {
+          this.addWarning(message, span.startLine, span.startCol, span.file);
+        }
+        return;
+      }
       if (argument?.warnOnly(tName, vName) === true) {
         this.addWarning(
           `Cannot pass ${vName} to an input of type ${tName} without a conversion; use ${vName}_TO_${tName}`,
@@ -10494,9 +10526,9 @@ export class TypeChecker {
   /**
    * An ARRAY variable stored in a fixed-size ARRAY (an assignment, or input
    * `input` by value). Other bounds or rank do not build: an error. Another
-   * element type is an error under iec-3 and --strict; by default one that
-   * narrows (DINT into INT) warns and one with no C++ conversion is an error.
-   * True when reported.
+   * element type is an error under --strict; else checked as an element
+   * stored on its own: one that narrows (DINT into INT) warns, one with no
+   * C++ conversion is an error. True when reported.
    */
   private checkArrayValue(
     input: string | undefined,
@@ -10527,15 +10559,16 @@ export class TypeChecker {
           d.start === expected.dims![i]!.start &&
           d.end === expected.dims![i]!.end,
       );
+    // A subrange element counts as its base type, as a scalar does
+    const tBase = this.subrangeBase(expected.base);
+    const vBase = this.subrangeBase(actual.base);
     const same =
-      actual.chain.join(" ") === expected.chain.join(" ") &&
-      actual.base === expected.base;
+      actual.chain.join(" ") === expected.chain.join(" ") && tBase === vBase;
     if (dims && same) return false;
-    let error = !dims || this.strict || this.inOutErrors;
-    let narrowing = false;
+    let error = !dims || this.strict;
     if (!error) {
-      const t = ELEMENTARY_TYPES[expected.base];
-      const v = ELEMENTARY_TYPES[actual.base];
+      const t = ELEMENTARY_TYPES[tBase];
+      const v = ELEMENTARY_TYPES[vBase];
       if (
         expected.chain.length !== 0 ||
         actual.chain.length !== 0 ||
@@ -10545,18 +10578,16 @@ export class TypeChecker {
         // Elements of other STRUCT, FB, pointer or alias types: left as before.
         return false;
       }
-      if (!_isAssignable(t, v)) {
-        narrowing = isNarrowingConversion(expected.base, actual.base);
-        error = !narrowing;
-      } else if (
-        INTEGER_STORAGE[expected.base] !== undefined &&
-        INTEGER_STORAGE[expected.base] === INTEGER_STORAGE[actual.base]
+      // As an element stored on its own: a widening (INT into DINT) and one
+      // C++ storage (WORD, UINT) pass, a narrowing warns
+      if (_isAssignable(t, v)) return false;
+      if (
+        INTEGER_STORAGE[tBase] !== undefined &&
+        INTEGER_STORAGE[tBase] === INTEGER_STORAGE[vBase]
       ) {
         return false;
-      } else {
-        // A widening of each element (INT into DINT) converts exactly.
-        return false;
       }
+      error = !isNarrowingConversion(tBase, vBase);
     }
     const into =
       input === undefined
@@ -10569,6 +10600,23 @@ export class TypeChecker {
     if (error) this.addError(message, span.startLine, span.startCol, span.file);
     else this.addWarning(message, span.startLine, span.startCol, span.file);
     return true;
+  }
+
+  /** The elementary type a subrange TYPE (through aliases) restricts; `name` otherwise. */
+  private subrangeBase(name: string): string {
+    let upper = name.toUpperCase();
+    for (let depth = 0; depth < 32; depth++) {
+      const current = upper;
+      const def = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === current,
+      )?.definition;
+      if (def?.kind === "SubrangeDefinition") {
+        upper = canonicalElementaryName(this.aliasBase(def.baseType.name));
+        continue;
+      }
+      return upper;
+    }
+    return upper;
   }
 
   /**
@@ -13368,7 +13416,7 @@ export class TypeChecker {
   /**
    * The argument of a typed conversion `X_TO_Y` is an X. Another type the
    * generated C++ cannot convert (a 32-bit date or time of another kind, a
-   * STRING into CHAR) is an error; one it converts as its own type is a
+   * STRING into CHAR_TO_INT) is an error; one it converts as its own type is a
    * warning by default, an error under iec-3 unless it narrows a number
    * (--strict has its own rules).
    */
@@ -13411,7 +13459,10 @@ export class TypeChecker {
         ? SHORT_TEMPORAL_KIND[a] !== SHORT_TEMPORAL_KIND[x]
         : (aTemporal && TEMPORAL32_NAMES.has(a)) ||
           (xTemporal && TEMPORAL32_NAMES.has(x)) ||
-          (isStringBase(a) && (x === "CHAR" || x === "WCHAR"));
+          // A string into CHAR/WCHAR converts (its first character) only into a character
+          (isStringBase(a) &&
+            (x === "CHAR" || x === "WCHAR") &&
+            !["CHAR", "WCHAR"].includes(canonicalElementaryName(conv.toType)));
     const message = `Argument 'IN' of '${expr.functionName.toUpperCase()}' expects ${x}, got ${display}`;
     const span = arg.value.sourceSpan;
     // A narrowing of numbers or bit strings warns under iec-3 too, as into an input

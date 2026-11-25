@@ -996,6 +996,61 @@ export interface EnumMemberEntry {
 }
 
 /**
+ * `own` (the map of this compile's enumerations) with the members of library
+ * enumerations added: only those no name of `taken` (this compile's
+ * declarations and enumeration members) is, each member ambiguous only among
+ * the libraries that declare it. A declaration of the sources always wins.
+ */
+export function withLibraryEnumMembers(
+  own: Map<string, EnumMemberEntry>,
+  libraryEnums: Iterable<{ name: string; members: string[] }>,
+  taken: ReadonlySet<string>,
+): Map<string, EnumMemberEntry> {
+  const library = buildEnumMemberMap(
+    [...libraryEnums].map((e) => ({
+      name: e.name,
+      members: e.members.filter(
+        (m) => !taken.has(m.toUpperCase()) && !own.has(m.toUpperCase()),
+      ),
+    })),
+  );
+  const merged = new Map(own);
+  for (const [name, entry] of library) merged.set(name, entry);
+  return merged;
+}
+
+/**
+ * Upper-cased names a compile declares that a library enumeration value must
+ * not take: globals (CONFIGURATION ones included), POUs, types and the values
+ * of its own enumerations.
+ */
+export function sourceNamesOverLibraryEnums(ast: CompilationUnit): Set<string> {
+  const names = new Set<string>();
+  for (const d of [
+    ...ast.programs,
+    ...ast.functions,
+    ...ast.functionBlocks,
+    ...ast.interfaces,
+    ...ast.types,
+  ]) {
+    names.add(d.name.toUpperCase());
+  }
+  for (const t of ast.types) {
+    if (t.definition.kind !== "EnumDefinition") continue;
+    for (const m of t.definition.members) names.add(m.name.toUpperCase());
+  }
+  for (const b of [
+    ...ast.globalVarBlocks,
+    ...ast.configurations.flatMap((c) => c.varBlocks),
+  ]) {
+    for (const d of b.declarations) {
+      for (const n of d.names) names.add(n.toUpperCase());
+    }
+  }
+  return names;
+}
+
+/**
  * Build a reverse lookup map from enum member names to their owning enum type.
  * When a member name exists in multiple enum types the entry is marked
  * ambiguous (`typeName: null`) and `conflictingTypes` lists all owners.

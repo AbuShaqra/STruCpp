@@ -293,6 +293,9 @@ export interface LibraryTypeEntry {
   /** The values of an enumeration in declaration order, each with its
    *  explicit integer value when written; absent in older archives. */
   members?: Array<{ name: string; value?: number }>;
+  /** The value an enumeration declares as its default (`:= T2`); absent
+   *  without one and in older archives. */
+  defaultMember?: string;
   /** Length of an alias of STRING(n) / WSTRING(n) (`baseType` STRING / WSTRING). */
   maxLength?: number | string;
   /** Struct member fields (name + declared type), so a consuming compilation

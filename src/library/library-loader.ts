@@ -284,6 +284,9 @@ function libraryEnumDefinition(
           },
         }
       : {}),
+    ...(typeof t.defaultMember === "string"
+      ? { defaultValue: t.defaultMember }
+      : {}),
     members: members.map((m) => ({
       kind: "EnumMember" as const,
       sourceSpan: createDefaultSourceSpan(),
@@ -728,13 +731,17 @@ export function registerLibrarySymbols(
     // An enumeration's values are names of the global scope, as a local
     // TYPE's are; a name already taken keeps its symbol.
     if (t.kind === "enum" && Array.isArray(t.members)) {
-      t.members.forEach((m, index) => {
+      // A value without one written follows the one before it.
+      let next = 0;
+      t.members.forEach((m) => {
+        const value = typeof m.value === "number" ? m.value : next;
+        next = value + 1;
         try {
           symbolTables.globalScope.defineFromLibrary({
             name: m.name,
             kind: "enumValue",
             enumType: t.name,
-            value: typeof m.value === "number" ? m.value : index,
+            value,
           });
         } catch (e) {
           if (!(e instanceof DuplicateSymbolError)) throw e;

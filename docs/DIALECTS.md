@@ -172,8 +172,10 @@ The namespace is the manifest's `stNamespace`, given when the library is compile
 before the field existed, it is the library's name with every character other than a letter, a digit or `_`
 as `_` (`oscat-basic` is `oscat_basic`, `iec-standard-fb` is `iec_standard_fb`).
 
-A name that is a variable of the POU, a global, a global variable list, a POU or a type of the sources is
-never taken as a namespace (`s.f` of a STRUCT variable `s` stays a member access). Refused (each an error):
+A name that is a variable of the POU, a member, method, property or action a function block has or
+inherits (from a library base too), a global, a global variable list, a POU or a type of the sources, or a
+name any library declares, is never taken as a namespace (`s.f` of a STRUCT variable `s` stays a member
+access), with the feature on or off. Refused (each an error):
 
 | Written                                     | Message                                                                                  |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------- |

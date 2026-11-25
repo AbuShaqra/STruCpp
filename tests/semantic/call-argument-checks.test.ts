@@ -249,16 +249,32 @@ END_PROGRAM
     ]);
   });
 
-  it("refuses every other element type under iec-3 and --strict", () => {
-    for (const options of [IEC, STRICT]) {
-      const r = diagnostics(src, options);
-      expect(r.errors).toHaveLength(8);
-      expect(r.errors).toContain(
-        "8: Cannot store ARRAY[1..3] OF WORD in input 'A' of type ARRAY[1..3] OF INT",
-      );
-      expect(r.errors).toContain(
-        "13: Cannot store ARRAY[1..3] OF INT in a variable of type ARRAY[1..3] OF DINT",
-      );
+  it("refuses every other element type under --strict; iec-3 checks each element as a scalar", () => {
+    const r = diagnostics(src, STRICT);
+    expect(r.errors).toHaveLength(8);
+    expect(r.errors).toContain(
+      "8: Cannot store ARRAY[1..3] OF WORD in input 'A' of type ARRAY[1..3] OF INT",
+    );
+    expect(r.errors).toContain(
+      "13: Cannot store ARRAY[1..3] OF INT in a variable of type ARRAY[1..3] OF DINT",
+    );
+    // A narrowing into an input warns under iec-3, as a scalar's does
+    expect(diagnostics(src, IEC)).toEqual(diagnostics(src));
+  });
+
+  it("takes an ARRAY OF a subrange as an ARRAY OF its base", () => {
+    const sub = `TYPE R : INT(0..10); END_TYPE
+FUNCTION F3 : INT VAR_INPUT a : ARRAY[1..3] OF INT; END_VAR F3 := a[1]; END_FUNCTION
+FUNCTION F4 : INT VAR_INPUT a : ARRAY[1..3] OF R; END_VAR F4 := a[1]; END_FUNCTION
+PROGRAM Main
+VAR a : ARRAY[1..3] OF INT; b : ARRAY[1..3] OF R; n : INT; END_VAR
+n := F3(b);
+n := F4(a);
+a := b;
+END_PROGRAM
+`;
+    for (const options of [{}, IEC, STRICT]) {
+      expect(diagnostics(sub, options)).toEqual({ errors: [], warnings: [] });
     }
   });
 });
@@ -361,13 +377,14 @@ END_PROGRAM
 `;
   const message =
     "Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME";
-  it("warns by default; a variable's own initial value stays an error", () => {
+  it("warns by default, a variable's own initial value included", () => {
     const r = diagnostics(src);
-    expect(r.errors).toEqual(["6: Cannot assign LTIME to TIME"]);
+    expect(r.errors).toEqual([]);
     expect(r.warnings).toEqual([
       `3: ${message}`,
       `4: ${message}`,
       `5: ${message}`,
+      `6: ${message}`,
     ]);
   });
 
@@ -377,9 +394,24 @@ END_PROGRAM
         `3: ${message}`,
         `4: ${message}`,
         `5: ${message}`,
-        "6: Cannot assign LTIME to TIME",
+        `6: ${message}`,
       ]);
     }
+  });
+
+  it("warns on a STRUCT field default, a global and an assignment too", () => {
+    const more = `TYPE MyT : TIME; END_TYPE
+TYPE S_T2 : STRUCT t : TIME := LTIME#3s; m : MyT := LTIME#4s; END_STRUCT END_TYPE
+VAR_GLOBAL g : TIME := LTIME#5s; END_VAR
+PROGRAM Main
+VAR lt : LTIME; t : TIME; END_VAR
+t := lt;
+END_PROGRAM
+`;
+    const r = diagnostics(more);
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toHaveLength(4);
+    expect(diagnostics(more, IEC).errors).toHaveLength(4);
   });
 });
 
@@ -394,5 +426,64 @@ END_PROGRAM
     expect(diagnostics(src).errors).toEqual([
       "3: Function 'DAY_OF_WEEK' has no parameter named 'IN' (the FUNCTION of library oscat-basic; its parameters: IDATE)",
     ]);
+  });
+});
+
+describe("a STRING into a CHAR or WCHAR conversion", () => {
+  const conv = (body: string, options: Options = {}) =>
+    diagnostics(
+      `PROGRAM Main
+VAR ws : WSTRING := "AB"; s : STRING := 'AB'; c : CHAR; i : INT; END_VAR
+${body}
+END_PROGRAM
+`,
+      options,
+    );
+  it("warns by default into a character (its first one), an error under iec-3 and --strict", () => {
+    const by = conv("c := WCHAR_TO_CHAR(ws);");
+    expect(by.errors).toEqual([]);
+    expect(by.warnings).toEqual([
+      "3: Argument 'IN' of 'WCHAR_TO_CHAR' expects WCHAR, got WSTRING",
+    ]);
+    expect(conv("c := WCHAR_TO_CHAR(ws);", IEC).errors).toEqual(by.warnings);
+    expect(conv("c := WCHAR_TO_CHAR(ws);", STRICT).errors).toHaveLength(1);
+  });
+  it("refuses it in every mode into a number (no C++ conversion, or a wrong value)", () => {
+    for (const body of ["i := WCHAR_TO_INT(ws);", "i := CHAR_TO_INT(s);"]) {
+      expect(conv(body).errors).toHaveLength(1);
+    }
+  });
+});
+
+describe("a type or function block name used as a value", () => {
+  it("is refused (no C++ value)", () => {
+    const src = `TYPE MyS : STRUCT x : INT; END_STRUCT END_TYPE
+PROGRAM Main
+VAR r : INT; c : COMPLEX; END_VAR
+r := MyS;
+c := COMPLEX;
+r := TON + 1;
+END_PROGRAM
+`;
+    for (const options of [{}, IEC]) {
+      expect(diagnostics(src, options).errors).toEqual([
+        "4: 'MYS' names a type, not a value",
+        "5: 'COMPLEX' names a type, not a value",
+        "6: 'TON' names a function block, not a value",
+      ]);
+    }
+  });
+});
+
+describe("Table 30 MOD in STRUCT defaults and initial values", () => {
+  it("accepts TOD, DT and TIME MOD a TIME", () => {
+    const src = `TYPE S_M : STRUCT a : TOD := TOD#01:30:00 MOD T#1h; b : TIME := T#90m MOD T#1h;
+  c : DT := DT#2020-01-01-01:30:00 MOD T#1h; END_STRUCT END_TYPE
+PROGRAM Main VAR s : S_M; u : S_M := (a := TOD#02:10:00 MOD T#1h); END_VAR
+END_PROGRAM
+`;
+    for (const options of [{}, IEC, STRICT]) {
+      expect(diagnostics(src, options).errors).toEqual([]);
+    }
   });
 });
