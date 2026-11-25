@@ -102,7 +102,7 @@ int main() {
       );
       expect(r.errors.map((e) => e.message)).toEqual([
         "Cannot assign LTIME to TIME",
-        "Cannot assign to CONSTANT variable 'K'",
+        "Cannot assign to CONSTANT variable 'k'",
       ]);
     });
 

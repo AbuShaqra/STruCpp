@@ -64,7 +64,7 @@ int main() {
     });
     expect(result.success).toBe(false);
     expect(result.errors.map((e) => e.message)).toEqual([
-      "Symbol 'R' already defined in scope 'CFG'",
+      "Symbol 'r' already defined in scope 'Cfg'",
     ]);
   });
 });

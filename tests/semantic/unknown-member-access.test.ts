@@ -57,12 +57,12 @@ describe("unknown member in an access chain", () => {
         "x := mid.nothing; s.zz := 1; x := o.mid.nothing; o.mid.zz := 1; x := d.zz; x := ts.zz;",
       ),
     ).toEqual([
-      "STRUCT 'ST_I' has no member 'NOTHING'",
-      "STRUCT 'ST_I' has no member 'ZZ'",
-      "STRUCT 'ST_I' has no member 'NOTHING'",
-      "STRUCT 'ST_I' has no member 'ZZ'",
-      "STRUCT 'ST_D' has no member 'ZZ'",
-      "STRUCT 'ST_I' has no member 'ZZ'",
+      "STRUCT 'ST_I' has no member 'nothing'",
+      "STRUCT 'ST_I' has no member 'zz'",
+      "STRUCT 'ST_I' has no member 'nothing'",
+      "STRUCT 'ST_I' has no member 'zz'",
+      "STRUCT 'ST_D' has no member 'zz'",
+      "STRUCT 'ST_I' has no member 'zz'",
     ]);
   });
 
@@ -72,20 +72,20 @@ describe("unknown member in an access chain", () => {
         "x := fb.nothing; fb.zz := 1; x := fbb.zz; x := fb.sub.zz; b := x.zz; x := str.zz; x := arr2[0].zz; b := ti.zz;",
       ),
     ).toEqual([
-      "Function block 'FB_A' has no member 'NOTHING'",
-      "Function block 'FB_A' has no member 'ZZ'",
-      "Function block 'FB_B' has no member 'ZZ'",
-      "STRUCT 'ST_I' has no member 'ZZ'",
-      "A value of type 'INT' has no member 'ZZ'",
-      "A value of type 'STRING' has no member 'ZZ'",
-      "A value of type 'INT' has no member 'ZZ'",
-      "A value of type 'INT' has no member 'ZZ'",
+      "Function block 'FB_A' has no member 'nothing'",
+      "Function block 'FB_A' has no member 'zz'",
+      "Function block 'FB_B' has no member 'zz'",
+      "STRUCT 'ST_I' has no member 'zz'",
+      "A value of type 'INT' has no member 'zz'",
+      "A value of type 'STRING' has no member 'zz'",
+      "A value of type 'INT' has no member 'zz'",
+      "A value of type 'INT' has no member 'zz'",
     ]);
   });
 
   it("refuses under iec-3 too", () => {
     expect(errorsIn("x := mid.nothing;", "iec-3")).toEqual([
-      "STRUCT 'ST_I' has no member 'NOTHING'",
+      "STRUCT 'ST_I' has no member 'nothing'",
     ]);
   });
 

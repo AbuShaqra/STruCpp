@@ -138,7 +138,7 @@ GP := 0;
 END_FUNCTION
 `;
   const message =
-    "An integer cannot be passed to the POINTER TO input 'P'; pass an address (ADR) or 0";
+    "An integer cannot be passed to the POINTER TO input 'p'; pass an address (ADR) or 0";
 
   it("refuses a function result and a conversion", () => {
     expect(
@@ -287,8 +287,8 @@ describe("REFERENCE TO POINTER TO", () => {
       "PROGRAM Main\nVAR a : POINTER TO REFERENCE TO INT; b : REFERENCE TO REFERENCE TO INT; END_VAR\nEND_PROGRAM\n",
     );
     expect(r.errors.map((e) => e.message)).toEqual([
-      "REFERENCE TO cannot be combined with other reference levels in PROGRAM 'MAIN'",
-      "REFERENCE TO cannot be combined with other reference levels in PROGRAM 'MAIN'",
+      "REFERENCE TO cannot be combined with other reference levels in PROGRAM 'Main'",
+      "REFERENCE TO cannot be combined with other reference levels in PROGRAM 'Main'",
     ]);
   });
 
@@ -368,8 +368,8 @@ VAR b : ARRAY[0..1] OF REFERENCE TO ARRAY[0..1] OF INT; c : REFERENCE TO ARRAY[0
 END_PROGRAM
 `),
     ).toEqual([
-      `6: ${misplaced("PROGRAM 'MAIN'")}`,
-      "6: REFERENCE TO cannot be combined with other reference levels in PROGRAM 'MAIN'",
+      `6: ${misplaced("PROGRAM 'Main'")}`,
+      "6: REFERENCE TO cannot be combined with other reference levels in PROGRAM 'Main'",
       `1: ${misplaced("FUNCTION 'F' return type")}`,
       `3: ${misplaced("type alias 'RA'")}`,
       `4: ${misplaced("ARRAY type 'AA'")}`,
@@ -446,7 +446,7 @@ END_FUNCTION
   const message =
     "An integer is not a reference; a REF_TO takes REF(...), another reference or 0";
   const input =
-    "An integer cannot be passed to the REF_TO input 'R'; pass REF(...) or 0";
+    "An integer cannot be passed to the REF_TO input 'r'; pass REF(...) or 0";
 
   it("refuses a narrow integer or a literal in every mode, and as an input", () => {
     expect(

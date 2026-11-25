@@ -88,7 +88,7 @@ END_PROGRAM
 
   it("rejects REF= on a value field, naming the field", () => {
     expect(errors("s.v REF= x;")).toEqual([
-      "REF= requires a REF_TO or REFERENCE TO target; 'S.V' is not a reference",
+      "REF= requires a REF_TO or REFERENCE TO target; 'S.v' is not a reference",
     ]);
   });
 });
@@ -115,7 +115,7 @@ END_PROGRAM
 
   it("rejects REF= on an element of a value array", () => {
     expect(errors("vals[1] REF= x;")).toEqual([
-      "REF= requires a REF_TO or REFERENCE TO target; 'VALS' is not a reference",
+      "REF= requires a REF_TO or REFERENCE TO target; 'vals' is not a reference",
     ]);
   });
 
@@ -186,11 +186,11 @@ describe("pointer and reference initializers", () => {
   it.each([
     [
       "r : REF_TO REAL := REF(dw);",
-      "REF_TO initializers are not supported; assign 'R' in the body instead",
+      "REF_TO initializers are not supported; assign 'r' in the body instead",
     ],
     [
       "p : POINTER TO INT := dw;",
-      "POINTER TO initializers are not supported; assign 'P' in the body instead",
+      "POINTER TO initializers are not supported; assign 'p' in the body instead",
     ],
   ])("rejects %s", (decl, message) => {
     expect(errors(decl)).toEqual([message]);
@@ -217,7 +217,7 @@ describe("REFERENCE TO is not combined with other levels", () => {
   ])("rejects %s", (decl) => {
     const result = compile(`PROGRAM main\nVAR ${decl} END_VAR\nEND_PROGRAM\n`);
     expect(result.errors.map((e) => e.message)).toEqual([
-      message("PROGRAM 'MAIN'"),
+      message("PROGRAM 'main'"),
     ]);
   });
 

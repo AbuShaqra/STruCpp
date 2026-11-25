@@ -256,7 +256,7 @@ x := INT_TO_REAL(IN := 7);`,
 
       it("refuses a name the function does not declare", () => {
         expect(errors("s := MID(IN := s, L := 3, X := 2);", options)).toEqual([
-          "Function 'MID' has no parameter named 'X'",
+          "Function 'MID' has no parameter named 'x'",
         ]);
         expect(errors("x := INT_TO_REAL(V := 7);", options)).toEqual([
           "Function 'INT_TO_REAL' has no parameter named 'V'",

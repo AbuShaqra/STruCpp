@@ -237,7 +237,7 @@ END_FUNCTION_BLOCK
 
   it("refuses a namespace-qualified library call", () => {
     expect(errors("", "n := plib.F_R(REF(x));")).toEqual([
-      "Undeclared variable 'PLIB'",
+      "Undeclared variable 'plib'",
     ]);
   });
 });

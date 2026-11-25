@@ -49,7 +49,7 @@ describe("errors hidden behind an earlier error are reported with it", () => {
   it("an undeclared name after a type error", () => {
     expect(errorsOf(program(`${MOD}\ni := zz;`))).toEqual([
       `5:6 ${MOD_ERROR}`,
-      "6:6 Undeclared variable 'ZZ'",
+      "6:6 Undeclared variable 'zz'",
     ]);
   });
 
@@ -64,12 +64,12 @@ describe("errors hidden behind an earlier error are reported with it", () => {
       ),
     ).toEqual([
       `4:6 ${MOD_ERROR}`,
-      "5:1 Cannot assign to CONSTANT variable 'K'",
+      "5:1 Cannot assign to CONSTANT variable 'k'",
     ]);
   });
 
   it("type errors after a duplicate declaration", () => {
-    const dup = "3:74 Symbol 'I' already defined in scope 'MAIN'";
+    const dup = "3:74 Symbol 'i' already defined in scope 'Main'";
     expect(errorsOf(program("d := t;", "i : INT;"))).toEqual([
       dup,
       "5:6 Cannot assign TIME to DATE",
@@ -84,7 +84,7 @@ describe("errors hidden behind an earlier error are reported with it", () => {
     ]);
     expect(errorsOf(program("i := zz;", "i : INT;"))).toEqual([
       dup,
-      "5:6 Undeclared variable 'ZZ'",
+      "5:6 Undeclared variable 'zz'",
     ]);
   });
 
@@ -119,7 +119,7 @@ describe("errors hidden behind an earlier error are reported with it", () => {
         "PROGRAM A_B\nVAR c : (Red, Green); END_VAR\nc := Red;\nEND_PROGRAM\nPROGRAM A\nVAR b_c : (Cold, Hot); i : INT; r : REAL; END_VAR\nb_c := Hot;\ni := r MOD 2;\nEND_PROGRAM\n",
       ),
     ).toEqual([
-      "6:11 The inline enumeration of 'A.B_C' and the inline enumeration of 'A_B.C' both use the type name '__INLINE_ENUM_A_B_C'; rename one of them.",
+      "6:11 The inline enumeration of 'A.b_c' and the inline enumeration of 'A_B.c' both use the type name '__INLINE_ENUM_A_B_C'; rename one of them.",
       `8:6 ${MOD_ERROR}`,
     ]);
   });
@@ -193,11 +193,11 @@ describe("no echo of an earlier error", () => {
         "FUNCTION F : INT\nVAR_INPUT a : INT; END_VAR\nF := a + x;\nEND_FUNCTION\nFUNCTION_BLOCK FB2\nVAR x : INT; d : DATE; t : TIME; END_VAR\nx := 1; d := t;\nEND_FUNCTION_BLOCK\nPROGRAM Main\nVAR x : INT; x : STRING; i : INT; r : REAL; b : INT; END_VAR\nx := 'a';\ni := x + zz; b := r MOD 2;\nEND_PROGRAM\n",
       ),
     ).toEqual([
-      "10:14 Symbol 'X' already defined in scope 'MAIN'",
+      "10:14 Symbol 'x' already defined in scope 'Main'",
       `12:19 ${MOD_ERROR}`,
       "7:14 Cannot assign TIME to DATE",
-      "12:10 Undeclared variable 'ZZ'",
-      "3:10 Undeclared variable 'X'",
+      "12:10 Undeclared variable 'zz'",
+      "3:10 Undeclared variable 'x'",
     ]);
   });
 
@@ -208,12 +208,12 @@ describe("no echo of an earlier error", () => {
         "PROGRAM Main\nVAR x : INT; x : REAL; y : INT; d : DATE; t : TIME; r : REAL; b : BOOL; s : STRING; END_VAR\ny := x + zz;\nd := t; x := 1;\nIF x > 0 AND r MOD 2 = 0 THEN y := 1; END_IF\ny := x + s;\nb := (x > 1) AND (d = t);\ny := LEN(x) + r MOD 3;\nEND_PROGRAM\n",
       ),
     ).toEqual([
-      "2:14 Symbol 'X' already defined in scope 'MAIN'",
+      "2:14 Symbol 'x' already defined in scope 'Main'",
       "4:6 Cannot assign TIME to DATE",
       `5:14 ${MOD_ERROR}`,
       "6:6 Operator '+' does not apply to STRING; join strings with CONCAT",
       `8:15 ${MOD_ERROR}`,
-      "3:10 Undeclared variable 'ZZ'",
+      "3:10 Undeclared variable 'zz'",
     ]);
   });
 
@@ -223,7 +223,7 @@ describe("no echo of an earlier error", () => {
         "VAR_GLOBAL g : INT; g : REAL; END_VAR\nFUNCTION_BLOCK FB\nVAR g : BOOL; d : DATE; t : TIME; r : REAL; END_VAR\ng := r MOD 2 = 1;\nd := t;\nEND_FUNCTION_BLOCK\n",
       ),
     ).toEqual([
-      "1:21 Symbol 'G' already defined in scope 'global'",
+      "1:21 Symbol 'g' already defined in scope 'global'",
       `4:6 ${MOD_ERROR}`,
       "5:6 Cannot assign TIME to DATE",
     ]);
@@ -235,7 +235,7 @@ describe("no echo of an earlier error", () => {
       `CONFIGURATION C${n}\nVAR_GLOBAL g : ${type}; END_VAR\nRESOURCE R${n} ON PLC\nTASK T${n}(INTERVAL := T#10ms, PRIORITY := 1);\nPROGRAM I${n} WITH T${n} : P;\nEND_RESOURCE\nEND_CONFIGURATION\n`;
     const src = `${cfg(1, "INT")}${cfg(2, "REAL")}PROGRAM P\nVAR_EXTERNAL g : INT; END_VAR\nVAR r : REAL; y : INT; END_VAR\ny := g + r MOD 2;\nIF g + r MOD 2 THEN y := 1; END_IF\nEND_PROGRAM\n`;
     const both = [
-      "9:12 Global 'G' of CONFIGURATION C2 is also declared in CONFIGURATION C1; rename one of them",
+      "9:12 Global 'g' of CONFIGURATION C2 is also declared in CONFIGURATION C1; rename one of them",
       `18:10 ${MOD_ERROR}`,
     ];
     const condition = [
@@ -268,7 +268,7 @@ describe("no echo of an earlier error", () => {
         "PROGRAM Main\nVAR s : TrafficState; i : INT; END_VAR\nCASE s OF\n  TrafficState.RED: i := 1;\nEND_CASE;\ns := TrafficState.RED;\nEND_PROGRAM\n",
       ),
     ).toEqual([
-      "2:9 Undefined type 'TRAFFICSTATE' in PROGRAM 'MAIN'",
+      "2:9 Undefined type 'TrafficState' in PROGRAM 'Main'",
       "3:6 CASE selector must be an integer, bit, or enum type, got TRAFFICSTATE",
     ]);
     // Never declared as a type: an undeclared name, as before
@@ -276,7 +276,7 @@ describe("no echo of an earlier error", () => {
       errorsOf(
         "PROGRAM Main\nVAR i : INT; END_VAR\ni := Nope.RED;\nEND_PROGRAM\n",
       ),
-    ).toEqual(["3:6 Undeclared variable 'NOPE'"]);
+    ).toEqual(["3:6 Undeclared variable 'Nope'"]);
   });
 
   it("still generates nothing after an error", () => {
@@ -293,7 +293,7 @@ describe("what development's analysis reported stays", () => {
 
   it("an error before a syntax error on the same line", () => {
     expect(errorsOf(P("i := zz; i := 3 +;"))).toContain(
-      "7:6 Undeclared variable 'ZZ'",
+      "7:6 Undeclared variable 'zz'",
     );
     expect(errorsOf(P("i := r MOD 2; i := 3 +;"))).toContain(
       `7:6 ${MOD_ERROR}`,
@@ -302,12 +302,12 @@ describe("what development's analysis reported stays", () => {
       errorsOf(
         "PROGRAM Main\nVAR i : INT; END_VAR\ni := x $ 1;\nEND_PROGRAM\n",
       ),
-    ).toContain("3:6 Undeclared variable 'X'");
+    ).toContain("3:6 Undeclared variable 'x'");
   });
 
   it("a statement on the line after a missing semicolon", () => {
     expect(errorsOf(P("i := 1\ni := zz;"))).toContain(
-      "8:6 Undeclared variable 'ZZ'",
+      "8:6 Undeclared variable 'zz'",
     );
   });
 
@@ -316,7 +316,7 @@ describe("what development's analysis reported stays", () => {
       errorsOf(
         "PROGRAM Main\nVAR\n  x : INT;\nEND_VAR\nx := missingVar + 1;\n",
       ),
-    ).toContain("5:6 Undeclared variable 'MISSINGVAR'");
+    ).toContain("5:6 Undeclared variable 'missingVar'");
   });
 
   it("a misnamed argument of a FUNCTION declared twice", () => {
@@ -332,7 +332,7 @@ describe("what development's analysis reported stays", () => {
       errorsOf(
         "FUNCTION_BLOCK Der EXTENDS Basse\nVAR_INPUT q : INT; END_VAR\nq := 1; zz := 1;\nEND_FUNCTION_BLOCK\n",
       ),
-    ).toContain("3:9 Undeclared variable 'ZZ'");
+    ).toContain("3:9 Undeclared variable 'zz'");
   });
 });
 
@@ -381,8 +381,8 @@ describe("a library block's inherited members", () => {
       "6:'PRIV' is a PRIVATE variable of FUNCTION_BLOCK 'FB_L'; only 'FB_L' itself can access it",
     ]);
     expect(errors("nope").sort()).toEqual([
-      "4:Undeclared variable 'NOPE'",
-      "6:Undeclared variable 'NOPE'",
+      "4:Undeclared variable 'nope'",
+      "6:Undeclared variable 'nope'",
     ]);
   });
 });
@@ -396,11 +396,11 @@ describe("the shared-global in-out warning in the analysis", () => {
     "TASK T1(INTERVAL := T#10ms, PRIORITY := 1);\nTASK T2(INTERVAL := T#20ms, PRIORITY := 2);\nPROGRAM I1 WITH T1 : P1;\nPROGRAM I2 WITH T2 : P2;\n";
   const shared = (r: { warnings: { line: number; message: string }[] }) =>
     r.warnings
-      .filter((w) => w.message.includes("the shared global 'G'"))
+      .filter((w) => w.message.includes("the shared global 'g'"))
       .map((w) => `${w.line}:${w.message.slice(0, 54)}`);
 
   it("is given as the build gives it: more than one task, or threaded", () => {
-    const warned = ["8:VAR_IN_OUT 'X' refers to the shared global 'G' during "];
+    const warned = ["8:VAR_IN_OUT 'x' refers to the shared global 'g' during "];
     for (const [src, options] of [
       [source(TWO), {}],
       [source(ONE), { threaded: true }],
@@ -414,7 +414,7 @@ describe("the shared-global in-out warning in the analysis", () => {
 
   it("carries the POU it is in", () => {
     const w = analyze(source(TWO)).warnings.find((x) =>
-      x.message.includes("the shared global 'G'"),
+      x.message.includes("the shared global 'g'"),
     );
     expect(w?.pouName?.toUpperCase()).toBe("P1");
   });

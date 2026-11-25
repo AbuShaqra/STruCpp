@@ -356,14 +356,14 @@ PROGRAM Main
 END_PROGRAM
 `;
     expect(diags(src).errors).toEqual([
-      "10:14: Type mismatch for VAR_EXTERNAL 'GS' in function 'F': expected 'STRING' but found 'STRING(5)'",
+      "10:14: Type mismatch for VAR_EXTERNAL 'gs' in function 'F': expected 'STRING' but found 'STRING(5)'",
     ]);
   });
   it("is refused for a PROGRAM against a list global", () => {
     const src =
       "VAR_GLOBAL gs : STRING; END_VAR\nPROGRAM Main\nVAR_EXTERNAL gs : STRING(5); END_VAR\nEND_PROGRAM\n";
     expect(diags(src).errors).toEqual([
-      "3:14: Type mismatch for VAR_EXTERNAL 'GS' in program 'MAIN': expected 'STRING' but found 'STRING(5)'",
+      "3:14: Type mismatch for VAR_EXTERNAL 'gs' in program 'Main': expected 'STRING' but found 'STRING(5)'",
     ]);
   });
 });
@@ -398,7 +398,7 @@ VAR_EXTERNAL g5 : STRING; g : STRING(254); END_VAR
 END_PROGRAM
 `;
     expect(diags(src).errors).toEqual([
-      "10:14: Type mismatch for VAR_EXTERNAL 'G5' in program 'MAIN': expected 'STRING(5)' but found 'STRING'",
+      "10:14: Type mismatch for VAR_EXTERNAL 'g5' in program 'Main': expected 'STRING(5)' but found 'STRING'",
     ]);
   });
 });
@@ -498,9 +498,9 @@ describe("a list-qualified global in a test file", () => {
     expect(parsed.errors).toEqual([]);
     const r = analyzeTestFile(parsed.testFile!, src.symbolTables!, src.ast);
     expect(r.errors.map((e) => `${e.line}:${e.column}: ${e.message}`)).toEqual([
-      "2:16: 'GVL.X' is hidden by a test variable named X; rename it",
+      "2:16: 'GVL.x' is hidden by a test variable named X; rename it",
       "3:6: 'Y' is not a variable of global variable list 'GVL'",
-      "4:6: 'GVL.X' is hidden by a test variable named X; rename it",
+      "4:6: 'GVL.x' is hidden by a test variable named X; rename it",
     ]);
   });
 });

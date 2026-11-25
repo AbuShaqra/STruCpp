@@ -995,7 +995,7 @@ END_PROGRAM${CFG_R}`,
     );
     expect(r.success).toBe(true);
     expect(r.warnings.map((w) => w.message).join("\n")).toMatch(
-      /RETAIN on TON: this library does not export/,
+      /RETAIN on TON: the archive of library iec-standard-fb lists no internal variables/,
     );
     // The interface is still retained…
     const retained = (r.debugMap!.retainVars ?? []).map((v) => v.path);

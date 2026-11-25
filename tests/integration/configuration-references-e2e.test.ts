@@ -89,7 +89,7 @@ VAR_EXTERNAL x : INT; END_VAR
 END_PROGRAM
 `);
     expect(r.errors.map((e) => `${e.line}:${e.column}: ${e.message}`)).toEqual([
-      "3:12: Global 'X' of CONFIGURATION CFG is also declared in a top-level VAR_GLOBAL; rename one of them",
+      "3:12: Global 'x' of CONFIGURATION CFG is also declared in a top-level VAR_GLOBAL; rename one of them",
     ]);
   });
 

@@ -161,6 +161,17 @@ export interface ILTranspileResult {
   ilBodies?: Array<{ pou: string; line: number; column: number }>;
   /** Each label an IL body declares, as written, where it is written in the original source. */
   ilLabels?: Array<{ name: string; line: number; column: number }>;
+  /**
+   * Each IL operand in the generated ST (`line`, `column`, `length`) and the
+   * IL line and column that name it: a diagnostic at the operand belongs there.
+   */
+  operandOrigins?: Array<{
+    line: number;
+    column: number;
+    length: number;
+    ilLine: number;
+    ilColumn: number;
+  }>;
   /** Transpilation errors */
   errors: Array<{
     message: string;
@@ -169,8 +180,6 @@ export interface ILTranspileResult {
     severity: "error" | "warning";
     file?: string | undefined;
   }>;
-  // Note: error line numbers refer to lines in the *original* source for IL
-  // detection failures, and to generated ST for downstream parse errors.
-  // A bidirectional source map (IL ↔ ST line) would help debugging but is
-  // not yet emitted; tracked as a follow-up.
+  // Line numbers refer to the original source: the generated ST of an IL
+  // body is laid out on the lines of the IL instructions it comes from.
 }

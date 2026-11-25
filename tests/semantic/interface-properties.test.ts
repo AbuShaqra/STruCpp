@@ -119,7 +119,7 @@ END_PROPERTY
 END_INTERFACE
 `;
     expect(messages(source, ON)).toEqual([
-      "2:1 Property 'STATE' in INTERFACE 'IBARE' declares no accessor: declare GET and/or SET",
+      "2:1 Property 'State' in INTERFACE 'IBare' declares no accessor: declare GET and/or SET",
     ]);
   });
 
@@ -133,7 +133,7 @@ END_PROPERTY
 END_INTERFACE
 `;
     expect(messages(source, ON)).toEqual([
-      "2:1 GET of property 'STATE' in INTERFACE 'IBODY' has a body; an interface accessor is written GET END_GET",
+      "2:1 GET of property 'State' in INTERFACE 'IBody' has a body; an interface accessor is written GET END_GET",
     ]);
   });
 
@@ -161,7 +161,7 @@ END_PROPERTY
 END_FUNCTION_BLOCK
 `;
     expect(messages(ITF + fb, ON)).toEqual([
-      "10:1 FUNCTION_BLOCK 'FB_X' implements 'ISTATE' but does not provide property 'STATE'.",
+      "10:1 FUNCTION_BLOCK 'FB_X' implements 'IState' but does not provide property 'State'.",
     ]);
   });
 
@@ -183,7 +183,7 @@ END_PROPERTY
 END_FUNCTION_BLOCK
 `;
     expect(messages(ITF + fb, ON)).toEqual([
-      "12:1 FUNCTION_BLOCK 'FB_X' implements 'ISTATE' but its property 'STATE' has no GET accessor.",
+      "12:1 FUNCTION_BLOCK 'FB_X' implements 'IState' but its property 'State' has no GET accessor.",
     ]);
   });
 
@@ -202,7 +202,7 @@ END_PROPERTY
 END_FUNCTION_BLOCK
 `;
     expect(messages(ITF + fb, ON)).toEqual([
-      "16:1 FUNCTION_BLOCK 'FB_X' implements 'ISTATE' but its property 'LEVEL' has no SET accessor.",
+      "16:1 FUNCTION_BLOCK 'FB_X' implements 'IState' but its property 'Level' has no SET accessor.",
     ]);
   });
 
@@ -223,7 +223,7 @@ END_PROPERTY
 END_FUNCTION_BLOCK
 `;
     expect(messages(ITF + fb, ON)).toEqual([
-      "11:1 Property 'STATE' of FUNCTION_BLOCK 'FB_X' has type REAL, but 'ISTATE' declares it INT.",
+      "11:1 Property 'State' of FUNCTION_BLOCK 'FB_X' has type REAL, but 'IState' declares it INT.",
     ]);
   });
 
@@ -306,7 +306,7 @@ END_PROPERTY
 END_FUNCTION_BLOCK
 `;
     expect(messages(source, ON)).toEqual([
-      "15:1 FUNCTION_BLOCK 'FB_M' implements 'IMORE' but does not provide property 'LEVEL'.",
+      "15:1 FUNCTION_BLOCK 'FB_M' implements 'IMore' but does not provide property 'Level'.",
     ]);
   });
 });
@@ -332,7 +332,7 @@ END_PROGRAM
 
   it("a write to a property the interface declares without SET is refused", () => {
     expect(messages(program("  s.State := 3;"), ON)).toEqual([
-      "29:3 Property 'STATE' of INTERFACE 'ISTATE' has no SET accessor; it cannot be written through the interface.",
+      "29:3 Property 'State' of INTERFACE 'IState' has no SET accessor; it cannot be written through the interface.",
     ]);
   });
 
@@ -358,7 +358,7 @@ VAR fb : FB_W; w : IW; x : INT; END_VAR
 END_PROGRAM
 `;
     expect(messages(source, ON)).toEqual([
-      "18:8 Property 'TARGET' of INTERFACE 'IW' has no GET accessor; it cannot be read through the interface.",
+      "18:8 Property 'Target' of INTERFACE 'IW' has no GET accessor; it cannot be read through the interface.",
     ]);
   });
 
@@ -392,7 +392,7 @@ VAR fb : FB_M; m : IMore; END_VAR
 END_PROGRAM
 `;
     expect(messages(source, ON)).toEqual([
-      "35:3 Property 'STATE' of INTERFACE 'IMORE' has no SET accessor; it cannot be written through the interface.",
+      "35:3 Property 'State' of INTERFACE 'IMore' has no SET accessor; it cannot be written through the interface.",
     ]);
   });
 });

@@ -186,12 +186,12 @@ END_PROGRAM
     const tail =
       "a BIT has no address of its own; copy it to a BOOL variable first";
     expect(diag(src, { dialect: PROFILE }).errors).toEqual([
-      `18:30: VAR_IN_OUT 'IO' cannot be bound to the BIT member S.A: ${tail}`,
-      `19:23: VAR_OUTPUT 'O' cannot be bound to the BIT member S.B: ${tail}`,
+      `18:30: VAR_IN_OUT 'io' cannot be bound to the BIT member S.A: ${tail}`,
+      `19:23: VAR_OUTPUT 'o' cannot be bound to the BIT member S.B: ${tail}`,
       `20:11: ADR() cannot take the BIT member S.A: ${tail}`,
       `21:11: REF() cannot take the BIT member S.A: ${tail}`,
       `22:9: REF= cannot bind to the BIT member S.A: ${tail}`,
-      `23:9: REFERENCE TO input 'R' cannot be bound to the BIT member S.B: ${tail}`,
+      `23:9: REFERENCE TO input 'r' cannot be bound to the BIT member S.B: ${tail}`,
     ]);
   });
 });
@@ -283,7 +283,7 @@ END_PROGRAM
 `;
     expect(diag(src, { dialect: PROFILE }).errors).toEqual([
       `11:10: ADR() cannot take the BIT member S.A: ${tail}`,
-      `12:8: VAR_IN_OUT 'X' cannot be bound to the BIT member S.A: ${tail}`,
+      `12:8: VAR_IN_OUT 'x' cannot be bound to the BIT member S.A: ${tail}`,
       `13:8: REF= cannot bind to the BIT member S.B: ${tail}`,
       `14:11: REF() cannot take the BIT member S.A: ${tail}`,
       `15:10: ADR() cannot take the BIT member P^.A: ${tail}`,
@@ -342,7 +342,7 @@ END_PROGRAM
 `;
     expect(diag(src, { dialect: PROFILE }).errors).toEqual([
       `17:15: REF_LINK() cannot take the BIT member S.A: ${tail}`,
-      `18:16: VAR_OUTPUT 'O' cannot be bound to the BIT member S.B: ${tail}`,
+      `18:16: VAR_OUTPUT 'o' cannot be bound to the BIT member S.B: ${tail}`,
     ]);
   });
 
@@ -432,7 +432,7 @@ END_PROGRAM
     expect(
       diag(src, { features: ["+bit_type", "+pointer_to", "+property"] }).errors,
     ).toEqual([
-      `10:3: VAR_IN_OUT 'X' cannot be bound to the BIT member MKI.B: ${tail}`,
+      `10:3: VAR_IN_OUT 'x' cannot be bound to the BIT member MKI.B: ${tail}`,
       `15:10: ADR() cannot take the BIT member M.A: ${tail}`,
       `20:10: ADR() cannot take the BIT member P.A: ${tail}`,
       `9:10: ADR() cannot take the BIT member MKI.A: ${tail}`,

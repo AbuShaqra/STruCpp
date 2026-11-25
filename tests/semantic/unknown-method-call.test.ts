@@ -66,19 +66,19 @@ describe("method call on a variable", () => {
         "r := i.M(); i.M(); r := s.M(); r := e.M(); r := str.M(); r := arr.M();",
       ),
     ).toEqual([
-      "Cannot call method 'M' on 'I': it is not a function block instance",
-      "Cannot call method 'M' on 'I': it is not a function block instance",
-      "Cannot call method 'M' on 'S': it is not a function block instance",
-      "Cannot call method 'M' on 'E': it is not a function block instance",
-      "Cannot call method 'M' on 'STR': it is not a function block instance",
-      "Cannot call method 'M' on 'ARR': it is not a function block instance",
+      "Cannot call method 'M' on 'i': it is not a function block instance",
+      "Cannot call method 'M' on 'i': it is not a function block instance",
+      "Cannot call method 'M' on 's': it is not a function block instance",
+      "Cannot call method 'M' on 'e': it is not a function block instance",
+      "Cannot call method 'M' on 'str': it is not a function block instance",
+      "Cannot call method 'M' on 'arr': it is not a function block instance",
     ]);
   });
 
   it("refuses calling a member that is no instance as a method", () => {
     expect(errorsIn("inst.o(); s.a();")).toEqual([
-      "Cannot call 'INST.O': it is a member that is not a function block instance, not a method",
-      "Cannot call 'S.A': it is a member that is not a function block instance, not a method",
+      "Cannot call 'inst.o': it is a member that is not a function block instance, not a method",
+      "Cannot call 's.a': it is a member that is not a function block instance, not a method",
     ]);
   });
 
@@ -113,8 +113,8 @@ describe("method call on a variable", () => {
       { libraries: discoverStlibs("libs") },
     );
     expect(result.errors.map((e) => e.message)).toEqual([
-      "Cannot call method 'M' on 'P': it is not a function block instance",
-      "Cannot call method 'M' on 'RF': it is not a function block instance",
+      "Cannot call method 'M' on 'p': it is not a function block instance",
+      "Cannot call method 'M' on 'rf': it is not a function block instance",
       "Function block 'FB_A' has no method 'NOPE'",
     ]);
   });

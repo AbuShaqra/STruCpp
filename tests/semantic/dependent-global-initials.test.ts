@@ -29,7 +29,7 @@ PROGRAM Main VAR x : INT; END_VAR x := p^ + r^ + DINT_TO_INT(hi); END_PROGRAM
           (e) => `${e.line}:${e.column} ${e.message}`,
         ),
       ).toEqual([
-        "2:23 The initial value of global 'A' reads global 'B', which is no CONSTANT: an initial value is a constant expression",
+        "2:23 The initial value of global 'a' reads global 'b', which is no CONSTANT: an initial value is a constant expression",
       ]);
     });
 
@@ -66,7 +66,7 @@ PROGRAM Main VAR x : DINT; END_VAR x := hi; END_PROGRAM
           options,
         ).errors.map((e) => `${e.line}:${e.column} ${e.message}`),
       ).toEqual([
-        "1:83 The initial value of global 'HI' reads global 'D', which is no CONSTANT: an initial value is a constant expression",
+        "1:83 The initial value of global 'hi' reads global 'd', which is no CONSTANT: an initial value is a constant expression",
       ]);
     });
 
@@ -79,8 +79,8 @@ PROGRAM Main VAR x : DINT; END_VAR x := hi; END_PROGRAM
           options,
         ).errors.map((e) => `${e.line}:${e.column} ${e.message}`),
       ).toEqual([
-        "1:16 'V' is a variable-length ARRAY[*] in a VAR_GLOBAL: it needs fixed bounds there; ARRAY[*] is only a FUNCTION or METHOD VAR_INPUT, VAR_OUTPUT or VAR_IN_OUT, or a FUNCTION_BLOCK VAR_IN_OUT",
-        "1:58 The initial value of global 'HI' reads global 'V', which is no CONSTANT: an initial value is a constant expression",
+        "1:16 'v' is a variable-length ARRAY[*] in a VAR_GLOBAL: it needs fixed bounds there; ARRAY[*] is only a FUNCTION or METHOD VAR_INPUT, VAR_OUTPUT or VAR_IN_OUT, or a FUNCTION_BLOCK VAR_IN_OUT",
+        "1:58 The initial value of global 'hi' reads global 'v', which is no CONSTANT: an initial value is a constant expression",
       ]);
     });
 
@@ -94,8 +94,8 @@ PROGRAM Main VAR x : INT; END_VAR x := p^ + r^; END_PROGRAM
           { ...options, features: ["+pointer_to"] },
         ).errors.map((e) => `${e.line}:${e.column} ${e.message}`),
       ).toEqual([
-        "2:31 The initial value of global 'P' reads global 'G', which is no CONSTANT: an initial value is a constant expression",
-        "2:62 The initial value of global 'R' reads global 'G', which is no CONSTANT: an initial value is a constant expression",
+        "2:31 The initial value of global 'p' reads global 'g', which is no CONSTANT: an initial value is a constant expression",
+        "2:62 The initial value of global 'r' reads global 'g', which is no CONSTANT: an initial value is a constant expression",
       ]);
     });
 
@@ -128,8 +128,8 @@ PROGRAM Main VAR_EXTERNAL u : INT; END_VAR VAR x : INT; END_VAR x := u; END_PROG
           options,
         ).errors.map((e) => `${e.line}:${e.column} ${e.message}`),
       ).toEqual([
-        "4:23 The initial value of global 'U' reads global 'T', which is no CONSTANT: an initial value is a constant expression",
-        "4:52 The initial value of global 'W' reads global 'Z', which is no CONSTANT: an initial value is a constant expression",
+        "4:23 The initial value of global 'u' reads global 'T', which is no CONSTANT: an initial value is a constant expression",
+        "4:52 The initial value of global 'w' reads global 'z', which is no CONSTANT: an initial value is a constant expression",
       ]);
     });
   }

@@ -9,7 +9,7 @@
  */
 
 import type { AnalysisResult, EnclosingScope } from "strucpp";
-import { findEnclosingPOU } from "strucpp";
+import { decodeStringLiteral, findEnclosingPOU } from "strucpp";
 import { stripCommentsAndStrings } from "./lsp-utils.js";
 
 export type CursorContext =
@@ -48,7 +48,7 @@ export function getCursorContext(
   // may return "global" even though the cursor is inside a POU. Fall back to
   // text-based POU detection so dot-access and body completions still work.
   if (pouScope.kind === "global") {
-    pouScope = detectPOUFromText(lines, line);
+    pouScope = detectPOUFromText(lines, line, source.split("\n"));
   }
 
   if (pouScope.kind === "global") {
@@ -146,7 +146,12 @@ function methodOwnerFromText(
   return undefined;
 }
 
-function detectPOUFromText(lines: string[], cursorLine: number): EnclosingScope {
+/** `rawLines`: the source as written, where a TEST's quoted name still stands. */
+function detectPOUFromText(
+  lines: string[],
+  cursorLine: number,
+  rawLines: string[] = lines,
+): EnclosingScope {
   // Track nesting: when scanning backwards, END_* increases depth, openers decrease
   const pouPatterns: Array<{
     end: RegExp;
@@ -159,7 +164,7 @@ function detectPOUFromText(lines: string[], cursorLine: number): EnclosingScope 
     { end: /\bEND_FUNCTION(?!_BLOCK)\b/g, open: /\bFUNCTION(?!_BLOCK)\b/g, kind: "function" },
     { end: /\bEND_PROGRAM\b/g, open: /\bPROGRAM\b/g, kind: "program" },
     // TEST blocks are treated as "program" scope for completion purposes
-    { end: /\bEND_TEST\b/g, open: /\bTEST\b/g, kind: "program", namePattern: /\bTEST\s+'([^']+)'/ },
+    { end: /\bEND_TEST\b/g, open: /\bTEST\b/g, kind: "program", namePattern: /\bTEST\s+('(?:[^'$]|\$.|'')*'|"(?:[^"$]|\$.)*")/i },
   ];
 
   // Simple approach: scan backwards for the nearest unmatched POU opener
@@ -174,11 +179,18 @@ function detectPOUFromText(lines: string[], cursorLine: number): EnclosingScope 
       if (depth > 0) {
         // Extract name from the opener line
         const nameMatch = namePattern
-          ? lines[i].match(namePattern)
+          ? (rawLines[i] ?? "").match(namePattern)
           : upper.match(
               new RegExp(`\\b(?:PROGRAM|FUNCTION_BLOCK|FUNCTION|METHOD)\\s+(\\w+)`),
             );
-        const name = nameMatch?.[1] ?? "unknown";
+        const written = nameMatch?.[1];
+        // A TEST name is a string literal: its quotes and escapes are not part of it
+        const name =
+          written === undefined
+            ? "unknown"
+            : namePattern
+              ? decodeStringLiteral(written)
+              : written;
         if (kind !== "method") return { kind, name };
         const parentName = methodOwnerFromText(lines, i - 1);
         return parentName === undefined

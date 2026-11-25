@@ -399,7 +399,7 @@ TYPE S : STRUCT f1 : BOOL := GC.3; f2 : BOOL := GC.0; END_STRUCT END_TYPE
 TYPE S : STRUCT f1 : BOOL := GC.3; END_STRUCT END_TYPE
 `),
     ).toEqual([
-      "The default of STRUCT field 'S.F1' reads bit 3 of 'GC', whose value is not an integer literal; use a BOOL constant instead",
+      "The default of STRUCT field 'S.f1' reads bit 3 of 'GC', whose value is not an integer literal; use a BOOL constant instead",
     ]);
   });
 });
@@ -499,8 +499,8 @@ END_PROGRAM
 `;
   it("refuses binding a CONSTANT instance to an interface, not comparing it", () => {
     expect(errorsOf(CONST)).toEqual([
-      "The CONSTANT instance 'C' cannot be bound to interface I_A: a method called through it could change it",
-      "The CONSTANT instance 'GC' cannot be bound to interface I_A: a method called through it could change it",
+      "The CONSTANT instance 'c' cannot be bound to interface I_A: a method called through it could change it",
+      "The CONSTANT instance 'gc' cannot be bound to interface I_A: a method called through it could change it",
     ]);
   });
 

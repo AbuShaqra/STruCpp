@@ -51,7 +51,7 @@ describe("duplicate CONFIGURATION and RESOURCE globals", () => {
           errors(options, "VAR_GLOBAL r : INT := 1; r : INT := 2; END_VAR"),
         ).toEqual([
           {
-            message: "Symbol 'R' already defined in scope 'CFG'",
+            message: "Symbol 'r' already defined in scope 'Cfg'",
             line: 7,
             column: 26,
           },
@@ -69,8 +69,10 @@ describe("duplicate CONFIGURATION and RESOURCE globals", () => {
             `VAR_GLOBAL r : INT := 1; END_VAR\n${second}`,
           );
           expect(found).toHaveLength(1);
+          // Declared as r and R, the name keeps the message's spelling
+          const name = second.includes(" R :") ? "R" : "r";
           expect(found[0]!.message).toBe(
-            "Symbol 'R' already defined in scope 'CFG'",
+            `Symbol '${name}' already defined in scope 'Cfg'`,
           );
           expect(found[0]!.line).toBe(8);
         }
@@ -81,7 +83,7 @@ describe("duplicate CONFIGURATION and RESOURCE globals", () => {
           errors(options, "VAR_GLOBAL r, r : INT; END_VAR").map(
             (e) => e.message,
           ),
-        ).toEqual(["Symbol 'R' already defined in scope 'CFG'"]);
+        ).toEqual(["Symbol 'r' already defined in scope 'Cfg'"]);
       });
 
       it("refuses a duplicate within one RESOURCE", () => {
@@ -93,7 +95,7 @@ describe("duplicate CONFIGURATION and RESOURCE globals", () => {
           ),
         ).toEqual([
           {
-            message: "Symbol 'R' already defined in scope 'CFG.R1'",
+            message: "Symbol 'r' already defined in scope 'Cfg.R1'",
             line: 10,
             column: 12,
           },

@@ -3149,13 +3149,14 @@ export function getTestParser(): STParser {
  * lexer errors followed by the parser's, and the CST of what was recognised.
  *
  * @param source - The ST source code to parse
- * @returns Parse result with CST, any errors (lexer errors first) and the
- *   skipped pragma tokens
+ * @returns Parse result with CST, any errors (lexer errors first), the
+ *   skipped pragma tokens and the lexer's tokens (offsets into `source`)
  */
 export function parse(source: string): {
   cst: CstNode | null;
   errors: unknown[];
   pragmas: IToken[];
+  tokens: IToken[];
 } {
   const lexResult = tokens.tokenize(source);
 
@@ -3166,6 +3167,7 @@ export function parse(source: string): {
     cst,
     errors: [...lexResult.errors, ...parser.errors],
     pragmas: lexResult.groups[tokens.PRAGMA_GROUP] ?? [],
+    tokens: lexResult.tokens,
   };
 }
 
@@ -3174,12 +3176,14 @@ export function parse(source: string): {
  * {@link parse}, it keeps parsing after lexer errors.
  *
  * @param source - The test file source code to parse
- * @returns Parse result with CST and any errors
+ * @returns Parse result with CST, any errors, the skipped pragma tokens and
+ *   the lexer's tokens
  */
 export function parseTestSource(source: string): {
   cst: CstNode | null;
   errors: unknown[];
   pragmas: IToken[];
+  tokens: IToken[];
 } {
   const lexResult = tokens.tokenizeTest(source);
 
@@ -3191,5 +3195,6 @@ export function parseTestSource(source: string): {
     cst,
     errors: [...lexResult.errors, ...testParser.errors],
     pragmas: lexResult.groups[tokens.PRAGMA_GROUP] ?? [],
+    tokens: lexResult.tokens,
   };
 }

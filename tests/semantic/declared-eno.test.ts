@@ -80,7 +80,7 @@ END_PROGRAM
           options,
         );
         expect(fb.errors.map((e) => e.message)).toEqual([
-          "'ENO' of FUNCTION_BLOCK FB must be BOOL: it is the block's ENO output",
+          "'eno' of FUNCTION_BLOCK FB must be BOOL: it is the block's ENO output",
         ]);
         const prog = compile(
           `PROGRAM Main

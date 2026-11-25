@@ -78,8 +78,8 @@ END_PROGRAM
           options,
         );
         expect(r.errors).toEqual([
-          "Method 'F' of 'MAIN' has no parameter named 'X'",
-          "Method 'F' of 'MAIN' has no parameter named 'Y'",
+          "Method 'F' of 'Main' has no parameter named 'x'",
+          "Method 'F' of 'Main' has no parameter named 'y'",
         ]);
       });
 

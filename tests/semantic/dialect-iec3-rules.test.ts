@@ -259,7 +259,7 @@ END_PROGRAM
     expect(compiled.errors.map(at)).toEqual([
       `2:5: ${trailing("x_")}`,
       "2:19: POINTER TO needs the feature pointer_to",
-      "4:6: Undeclared variable 'UNDECLARED'",
+      "4:6: Undeclared variable 'undeclared'",
       "3:6: ADR needs the feature pointer_to",
     ]);
     expect(compiled.success).toBe(false);
@@ -686,9 +686,9 @@ d := 10_;
 ASSERT_EQ(d, 1_0);
 END_TEST
 `;
-    // A test file's AST holds the literal upper-cased, as its names.
+    // Spelled as written in the test file
     const errors = [
-      `2:17: ${underscore("T#1_MS")}`,
+      `2:17: ${underscore("T#1_ms")}`,
       `3:6: ${underscore("10_")}`,
     ];
     expect(testFileResult(SOURCE, TEST, IEC3).errors).toEqual(errors);

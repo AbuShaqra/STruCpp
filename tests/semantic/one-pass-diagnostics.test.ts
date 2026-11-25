@@ -71,7 +71,7 @@ describe("one-pass diagnostics", () => {
       expect(
         r.errors.map((e) => `${e.line}:${e.column}: ${e.message}`),
       ).toEqual([
-        "5:3: Symbol 'X' already defined in scope 'P'",
+        "5:3: Symbol 'x' already defined in scope 'P'",
         "7:6: CHAR#'☃' holds a character Windows-1252 lacks, which a CHAR cannot store; use a WCHAR literal (WCHAR#\"...\") for it",
       ]);
     });

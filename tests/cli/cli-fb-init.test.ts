@@ -102,9 +102,9 @@ describe("--check with init arguments and FB_init", () => {
         status: 1,
         diags: [
           "warning 3:8 FB_init is not run unless the feature fb_init is on",
-          "error 8:20 The init argument list of 'G' needs the feature fb_init",
-          "error 10:13 The init argument list of 'F' needs the feature fb_init",
-          "error 10:48 The init argument list of 'ARR' needs the feature fb_init",
+          "error 8:20 The init argument list of 'g' needs the feature fb_init",
+          "error 10:13 The init argument list of 'f' needs the feature fb_init",
+          "error 10:48 The init argument list of 'arr' needs the feature fb_init",
         ],
       });
     });
@@ -146,7 +146,7 @@ describe("compiling with fb_init", () => {
     const r = run(["libfb.st", "--feature", "+fb_init", "-o", out]);
     expect(r.status).toBe(1);
     expect(r.err + r.out).toContain(
-      "libfb.st:2:5: error: FB_init of 'T' is not supported yet: 'TON' comes from a library",
+      "libfb.st:2:5: error: FB_init of 't' is not supported yet: 'TON' comes from a library",
     );
     expect(existsSync(out)).toBe(false);
   });

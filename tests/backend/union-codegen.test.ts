@@ -218,8 +218,8 @@ PROGRAM Main VAR u : U_R; END_VAR END_PROGRAM
 `);
     expect(d.check).toEqual([]);
     expect(d.compile).toEqual([
-      "3:19 Member 'A' stored in UNION 'U_R' is a REFERENCE TO: a REFERENCE TO in a UNION is not supported yet",
-      "2:21 Member 'R' stored in UNION 'U_R' is a REFERENCE TO: a REFERENCE TO in a UNION is not supported yet",
+      "3:19 Member 'a' stored in UNION 'U_R' is a REFERENCE TO: a REFERENCE TO in a UNION is not supported yet",
+      "2:21 Member 'r' stored in UNION 'U_R' is a REFERENCE TO: a REFERENCE TO in a UNION is not supported yet",
     ]);
   });
 
@@ -236,10 +236,10 @@ END_PROGRAM
 `);
     expect(d.check).toEqual([]);
     expect(d.compile).toEqual([
-      "11:12 RETAIN of a UNION is not supported yet: 'U' is or holds UNION 'U_A'",
-      "12:16 RETAIN of a UNION is not supported yet: 'W' is or holds UNION 'U_A'",
-      "13:12 RETAIN of a UNION is not supported yet: 'FB' is or holds UNION 'U_A'",
-      "13:23 RETAIN of a UNION is not supported yet: 'A' is or holds UNION 'U_A'",
+      "11:12 RETAIN of a UNION is not supported yet: 'u' is or holds UNION 'U_A'",
+      "12:16 RETAIN of a UNION is not supported yet: 'w' is or holds UNION 'U_A'",
+      "13:12 RETAIN of a UNION is not supported yet: 'fb' is or holds UNION 'U_A'",
+      "13:23 RETAIN of a UNION is not supported yet: 'a' is or holds UNION 'U_A'",
     ]);
   });
 });

@@ -10,7 +10,13 @@
 import type { ILTranspileResult, POURegion } from "./il-types.js";
 import { extractPOURegions } from "./il-detector.js";
 import { parseILBody } from "./il-parser.js";
-import { convertILToST } from "./il-to-st.js";
+import {
+  convertILToST,
+  ORIGIN_END,
+  ORIGIN_LINE_END,
+  ORIGIN_START,
+  stripOrigins,
+} from "./il-to-st.js";
 
 /**
  * Transpile any IL bodies in the source to ST.
@@ -54,6 +60,7 @@ export function transpileILSource(
   // Rebuild the source, replacing IL bodies with ST equivalents.
   // Process regions in reverse order so offsets remain valid.
   let result = source;
+  const operandOrigins: NonNullable<ILTranspileResult["operandOrigins"]> = [];
   const ilLabels: NonNullable<ILTranspileResult["ilLabels"]> = [];
 
   for (let i = ilRegions.length - 1; i >= 0; i--) {
@@ -91,21 +98,36 @@ export function transpileILSource(
       errors.push(entry);
     }
 
-    // Reconstruct the POU: header + extra vars (if needed) + ST body + closing
-    let body = "";
-
-    // If the state machine needs extra variables, inject a VAR block
+    // Reconstruct the POU: header + extra vars (if needed) + ST body + closing.
+    // Each ST line goes on the line of the IL instruction it comes from, so a
+    // diagnostic in the body names the IL line; the POU keeps its line count.
+    const pieces: Array<{ text: string; at: number }> = [];
     if (convertResult.extraVars) {
-      // Insert VAR block with the state machine variables
-      body += "\n  VAR\n" + convertResult.extraVars + "\n  END_VAR\n";
+      // The state machine's variables, in a VAR block before the body
+      pieces.push({ text: "  VAR", at: 0 });
+      for (const line of convertResult.extraVars.split("\n")) {
+        pieces.push({ text: line, at: 0 });
+      }
+      pieces.push({ text: "  END_VAR", at: 0 });
     }
-
-    body += "\n" + convertResult.stBody + "\n";
-    // As many lines as the IL body, so a diagnostic after the POU keeps its line
-    const newPOU =
-      region.headerText +
-      fitLineCount(body, lineBreaks(region.bodyText)) +
-      region.closingText;
+    (convertResult.markedBody ?? convertResult.stBody)
+      .split("\n")
+      .forEach((text, i) => {
+        pieces.push({ text, at: convertResult.lineSources?.[i] ?? 0 });
+      });
+    const bodyOffset = region.startOffset + region.headerText.length;
+    const body = takeOrigins(
+      layOutOnSourceLines(
+        pieces,
+        region.bodyStartLine,
+        lineBreaks(region.bodyText),
+      ),
+      region.bodyStartLine,
+      bodyOffset - (source.lastIndexOf("\n", bodyOffset - 1) + 1),
+      source,
+      operandOrigins,
+    );
+    const newPOU = region.headerText + body + region.closingText;
 
     // Replace the original POU text in the source
     result =
@@ -120,6 +142,7 @@ export function transpileILSource(
     errors,
     ilBodies: ilRegions.map((r) => ilBodyStart(source, r)),
     ilLabels,
+    operandOrigins,
   };
 }
 
@@ -131,16 +154,104 @@ function lineBreaks(text: string): number {
 }
 
 /**
- * `text` with exactly `breaks` line breaks: blank lines appended, or the
- * excess lines joined by spaces (generated ST holds no line comment).
+ * ST `pieces` laid out over `breaks + 1` lines, the first being source line
+ * `firstLine`: each piece on the line of its IL instruction (`at`), or after
+ * the piece before it when that line is not later (`at` 0, or out of order),
+ * joined by spaces (generated ST holds no line comment).
  */
-function fitLineCount(text: string, breaks: number): string {
-  const lines = text.split("\n");
-  const have = lines.length - 1;
-  if (have <= breaks) return text + "\n".repeat(breaks - have);
-  const kept = lines.slice(0, breaks);
-  kept.push(lines.slice(breaks).join(" "));
-  return kept.join("\n");
+function layOutOnSourceLines(
+  pieces: ReadonlyArray<{ text: string; at: number }>,
+  firstLine: number,
+  breaks: number,
+): string {
+  const lines: string[][] = Array.from({ length: breaks + 1 }, () => []);
+  let cursor = 0;
+  for (const piece of pieces) {
+    const target = piece.at - firstLine;
+    if (piece.at > 0 && target > cursor) cursor = Math.min(target, breaks);
+    if (piece.text.trim() !== "") lines[cursor]!.push(piece.text.trim());
+  }
+  return lines.map((parts) => parts.join(" ")).join("\n");
+}
+
+/**
+ * `body` without the operand marks of the generated ST (il-to-st.ts
+ * markOrigin), each marked operand recorded in `out` with its position in the
+ * output (line from `firstLine`; the first line starts at column
+ * `firstColumnOffset` + 1) and the IL line and column naming it in `source`.
+ */
+function takeOrigins(
+  body: string,
+  firstLine: number,
+  firstColumnOffset: number,
+  source: string,
+  out: NonNullable<ILTranspileResult["operandOrigins"]>,
+): string {
+  const sourceLines = source.split("\n");
+  return body
+    .split("\n")
+    .map((line, i) => {
+      let text = "";
+      for (let k = 0; k < line.length; k++) {
+        if (line[k] !== ORIGIN_START) {
+          if (line[k] !== ORIGIN_END) text += line[k];
+          continue;
+        }
+        const close = line.indexOf(ORIGIN_LINE_END, k);
+        const end = line.indexOf(ORIGIN_END, close);
+        const ilLine = Number(line.slice(k + 1, close));
+        const operand = stripOrigins(line.slice(close + 1, end));
+        const at = ilOperandOffset(sourceLines[ilLine - 1] ?? "", operand);
+        out.push({
+          line: firstLine + i,
+          column: text.length + 1 + (i === 0 ? firstColumnOffset : 0),
+          length: operand.length,
+          ilLine,
+          ilColumn: at >= 0 ? at + 1 : 1,
+        });
+        text += operand;
+        k = end;
+      }
+      return text;
+    })
+    .join("\n");
+}
+
+/**
+ * The offset of `operand` in IL source line `line`: after its label and its
+ * operator, on word boundaries, outside comments (an inline function call
+ * names itself as the operator); -1 when it is not there.
+ */
+function ilOperandOffset(line: string, operand: string): number {
+  // Comments blanked, offsets kept
+  const code = line
+    .replace(/\(\*.*?\*\)/g, (c) => " ".repeat(c.length))
+    .replace(/\/\/.*$/, (c) => " ".repeat(c.length))
+    .toUpperCase();
+  const label = /^\s*[A-Z_][A-Z0-9_]*\s*:(?!=)/.exec(code)?.[0].length ?? 0;
+  const operator =
+    /^\s*[A-Z_][A-Z0-9_]*/.exec(code.slice(label))?.[0].length ?? 0;
+  const word = /[A-Za-z0-9_]/;
+  const want = operand.toUpperCase();
+  const find = (from: number): number => {
+    for (
+      let i = code.indexOf(want, from);
+      i >= 0;
+      i = code.indexOf(want, i + 1)
+    ) {
+      const before = code[i - 1] ?? "";
+      const after = code[i + want.length] ?? "";
+      if (
+        !(word.test(want[0]!) && word.test(before)) &&
+        !(word.test(want[want.length - 1]!) && word.test(after))
+      ) {
+        return i;
+      }
+    }
+    return -1;
+  };
+  const afterOperator = find(label + operator);
+  return afterOperator >= 0 ? afterOperator : find(label);
 }
 
 /** The first non-blank character of an IL body, and the POU's name from its header. */
