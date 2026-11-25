@@ -2201,6 +2201,41 @@ inline T XOR(T first, T second, Args... rest) noexcept {
     return XOR(T(iec_unwrap(first) ^ iec_unwrap(second)), rest...);
 }
 
+// AND/OR/XOR on a signed integer (CODESYS extension, as for SHL/SHR and the
+// infix operators): two's complement bits, the result in the same type.
+template<typename T, std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
+inline T AND(T a, T b) noexcept {
+    return T(static_cast<iec_underlying_type_t<T>>(iec_unwrap(a) & iec_unwrap(b)));
+}
+
+template<typename T, typename... Args,
+    std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
+inline T AND(T first, T second, Args... rest) noexcept {
+    return AND(AND(first, second), rest...);
+}
+
+template<typename T, std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
+inline T OR(T a, T b) noexcept {
+    return T(static_cast<iec_underlying_type_t<T>>(iec_unwrap(a) | iec_unwrap(b)));
+}
+
+template<typename T, typename... Args,
+    std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
+inline T OR(T first, T second, Args... rest) noexcept {
+    return OR(OR(first, second), rest...);
+}
+
+template<typename T, std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
+inline T XOR(T a, T b) noexcept {
+    return T(static_cast<iec_underlying_type_t<T>>(iec_unwrap(a) ^ iec_unwrap(b)));
+}
+
+template<typename T, typename... Args,
+    std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
+inline T XOR(T first, T second, Args... rest) noexcept {
+    return XOR(XOR(first, second), rest...);
+}
+
 // =============================================================================
 // Variadic Selection Functions (ANY_ELEMENTARY)
 // =============================================================================

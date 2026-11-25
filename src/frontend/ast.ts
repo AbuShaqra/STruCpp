@@ -883,6 +883,8 @@ export interface FunctionCallExpression extends TypedNode {
   libraryFunction?: string;
   /** Set by the type checker: the call is the built-in operator of this name (`__ISVALIDREF`, `XSIZEOF`). */
   vendorOperator?: VendorOperator;
+  /** Set by the type checker: MUL or DIV of a TIME/LTIME by a number (IEC 61131-3 Table 35), built as this operator. */
+  durationOperator?: "*" | "/";
 }
 
 /** Built-in operators beyond IEC 61131-3, each enabled by a dialect feature. */

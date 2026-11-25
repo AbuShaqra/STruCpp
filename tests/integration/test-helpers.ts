@@ -13,6 +13,7 @@ import { compile } from '../../src/index.js';
 import { parseTestFile } from '../../src/testing/test-parser.js';
 import { generateTestMain, buildPOUInfoFromAST } from '../../src/backend/test-main-gen.js';
 import { uppercaseSource } from '../../src/frontend/lexer.js';
+import { resolveDialect } from '../../src/dialect.js';
 import { analyzeTestFile } from '../../src/semantic/analyzer.js';
 
 /** Resolved path to the C++ runtime headers */
@@ -249,6 +250,10 @@ export interface RunE2ETestPipelineOptions {
   tempDirPrefix?: string;
   /** Additional compile options passed to compile() */
   compileOptions?: Record<string, unknown>;
+  /** Hand the source AST to the test file's analysis, as the CLI does. */
+  passSourceAst?: boolean;
+  /** Feature changes (`+name`) of the run, applied to the test file's analysis as the CLI does. */
+  testFeatures?: string[];
 }
 
 /**
@@ -291,7 +296,14 @@ export function runE2ETestPipeline(
 
   // 3b. Semantic analysis of test file
   if (parseResult.testFile && result.symbolTables) {
-    const analysisResult = analyzeTestFile(parseResult.testFile, result.symbolTables);
+    const analysisResult = analyzeTestFile(
+      parseResult.testFile,
+      result.symbolTables,
+      opts.passSourceAst === true ? result.ast : undefined,
+      opts.testFeatures !== undefined
+        ? resolveDialect({ features: opts.testFeatures })
+        : undefined,
+    );
     if (analysisResult.errors.length > 0) {
       throw new Error(
         `Test semantic analysis failed: ${analysisResult.errors.map((e) => e.message).join(', ')}`,

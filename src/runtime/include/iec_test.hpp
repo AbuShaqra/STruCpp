@@ -102,6 +102,69 @@ inline std::string to_display_string(const strucpp::IECStringVar<N>& value) {
     return std::string("'") + cp1252_display(value.get().c_str()) + "'";
 }
 
+/** WSTRING text (UTF-16) as UTF-8, for the console and JSON; a lone surrogate shows as U+FFFD. */
+inline std::string utf16_display(const char16_t* value, size_t n) {
+    std::string out;
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t cp = value[i];
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < n &&
+            value[i + 1] >= 0xDC00 && value[i + 1] <= 0xDFFF) {
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (value[i + 1] - 0xDC00);
+            ++i;
+        } else if (cp >= 0xD800 && cp <= 0xDFFF) {
+            cp = 0xFFFD;
+        }
+        if (cp < 0x80) {
+            out += static_cast<char>(cp);
+        } else if (cp < 0x800) {
+            out += static_cast<char>(0xC0 | (cp >> 6));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            out += static_cast<char>(0xE0 | (cp >> 12));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        } else {
+            out += static_cast<char>(0xF0 | (cp >> 18));
+            out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        }
+    }
+    return out;
+}
+
+// const char16_t* (a WSTRING literal)
+inline std::string to_display_string(const char16_t* value) {
+    if (!value) return "(null)";
+    size_t n = 0;
+    while (value[n] != 0) ++n;
+    return std::string("\"") + utf16_display(value, n) + "\"";
+}
+
+template<size_t N>
+inline std::string to_display_string(const strucpp::IECWString<N>& value) {
+    return std::string("\"") + utf16_display(value.c_str(), value.length()) + "\"";
+}
+
+template<size_t N>
+inline std::string to_display_string(const strucpp::IECWStringVar<N>& value) {
+    return std::string("\"") + utf16_display(value.c_str(), value.length()) + "\"";
+}
+
+// CHAR and WCHAR as their character literal
+inline std::string to_display_string(const char& value) {
+    return std::string("'") + cp1252_display(std::string(1, value).c_str()) + "'";
+}
+inline std::string to_display_string(const char16_t& value) {
+    return std::string("\"") + utf16_display(&value, 1) + "\"";
+}
+inline std::string to_display_string(const IECVar<char>& value) {
+    return to_display_string(value.get());
+}
+inline std::string to_display_string(const IECVar<char16_t>& value) {
+    return to_display_string(value.get());
+}
+
 // ============================================================================
 // JSON helpers (no external library — simple char-by-char escaping)
 // ============================================================================

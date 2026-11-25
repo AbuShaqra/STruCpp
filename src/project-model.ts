@@ -25,6 +25,7 @@ import type {
 } from "./frontend/ast.js";
 import type { CompileError, SourceSpan } from "./types.js";
 import { walkAST } from "./ast-utils.js";
+import { IEC_DEFAULT_STRING_LENGTH } from "./semantic/string-default-length.js";
 
 // =============================================================================
 // Project Model Interfaces
@@ -326,6 +327,39 @@ export function collectFileScopeGlobals(
     }
   }
   return globals;
+}
+
+/** A STRING/WSTRING declaration's length; a plain one has the default length. */
+function declaredStringLength(decl: {
+  typeName: string;
+  maxLength?: number | string;
+}): number | string | undefined {
+  const upper = decl.typeName.toUpperCase();
+  if (upper !== "STRING" && upper !== "WSTRING") return undefined;
+  const len = decl.maxLength ?? IEC_DEFAULT_STRING_LENGTH;
+  return typeof len === "string" ? len.toUpperCase() : len;
+}
+
+/** Two STRING/WSTRING declarations of different lengths (constant-named lengths of the same name agree). */
+function stringLengthsDiffer(
+  a: { typeName: string; maxLength?: number | string },
+  b: { typeName: string; maxLength?: number | string },
+): boolean {
+  const la = declaredStringLength(a);
+  const lb = declaredStringLength(b);
+  if (la === undefined || lb === undefined) return false;
+  if (typeof la !== typeof lb) return false;
+  return la !== lb;
+}
+
+/** `STRING(n)` as declared, for a mismatch message. */
+function stringTypeText(decl: {
+  typeName: string;
+  maxLength?: number | string;
+}): string {
+  return decl.maxLength !== undefined
+    ? `${decl.typeName}(${decl.maxLength})`
+    : decl.typeName;
 }
 
 /**
@@ -1049,7 +1083,7 @@ export class ProjectModelBuilder {
     // Build a map of all global variables across all configurations
     const globalVarMap = new Map<
       string,
-      { typeName: string; configName: string }
+      { typeName: string; configName: string; maxLength?: number | string }
     >();
 
     for (const config of this.configurations) {
@@ -1072,6 +1106,9 @@ export class ProjectModelBuilder {
           globalVarMap.set(key, {
             typeName: globalVar.typeName,
             configName: config.name,
+            ...(globalVar.maxLength !== undefined
+              ? { maxLength: globalVar.maxLength }
+              : {}),
           });
         }
       }
@@ -1104,7 +1141,10 @@ export class ProjectModelBuilder {
   private checkVarExternalReferences(
     externals: VarExternalDeclaration[],
     ownerLabel: string,
-    globalVarMap: Map<string, { typeName: string; configName: string }>,
+    globalVarMap: Map<
+      string,
+      { typeName: string; configName: string; maxLength?: number | string }
+    >,
   ): void {
     for (const ext of externals) {
       const globalVar = globalVarMap.get(ext.name.toUpperCase());
@@ -1122,6 +1162,14 @@ export class ProjectModelBuilder {
       ) {
         this.addError(
           `Type mismatch for VAR_EXTERNAL '${ext.name}' in ${ownerLabel}: expected '${globalVar.typeName}' but found '${ext.typeName}'`,
+          span?.startLine ?? 0,
+          span?.startCol ?? 0,
+          span?.file,
+        );
+      } else if (stringLengthsDiffer(globalVar, ext)) {
+        // The external is a pointer to the global's storage: a STRING of another length is another C++ type.
+        this.addError(
+          `Type mismatch for VAR_EXTERNAL '${ext.name}' in ${ownerLabel}: expected '${stringTypeText(globalVar)}' but found '${stringTypeText(ext)}'`,
           span?.startLine ?? 0,
           span?.startCol ?? 0,
           span?.file,

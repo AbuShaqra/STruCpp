@@ -505,7 +505,8 @@ const TEMPORAL_CPP: Record<
  * date-and-time is split off (in every form, Table 26), and with a long
  * (Ed. 3) form on either side the value goes through the long form's unit (ns,
  * days for LDATE): a 32-bit source widens exactly, a 32-bit target is
- * truncated to its unit and taken modulo 2^32. A duration and a date or
+ * truncated to its unit and taken modulo 2^32. A time of day and a duration
+ * convert as the time since midnight. A duration and a date or
  * date-and-time convert as the time since 1970-01-01, as the runtime's DATE
  * and DT count it (a date by whole days).
  * Undefined for any other pair.
@@ -542,7 +543,13 @@ function longTemporalConversion(
   const tk = sinceEpoch && t === "duration" ? "dt" : t;
   let long: string;
   if (fk === tk) long = value;
-  else if (fk === "dt" && tk === "date") {
+  // A time of day and a duration: the time since midnight, in ns
+  else if (
+    (fk === "tod" && tk === "duration") ||
+    (fk === "duration" && tk === "tod")
+  ) {
+    long = value;
+  } else if (fk === "dt" && tk === "date") {
     long = `iec_floor_div(${value}, ${NS_PER_DAY})`;
   } else if (f === "dt" && t === "tod") long = `TOD_NORMALIZE(${value})`;
   else if (fk === "date" && tk === "dt") long = `(${value}) * ${NS_PER_DAY}`;
@@ -2333,6 +2340,9 @@ export class CodeGenerator {
       }
     }
 
+    // A user FUNCTION called in a global initial value is declared before the globals.
+    this.emitGlobalInitFunctionPrototypes(ast);
+
     // Generate top-level global variables (GVL files). One that holds a
     // function block waits for the FB classes and late types below.
     this.emitGvlGlobals(ast, false);
@@ -2661,7 +2671,7 @@ export class CodeGenerator {
    * rule the project model applies to PROGRAMs (see `addVarExternal`).
    */
   private collectFBExternals(
-    fb: CompilationUnit["functionBlocks"][0],
+    fb: Pick<CompilationUnit["functionBlocks"][0], "varBlocks">,
   ): Array<{ name: string; typeName: string; cppType: string }> {
     const fileScopeGlobals = this.fileScopeGlobalNames();
     const externals: Array<{
@@ -3075,6 +3085,32 @@ export class CodeGenerator {
   /**
    * Generate header declaration for a function.
    */
+  /**
+   * Prototypes of the user FUNCTIONs called in an initial value of a GVL,
+   * or CONFIGURATION global, whose storage is emitted before the
+   * function declarations. A repeated declaration is legal C++.
+   */
+  private emitGlobalInitFunctionPrototypes(ast: CompilationUnit): void {
+    const blocks: VarBlock[] = [...ast.globalVarBlocks];
+    for (const config of ast.configurations) blocks.push(...config.varBlocks);
+    const called = new Set<string>();
+    for (const block of blocks) {
+      walkAST(block, (node) => {
+        if (node.kind === "FunctionCallExpression") {
+          called.add(
+            (node as FunctionCallExpression).functionName.toUpperCase(),
+          );
+        }
+      });
+    }
+    if (called.size === 0) return;
+    for (const func of ast.functions) {
+      if (called.has(func.name.toUpperCase())) {
+        this.generateFunctionHeaderDeclaration(func);
+      }
+    }
+  }
+
   private generateFunctionHeaderDeclaration(
     func: CompilationUnit["functions"][0],
   ): void {
@@ -4100,6 +4136,27 @@ export class CodeGenerator {
       this.currentFunctionResultType = func.returnType.name;
       this.enterScope(func.varBlocks, func.varBlocks);
 
+      // A VAR_EXTERNAL of a CONFIGURATION global: a local pointer to its GlobalVar, accessed like a PROGRAM's.
+      const externalDecls = this.collectFBExternals(func);
+      if (externalDecls.length > 0) {
+        const ns = this.projectModel
+          ? getProjectNamespace(this.projectModel)
+          : "strucpp";
+        for (const e of externalDecls) {
+          this.emit(
+            `    GlobalVar<${e.cppType}>* const ${e.name} = &${ns}::${globalCppName(e.name)};`,
+          );
+        }
+      }
+      this.programExternals = new Set(
+        externalDecls.map((e) => e.name.toUpperCase()),
+      );
+      this.compositeExternals = new Set(
+        externalDecls
+          .filter((e) => !isElementaryType(e.typeName))
+          .map((e) => e.name.toUpperCase()),
+      );
+
       // Declare local variables (VAR, VAR_TEMP) — same pattern as method locals
       for (const block of func.varBlocks) {
         if (block.blockType === "VAR" || block.blockType === "VAR_TEMP") {
@@ -4125,6 +4182,8 @@ export class CodeGenerator {
         this.emit("    // Empty function body");
       }
       this.exitScope();
+      this.programExternals = new Set();
+      this.compositeExternals = new Set();
       this.currentFunctionName = undefined;
       this.emit(`    return ${funcName}_result;`);
     };
@@ -4313,7 +4372,7 @@ export class CodeGenerator {
       // C++ type the same way the constructor params do (must agree).
       const extTypes = prog.varExternal.map((ext) =>
         this.mapTypeRefToCpp(
-          this.toParamTypeRef(this.projectVarToTypeRef(ext)),
+          this.byRefParamTypeRef(this.projectVarToTypeRef(ext)),
         ),
       );
       this.emitHeader("    // External variables (pointers to shared globals)");
@@ -4350,7 +4409,7 @@ export class CodeGenerator {
       const params = prog.varExternal
         .map((ext) => {
           const cppType = this.mapTypeRefToCpp(
-            this.toParamTypeRef(this.projectVarToTypeRef(ext)),
+            this.byRefParamTypeRef(this.projectVarToTypeRef(ext)),
           );
           return `GlobalVar<${cppType}>* ${ext.name}_ref`;
         })
@@ -4422,7 +4481,7 @@ export class CodeGenerator {
       const params = prog.varExternal
         .map((ext) => {
           const cppType = this.mapTypeRefToCpp(
-            this.toParamTypeRef(this.projectVarToTypeRef(ext)),
+            this.byRefParamTypeRef(this.projectVarToTypeRef(ext)),
           );
           return `GlobalVar<${cppType}>* ${ext.name}_ref`;
         })
@@ -4733,6 +4792,21 @@ export class CodeGenerator {
     return this.reachedPrograms.has(upper)
       ? this.sharedProgramInstance(upper)
       : undefined;
+  }
+
+  /**
+   * Constructor arguments of a PROGRAM instance declared outside a CONFIGURATION
+   * (a test variable): the CONFIGURATION globals its VAR_EXTERNALs reach.
+   */
+  programInstanceArgs(typeName: string): string | undefined {
+    const upper = typeName.toUpperCase();
+    const prog = this.ast?.programs.find((p) => p.name.toUpperCase() === upper);
+    if (!prog) return undefined;
+    const externals = this.collectFBExternals(prog);
+    if (externals.length === 0) return undefined;
+    return externals
+      .map((e) => `&strucpp::${globalCppName(e.name)}`)
+      .join(", ");
   }
 
   /** The reached PROGRAM `name` names when no local variable shadows it. */
@@ -8466,7 +8540,7 @@ export class CodeGenerator {
    * Lightweight type inference for an expression using the current scope's
    * variable type map. Returns the IEC type name (upper case) or undefined.
    */
-  private inferExprType(expr: Expression): string | undefined {
+  protected inferExprType(expr: Expression): string | undefined {
     // A 0 stored in an interface (interface_zero) is NULL, untyped like it
     if (expr.kind === "LiteralExpression" && expr.asNull === true) {
       return undefined;
@@ -8722,7 +8796,11 @@ export class CodeGenerator {
     }
     const unit = this.temporalConversionUnit(fromTypeUpper);
     if (!unit) return argExpr;
-    return unit.toUnit === undefined ? argExpr : `${unit.toUnit}(${argExpr})`;
+    if (unit.toUnit === undefined) return argExpr;
+    // An LDATE literal is a raw day count: DATE_TO_NS takes the LDATE.
+    return fromTypeUpper === "LDATE"
+      ? `${unit.toUnit}(IEC_LDATE(${argExpr}))`
+      : `${unit.toUnit}(${argExpr})`;
   }
 
   /**
@@ -8825,10 +8903,12 @@ export class CodeGenerator {
       ((name === "MAX" || name === "MIN") &&
         stripEnEno([...argExprs]).length === 2);
 
-    // Infer types for all arguments
-    const argTypes: (string | undefined)[] = argExprs.map((a) =>
-      this.inferExprType(a.value),
-    );
+    // Infer types for all arguments; a generic result left unrefined (ANY)
+    // names no C++ type.
+    const argTypes: (string | undefined)[] = argExprs.map((a) => {
+      const t = this.inferExprType(a.value);
+      return t !== undefined && t.startsWith("ANY") ? undefined : t;
+    });
 
     // Separate variable types from literal types
     const varTypes: string[] = [];
@@ -8931,8 +9011,13 @@ export class CodeGenerator {
     ) {
       return;
     }
+    // A variable, or a literal cast to IEC_<T> above, is an IECVar<T>.
     const isVariable = argExprs.map(
-      (a) => !isEnEnoArgument(a) && a.value.kind === "VariableExpression",
+      (a, i) =>
+        !isEnEnoArgument(a) &&
+        (a.value.kind === "VariableExpression" ||
+          (literalIndices.includes(i) &&
+            (args[i] ?? "").startsWith("static_cast<IEC_"))),
     );
     for (let i = 0; i < args.length && i < argExprs.length; i++) {
       if (
@@ -9157,6 +9242,24 @@ export class CodeGenerator {
           this.keepReferenceWrapper = kept;
         }
         return vendorOperatorCpp(expr.vendorOperator, arg);
+      }
+      // MUL/DIV of a TIME or LTIME by a number: built as `*` / `/`
+      if (expr.durationOperator !== undefined) {
+        const named = (n: string): Expression | undefined =>
+          expr.arguments.find((a) => a.name?.toUpperCase() === n)?.value;
+        const left = named("IN1") ?? expr.arguments[0]!.value;
+        const right = named("IN2") ?? expr.arguments[1]!.value;
+        const binary: BinaryExpression = {
+          kind: "BinaryExpression",
+          operator: expr.durationOperator,
+          left,
+          right,
+          sourceSpan: expr.sourceSpan,
+          ...(expr.resolvedType !== undefined
+            ? { resolvedType: expr.resolvedType }
+            : {}),
+        };
+        return `(${this.generateExpression(binary)})`;
       }
       // DIV_TIME(t, n) of a TIME faults on a zero divisor, as `t / n` does
       if (
