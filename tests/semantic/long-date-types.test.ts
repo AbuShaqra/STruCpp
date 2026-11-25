@@ -69,9 +69,14 @@ ldt := LDATE_AND_TIME#2024-01-16-00:00:00;`,
             options,
           ),
         ).toEqual([]);
-        expect(errors("tm := ldt - ldt;", options)).toEqual([
-          "Cannot assign LTIME to TIME",
-        ]);
+        // Converted as LTIME_TO_TIME: a warning by default
+        expect(errors("tm := ldt - ldt;", options)).toEqual(
+          label === "no dialect"
+            ? []
+            : [
+                "Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+              ],
+        );
       });
 
       it("splits and joins long instants in conversions", () => {

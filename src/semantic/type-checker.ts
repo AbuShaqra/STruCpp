@@ -1933,11 +1933,25 @@ export class TypeChecker {
     }
     let inner = value;
     while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
+    // A global (constant) read before the initial value is typed: its type
+    const named =
+      inner.kind === "VariableExpression" &&
+      inner.resolvedType === undefined &&
+      inner.fieldAccess.length === 0 &&
+      inner.subscripts.length === 0 &&
+      !inner.isDereference
+        ? this.symbolTables.globalScope.lookup(inner.name)
+        : undefined;
+    const resolved =
+      inner.resolvedType ??
+      (named?.kind === "variable" || named?.kind === "constant"
+        ? named.type
+        : undefined);
     const valueType =
       inner.kind === "LiteralExpression"
         ? inner.literalType
-        : inner.resolvedType?.typeKind === "elementary"
-          ? this.aliasBase((inner.resolvedType as ElementaryType).name)
+        : resolved?.typeKind === "elementary"
+          ? this.aliasBase((resolved as ElementaryType).name)
           : undefined;
     if (
       valueType === undefined ||
@@ -1952,8 +1966,17 @@ export class TypeChecker {
       return value;
     }
     this.addWarning(message, span.startLine, span.startCol, span.file);
-    // The node itself becomes the call, so every holder of it (the project
-    // model's copy of a declaration included) sees the conversion
+    this.convertLtimeInPlace(value);
+    return value;
+  }
+
+  /**
+   * `value` (an LTIME) becomes `LTIME_TO_TIME(value)`. The node itself
+   * becomes the call, so every holder of it (the project model's copy of a
+   * declaration included) sees the conversion.
+   */
+  private convertLtimeInPlace(value: Expression): void {
+    const span = value.sourceSpan;
     const original = { ...value } as Expression;
     const node = value as unknown as Record<string, unknown>;
     for (const key of Object.keys(node)) delete node[key];
@@ -1970,8 +1993,9 @@ export class TypeChecker {
         },
       ],
     };
+    const time = ELEMENTARY_TYPES["TIME"];
+    if (time !== undefined) call.resolvedType = time;
     Object.assign(node, call);
-    return value;
   }
 
   /**
@@ -5970,6 +5994,7 @@ export class TypeChecker {
               ? this.resolveExprType(value, scope)
               : undefined;
           if (targetType !== undefined && valueType !== undefined) {
+            this.ltimeStores.add(value);
             this.validateAssignment(
               targetType,
               valueType,
@@ -6720,6 +6745,7 @@ export class TypeChecker {
         if (this.reportedCharValues.has(decl.initialValue)) continue;
         const valueType = this.resolveExprType(decl.initialValue, scope);
         if (!valueType) continue;
+        this.ltimeStores.add(decl.initialValue);
         this.validateAssignment(
           targetType,
           valueType,
@@ -7839,6 +7865,7 @@ export class TypeChecker {
           break;
         }
         const errorsBefore = this.errors.length;
+        this.ltimeStores.add(stmt.value);
         this.validateAssignment(targetType, valueType, stmt.target, stmt.value);
         this.softenResultStore(
           errorsBefore,
@@ -8507,6 +8534,9 @@ export class TypeChecker {
     return bits(wider) < 32 ? "DINT" : wider;
   }
 
+  /** Stored values (statements, initial values) an LTIME into TIME converts in. */
+  private ltimeStores = new WeakSet<Expression>();
+
   private validateAssignment(
     targetType: IECType | undefined,
     valueType: IECType | undefined,
@@ -8660,6 +8690,7 @@ export class TypeChecker {
       // default, an error under iec-3 and --strict
       if (
         argument === undefined &&
+        this.ltimeStores.has(value) &&
         targetType.typeKind === "elementary" &&
         valueType.typeKind === "elementary" &&
         this.elementaryAliasName(tName) === "TIME" &&
@@ -8671,6 +8702,7 @@ export class TypeChecker {
           this.addError(message, span.startLine, span.startCol, span.file);
         } else {
           this.addWarning(message, span.startLine, span.startCol, span.file);
+          this.convertLtimeInPlace(value);
         }
         return;
       }

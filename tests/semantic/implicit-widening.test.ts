@@ -169,9 +169,16 @@ describe("implicit widening (Figures 11 and 12)", () => {
       ).toEqual(
         strict ? [] : ["Implicit narrowing conversion from UINT to INT"],
       );
+      // LTIME into TIME converts: a warning by default, an error under iec-3 and --strict
       expect(
         assign("LTIME", "TIME", options).errors.map((e) => e.message),
-      ).toEqual(["Cannot assign LTIME to TIME"]);
+      ).toEqual(
+        label === "no dialect"
+          ? []
+          : [
+              "Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+            ],
+      );
       expect(assign("UINT", "INT", options).errors.length > 0).toBe(strict);
     });
 
