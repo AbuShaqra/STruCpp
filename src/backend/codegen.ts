@@ -8527,6 +8527,59 @@ export class CodeGenerator {
   }
 
   /**
+   * The complement of an integer or bit-string `operand` in its type, cut to
+   * that type before and after `~` (C++ promotes a BYTE or WORD expression to
+   * int). Undefined for a BOOL or an operand of no known integer type.
+   */
+  private integerComplement(
+    operand: Expression,
+    operandCpp?: string,
+  ): string | undefined {
+    // Without a checked type (a test body) only a plain variable is typed reliably
+    const plain =
+      operand.kind === "VariableExpression" &&
+      operand.fieldAccess.length === 0 &&
+      operand.subscripts.length === 0 &&
+      !operand.isDereference;
+    const type =
+      operand.resolvedType !== undefined || plain
+        ? this.elementaryAliasBase(this.inferExprType(operand))
+        : undefined;
+    if (
+      type === undefined ||
+      (INTEGER_RANGES[type] === undefined &&
+        !["BYTE", "WORD", "DWORD", "LWORD"].includes(type))
+    ) {
+      return undefined;
+    }
+    const cpp = operandCpp ?? this.generateExpression(operand);
+    return `static_cast<${type}_t>(~static_cast<${type}_t>(${cpp}))`;
+  }
+
+  /** An elementary alias (`TYPE MyI : INT`, a subrange of one) followed to its base, upper-case. */
+  private elementaryAliasBase(name: string | undefined): string | undefined {
+    let current = name?.toUpperCase();
+    for (let i = 0; i < 16 && current !== undefined; i++) {
+      const decl = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === current,
+      );
+      const def = decl?.definition;
+      if (
+        def?.kind === "TypeReference" &&
+        (def.referenceKind ?? "none") === "none" &&
+        def.arrayDimensions === undefined
+      ) {
+        current = def.name.toUpperCase();
+      } else if (def?.kind === "SubrangeDefinition") {
+        current = def.baseType.name.toUpperCase();
+      } else {
+        return current;
+      }
+    }
+    return current;
+  }
+
+  /**
    * Generate C++ for a unary expression.
    */
   private generateUnaryExpression(expr: UnaryExpression): string {
@@ -8539,15 +8592,8 @@ export class CodeGenerator {
         if (contextType !== undefined) {
           return untypedNotCpp(contextType, operand);
         }
-        // NOT on non-BOOL ANY_BIT types must use bitwise complement (~)
-        const opType = this.inferExprType(expr.operand);
-        if (opType) {
-          const cat = getTypeCategory(opType.toUpperCase());
-          if (cat === "BIT" && opType.toUpperCase() !== "BOOL") {
-            return `~${operand}`;
-          }
-        }
-        return `!${operand}`;
+        // NOT of an integer or bit string: its complement (Table 31); of a BOOL: logical
+        return this.integerComplement(expr.operand, operand) ?? `!${operand}`;
       }
       case "-": {
         // Negating a variable wraps like `0 - x`; a literal stays as written
@@ -9080,6 +9126,45 @@ export class CodeGenerator {
   }
 
   /**
+   * SHL/SHR/ROL/ROR of a computed bit string (`ROL(w AND 16#FF, 4)`): C++
+   * promotes it to int, so it is passed as its bit-string type, which picks
+   * the width the shift or rotation works in.
+   */
+  private castComputedShiftOperand(
+    args: string[],
+    expr: FunctionCallExpression,
+    name: string,
+  ): void {
+    if (!["SHL", "SHR", "ROL", "ROR"].includes(name.toUpperCase())) return;
+    const i = expr.arguments.findIndex((a) => !isEnEnoArgument(a));
+    const arg = expr.arguments[i];
+    if (
+      arg === undefined ||
+      (arg.name !== undefined && arg.name.toUpperCase() !== "IN")
+    ) {
+      return;
+    }
+    // Only an operator result is promoted; a call returns its own type
+    if (
+      ![
+        "BinaryExpression",
+        "UnaryExpression",
+        "ParenthesizedExpression",
+      ].includes(arg.value.kind)
+    ) {
+      return;
+    }
+    const type = this.inferExprType(arg.value)?.toUpperCase();
+    if (
+      type === undefined ||
+      !["BYTE", "WORD", "DWORD", "LWORD"].includes(type)
+    ) {
+      return;
+    }
+    args[i] = `static_cast<IEC_${type}>(${args[i]})`;
+  }
+
+  /**
    * AND/OR/XOR whose arguments are of different integer or bit-string types:
    * every argument is passed as the call's type, which the checker gave as the
    * infix form's (a signed and an unsigned one widen). True when cast.
@@ -9578,6 +9663,16 @@ export class CodeGenerator {
           this.generateExpression(expr.arguments[0]!.value),
         );
       }
+      // NOT(x) of an integer or bit string: its complement in x's type, as `NOT x`
+      if (nameUpper === "NOT") {
+        const operands = stripEnEno(expr.arguments);
+        const operand = operands[0]?.value;
+        const complement =
+          operands.length === 1 && operand !== undefined
+            ? this.integerComplement(operand)
+            : undefined;
+        if (complement !== undefined) return complement;
+      }
 
       // 0. ADR(x) → &(x) (CODESYS address-of operator)
       if (nameUpper === "ADR") {
@@ -9733,6 +9828,7 @@ export class CodeGenerator {
         // code, and EN/ENO of a nested call not taken as operands.
         const charCall = this.charStdCall(stdFunc, expr, args);
         if (charCall !== undefined) return charCall;
+        this.castComputedShiftOperand(args, expr, stdFunc.name);
         if (!this.castBitwiseCallArgs(args, expr, stdFunc.name)) {
           this.harmonizeStdFuncArgs(args, expr.arguments, stdFunc);
         }

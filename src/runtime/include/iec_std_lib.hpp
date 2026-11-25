@@ -2244,13 +2244,6 @@ inline T XOR(T first, T second, Args... rest) noexcept {
     return XOR(T(iec_unwrap(first) ^ iec_unwrap(second)), rest...);
 }
 
-// NOT of a signed integer keeps its logical meaning, as the operator `NOT i`
-// does: 1 for 0, else 0, in the same type.
-template<typename T, std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>
-inline T NOT(T value) noexcept {
-    return T(static_cast<iec_underlying_type_t<T>>(!iec_unwrap(value)));
-}
-
 // AND/OR/XOR on a signed integer (CODESYS extension, as for SHL/SHR and the
 // infix operators): two's complement bits, the result in the same type.
 template<typename T, std::enable_if_t<is_any_int_v<T> && !is_any_bit_v<T>, int> = 0>

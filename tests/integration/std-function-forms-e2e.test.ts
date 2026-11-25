@@ -90,6 +90,58 @@ int main() {
 }
 `;
 
+const COMPLEMENT = `
+PROGRAM Main
+VAR w2 : WORD := 16#00F0; y2 : BYTE := 16#0F; i : INT := 5; z : INT := 0; d : DINT := 7;
+  u : UINT := 0; ul : ULINT := 0; si : SINT := 0; b : BOOL := TRUE; bb : BOOL; ok : BOOL;
+  ib : INT := -16; bt8 : BYTE := 16#0F; dd : DINT := -16; ww : WORD := 16#000F;
+  w : ARRAY[1..7] OF WORD; y : BYTE; r : ARRAY[1..12] OF LINT; s : ARRAY[1..8] OF LINT; END_VAR
+w[1] := NOT(w2 AND 16#0F);
+w[2] := NOT(w2 XOR 16#FFFF);
+w[3] := NOT(w2 OR 1);
+w[4] := NOT(SHR(w2, 1) AND 3);
+w[5] := NOT w2;
+w[6] := ROL(w2 AND 16#FFFF, 4);
+w[7] := ROR(w2 + 1, 1);
+y := NOT(y2 AND 16#F0);
+r[1] := NOT INT#0;
+r[2] := NOT i;
+r[3] := NOT(i);
+r[4] := NOT (d + 1);
+r[5] := NOT(-1);
+r[6] := NOT(16#FF);
+r[7] := NOT(SHL(i, 1));
+r[8] := NOT(IN := i);
+r[9] := NOT u;
+r[10] := NOT ul;
+r[11] := NOT si;
+r[12] := BOOL_TO_LINT((NOT w2) = 16#FF0F);
+bb := NOT b;
+ok := NOT(b);
+s[1] := OR(ib, bt8); s[2] := ib OR bt8;
+s[3] := OR(dd, ww); s[4] := dd OR ww;
+s[5] := BOOL_TO_LINT(SHL(y2 OR 0, 5) = 16#E0);
+s[6] := ROR(y2 OR 16#10, 1);
+s[7] := SHR(w2 XOR 16#FFFF, 4);
+s[8] := NOT z;
+END_PROGRAM
+`;
+
+const COMPLEMENT_MAIN = `
+#include <iostream>
+int main() {
+    static strucpp::Program_MAIN p;
+    p.run();
+    for (int k = 1; k <= 7; ++k) std::cout << p.W[k].get() << " ";
+    std::cout << int(p.Y.get()) << "|";
+    for (int k = 1; k <= 12; ++k) std::cout << p.R[k].get() << " ";
+    std::cout << p.BB.get() << p.OK.get() << "|";
+    for (int k = 1; k <= 8; ++k) std::cout << p.S[k].get() << " ";
+    std::cout << std::endl;
+    return 0;
+}
+`;
+
 const ZERO_POWER = `
 PROGRAM Main
 VAR z : DINT := 0; m : DINT := -1; r : DINT; END_VAR
@@ -125,7 +177,7 @@ describe.skipIf(!hasGpp)("standard-function forms — g++ e2e", () => {
   });
   afterAll(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
-  it("computes mixed-type functional AND/OR/XOR and NOT as the operators do", () => {
+  it("computes mixed-type functional AND/OR/XOR and NOT (the complement) as the operators do", () => {
     const result = compile(MIXED, { headerFileName: "generated.hpp" });
     expect(result.errors).toEqual([]);
     const out = compileAndRunStandalone({
@@ -137,8 +189,26 @@ describe.skipIf(!hasGpp)("standard-function forms — g++ e2e", () => {
       mainCode: MIXED_MAIN,
     });
     expect(out).toBe(
-      "65534/65534 4000000000/4000000000 -7/-7 -65532/-65532 61680/61680 -65536/-65536 0/0 1",
+      "65534/65534 4000000000/4000000000 -7/-7 -65532/-65532 61680/61680 -65536/-65536 6/6 -1",
     );
+  });
+
+  it("complements integers and promoted bit strings in their type (Table 31)", () => {
+    const result = compile(COMPLEMENT, { headerFileName: "generated.hpp" });
+    expect(result.errors).toEqual([]);
+    const out = compileAndRunStandalone({
+      tempDir,
+      pchPath,
+      headerCode: result.headerCode,
+      cppCode: result.cppCode,
+      testName: "std_function_complement",
+      mainCode: COMPLEMENT_MAIN,
+    });
+    expect(out.split("|").map((p) => p.trim())).toEqual([
+      "65535 240 65294 65535 65295 3840 32888 255",
+      "-1 -6 -6 -9 0 -256 -11 -6 65535 -1 -1 1 00",
+      "-1 -1 -1 -1 1 143 4080 -1",
+    ]);
   });
 
   it("faults on 0 to a negative power, as a division by zero", () => {

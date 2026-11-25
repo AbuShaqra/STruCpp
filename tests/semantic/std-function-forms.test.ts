@@ -207,11 +207,84 @@ describe("date and time forms", () => {
       expect(diags(src, options).errors).toEqual([]);
     }
   });
-  it("still refuses DIV of a TIME by a TIME through the function", () => {
+  it("still refuses DIV of a TIME by a TIME through the function, at IN2", () => {
     expect(diags(body("t : TIME;", "t := DIV(t, t);")).errors).toEqual([
-      "3:10: Argument 'IN1' of 'DIV' expects ANY_NUM, got TIME",
-      "3:13: Argument 'IN2' of 'DIV' expects ANY_NUM, got TIME",
+      "3:13: Argument 'IN2' of 'DIV' expects ANY_NUM, got TIME; a TIME is divided by a number (IEC 61131-3 Table 35)",
     ]);
+  });
+  it("blames IN2 for a STRING or BOOL factor or divisor", () => {
+    expect(
+      diags(
+        body(
+          "t : TIME; lt : LTIME; s : STRING; b : BOOL;",
+          "t := MUL(t, s);\nlt := DIV(lt, b);",
+        ),
+      ).errors,
+    ).toEqual([
+      "3:13: Argument 'IN2' of 'MUL' expects ANY_NUM, got STRING; a TIME is multiplied by a number (IEC 61131-3 Table 35)",
+      "4:15: Argument 'IN2' of 'DIV' expects ANY_NUM, got BOOL; an LTIME is divided by a number (IEC 61131-3 Table 35)",
+    ]);
+  });
+});
+
+describe("recheck: NOT of an integer is its complement", () => {
+  it("complements an integer, an alias of one and a promoted bit string in its type; BOOL stays logical", () => {
+    const r = compile(
+      "TYPE MyI : INT; END_TYPE\n" +
+        body(
+          "a : MyI; i : INT; w2 : WORD; r : INT; rw : WORD; b : BOOL;",
+          "r := NOT a;\nr := NOT(i);\nrw := NOT(w2 AND 16#0F);\nb := NOT b;",
+        ),
+      { headerFileName: "generated.hpp" },
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.cppCode).toContain(
+      "R = static_cast<INT_t>(~static_cast<INT_t>(A));",
+    );
+    expect(r.cppCode).toContain(
+      "R = static_cast<INT_t>(~static_cast<INT_t>(I));",
+    );
+    expect(r.cppCode).toContain(
+      "RW = static_cast<WORD_t>(~static_cast<WORD_t>((W2) & (0x0F)));",
+    );
+    expect(r.cppCode).toContain("B = !B;");
+  });
+});
+
+describe("recheck: enumeration inputs of SEL and MUX, strict bitwise narrowing", () => {
+  it("builds SEL and MUX of enumeration literals with a non-enumeration selector", () => {
+    const src =
+      "TYPE E : (a, b, c); END_TYPE\n" +
+      body(
+        "e : E := b; i : INT := 1; x : E;",
+        "x := MUX(i, E#a, E#c);\nx := SEL(FALSE, E#a, E#c);",
+      );
+    for (const [, options] of MODES) {
+      expect(diags(src, options).errors).toEqual([]);
+    }
+  });
+  it("refuses a narrowing functional AND/OR under --strict as the infix form does", () => {
+    const d = diags(
+      body(
+        "w : WORD; lw : LWORD; r : WORD; dd : DWORD;",
+        "r := OR(w, lw);\ndd := AND(w, lw, lw);",
+      ),
+      { strict: true },
+    );
+    expect(d.errors).toEqual([
+      "3:6: Implicit conversion from LWORD to WORD is not allowed; use LWORD_TO_WORD",
+      "4:7: Implicit conversion from LWORD to DWORD is not allowed; use LWORD_TO_DWORD",
+    ]);
+  });
+  it("types a signed integer with a bit string as the signed type holding both", () => {
+    const d = diags(
+      body(
+        "i : INT; b : BYTE; d : DINT; w : WORD; r : INT; rd : DINT;",
+        "r := OR(i, b);\nr := i OR b;\nrd := OR(d, w);\nrd := d OR w;",
+      ),
+    );
+    expect(d.errors).toEqual([]);
+    expect(d.warnings).toEqual([]);
   });
 });
 
@@ -225,7 +298,9 @@ describe("integer powers", () => {
       { headerFileName: "generated.hpp" },
     );
     expect(r.errors).toEqual([]);
-    expect(r.cppCode).toContain("strucpp::iec_expt<DINT_t>(I, -1, strucpp::iec_site{");
+    expect(r.cppCode).toContain(
+      "strucpp::iec_expt<DINT_t>(I, -1, strucpp::iec_site{",
+    );
     expect(r.cppCode).toContain("W = strucpp::iec_expt<DINT_t>(I, 3)");
     expect(r.cppCode).toContain("strucpp::iec_expt<LWORD_t>(");
     expect(r.cppCode).not.toContain("std::pow");

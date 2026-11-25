@@ -14,6 +14,7 @@ import { IEC_DEFAULT_STRING_LENGTH } from "./string-default-length.js";
 import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import type {
   AdvanceTimeStatement,
+  AssertCall,
   ASTNode,
   RefAssignStatement,
   RefExpression,
@@ -577,6 +578,14 @@ function constantIntegerPower(
   return base ** exponent;
 }
 
+/** The unsigned integer of each bit string's width. */
+const BIT_STRING_UNSIGNED: Readonly<Record<string, string>> = {
+  BYTE: "USINT",
+  WORD: "UINT",
+  DWORD: "UDINT",
+  LWORD: "ULINT",
+};
+
 /** Constraints of standard-function parameters an enumeration does not meet. */
 const ENUM_REFUSING_CONSTRAINTS: ReadonlySet<string> = new Set([
   "ANY_NUM",
@@ -943,6 +952,20 @@ export class TypeChecker {
     this.ast = ast;
     for (const root of roots) {
       walkAST(root, (node) => {
+        // An assertion of integers compares the exact integer powers
+        if (node.kind === "AssertCall") {
+          const assert = node as AssertCall;
+          if (
+            assert.assertType !== "ASSERT_NEAR" &&
+            assert.args.every(
+              (a) => this.testIntegerType(a, scope) !== undefined,
+            )
+          ) {
+            for (const arg of assert.args) {
+              this.markTestIntegerPowers(undefined, arg, scope);
+            }
+          }
+        }
         if (node.kind === "FunctionCallExpression") {
           this.refuseRealModCall(node as FunctionCallExpression, scope);
         } else if (
@@ -965,6 +988,7 @@ export class TypeChecker {
           this.refuseDeleteOperand((node as DeleteStatement).pointer, scope);
         } else if (node.kind === "AssignmentStatement") {
           const { target, value } = node as AssignmentStatement;
+          this.markTestIntegerPowers(target, value, scope);
           if (unparenthesized(value).kind !== "NewExpression") return;
           const shape = this.declaredReferenceShape(target, scope);
           if (shape) this.validateReferenceValue(shape, value, scope);
@@ -1029,6 +1053,75 @@ export class TypeChecker {
       duration.sourceSpan.startCol,
       duration.sourceSpan.file,
     );
+  }
+
+  /**
+   * An integer `**` in a test body (stored in an integer, or in an assertion)
+   * is the exact integer power, as in a POU (markIntegerPowers). Test
+   * variables have no resolved type: operands are typed from declarations.
+   */
+  private markTestIntegerPowers(
+    target: Expression | undefined,
+    value: Expression,
+    scope: Scope,
+  ): void {
+    const intType = (e: Expression): string | undefined =>
+      this.testIntegerType(e, scope);
+    let targetName: string | undefined;
+    if (target !== undefined) {
+      const t = this.accessedElementaryType(target, scope);
+      if (
+        t === undefined ||
+        !(this.isIntegerType(t) || this.isBitStringTarget(t))
+      ) {
+        return;
+      }
+      targetName = this.aliasBase(typeNameUtil(t)).toUpperCase();
+    }
+    walkAST(value, (n) => {
+      if (n.kind !== "BinaryExpression") return;
+      const e = n as BinaryExpression;
+      if (e.operator !== "**") return;
+      const own = intType(e.left);
+      if (own === undefined || intType(e.right) === undefined) return;
+      e.integerPower = this.powerComputeType(targetName ?? own, own);
+    });
+  }
+
+  /** The integer type of a test-body expression, its variables typed from declarations. */
+  private testIntegerType(e0: Expression, scope: Scope): string | undefined {
+    const bits = (n: string): number => ELEMENTARY_TYPES[n]?.sizeBits ?? 32;
+    const intType = (e: Expression): string | undefined => {
+      switch (e.kind) {
+        case "LiteralExpression":
+          if (e.literalType !== "INT") return undefined;
+          return (e.typePrefix ?? "") !== ""
+            ? this.aliasBase(e.typePrefix!).toUpperCase()
+            : "DINT";
+        case "ParenthesizedExpression":
+          return intType(e.expression);
+        case "UnaryExpression":
+          return e.operator === "NOT" ? undefined : intType(e.operand);
+        case "VariableExpression": {
+          const t = e.resolvedType ?? this.accessedElementaryType(e, scope);
+          return t !== undefined && this.isIntegerType(t)
+            ? this.aliasBase(typeNameUtil(t)).toUpperCase()
+            : undefined;
+        }
+        case "BinaryExpression": {
+          if (!["+", "-", "*", "/", "MOD", "**"].includes(e.operator)) {
+            return undefined;
+          }
+          const l = intType(e.left);
+          const r = intType(e.right);
+          if (l === undefined || r === undefined) return undefined;
+          return e.operator === "**" || bits(l) >= bits(r) ? l : r;
+        }
+        default:
+          return undefined;
+      }
+    };
+    return intType(e0);
   }
 
   /** The enumeration a plain variable is declared of (a test variable has no resolved type). */
@@ -2372,6 +2465,18 @@ export class TypeChecker {
     scope: Scope,
   ): IECType | undefined {
     this.refuseInheritedPrivateProperty(expr, scope);
+    // `E#a` names the enumeration E, also beside a variable named `e`
+    if (expr.typedLiteral === true && expr.fieldAccess.length === 1) {
+      const enumType = this.symbolTables.lookupType(expr.name)?.resolvedType;
+      if (
+        enumType?.typeKind === "enum" &&
+        (enumType as EnumType).values.some(
+          (v) => v.toUpperCase() === expr.fieldAccess[0]!.toUpperCase(),
+        )
+      ) {
+        return enumType;
+      }
+    }
     const symbol = scope.lookup(expr.name);
     if (symbol === undefined) {
       this.refuseSelfMember(expr);
@@ -2970,6 +3075,18 @@ export class TypeChecker {
       if (widened !== undefined && type === widened) {
         expr.computeAs = (widened as ElementaryType).name.toUpperCase();
       }
+      // A signed integer with a bit string: computed in the signed type they widen to
+      if (
+        type !== undefined &&
+        this.isIntegerType(type) &&
+        [leftType, rightType].some(
+          (t) =>
+            t.typeKind === "elementary" &&
+            STRICT_BIT_STRINGS.has(this.aliasBase((t as ElementaryType).name)),
+        )
+      ) {
+        expr.computeAs = (type as ElementaryType).name.toUpperCase();
+      }
       const names = [leftType, rightType].map((t) =>
         t.typeKind === "elementary"
           ? this.aliasBase((t as ElementaryType).name)
@@ -3064,7 +3181,20 @@ export class TypeChecker {
     const base = (t: IECType): string =>
       canonicalElementaryName(this.aliasBase((t as ElementaryType).name));
     if (base(t1) !== "TIME" && base(t1) !== "LTIME") return undefined;
-    if (!TABLE30_NUMBERS.has(base(t2))) return undefined;
+    if (!TABLE30_NUMBERS.has(base(t2))) {
+      // The duration is right: the factor or divisor is the wrong argument
+      if (!this.durationArgumentRefused.has(expr)) {
+        this.durationArgumentRefused.add(expr);
+        const at = in2!.value.sourceSpan;
+        this.addError(
+          `Argument 'IN2' of '${nameUpper}' expects ANY_NUM, got ${typeNameUtil(t2)}; ${base(t1) === "LTIME" ? "an" : "a"} ${base(t1)} is ${nameUpper === "MUL" ? "multiplied" : "divided"} by a number (IEC 61131-3 Table 35)`,
+          at.startLine,
+          at.startCol,
+          at.file,
+        );
+      }
+      return t1;
+    }
     expr.durationOperator = nameUpper === "MUL" ? "*" : "/";
     // --strict: a bit-string factor is refused, as in `t * w`
     if (
@@ -3198,6 +3328,30 @@ export class TypeChecker {
       const name = this.aliasBase((t as ElementaryType).name);
       return STRICT_BIT_STRINGS.has(name) ? [ELEMENTARY_TYPES[name]!] : [];
     });
+    // A signed integer with a bit string: the bit string counts as the
+    // unsigned integer of its width, so the signed value keeps its sign
+    if (bits.length === 1) {
+      const other = STRICT_BIT_STRINGS.has(
+        this.aliasBase(typeNameUtil(leftType)),
+      )
+        ? rightType
+        : leftType;
+      const otherName =
+        other.typeKind === "elementary"
+          ? this.aliasBase((other as ElementaryType).name).toUpperCase()
+          : "";
+      const unsigned = BIT_STRING_UNSIGNED[bits[0]!.name.toUpperCase()];
+      if (
+        ["SINT", "INT", "DINT", "LINT"].includes(otherName) &&
+        unsigned !== undefined
+      ) {
+        const widened = this.mixedSignCommonType(
+          ELEMENTARY_TYPES[otherName]!,
+          ELEMENTARY_TYPES[unsigned]!,
+        );
+        if (widened !== undefined) return widened;
+      }
+    }
     if (bits.length > 0) {
       return bits.reduce((a, b) => (b.sizeBits > a.sizeBits ? b : a));
     }
@@ -12988,6 +13142,9 @@ export class TypeChecker {
   /** `5 - ldt` already warned. */
   private numberMinusWarned = new WeakSet<BinaryExpression>();
 
+  /** MUL/DIV calls of a duration whose second argument was refused. */
+  private durationArgumentRefused = new WeakSet<FunctionCallExpression>();
+
   /** MUL/DIV duration calls whose bit-string factor --strict refused. */
   private strictDurationRefused = new WeakSet<FunctionCallExpression>();
 
@@ -13151,7 +13308,9 @@ export class TypeChecker {
     stripEnEno(expr.arguments).forEach((arg, i) => {
       const param = params[i];
       const argType = arg.value.resolvedType;
+      // One report per call
       if (
+        refused ||
         param?.constraint !== "ANY_ELEMENTARY" ||
         argType?.typeKind !== "enum"
       ) {
@@ -13804,6 +13963,17 @@ export class TypeChecker {
           (a) => this.untypedConstantKind(a) === undefined,
         );
         if (typed.length === 0) return expr.resolvedType;
+        // AND/OR/XOR of typed arguments of different types: the type they combine to
+        if (
+          ["AND", "OR", "XOR"].includes(expr.functionName.toUpperCase()) &&
+          new Set(
+            typed.map((a) =>
+              a.resolvedType ? typeNameUtil(a.resolvedType).toUpperCase() : "",
+            ),
+          ).size > 1
+        ) {
+          return expr.resolvedType;
+        }
         const other = this.strictExprType(typed[0]!);
         if (other?.typeKind !== "elementary") return expr.resolvedType;
         const kind = strictKind((other as ElementaryType).name);

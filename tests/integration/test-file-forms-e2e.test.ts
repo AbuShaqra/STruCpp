@@ -69,6 +69,13 @@ TEST 'a char failure'
   VAR c : CHAR := 'x'; END_VAR
   ASSERT_EQ(c, 'q');
 END_TEST
+TEST 'integer powers'
+  VAR b : DINT := 3; n : DINT := 2; r : DINT; END_VAR
+  ASSERT_EQ(b ** -n, 0);
+  ASSERT_EQ(b ** n, 9);
+  r := 1 + b ** -n;
+  ASSERT_EQ(r, 1);
+END_TEST
 TEST 'a sint failure'
   VAR si : SINT := -5; END_VAR
   ASSERT_EQ(si, 3);
@@ -115,10 +122,11 @@ describe.skipIf(!hasGpp)("test-file forms (e2e)", () => {
     );
     expect(stdout).toContain("[PASS] integer MOD of a computed argument");
     expect(stdout).toContain("[PASS] strings and characters");
+    expect(stdout).toContain("[PASS] integer powers");
     expect(stdout).toContain('expected "ac", got "ab"');
     expect(stdout).toContain("expected 'q', got 'x'");
     expect(stdout).toContain("SI expected 3, got -5");
-    expect(stdout).toContain("7 tests, 4 passed, 3 failed");
+    expect(stdout).toContain("8 tests, 5 passed, 3 failed");
     expect(exitCode).toBe(1);
   });
 
