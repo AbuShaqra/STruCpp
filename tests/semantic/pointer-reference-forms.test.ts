@@ -4,7 +4,8 @@
  * Pointer, reference and alias forms that passed the check and failed g++ or
  * ran wrong, now refused or accepted as they build:
  * - `__NEW` stored into what is no 64-bit integer or pointer is refused;
- * - `ADR(i)` of a value that is no pointer into a POINTER TO POINTER TO;
+ * - `ADR(i)` of a value that is no pointer into a POINTER TO POINTER TO warns
+ *   (an error under --strict);
  * - `ADR(d)` of another type into a REF_TO (assignment and input);
  * - an integer function result or conversion into a POINTER TO input;
  * - `ps^ + b`, `ps^ = 1` through a POINTER TO STRING;
@@ -73,13 +74,22 @@ describe("ADR into a POINTER TO POINTER TO", () => {
   const message =
     "POINTER TO POINTER TO INT holds the address of a POINTER TO INT, not of an INT";
 
-  it("refuses the address of a value that is no pointer", () => {
+  const vars = "i : INT; r : INT; pp : POINTER TO POINTER TO INT;";
+  const body = "r := F(ADR(i));\npp := ADR(i);";
+
+  it("warns about the address of a value that is no pointer (an error under --strict and iec-3)", () => {
+    expect(run(decls, vars, body)).toEqual({
+      errors: [],
+      warnings: [`1: ${message}`, `2: ${message}`],
+    });
+    expect(run(decls, vars, body, { strict: true }).errors).toEqual([
+      `1: ${message}`,
+      `2: ${message}`,
+    ]);
     expect(
-      run(
-        decls,
-        "i : INT; r : INT; pp : POINTER TO POINTER TO INT;",
-        "r := F(ADR(i));\npp := ADR(i);",
-      ).errors,
+      run(decls, vars, body, { dialect: "iec-3" }).errors.filter((e) =>
+        e.includes("holds the address"),
+      ),
     ).toEqual([`1: ${message}`, `2: ${message}`]);
   });
 

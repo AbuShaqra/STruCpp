@@ -11469,7 +11469,8 @@ export class TypeChecker {
 
   /**
    * `ADR(i)` of a value that is no pointer into a POINTER TO POINTER TO
-   * (`pp := ADR(i)`): the INT would be read as an address. True when refused.
+   * (`pp := ADR(i)`): the INT would be read as an address. A warning by
+   * default, an error under iec-3 and --strict. True when reported.
    */
   private refuseAdrLevelMismatch(
     target: ReferenceShape,
@@ -11500,12 +11501,13 @@ export class TypeChecker {
       return false;
     }
     const span = value.sourceSpan;
-    this.addError(
-      `${describeReferenceShape(target)} holds the address of ${withArticle(describeReferenceShape({ chain: target.chain.slice(1), base: target.base }))}, not of ${withArticle(shape.base.toUpperCase())}`,
-      span.startLine,
-      span.startCol,
-      span.file,
-    );
+    // It goes wrong only when dereferenced: a warning by default.
+    const message = `${describeReferenceShape(target)} holds the address of ${withArticle(describeReferenceShape({ chain: target.chain.slice(1), base: target.base }))}, not of ${withArticle(shape.base.toUpperCase())}`;
+    if (this.strict || this.inOutErrors) {
+      this.addError(message, span.startLine, span.startCol, span.file);
+    } else {
+      this.addWarning(message, span.startLine, span.startCol, span.file);
+    }
     return true;
   }
 
