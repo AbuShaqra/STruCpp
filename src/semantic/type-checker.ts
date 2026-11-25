@@ -2027,6 +2027,18 @@ export class TypeChecker {
    * `event := prog[pos]` where both are a library struct would compare a real
    * StructType against a placeholder elementary and be wrongly rejected.
    */
+  /**
+   * A library FUNCTION's STRUCT result, recorded by name only (`CADD : COMPLEX`):
+   * the STRUCT type a variable of that name has, so the two are the same type.
+   */
+  private libraryStructResult(type: IECType): IECType {
+    if (type.typeKind !== "elementary") return type;
+    const name = (type as ElementaryType).name;
+    if (ELEMENTARY_TYPES[name.toUpperCase()] !== undefined) return type;
+    const named = this.symbolTables.lookupType(name)?.resolvedType;
+    return named?.typeKind === "struct" ? named : type;
+  }
+
   private resolveNamedType(name: string): IECType {
     return (
       ELEMENTARY_TYPES[name.toUpperCase()] ??
@@ -4563,7 +4575,7 @@ export class TypeChecker {
       if (funcSymbol.libraryName === STD_FUNCTIONS_LIBRARY) {
         this.validateFunctionCallArgs(expr, scope);
       }
-      let returnType = funcSymbol.returnType;
+      let returnType = this.libraryStructResult(funcSymbol.returnType);
       // Overloaded standard functions are published in the builtin stdlib
       // manifest with their generic return *constraint* (e.g. NOT -> ANY_BIT,
       // ADD -> ANY_NUM). When the IEC signature says the result type matches
@@ -7435,6 +7447,7 @@ export class TypeChecker {
         this.softenResultStore(
           errorsBefore,
           stmt.target,
+          stmt.value,
           targetType,
           valueType,
         );
@@ -8316,26 +8329,72 @@ export class TypeChecker {
         value.sourceSpan.file,
       );
     };
+    const mismatch = this.interfaceMismatch(target, source);
+    if (mismatch !== undefined) {
+      fail(mismatch);
+      return;
+    }
+    // A CONSTANT instance is const in C++; a call through the interface could change it
+    if (
+      this.isFbTypeName(source) &&
+      value.kind === "VariableExpression" &&
+      !value.isDereference &&
+      this.lastResolvedScope?.lookup(value.name)?.kind === "constant"
+    ) {
+      this.addError(
+        `The CONSTANT instance '${value.name}' cannot be bound to interface ${target}: a method called through it could change it`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+    }
+  }
+
+  /** A function block type, of this compile or a library. */
+  private isFbTypeName(name: string): boolean {
+    const upper = name.toUpperCase();
+    return (
+      this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper) ===
+        true || this.symbolTables.lookupFunctionBlock(name) !== undefined
+    );
+  }
+
+  /**
+   * Why a value of type `source` cannot refer to (or be compared with) an
+   * instance of interface `target`: a detail to append (possibly ""), or
+   * undefined when it can or this compile cannot tell.
+   */
+  private interfaceMismatch(
+    target: string,
+    source: string,
+  ): string | undefined {
     const upper = source.toUpperCase();
     if (this.interfaceNamed(source)) {
-      if (this.interfaceExtends(source, target) === false) {
-        fail(`: ${source} does not extend ${target}`);
-      }
-      return;
+      return this.interfaceExtends(source, target) === false
+        ? `: ${source} does not extend ${target}`
+        : undefined;
     }
     if (this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper)) {
-      if (this.fbImplements(source, target) === false) {
-        fail(`: ${source} does not implement ${target}`);
-      }
-      return;
+      return this.fbImplements(source, target) === false
+        ? `: ${source} does not implement ${target}`
+        : undefined;
+    }
+    // A library block cannot implement an interface this compile declares
+    if (
+      this.interfaceNamed(target) &&
+      this.symbolTables.lookupFunctionBlock(source) !== undefined
+    ) {
+      return `: ${source} does not implement ${target}`;
     }
     const isStruct =
-      this.ast?.types.some(
+      (this.ast?.types.some(
         (t) =>
           t.name.toUpperCase() === upper &&
           t.definition.kind === "StructDefinition",
-      ) ?? false;
-    if (ELEMENTARY_TYPES[upper] !== undefined || isStruct) fail("");
+      ) ??
+        false) ||
+      this.symbolTables.lookupType(source)?.resolvedType?.typeKind === "struct";
+    return ELEMENTARY_TYPES[upper] !== undefined || isStruct ? "" : undefined;
   }
 
   /**
@@ -8346,6 +8405,7 @@ export class TypeChecker {
   private softenResultStore(
     errorsBefore: number,
     target: Expression,
+    value: Expression,
     targetType: IECType | undefined,
     valueType: IECType | undefined,
   ): void {
@@ -8364,12 +8424,18 @@ export class TypeChecker {
     ) {
       return;
     }
-    if (resultStoreFailsCpp(targetType, valueType, (n) => this.aliasBase(n))) {
+    // `F := 0` into an interface result builds as NULL: the feature refusal warns
+    const zeroIntoInterface =
+      isUntypedZero(value) && this.interfaceTypeOf(targetType) !== undefined;
+    if (
+      !zeroIntoInterface &&
+      resultStoreFailsCpp(targetType, valueType, (n) => this.aliasBase(n))
+    ) {
       return;
     }
     const added = this.errors.splice(errorsBefore);
     for (const e of added) {
-      if (!e.message.startsWith("Cannot assign")) {
+      if (!zeroIntoInterface && !e.message.startsWith("Cannot assign")) {
         this.errors.push(e);
         continue;
       }
@@ -8397,28 +8463,15 @@ export class TypeChecker {
         : [rightItf!, expr.left, leftType];
     if (isUntypedZero(other) || otherType.typeKind === "reference") return;
     const source = typeNameUtil(otherType);
-    const upper = source.toUpperCase();
-    const fail = (detail: string): void => {
+    const mismatch = this.interfaceMismatch(target, source);
+    if (mismatch !== undefined) {
       this.addError(
-        `Cannot compare ${target} with ${source}${detail}`,
+        `Cannot compare ${target} with ${source}${mismatch}`,
         expr.sourceSpan.startLine,
         expr.sourceSpan.startCol,
         expr.sourceSpan.file,
       );
-    };
-    if (this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper)) {
-      if (this.fbImplements(source, target) === false) {
-        fail(`: ${source} does not implement ${target}`);
-      }
-      return;
     }
-    const isStruct =
-      this.ast?.types.some(
-        (t) =>
-          t.name.toUpperCase() === upper &&
-          t.definition.kind === "StructDefinition",
-      ) ?? false;
-    if (ELEMENTARY_TYPES[upper] !== undefined || isStruct) fail("");
   }
 
   /**
@@ -13317,13 +13370,19 @@ function resultStoreFailsCpp(
   value: IECType,
   aliasBase: (name: string) => string,
 ): boolean {
-  if (target.typeKind !== "elementary" || value.typeKind !== "elementary") {
+  // A STRUCT, FB or UNION may arrive as a named elementary placeholder
+  const real = (t: IECType): string | undefined => {
+    if (t.typeKind !== "elementary") return undefined;
+    const name = canonicalElementaryName(aliasBase((t as ElementaryType).name));
+    return ELEMENTARY_TYPES[name] !== undefined ? name : undefined;
+  };
+  const t = real(target);
+  const v = real(value);
+  if (t === undefined || v === undefined) {
     return (
       typeNameUtil(target).toUpperCase() !== typeNameUtil(value).toUpperCase()
     );
   }
-  const t = canonicalElementaryName(aliasBase((target as ElementaryType).name));
-  const v = canonicalElementaryName(aliasBase((value as ElementaryType).name));
   if (t === v) return false;
   return failsAsCppArgument(v, t) || temporalValueDiffers(v, t);
 }

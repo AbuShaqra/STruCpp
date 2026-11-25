@@ -8,8 +8,14 @@
  * debug-table warnings grouped per declaration; a FUNCTION result is checked
  * as the variable it is.
  */
+import * as fs from "fs";
+import * as path from "path";
 import { describe, it, expect } from "vitest";
 import { compile } from "../../src/index.js";
+import { discoverStlibs } from "../../src/node/library-loader.js";
+
+const LIBS_DIR = path.resolve(__dirname, "../../libs");
+const oscatAvailable = fs.existsSync(path.join(LIBS_DIR, "oscat-basic.stlib"));
 
 type Options = Parameters<typeof compile>[1];
 const MODES: Array<[string, Options]> = [
@@ -427,4 +433,108 @@ END_CONFIGURATION
       "FB_X.A (in 6 places: P1.YS[*].XS[*].A, P1.YS[*].ONE.A and 4 more) is not debuggable: an interface reference (I_A) holds an address, which the debugger cannot show or write.",
     ]);
   });
+});
+
+describe("review: identity, result stores and CONSTANT instances", () => {
+  it.skipIf(!oscatAvailable)(
+    "takes a library STRUCT FUNCTION result into the same STRUCT (CADD)",
+    () => {
+      const libraries = discoverStlibs(LIBS_DIR);
+      for (const [, options] of MODES) {
+        expect(
+          errorsOf(
+            `FUNCTION F2 : COMPLEX VAR_INPUT a, b : COMPLEX; END_VAR F2 := CADD(a, b); END_FUNCTION
+PROGRAM Main
+VAR c, d, e : COMPLEX; END_VAR
+d := F2(c, c); e := CADD(c, c);
+END_PROGRAM
+`,
+            { ...options, libraries },
+          ),
+        ).toEqual([]);
+      }
+    },
+  );
+
+  it("refuses a FUNCTION result store of another STRUCT, FB or UNION in every mode", () => {
+    for (const [, options] of MODES) {
+      expect(
+        errorsOf(
+          `TYPE ST : STRUCT x : INT; END_STRUCT END_TYPE
+TYPE ST2 : STRUCT x : INT; END_STRUCT END_TYPE
+FUNCTION_BLOCK FB_A VAR x : INT; END_VAR END_FUNCTION_BLOCK
+FUNCTION_BLOCK FB_B VAR x : INT; END_VAR END_FUNCTION_BLOCK
+FUNCTION F1 : ST VAR_INPUT r : ST2; END_VAR F1 := r; END_FUNCTION
+FUNCTION F2 : FB_A VAR_INPUT r : FB_B; END_VAR F2 := r; END_FUNCTION
+FUNCTION F3 : ST VAR_INPUT r : REAL; END_VAR F3 := r; END_FUNCTION
+FUNCTION F4 : INT VAR_INPUT r : ST; END_VAR F4 := r; END_FUNCTION
+FUNCTION F5 : FB_A VAR_INPUT r : INT; END_VAR F5 := r; END_FUNCTION
+`,
+          options,
+        ),
+      ).toEqual([
+        "Cannot assign ST2 to ST",
+        "Cannot assign FB_B to FB_A",
+        "Cannot assign REAL to ST",
+        "Cannot assign ST to INT",
+        "Cannot assign INT to FB_A",
+      ]);
+    }
+  });
+
+  const CONST = `INTERFACE I_A METHOD Bump : INT END_METHOD END_INTERFACE
+FUNCTION_BLOCK FB_A IMPLEMENTS I_A
+VAR_INPUT n : INT; END_VAR
+METHOD Bump : INT n := n + 1; Bump := n; END_METHOD
+END_FUNCTION_BLOCK
+FUNCTION G : INT VAR_INPUT i : I_A; END_VAR G := 1; END_FUNCTION
+VAR_GLOBAL CONSTANT gc : FB_A := (n := 1); END_VAR
+PROGRAM Main
+VAR CONSTANT c : FB_A := (n := 1); END_VAR
+VAR i : I_A; x : INT; b : BOOL; END_VAR
+i := c;
+x := G(gc);
+b := i = c;
+END_PROGRAM
+`;
+  it("refuses binding a CONSTANT instance to an interface, not comparing it", () => {
+    expect(errorsOf(CONST)).toEqual([
+      "The CONSTANT instance 'C' cannot be bound to interface I_A: a method called through it could change it",
+      "The CONSTANT instance 'GC' cannot be bound to interface I_A: a method called through it could change it",
+    ]);
+  });
+
+  it("warns for 0 into an interface FUNCTION result by default, refuses it under iec-3 and --strict", () => {
+    const src = `INTERFACE I_A END_INTERFACE
+FUNCTION F : I_A F := 0; END_FUNCTION
+`;
+    const r = compile(src, { headerFileName: "g.hpp" });
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.map((w) => w.message)).toEqual([
+      "Assigning 0 to interface I_A needs the feature interface_zero",
+    ]);
+    expect(errorsOf(src, { strict: true }).length).toBe(1);
+    expect(errorsOf(src, { dialect: "iec-3" }).length).toBe(1);
+  });
+
+  it.skipIf(!oscatAvailable)(
+    "refuses comparing an interface with a library block that cannot implement it",
+    () => {
+      expect(
+        errorsOf(
+          `INTERFACE I_X METHOD X : INT END_METHOD END_INTERFACE
+PROGRAM Main
+VAR ix : I_X; b : BOOL; t : TON; END_VAR
+b := t = ix;
+ix := t;
+END_PROGRAM
+`,
+          { libraries: discoverStlibs(LIBS_DIR) },
+        ),
+      ).toEqual([
+        "Cannot compare I_X with TON: TON does not implement I_X",
+        "Cannot assign TON to I_X: TON does not implement I_X",
+      ]);
+    },
+  );
 });

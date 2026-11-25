@@ -5710,14 +5710,44 @@ export class CodeGenerator {
       const read = `${target.name}->read()`;
       return `${target.name}->write(static_cast<decltype(${read})>(${bit(read)}));`;
     }
+    // An index that calls (`arr[IDX()].P.2`) is evaluated once: the object is bound first
+    const once = this.indexCalls(baseVar);
     // `fb.P.4 := v`: the property's value read, the bit set, the value written back
     const propWrite = this.detectPropertyWrite(baseVar);
     if (propWrite) {
+      const name = propWrite.propertyName;
+      if (once && propWrite.objectCode.endsWith(".")) {
+        const get = `__bo.get_${name}()`;
+        return `{ auto&& __bo = ${propWrite.objectCode.slice(0, -1)}; __bo.set_${name}(static_cast<decltype(${get})>(${bit(get)})); }`;
+      }
       const read = this.generateExpression(baseVar);
-      return `${propWrite.objectCode}set_${propWrite.propertyName}(static_cast<decltype(${read})>(${bit(read)}));`;
+      return `${propWrite.objectCode}set_${name}(static_cast<decltype(${read})>(${bit(read)}));`;
     }
     const baseCode = this.generateLvalue(baseVar);
+    if (once) return `{ auto& __bv = ${baseCode}; __bv = ${bit("__bv")}; }`;
     return `${baseCode} = ${bit(baseCode)};`;
+  }
+
+  /** An index of `expr` calls a function or method: evaluating the access twice repeats the call. */
+  private indexCalls(expr: VariableExpression): boolean {
+    const indices = [
+      ...expr.subscripts,
+      ...(expr.accessChain ?? []).flatMap((st) =>
+        st.kind === "subscript" ? st.indices : [],
+      ),
+    ];
+    let calls = false;
+    for (const idx of indices) {
+      walkAST(idx, (node) => {
+        if (
+          node.kind === "FunctionCallExpression" ||
+          node.kind === "MethodCallExpression"
+        ) {
+          calls = true;
+        }
+      });
+    }
+    return calls;
   }
 
   /** Write the queued copy-outs of the current statement. */
@@ -7627,6 +7657,11 @@ export class CodeGenerator {
             );
             result = `strucpp::iec_at(${result}, ${this.faultSite(step.indices[0]!)}, ${args.join(", ")})`;
           }
+          // The element's type, for a property of it (`arr[i].P`)
+          if (currentType !== undefined && this.ast) {
+            const element = resolveArrayElementTypeUtil(currentType, this.ast);
+            if (element !== undefined) currentType = element;
+          }
           break;
         }
         case "dereference": {
@@ -9069,19 +9104,34 @@ export class CodeGenerator {
             fieldAccess: [],
             isDereference: false,
           });
+        // `PJ.M()`: the FB's own property, read through its getter
+        const ownProperty =
+          varType === undefined &&
+          this.rootVariableType(prefix.toUpperCase()) === undefined &&
+          this.ownPropertyValueType(prefix) !== undefined
+            ? this.propertyRead(
+                "(*this)",
+                this.currentFBName,
+                this.resolvePropertyName(this.currentFBName, prefix)!,
+              )
+            : undefined;
         const receiver =
-          ownerType !== undefined && this.isInterfaceType(ownerType)
-            ? `itf_ref(${instance()})`
-            : reachedProgram !== undefined
-              ? this.sharedProgramInstance(reachedProgram)
-              : varType !== undefined &&
-                  (this.memberMangledNames.has(prefix.toUpperCase()) ||
-                    this.varInstMangledNames.has(prefix.toUpperCase()))
-                ? instance()
-                : this.currentScopeVarRefKinds.get(prefix.toUpperCase()) ===
-                    "reference_to"
-                  ? this.refTarget(instance(), prefix, expr)
-                  : this.resolveVariableBaseName(prefix);
+          ownProperty !== undefined
+            ? ownerType !== undefined && this.isInterfaceType(ownerType)
+              ? `itf_ref(${ownProperty})`
+              : ownProperty
+            : ownerType !== undefined && this.isInterfaceType(ownerType)
+              ? `itf_ref(${instance()})`
+              : reachedProgram !== undefined
+                ? this.sharedProgramInstance(reachedProgram)
+                : varType !== undefined &&
+                    (this.memberMangledNames.has(prefix.toUpperCase()) ||
+                      this.varInstMangledNames.has(prefix.toUpperCase()))
+                  ? instance()
+                  : this.currentScopeVarRefKinds.get(prefix.toUpperCase()) ===
+                      "reference_to"
+                    ? this.refTarget(instance(), prefix, expr)
+                    : this.resolveVariableBaseName(prefix);
         return `${receiver}.${resolvedMethod}(${args.join(", ")})`;
       }
     }
@@ -9467,8 +9517,18 @@ export class CodeGenerator {
     }
     if (prefixUpper === "SUPER") return this.currentFBExtends;
     return (
-      this.rootVariableType(prefixUpper) ?? this.reachedProgramNamed(prefix)
+      this.rootVariableType(prefixUpper) ??
+      this.reachedProgramNamed(prefix) ??
+      this.ownPropertyValueType(prefix)
     );
+  }
+
+  /** `PJ.M()` in the FB's own body: the plain type of its own PROPERTY `PJ`. */
+  private ownPropertyValueType(name: string): string | undefined {
+    return this.currentFBName !== undefined &&
+      this.resolvePropertyName(this.currentFBName, name) !== undefined
+      ? this.propertyValueType(this.currentFBName, name)
+      : undefined;
   }
 
   /**
@@ -10334,6 +10394,22 @@ export class CodeGenerator {
     for (let i = 0; i < expr.fieldAccess.length - 1; i++) {
       if (!currentType) break;
       currentType = this.resolveMemberType(currentType, expr.fieldAccess[i]!);
+    }
+    // `arr[i].P`, `s.a[2].P`: the owner through the subscripts
+    if (
+      nameUpper !== "THIS" &&
+      nameUpper !== "SUPER" &&
+      expr.accessChain?.some((st) => st.kind === "subscript") === true
+    ) {
+      const trimmed = this.trimLastFieldFromAccessChain(expr.accessChain);
+      currentType =
+        trimmed === undefined
+          ? undefined
+          : this.methodCallOwnerType({
+              ...expr,
+              fieldAccess: expr.fieldAccess.slice(0, -1),
+              accessChain: trimmed,
+            });
     }
 
     if (!currentType) return undefined;

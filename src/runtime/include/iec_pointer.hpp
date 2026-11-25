@@ -815,12 +815,9 @@ public:
     IEC_ITF(const IEC_ITF&) = default;
     IEC_ITF& operator=(const IEC_ITF&) = default;
 
-    /**
-     * Refer to an implementing instance (`itf := fb`). A PROPERTY getter is a
-     * const member, so its FB's own members arrive const; the instance is not.
-     */
+    /** Refer to an implementing instance (`itf := fb`). */
     template<typename U, if_derived<U> = 0>
-    IEC_ITF(U& obj) noexcept : ptr_(const_cast<I*>(static_cast<const I*>(&obj))) {}
+    IEC_ITF(U& obj) noexcept : ptr_(&obj) {}
 
     /** Take the instance of a variable of an extending interface. */
     template<typename J, if_derived<J> = 0>
@@ -833,7 +830,7 @@ public:
 
     template<typename U, if_derived<U> = 0>
     IEC_ITF& operator=(U& obj) noexcept {
-        ptr_ = const_cast<I*>(static_cast<const I*>(&obj));
+        ptr_ = &obj;
         return *this;
     }
 

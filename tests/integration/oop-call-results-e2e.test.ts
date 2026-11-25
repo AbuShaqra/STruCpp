@@ -14,6 +14,7 @@ import * as os from "os";
 import * as path from "path";
 import { compile, compileStlib } from "../../src/index.js";
 import { loadStlibArchive } from "../../src/library/library-loader.js";
+import { discoverStlibs } from "../../src/node/library-loader.js";
 import type { StlibArchive } from "../../src/library/library-manifest.js";
 import { hasGpp, createPCH, compileAndRunStandalone } from "./test-helpers.js";
 
@@ -465,6 +466,63 @@ END_PROGRAM
     main: 'Program_MAIN p; p.run(); std::cout << (int)p.X << " " << (int)p.Y;',
     expected: "5 11",
   },
+  {
+    title:
+      "reads and writes properties and bits of array elements, an index call evaluated once",
+    name: "oop_elem_props",
+    features: [],
+    source: `FUNCTION_BLOCK FB_P
+VAR w : WORD := 16#0010; END_VAR
+VAR_OUTPUT gets : INT; sets : INT; END_VAR
+PROPERTY P : WORD
+GET gets := gets + 1; P := w; END_GET
+SET sets := sets + 1; w := P; END_SET
+END_PROPERTY
+END_FUNCTION_BLOCK
+VAR_GLOBAL arr : ARRAY[0..3] OF FB_P; calls : INT; wa : ARRAY[0..3] OF WORD; END_VAR
+FUNCTION Idx : INT calls := calls + 1; Idx := 1; END_FUNCTION
+PROGRAM Main
+VAR b : BOOL; i : INT := 2; END_VAR
+arr[Idx()].P.2 := TRUE;
+wa[Idx()].3 := TRUE;
+arr[i].P := 16#00FF;
+b := arr[i].P.3;
+END_PROGRAM
+`,
+    main: 'Program_MAIN p; p.run(); std::cout << (int)ARR[1].get_P() << " " << (int)WA[1] << " c" << CALLS << " s" << ARR[1].SETS << " " << (int)ARR[2].get_P() << " " << (int)p.B;',
+    expected: "20 8 c2 s1 255 1",
+  },
+  {
+    title: "calls a method through the block's own interface property",
+    name: "oop_own_prop",
+    features: [],
+    source: `INTERFACE I_J METHOD M : INT END_METHOD END_INTERFACE
+FUNCTION_BLOCK FB_T IMPLEMENTS I_J
+VAR_OUTPUT k : INT; END_VAR
+METHOD M : INT k := k + 1; M := k; END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL gi : INT := 5; END_VAR
+FUNCTION_BLOCK FB_H
+VAR t : FB_T; END_VAR
+VAR_OUTPUT gets : INT; END_VAR
+PROPERTY P : POINTER TO INT
+GET gets := gets + 1; P := ADR(gi); END_GET
+END_PROPERTY
+PROPERTY PJ : I_J
+GET gets := gets + 1; PJ := t; END_GET
+END_PROPERTY
+METHOD Inner : INT Inner := PJ.M(); PJ.M(); END_METHOD
+END_FUNCTION_BLOCK
+PROGRAM Main
+VAR h : FB_H; a, b, c : INT; END_VAR
+b := h.PJ.M();
+h.PJ.M();
+c := h.Inner();
+END_PROGRAM
+`,
+    main: 'Program_MAIN p; p.run(); std::cout << p.A << " " << GI << " " << p.B << " " << p.C << " g" << p.H.GETS;',
+    expected: "0 5 1 3 g4",
+  },
 ];
 
 const LIB = `FUNCTION_BLOCK FB_L
@@ -486,6 +544,8 @@ s.f.M(io := w, a := 1);
 z := s.f.M(1, 2, y, w);
 END_PROGRAM
 `;
+
+const LIBS_DIR = path.resolve(__dirname, "../../libs");
 
 const mainOf = (body: string): string => `
 #include <iostream>
@@ -526,6 +586,36 @@ describe.skipIf(!hasGpp)(
         expect(stdout).toBe(c.expected);
       });
     }
+
+    it.skipIf(!fs.existsSync(path.join(LIBS_DIR, "oscat-basic.stlib")))(
+      "stores a library STRUCT FUNCTION result (CADD) in a variable and a FUNCTION result",
+      () => {
+        const result = compile(
+          `FUNCTION F2 : COMPLEX VAR_INPUT a, b : COMPLEX; END_VAR F2 := CADD(a, b); END_FUNCTION
+PROGRAM Main
+VAR c, d, e : COMPLEX; END_VAR
+c.RE := 3.0; c.IM := 4.0; d := F2(c, c); e := CADD(c, c);
+END_PROGRAM
+`,
+          {
+            headerFileName: "generated.hpp",
+            libraries: discoverStlibs(LIBS_DIR),
+          },
+        );
+        expect(result.errors).toEqual([]);
+        const stdout = compileAndRunStandalone({
+          tempDir,
+          pchPath,
+          headerCode: result.headerCode,
+          cppCode: result.cppCode,
+          testName: "oop_cadd",
+          mainCode: mainOf(
+            'Program_MAIN p; p.run(); std::cout << p.D.RE << " " << p.D.IM << " " << p.E.RE;',
+          ),
+        });
+        expect(stdout).toBe("6 8 6");
+      },
+    );
 
     it("binds named and positional arguments of s.f.M() with a library STRUCT and FB", () => {
       const lib = compileStlib([{ source: LIB, fileName: "lib.st" }], {
