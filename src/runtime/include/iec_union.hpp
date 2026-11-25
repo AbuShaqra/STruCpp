@@ -193,6 +193,12 @@ public:
         return *get();
     }
 
+    /** `!m` of a POINTER TO member: whether it is NULL (the NULL check of `m^`). */
+    template<typename Q = W>
+    auto operator!() const -> decltype(!std::declval<Q>()) {
+        return !get();
+    }
+
     /** ADR of a member: the address of its bytes. */
     union_plain_type* operator&() noexcept {
         return reinterpret_cast<union_plain_type*>(

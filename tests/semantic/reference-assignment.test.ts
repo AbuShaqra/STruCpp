@@ -211,7 +211,7 @@ describe("REFERENCE TO is not combined with other levels", () => {
 
   it.each([
     ["rr : REFERENCE TO REF_TO INT;"],
-    ["rp : REFERENCE TO POINTER TO INT;"],
+    ["rpr : REFERENCE TO POINTER TO REFERENCE TO INT;"],
     ["rrf : REF_TO REFERENCE TO INT;"],
     ["arr : ARRAY[0..1] OF REF_TO REFERENCE TO INT;"],
   ])("rejects %s", (decl) => {
@@ -235,6 +235,13 @@ END_PROGRAM
       message("ARRAY type 'A'"),
       message("type alias 'RRA'"),
     ]);
+  });
+
+  it("accepts a REFERENCE TO a pointer (REFERENCE TO POINTER TO INT)", () => {
+    const result = compile(
+      "PROGRAM main\nVAR q : POINTER TO INT; rp : REFERENCE TO POINTER TO INT; END_VAR\nrp REF= q;\nEND_PROGRAM\n",
+    );
+    expect(result.errors).toEqual([]);
   });
 
   it("still accepts a single REFERENCE TO", () => {

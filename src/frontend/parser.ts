@@ -607,6 +607,13 @@ export class STParser extends CstParser {
       this.CONSUME(tokens.POINTER);
       this.CONSUME2(tokens.TO);
     });
+    // `REFERENCE TO ARRAY[...] OF T` (any other REFERENCE TO is read by dataType)
+    this.OPTION8({
+      GATE: () =>
+        this.LA(1).tokenType === tokens.REFERENCE_TO &&
+        this.LA(2).tokenType === tokens.ARRAY,
+      DEF: () => this.CONSUME(tokens.REFERENCE_TO),
+    });
     this.OR([
       {
         ALT: () => this.SUBRULE(this.arrayType),

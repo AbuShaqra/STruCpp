@@ -6065,20 +6065,24 @@ export class SemanticAnalyzer {
     );
   }
 
-  /** REFERENCE TO is an alias with no storage of its own, so it cannot be stacked with other levels. */
+  /**
+   * REFERENCE TO is an alias with no storage of its own, so it cannot be
+   * stacked with other levels; it can itself name a pointer
+   * (`REFERENCE TO POINTER TO INT`), except as an array's element.
+   */
   private validateReferenceLevels(
     typeRef: TypeReference,
     context: string,
   ): void {
-    const stacked = [
-      typeRef.referenceChain,
-      typeRef.elementReferenceChain,
-    ].some(
-      (chain) =>
-        chain !== undefined &&
-        chain.length > 1 &&
-        chain.includes("reference_to"),
-    );
+    const stackedOn = (chain: readonly string[] | undefined): boolean =>
+      chain !== undefined && chain.length > 1 && chain.includes("reference_to");
+    const toPointer =
+      !context.startsWith("ARRAY type") &&
+      typeRef.referenceChain?.[0] === "reference_to" &&
+      typeRef.referenceChain.slice(1).every((k) => k === "pointer_to");
+    const stacked =
+      (stackedOn(typeRef.referenceChain) && !toPointer) ||
+      stackedOn(typeRef.elementReferenceChain);
     if (!stacked) return;
     this.addError(
       `REFERENCE TO cannot be combined with other reference levels${context ? " in " + context : ""}`,

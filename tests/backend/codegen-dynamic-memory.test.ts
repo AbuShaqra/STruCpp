@@ -32,7 +32,7 @@ describe("Phase 3.5: __NEW Scalar Allocation", () => {
     const result = compileST(`
       PROGRAM TestNewInt
         VAR
-          pInt : INT;
+          pInt : POINTER TO INT;
         END_VAR
         pInt := __NEW(INT);
       END_PROGRAM
@@ -45,7 +45,7 @@ describe("Phase 3.5: __NEW Scalar Allocation", () => {
     const result = compileST(`
       PROGRAM TestNewReal
         VAR
-          pReal : REAL;
+          pReal : POINTER TO REAL;
         END_VAR
         pReal := __NEW(REAL);
       END_PROGRAM
@@ -58,7 +58,7 @@ describe("Phase 3.5: __NEW Scalar Allocation", () => {
     const result = compileST(`
       PROGRAM TestNewBool
         VAR
-          pBool : BOOL;
+          pBool : POINTER TO BOOL;
         END_VAR
         pBool := __NEW(BOOL);
       END_PROGRAM
@@ -77,7 +77,7 @@ describe("Phase 3.5: __NEW Scalar Allocation", () => {
       END_TYPE
       PROGRAM TestNewStruct
         VAR
-          pPoint : INT;
+          pPoint : POINTER TO Point;
         END_VAR
         pPoint := __NEW(Point);
       END_PROGRAM
@@ -96,7 +96,7 @@ describe("Phase 3.5: __NEW Array Allocation", () => {
     const result = compileST(`
       PROGRAM TestNewArray
         VAR
-          pArr : INT;
+          pArr : POINTER TO INT;
         END_VAR
         pArr := __NEW(INT, 10);
       END_PROGRAM
@@ -109,7 +109,7 @@ describe("Phase 3.5: __NEW Array Allocation", () => {
     const result = compileST(`
       PROGRAM TestNewArrayVar
         VAR
-          pArr : REAL;
+          pArr : POINTER TO REAL;
           size : INT;
         END_VAR
         size := 100;
@@ -124,7 +124,7 @@ describe("Phase 3.5: __NEW Array Allocation", () => {
     const result = compileST(`
       PROGRAM TestNewArrayExpr
         VAR
-          pArr : INT;
+          pArr : POINTER TO INT;
           n : INT;
         END_VAR
         n := 5;
@@ -132,7 +132,9 @@ describe("Phase 3.5: __NEW Array Allocation", () => {
       END_PROGRAM
     `);
     expect(result.success).toBe(true);
-    expect(result.cppCode).toContain("strucpp::iec_new_array<INT_t>(strucpp::iec_mul<DINT_t>({N, 2}))");
+    expect(result.cppCode).toContain(
+      "strucpp::iec_new_array<INT_t>(strucpp::iec_mul<DINT_t>({N, 2}))",
+    );
   });
 });
 
@@ -215,7 +217,8 @@ describe("Phase 3.5: Combined __NEW/__DELETE Usage", () => {
     expect(result.success).toBe(true);
     // Should have two iec_new calls and two iec_delete calls
     const newCount = (result.cppCode.match(/strucpp::iec_new</g) || []).length;
-    const deleteCount = (result.cppCode.match(/strucpp::iec_delete/g) || []).length;
+    const deleteCount = (result.cppCode.match(/strucpp::iec_delete/g) || [])
+      .length;
     expect(newCount).toBe(2);
     expect(deleteCount).toBe(2);
   });
@@ -249,7 +252,7 @@ describe("Phase 3.5: Case Insensitivity", () => {
     const result = compileST(`
       PROGRAM TestLower
         VAR
-          p : INT;
+          p : POINTER TO INT;
         END_VAR
         p := __new(INT);
       END_PROGRAM

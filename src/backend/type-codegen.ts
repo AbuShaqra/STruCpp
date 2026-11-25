@@ -179,32 +179,6 @@ export const IEC_TO_CPP_VAR_TYPE: Record<string, string> = {
 };
 
 /**
- * The C++ type of a struct field or type alias declared POINTER TO, which is a
- * raw pointer. `cppType` is the pointee as a single level spells it today;
- * `rawType` is the unwrapped element (`INT_t`, a UDT name). With more levels,
- * the pointee is itself a reference variable, so `POINTER TO POINTER TO INT`
- * is `IEC_Ptr<INT_t>*` and `POINTER TO REF_TO INT` is `IEC_REF_TO<INT_t>*`.
- */
-function rawPointerType(
-  typeRef: TypeReference,
-  cppType: string,
-  rawType: string,
-): string {
-  const chain = typeRef.referenceChain ?? [typeRef.referenceKind];
-  if (chain[0] !== "pointer_to") return cppType;
-  if (chain.length === 1) return `${cppType}*`;
-  return `${wrapReferenceChain(chain.slice(1), rawType)}*`;
-}
-
-/** A field or alias whose outermost level is REF_TO or REFERENCE TO. */
-function isReferenceField(typeRef: TypeReference): boolean {
-  return (
-    typeRef.referenceKind === "ref_to" ||
-    typeRef.referenceKind === "reference_to"
-  );
-}
-
-/**
  * The decimal payload of a typed integer literal (`LINT#-5` → `-5`), or
  * undefined for an untyped or based one, which keep their existing lowering.
  */
@@ -574,10 +548,10 @@ export class TypeCodeGenerator {
       cppType = this.mapStructFieldTypeToCpp(type.name, type.maxLength);
     }
     const rawType = type.arrayDimensions ? cppType : this.mapTypeRefToCpp(type);
-    return isReferenceField(type)
-      ? // REF_TO / REFERENCE TO: the same wrapper a variable gets.
-        wrapReferenceChain(type.referenceChain ?? [type.referenceKind], rawType)
-      : rawPointerType(type, cppType, rawType);
+    // POINTER TO / REF_TO / REFERENCE TO: the same wrapper a variable gets.
+    return (type.referenceKind ?? "none") !== "none"
+      ? wrapReferenceChain(type.referenceChain ?? [type.referenceKind], rawType)
+      : cppType;
   }
 
   /**
@@ -820,27 +794,26 @@ export class TypeCodeGenerator {
     let cppType: string;
     if (def.arrayDimensions && def.elementTypeName) {
       // POINTER TO ARRAY[...] OF T — use array template
-      const elemCpp = def.elementReferenceChain
-        ? wrapReferenceChain(
-            def.elementReferenceChain,
-            this.mapTypeToCpp(def.elementTypeName),
-          )
-        : this.mapTypeToCpp(def.elementTypeName);
+      // The element a variable's inline array holds (`IEC_INT`), so a
+      // dereference reads the same type through an alias as through a variable.
+      const elemCpp = this.arrayElementTypeToCpp(
+        def.elementTypeName,
+        def.elementReferenceChain,
+        def.elementMaxLength,
+      );
       cppType = formatArrayType(elemCpp, def.arrayDimensions);
     } else {
       cppType = this.mapTypeRefToCpp(def);
     }
     const rawType = def.arrayDimensions ? cppType : this.mapTypeRefToCpp(def);
-    // One POINTER TO level is the wrapper a variable declared so gets
+    // Every reference level is the wrapper a variable declared so gets
     // (`IEC_Ptr<INT_t>`): ADR(x) converts to it and its arithmetic is in bytes.
-    const onePointer =
-      !def.arrayDimensions &&
-      def.referenceKind === "pointer_to" &&
-      (def.referenceChain?.length ?? 1) === 1;
-    cppType =
-      isReferenceField(def) || onePointer
-        ? wrapReferenceChain(def.referenceChain ?? [def.referenceKind], rawType)
-        : rawPointerType(def, cppType, rawType);
+    if ((def.referenceKind ?? "none") !== "none") {
+      cppType = wrapReferenceChain(
+        def.referenceChain ?? [def.referenceKind],
+        rawType,
+      );
+    }
     this.emit(`using ${name} = ${cppType};`);
     this.emit("");
   }

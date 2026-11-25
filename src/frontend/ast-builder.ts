@@ -1745,6 +1745,14 @@ export class ASTBuilder {
       }
     }
 
+    // `REFERENCE TO ARRAY[...] OF T`: the array is what the reference refers to.
+    const referenceToken = getFirstToken(children.REFERENCE_TO);
+    if (referenceToken) {
+      type.referenceKind = "reference_to";
+      type.isReference = true;
+      type.sourceSpan = spanStartingAt(referenceToken, type.sourceSpan);
+    }
+
     // This POINTER TO is the outermost level, wrapping any the type rule read.
     // The span starts at POINTER so it covers the type as written.
     const pointerToken = getFirstToken(children.POINTER);
