@@ -960,11 +960,22 @@ class TestFunctionGenerator {
  * Escape a string for use in C++ string literals.
  */
 function escapeString(s: string): string {
-  return s
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, "\\n")
-    .replace(/\r/g, "\\r")
-    .replace(/\t/g, "\\t")
-    .replace(/\0/g, "\\0");
+  return (
+    s
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      // `??=` and the other trigraphs: no `?` pair survives in the C++ literal
+      .replace(/\?/g, "\\?")
+      .replace(/\n/g, "\\n")
+      .replace(/\r/g, "\\r")
+      .replace(/\t/g, "\\t")
+      .replace(/\f/g, "\\f")
+      .replace(/./gsu, (c) => {
+        // Other control characters as 3-digit octal escapes, which no digit after extends
+        const code = c.charCodeAt(0);
+        return code < 0x20 || code === 0x7f
+          ? `\\${code.toString(8).padStart(3, "0")}`
+          : c;
+      })
+  );
 }

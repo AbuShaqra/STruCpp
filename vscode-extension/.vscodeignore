@@ -10,6 +10,7 @@ out/client/
 out/server/
 out/shared/
 src/**
+runtime/test/**
 *.ts
 **/*.map
 **/*.tsbuildinfo

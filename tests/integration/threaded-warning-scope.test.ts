@@ -62,9 +62,9 @@ describe("shared-global warnings only where tasks can race", () => {
       const found = raceWarnings(source(2), options);
       expect(found).toHaveLength(2);
       expect(found[0]).toContain(
-        "VAR_IN_OUT 'V' refers to the shared global 'G' during the call",
+        "VAR_IN_OUT 'v' refers to the shared global 'g' during the call",
       );
-      expect(found[1]).toContain("REF of the shared global 'G'");
+      expect(found[1]).toContain("REF of the shared global 'g'");
     });
 
     it(`warns for one task in a threaded build (${label})`, () => {
@@ -113,9 +113,9 @@ describe.skipIf(!hasGpp)("through the CLI", () => {
         ...flags,
       ]);
       expect(threaded).toContain(
-        "VAR_IN_OUT 'V' refers to the shared global 'G'",
+        "VAR_IN_OUT 'v' refers to the shared global 'g'",
       );
-      expect(threaded).toContain("REF of the shared global 'G'");
+      expect(threaded).toContain("REF of the shared global 'g'");
     });
   }
 });

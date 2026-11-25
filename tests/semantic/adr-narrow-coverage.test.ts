@@ -191,7 +191,7 @@ b := fb.M(o => u);
 END_PROGRAM
 `),
     ).toEqual([
-      `11:16: The output 'O' gives a 64-bit address, which UDINT cannot hold; ${TAIL}`,
+      `11:16: The output 'o' gives a 64-bit address, which UDINT cannot hold; ${TAIL}`,
     ]);
   });
 
@@ -225,7 +225,7 @@ b := FIO(io := ADR(x));
 END_PROGRAM
 `),
     ).toEqual([
-      "7:16: VAR_IN_OUT 'IO' must be bound to a variable, not an expression",
+      "7:16: VAR_IN_OUT 'io' must be bound to a variable, not an expression",
     ]);
   });
 
@@ -249,7 +249,7 @@ END_PROGRAM
         (e) => `${e.line}:${e.column}: ${e.message}`,
       ),
     ).toEqual([
-      `3:9: The output 'O' gives a 64-bit address, which UDINT cannot hold; ${TAIL}`,
+      `3:9: The output 'o' gives a 64-bit address, which UDINT cannot hold; ${TAIL}`,
     ]);
   });
 

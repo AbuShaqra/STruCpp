@@ -169,11 +169,11 @@ describe("globals that name later globals", () => {
       expect(
         r.errors.map((e) => `${e.file}:${e.line}:${e.column} ${e.message}`),
       ).toEqual([
-        `main.st:6:14 ${refusal("B", "C")}`,
-        `main.st:5:14 ${refusal("A", "B")}`,
-        `main.st:10:32 ${refusal("ARR", "LATE")}`,
-        `main.st:10:38 ${refusal("ARR", "C")}`,
-        `main.st:14:21 ${refusal("FROMLIST", "LEVEL")}`,
+        `main.st:6:14 ${refusal("b", "c")}`,
+        `main.st:5:14 ${refusal("a", "b")}`,
+        `main.st:10:32 ${refusal("arr", "late")}`,
+        `main.st:10:38 ${refusal("arr", "c")}`,
+        `main.st:14:21 ${refusal("fromList", "level")}`,
       ]);
     },
   );
@@ -221,21 +221,21 @@ describe("globals that name later globals", () => {
 
   it("refuses a cycle, naming it", () => {
     expect(errorsFor("  d : INT := d2;\n  d2 : INT := d;")).toEqual([
-      "The initial values of the globals 'D' and 'D2' depend on each other (D -> D2 -> D)",
+      "The initial values of the globals 'd' and 'd2' depend on each other (D -> D2 -> D)",
     ]);
     expect(
       errorsFor(
         "  p : INT := q + 1;\n  q : INT := r;\n  r : INT := p;\n  ok : INT := 1;",
       ),
     ).toEqual([
-      "The initial values of the globals 'P', 'Q' and 'R' depend on each other (P -> Q -> R -> P)",
+      "The initial values of the globals 'p', 'q' and 'r' depend on each other (P -> Q -> R -> P)",
     ]);
     expect(
       errorsFor(
         "  pa : POINTER TO POINTER TO INT := ADR(pb);\n  pb : POINTER TO POINTER TO INT := ADR(pa);",
       ),
     ).toEqual([
-      "The initial values of the globals 'PA' and 'PB' depend on each other (PA -> PB -> PA)",
+      "The initial values of the globals 'pa' and 'pb' depend on each other (PA -> PB -> PA)",
     ]);
   });
 
@@ -248,13 +248,13 @@ PROGRAM Main VAR st : ST_P; END_VAR END_PROGRAM`,
         {},
       ).errors.map((e) => e.message);
     expect(errors("p : POINTER TO INT := ADR(gz);")).toEqual([
-      "POINTER TO initializers are not supported in a STRUCT; assign 'ST_P.P' in the body instead",
+      "POINTER TO initializers are not supported in a STRUCT; assign 'ST_P.p' in the body instead",
     ]);
     expect(errors("p : POINTER TO INT := ADR(x);")).toEqual([
-      "POINTER TO initializers are not supported in a STRUCT; assign 'ST_P.P' in the body instead",
+      "POINTER TO initializers are not supported in a STRUCT; assign 'ST_P.p' in the body instead",
     ]);
     expect(errors("p : POINTER TO INT := gp;")).toEqual([
-      "POINTER TO initializers are not supported in a STRUCT; assign 'ST_P.P' in the body instead",
+      "POINTER TO initializers are not supported in a STRUCT; assign 'ST_P.p' in the body instead",
     ]);
     expect(errors("p : POINTER TO INT := 0;")).toEqual([]);
     expect(errors("r : REF_TO INT := NULL;")).toEqual([]);

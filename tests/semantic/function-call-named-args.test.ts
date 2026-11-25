@@ -48,7 +48,7 @@ describe("function call named arguments", () => {
 
   it("refuses a local variable of the function named as an argument", () => {
     expect(errors("x := F_ADD(a := 1, io := y, t := 2);")).toEqual([
-      "Function 'F_ADD' has no parameter named 'T'",
+      "Function 'F_ADD' has no parameter named 't'",
     ]);
   });
 

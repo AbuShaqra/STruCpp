@@ -186,13 +186,16 @@ export function sourceNameLocator(
 }
 
 /** One declared name and where it is declared. */
-interface DeclaredName {
+export interface DeclaredName {
   name: string;
   span: SourceSpan;
 }
 
 /** Each name a VAR block declares, inline enumeration members included. */
-function varBlockNames(blocks: readonly VarBlock[], out: DeclaredName[]): void {
+export function varBlockNames(
+  blocks: readonly VarBlock[],
+  out: DeclaredName[],
+): void {
   for (const block of blocks) {
     for (const decl of block.declarations) varDeclNames(decl, out);
   }
@@ -218,7 +221,7 @@ function enumNames(def: EnumDefinition, out: DeclaredName[]): void {
 }
 
 /** Every name a compilation unit declares, as written by the user (before lowering). */
-function unitDeclaredNames(unit: CompilationUnit): DeclaredName[] {
+export function unitDeclaredNames(unit: CompilationUnit): DeclaredName[] {
   const out: DeclaredName[] = [];
   const pou = (n: { name: string; sourceSpan: SourceSpan }): void => {
     out.push({ name: n.name, span: n.sourceSpan });

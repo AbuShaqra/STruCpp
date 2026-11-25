@@ -58,7 +58,7 @@ describe("CONFIGURATION and RESOURCE globals", () => {
           "",
         );
         if (constantOnly) {
-          expect(errors(nonConstant, options)).toEqual([refusal("R", "B")]);
+          expect(errors(nonConstant, options)).toEqual([refusal("r", "b")]);
         }
         const result = compile(
           constantOnly
@@ -83,8 +83,8 @@ describe("CONFIGURATION and RESOURCE globals", () => {
             options,
           ),
         ).toEqual([
-          "The initial values of the globals 'R' and 'B' depend on each other (R -> B -> R)",
-          ...(constantOnly ? [refusal("B", "R"), refusal("R", "B")] : []),
+          "The initial values of the globals 'r' and 'b' depend on each other (R -> B -> R)",
+          ...(constantOnly ? [refusal("b", "r"), refusal("r", "b")] : []),
         ]);
         expect(
           errors(
@@ -95,7 +95,7 @@ describe("CONFIGURATION and RESOURCE globals", () => {
             options,
           ),
         ).toEqual([
-          "The initial values of the globals 'B' and 'C' depend on each other (B -> C -> B)",
+          "The initial values of the globals 'b' and 'c' depend on each other (B -> C -> B)",
         ]);
       });
 
@@ -106,9 +106,9 @@ describe("CONFIGURATION and RESOURCE globals", () => {
         );
         if (constantOnly) {
           expect(errors(nonConstant, options)).toEqual([
-            refusal("S", "A"),
-            refusal("R", "S"),
-            refusal("R", "A"),
+            refusal("s", "a"),
+            refusal("r", "s"),
+            refusal("r", "a"),
           ]);
         }
         const result = compile(
@@ -144,7 +144,7 @@ describe("CONFIGURATION and RESOURCE globals", () => {
             options,
           ),
         ).toEqual([
-          "Global 'R' of RESOURCE 'R2' is also declared by RESOURCE 'R1'; the globals of a configuration and its resources need distinct names",
+          "Global 'r' of RESOURCE 'R2' is also declared by RESOURCE 'R1'; the globals of a configuration and its resources need distinct names",
         ]);
         expect(
           errors(
@@ -155,7 +155,7 @@ describe("CONFIGURATION and RESOURCE globals", () => {
             options,
           ),
         ).toEqual([
-          "Global 'R' of RESOURCE 'R1' is also declared by CONFIGURATION 'CFG'; the globals of a configuration and its resources need distinct names",
+          "Global 'r' of RESOURCE 'R1' is also declared by CONFIGURATION 'Cfg'; the globals of a configuration and its resources need distinct names",
         ]);
       });
 
@@ -163,7 +163,7 @@ describe("CONFIGURATION and RESOURCE globals", () => {
         expect(
           errors(source("", "", "VAR_GLOBAL r : INT; END_VAR"), options),
         ).toEqual([
-          "Program instance 'INST' of RESOURCE 'R1' reaches 'R', a global of RESOURCE 'R2'",
+          "Program instance 'inst' of RESOURCE 'R1' reaches 'r', a global of RESOURCE 'R2'",
         ]);
         expect(
           errors(
@@ -174,7 +174,7 @@ describe("CONFIGURATION and RESOURCE globals", () => {
             options,
           ),
         ).toEqual([
-          "The initial value of 'Q' names 'R', a global of RESOURCE 'R1'",
+          "The initial value of 'q' names 'r', a global of RESOURCE 'R1'",
         ]);
       });
     });

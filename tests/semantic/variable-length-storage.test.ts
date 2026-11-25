@@ -29,8 +29,8 @@ END_CONFIGURATION
 PROGRAM Main END_PROGRAM
 `).errors.map((e) => e.message),
     ).toEqual([
-      `'A' is a variable-length ARRAY[*] in a VAR_GLOBAL of CONFIGURATION C1${TAIL}`,
-      `'B' is a variable-length ARRAY[*] in a VAR_GLOBAL of RESOURCE R1 of CONFIGURATION C1${TAIL}`,
+      `'a' is a variable-length ARRAY[*] in a VAR_GLOBAL of CONFIGURATION C1${TAIL}`,
+      `'b' is a variable-length ARRAY[*] in a VAR_GLOBAL of RESOURCE R1 of CONFIGURATION C1${TAIL}`,
     ]);
   });
 
@@ -58,14 +58,14 @@ END_PROGRAM
       );
       expect(r.errors.map((e) => `${e.line}:${e.column} ${e.message}`)).toEqual(
         [
-          `15:9 'W' is a variable-length ARRAY[*] in a VAR of PROGRAM MAIN${TAIL}`,
-          `10:9 'L' is a variable-length ARRAY[*] in a VAR of FUNCTION F${TAIL}`,
-          `11:14 'T' is a variable-length ARRAY[*] in a VAR_TEMP of FUNCTION F${TAIL}`,
-          `5:9 'M' is a variable-length ARRAY[*] in a VAR of FUNCTION_BLOCK FB${TAIL}`,
-          `6:15 'I' is a variable-length ARRAY[*] in a VAR_INPUT of FUNCTION_BLOCK FB${TAIL}`,
-          `7:16 'O' is a variable-length ARRAY[*] in a VAR_OUTPUT of FUNCTION_BLOCK FB${TAIL}`,
-          `3:16 'V' is a variable-length ARRAY[*] in a VAR_GLOBAL${TAIL}`,
-          `2:21 'A' is a variable-length ARRAY[*] in STRUCT S${TAIL}`,
+          `15:9 'w' is a variable-length ARRAY[*] in a VAR of PROGRAM MAIN${TAIL}`,
+          `10:9 'l' is a variable-length ARRAY[*] in a VAR of FUNCTION F${TAIL}`,
+          `11:14 't' is a variable-length ARRAY[*] in a VAR_TEMP of FUNCTION F${TAIL}`,
+          `5:9 'm' is a variable-length ARRAY[*] in a VAR of FUNCTION_BLOCK FB${TAIL}`,
+          `6:15 'i' is a variable-length ARRAY[*] in a VAR_INPUT of FUNCTION_BLOCK FB${TAIL}`,
+          `7:16 'o' is a variable-length ARRAY[*] in a VAR_OUTPUT of FUNCTION_BLOCK FB${TAIL}`,
+          `3:16 'v' is a variable-length ARRAY[*] in a VAR_GLOBAL${TAIL}`,
+          `2:21 'a' is a variable-length ARRAY[*] in STRUCT S${TAIL}`,
         ],
       );
     });

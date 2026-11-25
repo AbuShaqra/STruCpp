@@ -76,8 +76,8 @@ END_PROGRAM
 END_PROGRAM
 `;
     expect(lines(compile(src, ON))).toEqual([
-      "19:3: VAR_OUTPUT 'DONE' of PROGRAM PRG_A is read-only outside PRG_A",
-      "20:3: Cannot assign to CONSTANT variable 'PRG_A.LIM'",
+      "19:3: VAR_OUTPUT 'done' of PROGRAM PRG_A is read-only outside PRG_A",
+      "20:3: Cannot assign to CONSTANT variable 'PRG_A.lim'",
     ]);
   });
 
@@ -90,7 +90,7 @@ VAR x : INT; END_VAR
 END_PROGRAM
 `;
     expect(lines(compile(src, ON))).toEqual([
-      "20:8: VAR_TEMP 'TMP' of PROGRAM PRG_A cannot be reached from another POU",
+      "20:8: VAR_TEMP 'tmp' of PROGRAM PRG_A cannot be reached from another POU",
       "21:8: PROGRAM PRG_A has no variable 'NOPE'",
       "22:3: PROGRAM PRG_A has no method or action 'MISSING'",
     ]);
@@ -102,7 +102,7 @@ END_PROGRAM
 END_PROGRAM
 `;
     expect(lines(compile(src, ON))).toEqual([
-      "19:3: Cannot call PRIVATE method 'HIDDEN' of 'PRG_A' from outside 'PRG_A'.",
+      "19:3: Cannot call PRIVATE method 'Hidden' of 'PRG_A' from outside 'PRG_A'.",
     ]);
   });
 
@@ -140,8 +140,8 @@ VAR b : BOOL; x : INT; END_VAR
 END_PROGRAM
 `;
     expect(lines(compile(src, ON))).toEqual([
-      "20:3: PROGRAM PRG_A has no VAR_INPUT 'CNT'",
-      "21:3: PROGRAM PRG_A has no VAR_OUTPUT 'INP'",
+      "20:3: PROGRAM PRG_A has no VAR_INPUT 'cnt'",
+      "21:3: PROGRAM PRG_A has no VAR_OUTPUT 'inp'",
       "22:3: too many arguments in the call of PROGRAM PRG_A",
       "23:8: PROGRAM PRG_A has no result: call it as a statement",
     ]);
@@ -296,7 +296,7 @@ VAR CONSTANT c : INT := 3; END_VAR
 END_PROGRAM
 `;
     expect(lines(compile(src, ON))).toEqual([
-      "3:3: Cannot assign to CONSTANT variable 'C'",
+      "3:3: Cannot assign to CONSTANT variable 'c'",
     ]);
   });
 

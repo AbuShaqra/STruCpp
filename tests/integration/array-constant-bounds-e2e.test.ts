@@ -103,7 +103,7 @@ describe("constant array bounds", () => {
 VAR n : INT; a : ARRAY[0..n] OF INT; END_VAR
 END_PROGRAM`),
     ).toEqual([
-      "The bounds of an ARRAY must be integer constants: 'N' is not a constant",
+      "The bounds of an ARRAY must be integer constants: 'n' is not a constant",
     ]);
     expect(
       errorsFor(`TYPE TA : ARRAY[0..NOPE] OF INT; END_TYPE

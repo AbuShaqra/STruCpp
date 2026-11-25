@@ -66,7 +66,7 @@ describe("VAR_IN_OUT REFERENCE TO T — check and codegen", () => {
         .map((w) => `${w.line}: ${w.message}`)
         .filter((m) => m.includes("copy-in")),
     ).toEqual([
-      "28: VAR_IN_OUT 'R' of type REFERENCE TO INT is bound to a variable of type DINT; it is passed by copy-in / copy-out, not by reference",
+      "28: VAR_IN_OUT 'r' of type REFERENCE TO INT is bound to a variable of type DINT; it is passed by copy-in / copy-out, not by reference",
     ]);
     expect(result.cppCode).toMatch(/IEC_REFERENCE_TO<INT_t> __gio_\d+\(I\);/);
     expect(result.cppCode).toMatch(

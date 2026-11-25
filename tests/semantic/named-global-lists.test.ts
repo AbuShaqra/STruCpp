@@ -132,7 +132,7 @@ describe("feature off", () => {
       expect(
         messages(prog("v := GVL_A.x;", "v : INT;"), undefined, options),
       ).toEqual([
-        "9:6 Global variable list access 'GVL_A.X' needs the feature named_global_lists",
+        "9:6 Global variable list access 'GVL_A.x' needs the feature named_global_lists",
       ]);
     });
 
@@ -164,7 +164,7 @@ describe("feature off", () => {
           ],
           options,
         ),
-      ).toEqual(["1:12 Symbol 'X' already defined in scope 'global'"]);
+      ).toEqual(["1:12 Symbol 'x' already defined in scope 'global'"]);
     });
   }
 
@@ -182,7 +182,7 @@ describe("feature off", () => {
       dialectIO: { readFile: () => JSON.stringify(profile), listDir: () => [] },
     });
     expect(result.errors.map((e) => e.message)).toEqual([
-      "Global variable list access 'GVL_A.X' needs the feature named_global_lists (profiles: lists)",
+      "Global variable list access 'GVL_A.x' needs the feature named_global_lists (profiles: lists)",
     ]);
   });
 });
@@ -323,7 +323,7 @@ describe("shadowing of the list name", () => {
   it("a POU or type named like the list wins", () => {
     const extra = [{ source: GVL_A, fileName: "ST_Pair.st" }];
     expect(messages(prog("v := ST_Pair.x;", "v : INT;"), extra, ON)).toEqual([
-      "9:6 Cannot access members of type 'ST_PAIR' directly — declare a variable of type 'ST_PAIR' first.",
+      "9:6 Cannot access members of type 'ST_Pair' directly — declare a variable of type 'ST_Pair' first.",
     ]);
   });
 
@@ -418,7 +418,7 @@ describe("two lists declaring the same name", () => {
 
   it("a plain use is an error at the use, asking for qualification", () => {
     expect(messages(prog("v := x;", "v : INT;"), TWO, ON)).toEqual([
-      "9:6 'X' is declared in lists GVL_A and GVL_B; qualify it as GVL_A.X or GVL_B.X",
+      "9:6 'x' is declared in lists GVL_A and GVL_B; qualify it as GVL_A.X or GVL_B.X",
     ]);
   });
 
@@ -434,7 +434,7 @@ VAR_EXTERNAL x : INT; END_VAR
 END_PROGRAM
 `;
     expect(messages(main, TWO, ON)).toEqual([
-      "8:14 VAR_EXTERNAL 'X' is ambiguous: it is declared in lists GVL_A and GVL_B; access it as GVL_A.X or GVL_B.X instead",
+      "8:14 VAR_EXTERNAL 'x' is ambiguous: it is declared in lists GVL_A and GVL_B; access it as GVL_A.X or GVL_B.X instead",
     ]);
   });
 
@@ -450,11 +450,11 @@ END_PROGRAM
       },
     ];
     expect(messages(prog("GVL_A.c := 2;"), consts, ON)).toEqual([
-      "9:1 Cannot assign to CONSTANT variable 'GVL_A.C'",
+      "9:1 Cannot assign to CONSTANT variable 'GVL_A.c'",
     ]);
     // Hidden by a local: the alias is shown the same way.
     expect(messages(prog("GVL_A.c := 2;", "c : INT;"), consts, ON)).toEqual([
-      "9:1 Cannot assign to CONSTANT variable 'GVL_A.C'",
+      "9:1 Cannot assign to CONSTANT variable 'GVL_A.c'",
     ]);
   });
 
@@ -479,7 +479,7 @@ describe("internal names and user identifiers", () => {
       },
     ];
     expect(messages(prog(""), TWO, ON).join("\n")).toMatch(
-      /'GVL_A\.X' is reached through the name 'GVL_A__X', which this program also declares/,
+      /'GVL_A\.x' is reached through the name 'GVL_A__X', which this program also declares/,
     );
     const hidden = messages(
       prog("GVL_A.x := 1;", "x : INT; GVL_A__X : INT;"),
@@ -487,7 +487,7 @@ describe("internal names and user identifiers", () => {
       ON,
     );
     expect(hidden).toEqual([
-      "9:1 'GVL_A.X' is reached through the name 'GVL_A__X', which this program also declares; rename that declaration",
+      "9:1 'GVL_A.x' is reached through the name 'GVL_A__X', which this program also declares; rename that declaration",
     ]);
   });
 });

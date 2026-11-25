@@ -40,7 +40,7 @@ describe("length-preserving upper-casing", () => {
         errors(
           `PROGRAM P\nVAR x, y : INT; END_VAR\nx := 1; {${ch}} y := q;\nEND_PROGRAM\n`,
         ),
-      ).toEqual(["3:21: Undeclared variable 'Q'"]);
+      ).toEqual(["3:21: Undeclared variable 'q'"]);
     }
   });
 
@@ -212,7 +212,7 @@ describe("names: one rule for refused characters (recheck 3)", () => {
     checked(
       `PROGRAM P\nVAR x : INT; y : INT; r : REAL; s : STRING; ab : INT; b : INT; c : INT; END_VAR\n${stmt}\nEND_PROGRAM\n`,
     );
-  const qq = "3:{c}: Undeclared variable 'QQ'";
+  const qq = "3:{c}: Undeclared variable 'qq'";
   const und = (col: number): string => qq.replace("{c}", String(col));
 
   it("refuses a run after a comment or pragma once (#1)", () => {
@@ -245,7 +245,7 @@ describe("names: one rule for refused characters (recheck 3)", () => {
     expect(body("x := b ANDäc;")).toEqual([
       msg("3:11", "ä"),
       "3:8: Expected `Semicolon`, found identifier `ANDC`.",
-      "3:8: Unexpected identifier `ANDC` after identifier `B` while parsing a statement.",
+      "3:8: Unexpected identifier `ANDC` after identifier `b` while parsing a statement.",
       "3:8: Expected `END_PROGRAM`, found identifier `ANDC`.",
     ]);
   });
@@ -300,7 +300,7 @@ describe("names: lexed as if the refused characters were not there (recheck 4)",
   it("gives a name after the refused character its own column (#3, #6)", () => {
     expect(body("IF TRUE THEN x := 1; END_IF; äqq := 2;")).toEqual([
       msg("3:30", "ä"),
-      "3:31: Undeclared variable 'QQ'",
+      "3:31: Undeclared variable 'qq'",
     ]);
   });
 

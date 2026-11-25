@@ -58,7 +58,7 @@ describe.skipIf(!hasGpp)(
         "FUNCTION FW : WORD VAR_INPUT x : WORD; END_VAR FW := x; END_FUNCTION\nTYPE S : STRUCT d : WORD := NOT FW(16#0F); END_STRUCT END_TYPE\nPROGRAM MAIN VAR s : S; END_VAR END_PROGRAM\n",
       );
       expect(r.errors.map((e) => e.message)).toEqual([
-        "The default of STRUCT field 'S.D' must be a constant expression: 'FW' is a FUNCTION call",
+        "The default of STRUCT field 'S.d' must be a constant expression: 'FW' is a FUNCTION call",
       ]);
     });
 

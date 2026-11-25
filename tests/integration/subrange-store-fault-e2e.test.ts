@@ -200,10 +200,10 @@ END_PROGRAM
       result.errors.map((e) => `${e.line}:${e.column} ${e.message}`).sort(),
     ).toEqual([
       "2:26 The initial value 42 of 'SD' is outside its subrange 0..10",
-      "3:28 The initial value 42 of 'F' is outside its subrange 0..10",
-      "5:102 The initial value -1 of 'N' is outside its subrange 0..10",
-      "5:24 The initial value 42 of 'X' is outside its subrange 0..10",
-      "5:70 The initial value 42 of 'A' is outside its subrange 0..10",
+      "3:28 The initial value 42 of 'f' is outside its subrange 0..10",
+      "5:102 The initial value -1 of 'n' is outside its subrange 0..10",
+      "5:24 The initial value 42 of 'x' is outside its subrange 0..10",
+      "5:70 The initial value 42 of 'a' is outside its subrange 0..10",
     ]);
   });
 
@@ -266,11 +266,11 @@ END_PROGRAM
     expect(
       result.errors.map((e) => `${e.line}:${e.column} ${e.message}`).sort(),
     ).toEqual([
-      "5:35 The initial value 42 of 'S.F' is outside its subrange 0..10",
-      "7:21 The initial value 42 of 'T.F' is outside its subrange 0..10",
-      "7:69 The initial value 42 of 'M' is outside its subrange 0..10",
-      "8:36 The initial value 42 of 'AS.F' is outside its subrange 0..10",
-      "8:84 The initial value -1 of 'H' is outside its subrange 100..300",
+      "5:35 The initial value 42 of 's.f' is outside its subrange 0..10",
+      "7:21 The initial value 42 of 't.f' is outside its subrange 0..10",
+      "7:69 The initial value 42 of 'm' is outside its subrange 0..10",
+      "8:36 The initial value 42 of 'as.f' is outside its subrange 0..10",
+      "8:84 The initial value -1 of 'h' is outside its subrange 100..300",
     ]);
   });
 });

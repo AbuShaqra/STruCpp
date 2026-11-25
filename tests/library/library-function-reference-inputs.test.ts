@@ -108,7 +108,7 @@ END_PROGRAM
         expect(
           run("y := Bump(x + 1, 5, 0);").errors.map((e) => e.message),
         ).toEqual([
-          "REFERENCE TO input 'R' needs a variable to refer to, not an expression",
+          "REFERENCE TO input 'r' needs a variable to refer to, not an expression",
         ]);
         expect(run("y := Bump(r, 5, 0);").errors.map((e) => e.message)).toEqual(
           ["REFERENCE TO INT cannot refer to a REAL variable"],

@@ -51,7 +51,7 @@ describe("function block call through a member chain", () => {
   it("still refuses a member that is not a function block instance", () => {
     const r = compileMain("a.h.s.n();");
     expect(r.errors.map((e) => e.message)).toEqual([
-      "'A.H.S.N' is a member that is not a function block instance, not a method",
+      "'a.h.s.n' is a member that is not a function block instance, not a method",
     ]);
   });
 });

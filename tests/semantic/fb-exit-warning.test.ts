@@ -86,7 +86,7 @@ PROGRAM Main VAR f : FB_Child; END_VAR`,
     expect(r.errors).toEqual([]);
     expect(located(r)).toEqual([
       WARNING,
-      "10:15 FB_exit of 'FB_CHILD' is never called: an instance is not torn down",
+      "10:15 FB_exit of 'FB_Child' is never called: an instance is not torn down",
     ]);
   });
 });

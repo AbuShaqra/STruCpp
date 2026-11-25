@@ -49,20 +49,20 @@ describe("unknown element in a structure initializer", () => {
         ta : T_ARR := [(tt := 7)];`,
       ),
     ).toEqual([
-      "STRUCT 'ST_P' has no member 'ZZ'",
-      "STRUCT 'ST_P' has no member 'YY'",
-      "STRUCT 'ST_P' has no member 'XX'",
-      "STRUCT 'ST_D' has no member 'WW'",
-      "STRUCT 'ST_P' has no member 'VV'",
-      "STRUCT 'ST_P' has no member 'UU'",
-      "STRUCT 'ST_P' has no member 'TT'",
+      "STRUCT 'ST_P' has no member 'zz'",
+      "STRUCT 'ST_P' has no member 'yy'",
+      "STRUCT 'ST_P' has no member 'xx'",
+      "STRUCT 'ST_D' has no member 'ww'",
+      "STRUCT 'ST_P' has no member 'vv'",
+      "STRUCT 'ST_P' has no member 'uu'",
+      "STRUCT 'ST_P' has no member 'tt'",
     ]);
   });
 
   it("refuses an element a function block does not have", () => {
     expect(errorsIn("f : FB_A := (zz := 1); g : FB_B := (yy := 2);")).toEqual([
-      "Function block 'FB_A' has no member 'ZZ'",
-      "Function block 'FB_B' has no member 'YY'",
+      "Function block 'FB_A' has no member 'zz'",
+      "Function block 'FB_B' has no member 'yy'",
     ]);
   });
 
@@ -75,14 +75,14 @@ describe("unknown element in a structure initializer", () => {
         TYPE T_DEF : ST_P := (xx := 3); END_TYPE`,
       ).sort(),
     ).toEqual([
-      "STRUCT 'ST_P' has no member 'YY'",
-      "STRUCT 'ST_P' has no member 'ZZ'",
+      "STRUCT 'ST_P' has no member 'yy'",
+      "STRUCT 'ST_P' has no member 'zz'",
     ]);
   });
 
   it("refuses under iec-3 too", () => {
     expect(errorsIn("s : ST_P := (zz := 1);", "", "iec-3")).toEqual([
-      "STRUCT 'ST_P' has no member 'ZZ'",
+      "STRUCT 'ST_P' has no member 'zz'",
     ]);
   });
 

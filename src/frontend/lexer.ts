@@ -651,7 +651,7 @@ export const TypedStringLiteral = createToken({
 export const TypedLiteral = createToken({
   name: "TypedLiteral",
   pattern:
-    /(?:BYTE|WORD|DWORD|LWORD|BOOL)#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[0-9][0-9_]*(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)|(?:SINT|INT|DINT|LINT|USINT|UINT|UDINT|ULINT|REAL|LREAL)#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[+-]?[0-9][0-9_]*(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)/i,
+    /(?:BYTE|WORD|DWORD|LWORD|BOOL)#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[0-9][0-9_]*(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)|(?:SINT|INT|DINT|LINT|USINT|UINT|UDINT|ULINT|REAL|LREAL)#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[+-]?[0-9][0-9_]*(?:\.[0-9][0-9_]*)?(?:[eE][+-]?[0-9][0-9_]*)?)/i,
 });
 
 // Typed enumeration literal: E_State#Idle (IEC 61131-3 type-qualified enum
@@ -663,10 +663,13 @@ export const EnumLiteral = createToken({
   pattern: /[A-Za-z_][A-Za-z0-9_]*#[A-Za-z_][A-Za-z0-9_]*/,
 });
 
-// Real number literal: 3.14, 1.0e-10
+// Real number literal: 3.14, 1.0e-10, 1_000.5 (Ed. 3 Annex A Real_Literal: each
+// part an Unsigned_Int, which may hold underscores; misplaced ones are refused
+// under iec-3/--strict like an integer's).
 export const RealLiteral = createToken({
   name: "RealLiteral",
-  pattern: /[0-9]+\.[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+/,
+  pattern:
+    /[0-9][0-9_]*\.[0-9][0-9_]*(?:[eE][+-]?[0-9][0-9_]*)?|[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*/,
 });
 
 // Integer literal: 123, 16#FF, 2#1010, 8#77

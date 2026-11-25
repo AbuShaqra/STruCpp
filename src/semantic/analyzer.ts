@@ -142,6 +142,11 @@ import {
 } from "./platform-types.js";
 import { implicitParameterHint } from "./implicit-parameters.js";
 import {
+  respellDiagnostics,
+  spellingsOf,
+  testFileSpellings,
+} from "./declared-spellings.js";
+import {
   iec3VarBlockIdentifierErrors,
   iec3Warnings,
   sourceNameLocator,
@@ -711,6 +716,7 @@ export class SemanticAnalyzer {
     this.validatePostfixEnumBases(ast);
     this.validateConfigurationGlobalsHoldNoFB(ast);
     this.validateDeclaredEno(ast);
+    this.validateInheritedRedeclarations(ast);
     // FB_exit is a vendor finalizer; no instance is ever torn down here, in any mode
     for (const fb of ast.functionBlocks) {
       for (const m of fb.methods) {
@@ -759,6 +765,78 @@ export class SemanticAnalyzer {
       seen.add(key);
       return true;
     });
+  }
+
+  /**
+   * A variable of a FUNCTION_BLOCK named like one it inherits (from any base,
+   * user or library) hides the inherited one: a warning, an error under iec-3
+   * and --strict. A VAR_TEMP is a member of the block's class too, so it hides
+   * one as well. A VAR_EXTERNAL names a global, not a member, and EN/ENO are
+   * the block's own pins (see validateDeclaredEno): both are left alone.
+   */
+  private validateInheritedRedeclarations(ast: CompilationUnit): void {
+    const strict = this.iec3Rules || this.options.strict === true;
+    for (const fb of ast.functionBlocks) {
+      if (fb.extends === undefined) continue;
+      /** Upper-cased inherited name → the block declaring it (nearest first). */
+      const inherited = new Map<string, string>();
+      const seen = new Set<string>([fb.name.toUpperCase()]);
+      let base: string | undefined = fb.extends;
+      while (base !== undefined && !seen.has(base.toUpperCase())) {
+        seen.add(base.toUpperCase());
+        const sym = this.symbolTables.lookupFunctionBlock(base.toUpperCase());
+        if (sym === undefined) break;
+        const names =
+          sym.libraryName !== undefined
+            ? [
+                ...sym.inputs,
+                ...sym.outputs,
+                ...sym.inouts,
+                ...sym.locals,
+                ...(sym.temps ?? []),
+              ].map((v) => v.name)
+            : sym.declaration.varBlocks
+                .filter((b) => b.blockType !== "VAR_EXTERNAL")
+                .flatMap((b) => b.declarations.flatMap((d) => d.names));
+        for (const n of names) {
+          if (!inherited.has(n.toUpperCase())) {
+            inherited.set(n.toUpperCase(), sym.declaration.name);
+          }
+        }
+        base = sym.declaration.extends;
+      }
+      if (inherited.size === 0) continue;
+      for (const vb of fb.varBlocks) {
+        if (vb.blockType === "VAR_EXTERNAL") continue;
+        for (const decl of vb.declarations) {
+          decl.names.forEach((n, i) => {
+            const upper = n.toUpperCase();
+            if (upper === "EN" || upper === "ENO") return;
+            const from = inherited.get(upper);
+            if (from === undefined) return;
+            const at = decl.nameSpans?.[i] ?? decl.sourceSpan;
+            const message =
+              `'${n}' of FUNCTION_BLOCK '${fb.name}' redeclares the variable '${n}' ` +
+              `it inherits from '${from}', which it hides; rename one of them`;
+            if (strict) {
+              this.addError(
+                message,
+                at.startLine,
+                at.startCol,
+                decl.sourceSpan.file,
+              );
+            } else {
+              this.addWarning(
+                message,
+                at.startLine,
+                at.startCol,
+                decl.sourceSpan.file,
+              );
+            }
+          });
+        }
+      }
+    }
   }
 
   /**
@@ -8285,25 +8363,32 @@ export class SemanticAnalyzer {
     }
     // Under iec-3 or --strict: an underscore in a numeric literal stands between two digits
     if (this.iec3Rules || this.options.strict === true) {
-      for (const root of testRoots) {
-        walkAST(root, (node) => {
-          if (node.kind !== "LiteralExpression") return;
-          const lit = node as LiteralExpression;
-          if (
-            lit.literalType === "STRING" ||
-            lit.literalType === "WSTRING" ||
-            !literalUnderscoreRefused(lit.rawValue)
-          ) {
-            return;
-          }
-          const at = node.sourceSpan;
-          this.addError(
-            literalUnderscoreMessage(lit.rawValue),
-            at.startLine,
-            at.startCol,
-            at.file,
-          );
-        });
+      if (testFile.literalUnderscoreErrors !== undefined) {
+        for (const e of testFile.literalUnderscoreErrors) {
+          this.addError(e.message, e.line, e.column, e.file);
+        }
+      } else {
+        // A TestFile built without the test parser: its expressions only
+        for (const root of testRoots) {
+          walkAST(root, (node) => {
+            if (node.kind !== "LiteralExpression") return;
+            const lit = node as LiteralExpression;
+            if (
+              lit.literalType === "STRING" ||
+              lit.literalType === "WSTRING" ||
+              !literalUnderscoreRefused(lit.rawValue)
+            ) {
+              return;
+            }
+            const at = node.sourceSpan;
+            this.addError(
+              literalUnderscoreMessage(lit.rawValue),
+              at.startLine,
+              at.startCol,
+              at.file,
+            );
+          });
+        }
       }
     }
     // TIME, DATE, TOD and DT literals fit their 32-bit types
@@ -9004,7 +9089,22 @@ export function analyzeTestFile(
     ...(effective !== undefined ? { dialect: effective } : {}),
     ...(strict === true ? { strict: true } : {}),
   });
-  return analyzer.analyzeTestFile(testFile, sourceSymbolTables, sourceAst);
+  const result = analyzer.analyzeTestFile(
+    testFile,
+    sourceSymbolTables,
+    sourceAst,
+  );
+  const spellings = testFileSpellings(
+    testFile,
+    sourceAst !== undefined ? spellingsOf(sourceAst) : undefined,
+  );
+  const sources =
+    testFile.source !== undefined
+      ? new Map([[testFile.fileName, testFile.source]])
+      : undefined;
+  respellDiagnostics(result.errors, spellings, sources, testFile.fileName);
+  respellDiagnostics(result.warnings, spellings, sources, testFile.fileName);
+  return result;
 }
 
 /** The unit declares its own FUNCTION or global TRUNC, which a `TRUNC(x)` call then names. */

@@ -182,7 +182,7 @@ describe("array subscripts: index count", () => {
     );
     expect(errors).toHaveLength(1);
     // strucpp uppercases identifiers, as its other diagnostics do.
-    expect(errors[0]).toBe("'M' has 2 dimensions but is indexed with 1 index.");
+    expect(errors[0]).toBe("'m' has 2 dimensions but is indexed with 1 index.");
   });
 
   it("rejects too many indices", () => {
@@ -190,7 +190,7 @@ describe("array subscripts: index count", () => {
       prog("    a : ARRAY[0..3] OF INT;", "  dummy := a[0,1];"),
     );
     expect(errors[0]).toBe(
-      "'A' has 1 dimension but is indexed with 2 indices.",
+      "'a' has 1 dimension but is indexed with 2 indices.",
     );
   });
 
@@ -281,8 +281,8 @@ FUNCTION_BLOCK FB
   out := m[0];
 END_FUNCTION_BLOCK
 `);
-    expect(errors.some((e) => e.includes("'M' has 2 dimensions"))).toBe(true);
-    expect(errors.some((e) => e.includes("'N' has 1 dimension"))).toBe(true);
+    expect(errors.some((e) => e.includes("'m' has 2 dimensions"))).toBe(true);
+    expect(errors.some((e) => e.includes("'n' has 1 dimension"))).toBe(true);
   });
 });
 

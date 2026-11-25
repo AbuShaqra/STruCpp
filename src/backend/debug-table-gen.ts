@@ -31,7 +31,10 @@ import type {
 import type { ProjectModel } from "../project-model.js";
 import { getProjectNamespace } from "../project-model.js";
 import { programsReachedByName } from "../semantic/program-access.js";
-import type { SymbolTables } from "../semantic/symbol-table.js";
+import type {
+  FunctionBlockSymbol,
+  SymbolTables,
+} from "../semantic/symbol-table.js";
 import { isElementaryType } from "../semantic/type-registry.js";
 import {
   evalIntConst,
@@ -539,7 +542,12 @@ export function generateDebugTable(
       currentDecl = outer;
     }
   };
+  /** Leaves left out without a warning (a non-RETAIN file-level global). */
+  let silentSkips = false;
+  /** The flags of the leaf being walked: a RETAIN one is warned about even in a silent walk. */
+  let leafFlags = 0;
   const skip = (item: { path: string; reason: string }): void => {
+    if (silentSkips && (leafFlags & LEAF_FLAG_RETAIN) === 0) return;
     skipped.push(
       currentDecl !== undefined ? { ...item, decl: currentDecl } : item,
     );
@@ -554,7 +562,7 @@ export function generateDebugTable(
    * anyone using a third-party .stlib they cannot rebuild. But a partial
    * retain that nobody is told about is exactly the failure this reports.
    */
-  const incomplete: Array<{ path: string; reason: string }> = [];
+  const incomplete: Array<{ path: string; reason: string; decl?: string }> = [];
 
   const tail = (): Entry[] => arrays[arrays.length - 1]!;
 
@@ -724,10 +732,196 @@ export function generateDebugTable(
     );
   };
 
+  /**
+   * The names of the members an instance of `fbSym` holds itself (not its
+   * base's), VAR_TEMP included: codegen declares those as class members too.
+   */
+  const ownMemberNames = (fbSym: FunctionBlockSymbol): string[] =>
+    fbSym.libraryName !== undefined
+      ? [
+          ...fbSym.inputs,
+          ...fbSym.outputs,
+          ...fbSym.inouts,
+          ...fbSym.locals,
+          ...(fbSym.temps ?? []),
+        ].map((v) => v.name.toUpperCase())
+      : fbSym.declaration.varBlocks
+          .filter((b) => b.blockType !== "VAR_EXTERNAL")
+          .flatMap((b) => b.declarations.flatMap((d) => d.names))
+          .map((n) => n.toUpperCase());
+
+  /**
+   * The members of an instance of function block `fbSym` (written `shownName`):
+   * those of the block it EXTENDS first, as C++ inherits them, then its own.
+   * A member a derived block declares again (`hiddenBy`) is listed under its
+   * qualified name (`INST.FB_A::Y`, C++ `inst.FB_A::Y`), so each has one entry.
+   * `seen` holds the blocks walked already, so a cyclic chain ends.
+   */
+  const visitFunctionBlock = (
+    path: string,
+    cppExpr: string,
+    fbSym: FunctionBlockSymbol,
+    shownName: string,
+    flags: number,
+    seen: Set<string>,
+    hiddenBy: ReadonlySet<string> = new Set(),
+  ): void => {
+    const name = fbSym.name.toUpperCase();
+    if (seen.has(name)) return;
+    seen.add(name);
+    /** A member's path step and C++ member, qualified when a derived block hides it. */
+    const step = (member: string, cppMember: string): [string, string] =>
+      hiddenBy.has(member)
+        ? [`${name}::${member}`, `${name}::${cppMember}`]
+        : [member, cppMember];
+    const base = fbSym.declaration.extends;
+    if (base !== undefined) {
+      const baseSym = symbolTables.lookupFunctionBlock(base.toUpperCase());
+      if (baseSym !== undefined) {
+        visitFunctionBlock(
+          path,
+          cppExpr,
+          baseSym,
+          base,
+          flags,
+          seen,
+          new Set([...hiddenBy, ...ownMemberNames(fbSym)]),
+        );
+      } else {
+        skip({
+          path,
+          reason: `the members ${shownName} inherits from ${base} are unknown to the debugger`,
+        });
+      }
+    }
+    const interfaceVars = [...fbSym.inputs, ...fbSym.outputs, ...fbSym.inouts];
+    // `name` is the FB type declaring these members, so it is the owner for
+    // both mangling collisions.
+    if (fbSym.libraryName !== undefined || interfaceVars.length > 0) {
+      inLibraryType(name, () => {
+        // A VAR_IN_OUT refers to the caller's variable (bound per call), so
+        // it has no address of its own to list.
+        for (const v of [...fbSym.inputs, ...fbSym.outputs]) {
+          const [seg, cpp] = step(
+            v.name.toUpperCase(),
+            libraryMemberCppName(v, name),
+          );
+          inDecl(`${name}.${v.name.toUpperCase()}`, () =>
+            visitTypeRef(
+              `${path}.${seg}`,
+              `${cppExpr}.${cpp}`,
+              v.declaration.type,
+              flags,
+            ),
+          );
+        }
+
+        // The block's own VAR members, from the manifest's `locals`.
+        //
+        // Only when the instance is RETAINed. The debugger keeps its
+        // black-box view of a library block everywhere else — the
+        // long-standing contract, and what stops a project instantiating a few
+        // hundred OSCAT blocks from paying for internals nobody addresses.
+        // Retain overrides it because a block restored from half its state
+        // comes back in a configuration it could never have run into: a TON
+        // with Q and ET but no STATE restarts its wait on the next scan.
+        // Two reasons to descend into a library block's own VAR members:
+        // the instance is RETAINed, or the library itself declared one of them
+        // `VAR RETAIN` — which retains it in every instance, exactly as it
+        // does for a user-defined block.
+        const instanceRetained = (flags & LEAF_FLAG_RETAIN) !== 0;
+        const localsToWalk = instanceRetained
+          ? fbSym.locals
+          : fbSym.locals.filter((v) => v.isRetain);
+        if (localsToWalk.length > 0 || instanceRetained) {
+          if (
+            instanceRetained &&
+            fbSym.locals.length === 0 &&
+            fbSym.localsRecorded !== true
+          ) {
+            // An archive whose manifest does not export locals. Retain still
+            // covers the visible surface — refusing the build would strand
+            // anyone using a third-party .stlib they cannot rebuild — but it
+            // is a partial retain, so it is said out loud rather than left to
+            // be discovered after a power cycle.
+            incomplete.push({
+              ...(currentDecl !== undefined ? { decl: currentDecl } : {}),
+              path,
+              reason:
+                `RETAIN on ${shownName}: the archive of library ` +
+                `${fbSym.libraryName ?? "?"} lists no internal variables of the block ` +
+                `(an archive built before they were recorded), so only its inputs ` +
+                `and outputs are retained. Rebuild that library to retain the rest.`,
+            });
+          }
+          for (const v of localsToWalk) {
+            const [seg, cpp] = step(
+              v.name.toUpperCase(),
+              libraryMemberCppName(v, name),
+            );
+            inDecl(`${name}.${v.name.toUpperCase()}`, () =>
+              visitTypeRef(
+                `${path}.${seg}`,
+                `${cppExpr}.${cpp}`,
+                v.declaration.type,
+                v.isRetain ? flags | LEAF_FLAG_RETAIN : flags,
+              ),
+            );
+          }
+        }
+      });
+    } else {
+      for (const block of fbSym.declaration.varBlocks) {
+        if (
+          block.blockType === "VAR" ||
+          block.blockType === "VAR_INPUT" ||
+          block.blockType === "VAR_OUTPUT"
+        ) {
+          // A `VAR CONSTANT` inside a function block is read-only for every
+          // instance of it, and a `VAR RETAIN` member is retained in every
+          // instance, so the block's own qualifiers are folded in here rather
+          // than only at the program level.
+          const memberFlags = applyBlockFlags(flags, block);
+          for (const fieldDecl of block.declarations) {
+            for (const fieldName of fieldDecl.names) {
+              const [seg, cpp] = step(
+                fieldName.toUpperCase(),
+                memberCppName(fieldName, fieldDecl.type, name),
+              );
+              inDecl(`${name}.${fieldName.toUpperCase()}`, () =>
+                visitTypeRef(
+                  `${path}.${seg}`,
+                  `${cppExpr}.${cpp}`,
+                  fieldDecl.type,
+                  memberFlags,
+                ),
+              );
+            }
+          }
+        }
+      }
+    }
+  };
+
   // visitTypeRef walks a TypeReference: elementary type → leaf, inline array
   // → per-element recursion, named user type (struct / FB / elementary alias)
   // → recurse into definition.
   const visitTypeRef = (
+    path: string,
+    cppExpr: string,
+    typeRef: TypeReference,
+    flags: number,
+  ): void => {
+    const outerFlags = leafFlags;
+    leafFlags = flags;
+    try {
+      visitTypeRefOf(path, cppExpr, typeRef, flags);
+    } finally {
+      leafFlags = outerFlags;
+    }
+  };
+
+  const visitTypeRefOf = (
     path: string,
     cppExpr: string,
     typeRef: TypeReference,
@@ -963,7 +1157,9 @@ export function generateDebugTable(
         if (def.name.toUpperCase() === name) {
           skip({
             path,
-            reason: `library type ${typeRef.name} is opaque to the debugger`,
+            reason:
+              `library type ${typeRef.name} is opaque to the debugger: its ` +
+              `archive records no layout for it (an enumeration's values, an array's shape).`,
           });
           return;
         }
@@ -999,103 +1195,20 @@ export function generateDebugTable(
     //     those are not persistent state.
     const fbSym = symbolTables.lookupFunctionBlock(name);
     if (fbSym) {
-      const interfaceVars = [
-        ...fbSym.inputs,
-        ...fbSym.outputs,
-        ...fbSym.inouts,
-      ];
-      // `name` is the FB type declaring these members, so it is the owner for
-      // both mangling collisions.
-      if (interfaceVars.length > 0) {
-        inLibraryType(name, () => {
-          // A VAR_IN_OUT refers to the caller's variable (bound per call), so
-          // it has no address of its own to list.
-          for (const v of [...fbSym.inputs, ...fbSym.outputs]) {
-            inDecl(`${name}.${v.name.toUpperCase()}`, () =>
-              visitTypeRef(
-                `${path}.${v.name.toUpperCase()}`,
-                `${cppExpr}.${libraryMemberCppName(v, name)}`,
-                v.declaration.type,
-                flags,
-              ),
-            );
-          }
-
-          // The block's own VAR members, from the manifest's `locals`.
-          //
-          // Only when the instance is RETAINed. The debugger keeps its
-          // black-box view of a library block everywhere else — the
-          // long-standing contract, and what stops a project instantiating a few
-          // hundred OSCAT blocks from paying for internals nobody addresses.
-          // Retain overrides it because a block restored from half its state
-          // comes back in a configuration it could never have run into: a TON
-          // with Q and ET but no STATE restarts its wait on the next scan.
-          // Two reasons to descend into a library block's own VAR members:
-          // the instance is RETAINed, or the library itself declared one of them
-          // `VAR RETAIN` — which retains it in every instance, exactly as it
-          // does for a user-defined block.
-          const instanceRetained = (flags & LEAF_FLAG_RETAIN) !== 0;
-          const localsToWalk = instanceRetained
-            ? fbSym.locals
-            : fbSym.locals.filter((v) => v.isRetain);
-          if (localsToWalk.length > 0 || instanceRetained) {
-            if (instanceRetained && fbSym.locals.length === 0) {
-              // An archive whose manifest does not export locals. Retain still
-              // covers the visible surface — refusing the build would strand
-              // anyone using a third-party .stlib they cannot rebuild — but it
-              // is a partial retain, so it is said out loud rather than left to
-              // be discovered after a power cycle.
-              incomplete.push({
-                path,
-                reason:
-                  `RETAIN on ${typeRef.name}: this library does not export the ` +
-                  `block's internal variables, so only its inputs and outputs ` +
-                  `are retained. Rebuild the library with a current STruC++ to ` +
-                  `retain the rest.`,
-              });
-            }
-            for (const v of localsToWalk) {
-              inDecl(`${name}.${v.name.toUpperCase()}`, () =>
-                visitTypeRef(
-                  `${path}.${v.name.toUpperCase()}`,
-                  `${cppExpr}.${libraryMemberCppName(v, name)}`,
-                  v.declaration.type,
-                  v.isRetain ? flags | LEAF_FLAG_RETAIN : flags,
-                ),
-              );
-            }
-          }
-        });
-      } else {
-        for (const block of fbSym.declaration.varBlocks) {
-          if (
-            block.blockType === "VAR" ||
-            block.blockType === "VAR_INPUT" ||
-            block.blockType === "VAR_OUTPUT"
-          ) {
-            // A `VAR CONSTANT` inside a function block is read-only for every
-            // instance of it, and a `VAR RETAIN` member is retained in every
-            // instance, so the block's own qualifiers are folded in here rather
-            // than only at the program level.
-            const memberFlags = applyBlockFlags(flags, block);
-            for (const fieldDecl of block.declarations) {
-              for (const fieldName of fieldDecl.names) {
-                inDecl(`${name}.${fieldName.toUpperCase()}`, () =>
-                  visitTypeRef(
-                    `${path}.${fieldName.toUpperCase()}`,
-                    `${cppExpr}.${memberCppName(fieldName, fieldDecl.type, name)}`,
-                    fieldDecl.type,
-                    memberFlags,
-                  ),
-                );
-              }
-            }
-          }
-        }
-      }
+      visitFunctionBlock(path, cppExpr, fbSym, typeRef.name, flags, new Set());
       return;
     }
 
+    // A hoisted inline array of a library STRUCT field, whose archive records no shape
+    if (libraryOwner !== undefined && name.startsWith("__INLINE_ARRAY_")) {
+      skip({
+        path,
+        reason:
+          `an array field of the library type ${libraryOwner}: its archive ` +
+          `records no array shape, so its elements cannot be listed.`,
+      });
+      return;
+    }
     skip({ path, reason: `unresolved type name: ${typeRef.name}` });
   };
 
@@ -1300,6 +1413,33 @@ export function generateDebugTable(
     }
   }
 
+  // File-level VAR_GLOBALs (GVL files): plain file-scope objects under their
+  // C++ global name, with no GlobalVar wrapper (codegen.ts emitGvlGlobals).
+  for (const block of ast.globalVarBlocks) {
+    for (const decl of block.declarations) {
+      for (const varName of decl.names) {
+        const key = varName.toUpperCase();
+        if (seenGlobals.has(key)) continue;
+        seenGlobals.add(key);
+        // Listed for the debugger; a leaf it cannot list is only warned about
+        // when retained, where leaving it out loses data at a power cycle.
+        silentSkips = true;
+        try {
+          inDecl(key, () =>
+            visitTypeRef(
+              key,
+              globalCppName(varName),
+              decl.type,
+              applyBlockFlags(0, block),
+            ),
+          );
+        } finally {
+          silentSkips = false;
+        }
+      }
+    }
+  }
+
   // Arrays filled so far hold globals only: the first program instance starts
   // a new array unless the current one is still empty.
   const globalArrayCount =
@@ -1407,7 +1547,7 @@ export function generateDebugTable(
     debugTableCpp,
     debugMap,
     skipped: groupSkipsByDeclaration(collapseElementSkips(skipped)),
-    incomplete,
+    incomplete: groupSkipsByDeclaration(collapseElementSkips(incomplete)),
   };
 }
 

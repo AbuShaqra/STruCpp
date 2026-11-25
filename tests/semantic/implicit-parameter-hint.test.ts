@@ -108,8 +108,8 @@ r := Log2();
 END_PROGRAM
 `;
     expect(compile(src).errors.map((e) => `${e.line}: ${e.message}`)).toEqual([
-      "22: 'LOG' is missing required input: PLAIN",
-      "23: 'LOG2' is missing required inputs: NPOS, A, B; this compiler does not fill {attribute 'implicit-parameter'} inputs (NPOS, A): pass them or give them an initial value",
+      "22: 'Log' is missing required input: PLAIN",
+      "23: 'Log2' is missing required inputs: NPOS, A, B; this compiler does not fill {attribute 'implicit-parameter'} inputs (NPOS, A): pass them or give them an initial value",
     ]);
   });
 
@@ -131,7 +131,7 @@ r := Log();
 END_PROGRAM
 `;
     expect(compile(src).errors.map((e) => e.message)).toEqual([
-      "'LOG' is missing required inputs: A, B, C, D, E, F; this compiler does not fill {attribute 'implicit-parameter'} inputs (C, F): pass them or give them an initial value",
+      "'Log' is missing required inputs: A, B, C, D, E, F; this compiler does not fill {attribute 'implicit-parameter'} inputs (C, F): pass them or give them an initial value",
     ]);
   });
 

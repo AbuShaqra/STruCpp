@@ -385,7 +385,7 @@ END_PROGRAM
     expect(found.some((m) => m.includes("Cannot assign STRING to INT"))).toBe(
       true,
     );
-    expect(found.some((m) => m.includes("UNDEFINEDVAR"))).toBe(true);
+    expect(found.some((m) => m.includes("undefinedVar"))).toBe(true);
   });
 });
 

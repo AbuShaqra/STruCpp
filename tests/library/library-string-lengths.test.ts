@@ -412,10 +412,10 @@ describe("library aliases and members behave as declared in the program", () => 
 
   it("copies an alias in/out and a library member of another length, with the same warnings", () => {
     expect(diagnostics(USE, "library").warnings).toEqual([
-      "VAR_IN_OUT 'X' of type TS is bound to a variable of type STRING(20); it is passed by copy-in / copy-out, not by reference",
-      "VAR_IN_OUT 'X' of type STRING is bound to a variable of type TS; it is passed by copy-in / copy-out, not by reference",
-      "VAR_IN_OUT 'X' of type STRING is bound to a variable of type STRING(5); it is passed by copy-in / copy-out, not by reference",
-      "VAR_IN_OUT 'X' of type STRING is bound to a variable of type STRING(6); it is passed by copy-in / copy-out, not by reference",
+      "VAR_IN_OUT 'x' of type TS is bound to a variable of type STRING(20); it is passed by copy-in / copy-out, not by reference",
+      "VAR_IN_OUT 'x' of type STRING is bound to a variable of type TS; it is passed by copy-in / copy-out, not by reference",
+      "VAR_IN_OUT 'x' of type STRING is bound to a variable of type STRING(5); it is passed by copy-in / copy-out, not by reference",
+      "VAR_IN_OUT 'x' of type STRING is bound to a variable of type STRING(6); it is passed by copy-in / copy-out, not by reference",
     ]);
   });
 

@@ -44,21 +44,21 @@ describe("method visibility in expressions", () => {
     describe(label, () => {
       it("refuses PRIVATE and PROTECTED calls in expressions and conditions", () => {
         expect(errors("i := f.Pm() + 1;", options)).toEqual([
-          "Cannot call PRIVATE method 'PM' of 'FB' from outside 'FB'.",
+          "Cannot call PRIVATE method 'Pm' of 'FB' from outside 'FB'.",
         ]);
         expect(errors("IF f.Qm() > 0 THEN i := 1; END_IF;", options)).toEqual([
-          "Cannot call PROTECTED method 'QM' of 'FB' from 'PROGRAM'.",
+          "Cannot call PROTECTED method 'Qm' of 'FB' from 'PROGRAM'.",
         ]);
         expect(
           errors("WHILE f.Pm() > 5 DO i := 1; END_WHILE;", options),
         ).toEqual([
-          "Cannot call PRIVATE method 'PM' of 'FB' from outside 'FB'.",
+          "Cannot call PRIVATE method 'Pm' of 'FB' from outside 'FB'.",
         ]);
       });
 
       it("refuses a base's PROTECTED method through a derived instance", () => {
         expect(errors("i := d.Qm();", options)).toEqual([
-          "Cannot call PROTECTED method 'QM' of 'FB' from 'PROGRAM'.",
+          "Cannot call PROTECTED method 'Qm' of 'FB' from 'PROGRAM'.",
         ]);
       });
 

@@ -44,7 +44,7 @@ describe("STRUCT aliases and EXTENDS", () => {
           `Cannot assign AD to AB: ${RELATION}`,
         ]);
         expect(errors("x := F(ad);", options)).toEqual([
-          `Cannot assign AD to parameter 'P' of type AB: ${RELATION}`,
+          `Cannot assign AD to parameter 'p' of type AB: ${RELATION}`,
         ]);
       });
 

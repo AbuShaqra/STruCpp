@@ -107,7 +107,7 @@ int main() {
           : [
               "Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
             ]),
-        "Cannot assign to CONSTANT variable 'K'",
+        "Cannot assign to CONSTANT variable 'k'",
       ]);
     });
 

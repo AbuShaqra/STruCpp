@@ -54,7 +54,7 @@ function compileErrors(body: string): string[] {
 }
 
 const NOT_EXPRESSION =
-  "REFERENCE TO input 'R' needs a variable to refer to, not an expression";
+  "REFERENCE TO input 'r' needs a variable to refer to, not an expression";
 
 describe("REFERENCE TO input arguments", () => {
   it.each([
@@ -70,7 +70,7 @@ describe("REFERENCE TO input arguments", () => {
 
   it("refuses a constant", () => {
     expect(analysisErrors("f(r := cn, k := 1);")).toEqual([
-      "REFERENCE TO input 'R' needs a variable to refer to, not a constant",
+      "REFERENCE TO input 'r' needs a variable to refer to, not a constant",
     ]);
   });
 
@@ -115,10 +115,10 @@ describe("REFERENCE TO input arguments", () => {
   });
 
   it.each([
-    ["alias", "f(r := mi, k := 1);", "INT", "MYINT"],
-    ["alias of an alias", "f(r := m2, k := 1);", "INT", "MYINT2"],
-    ["alias, reference to the alias", "fa(r := mi);", "MYINT", "MYINT"],
-    ["alias, REF=", "rr REF= mi;", "INT", "MYINT"],
+    ["alias", "f(r := mi, k := 1);", "INT", "MyInt"],
+    ["alias of an alias", "f(r := m2, k := 1);", "INT", "MyInt2"],
+    ["alias, reference to the alias", "fa(r := mi);", "MYINT", "MyInt"],
+    ["alias, REF=", "rr REF= mi;", "INT", "MyInt"],
   ])(
     "an %s variable passes analysis and compile refuses it as not supported yet",
     (_label, body, ref, alias) => {

@@ -56,7 +56,7 @@ VAR_GLOBAL G : INT := 5; END_VAR`),
             options,
           ),
         ).toEqual([
-          "The default of STRUCT field 'ST.A' must be a constant expression: 'G' is a global variable, not a constant",
+          "The default of STRUCT field 'ST.a' must be a constant expression: 'G' is a global variable, not a constant",
         ]);
       });
 
@@ -68,7 +68,7 @@ TYPE ST : STRUCT r : REF_TO INT := REF(G); END_STRUCT END_TYPE`),
             options,
           ),
         ).toEqual([
-          "REF_TO initializers are not supported in a STRUCT; assign 'ST.R' in the body instead",
+          "REF_TO initializers are not supported in a STRUCT; assign 'ST.r' in the body instead",
         ]);
         expect(
           errors(
@@ -90,7 +90,7 @@ TYPE ST : STRUCT r : REFERENCE TO INT := REF(G); END_STRUCT END_TYPE`),
         {},
       ),
     ).toEqual([
-      "REFERENCE TO initializers are not supported in a STRUCT; assign 'ST.R' in the body instead",
+      "REFERENCE TO initializers are not supported in a STRUCT; assign 'ST.r' in the body instead",
     ]);
   });
 

@@ -87,7 +87,7 @@ describe("interface implemented through a base FB", () => {
       END_PROPERTY
       END_FUNCTION_BLOCK`);
     expect(r.errors.map((e) => e.message)).toEqual([
-      "FUNCTION_BLOCK 'FBX' implements 'I_B' but does not provide method 'GET'.",
+      "FUNCTION_BLOCK 'FBX' implements 'I_B' but does not provide method 'Get'.",
     ]);
   });
 });

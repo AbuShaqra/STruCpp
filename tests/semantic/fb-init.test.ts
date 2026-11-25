@@ -71,7 +71,7 @@ describe("fb_init off", () => {
   for (const mode of MODES) {
     it(`refuses init arguments at '(' (${mode.name})`, () => {
       expect(check(program("f : FB_A(p := 1);"), mode.options)).toEqual([
-        "9:13 The init argument list of 'F' needs the feature fb_init",
+        "9:13 The init argument list of 'f' needs the feature fb_init",
       ]);
     });
 
@@ -96,7 +96,7 @@ describe("fb_init off", () => {
         },
       }),
     ).toEqual([
-      "9:13 The init argument list of 'F' needs the feature fb_init (profiles: inits)",
+      "9:13 The init argument list of 'f' needs the feature fb_init (profiles: inits)",
     ]);
   });
 
@@ -239,7 +239,7 @@ END_FUNCTION_BLOCK
 `;
     expect(check(src)).toEqual([]);
     expect(warnings(src)).toEqual([
-      "16:41 INNER's FB_init runs before FB_H.FB_init, so 'STORED' still has its initial value here",
+      "16:41 INNER's FB_init runs before FB_H.FB_init, so 'stored' still has its initial value here",
     ]);
   });
 
@@ -260,7 +260,7 @@ describe("fb_init on: analysis errors", () => {
       ),
     ).toEqual([
       "9:14 'FB_A' has no FB_init input 'X'",
-      "9:32 'BINITRETAINS' is set by the compiler and cannot be an init argument",
+      "9:32 'bInitRetains' is set by the compiler and cannot be an init argument",
       "9:72 Duplicate init argument 'P'",
       "9:90 Init arguments must be named: write 'input := value'",
       "9:103 Init argument 'P' must use ':=': init arguments set FB_init inputs",
@@ -278,8 +278,8 @@ END_FUNCTION_BLOCK
 VAR_GLOBAL g : FB_A(p := nope2); END_VAR
 `),
     ).toEqual([
-      "14:26 Undeclared variable 'NOPE2'",
-      "9:19 Undeclared variable 'NOPE1'",
+      "14:26 Undeclared variable 'nope2'",
+      "9:19 Undeclared variable 'nope1'",
     ]);
   });
 
@@ -302,7 +302,7 @@ PROGRAM P VAR z : FB_Z(p := 1); i : INT(p := 1); END_VAR END_PROGRAM
 `),
     ).toEqual([
       "14:23 'FB_Z' has no FB_init method to take init arguments",
-      "14:40 Init arguments need a FUNCTION_BLOCK instance, but 'I' is of type 'INT'",
+      "14:40 Init arguments need a FUNCTION_BLOCK instance, but 'i' is of type 'INT'",
       "11:21 Init arguments are not allowed in VAR_IN_OUT",
       "12:22 Init arguments are not allowed in VAR_EXTERNAL",
     ]);
@@ -325,10 +325,10 @@ END_FUNCTION_BLOCK
 `),
     ).toEqual([
       "2:18 FB_init must return BOOL or nothing, not INT",
-      "3:11 'BINITRETAINS' of FB_init must be a BOOL VAR_INPUT",
+      "3:11 'bInitRetains' of FB_init must be a BOOL VAR_INPUT",
       "4:1 FB_init cannot declare VAR_OUTPUT: nothing is passed to it or read from it at start-up",
       "5:1 FB_init cannot declare VAR_IN_OUT: nothing is passed to it or read from it at start-up",
-      "10:5 'BINCOPYCODE' of FB_init must be a BOOL VAR_INPUT",
+      "10:5 'bInCopyCode' of FB_init must be a BOOL VAR_INPUT",
     ]);
   });
 });
@@ -369,10 +369,10 @@ END_PROGRAM
 `;
     expect(check(src)).toEqual([]);
     expect(compileErrors(src)).toEqual([
-      "20:10 FB_init of 'T' is not supported yet: it is in VAR_TEMP",
-      "21:5 FB_init of 'S' is not supported yet: it is held in STRUCT 'ST_S'",
-      "16:5 FB_init of 'L' is not supported yet: it is local to METHOD 'M_A'",
-      "11:5 FB_init of 'L' is not supported yet: it is local to FUNCTION 'F_X'",
+      "20:10 FB_init of 't' is not supported yet: it is in VAR_TEMP",
+      "21:5 FB_init of 's' is not supported yet: it is held in STRUCT 'ST_S'",
+      "16:5 FB_init of 'l' is not supported yet: it is local to METHOD 'M_A'",
+      "11:5 FB_init of 'l' is not supported yet: it is local to FUNCTION 'F_X'",
     ]);
   });
 

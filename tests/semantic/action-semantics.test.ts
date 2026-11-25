@@ -159,7 +159,7 @@ VAR n : INT; END_VAR
 END_FUNCTION_BLOCK
 `;
     expect(messages(compile(src))).toEqual([
-      "FUNCTION_BLOCK 'FB' implements 'IRESET' but does not provide method 'RESET'.",
+      "FUNCTION_BLOCK 'Fb' implements 'IReset' but does not provide method 'Reset'.",
     ]);
   });
 
@@ -178,7 +178,7 @@ FUNCTION_BLOCK Derived EXTENDS Base IMPLEMENTS IReset
 END_FUNCTION_BLOCK
 `;
     expect(messages(compile(src))).toEqual([
-      "FUNCTION_BLOCK 'DERIVED' implements 'IRESET' but does not provide method 'RESET'.",
+      "FUNCTION_BLOCK 'Derived' implements 'IReset' but does not provide method 'Reset'.",
     ]);
   });
 

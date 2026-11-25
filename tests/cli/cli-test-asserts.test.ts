@@ -176,7 +176,7 @@ END_TEST
         "badnested.st:2:16: error: ASSERT_EQ expects 2 arguments, got 1",
       );
       expect(r.err).toContain(
-        "badnested.st:3:28: error: Undeclared variable 'ZZ'",
+        "badnested.st:3:28: error: Undeclared variable 'zz'",
       );
       expect(r.err).not.toContain("<input>");
       expect(r.err).not.toMatch(/^\s+at /m);
@@ -253,11 +253,11 @@ END_TEST
       ]);
       expect(r.status).toBe(1);
       expect(r.err).toContain(
-        "badinit.st:2:16: error: Undeclared variable 'NOSUCH'",
+        "badinit.st:2:16: error: Undeclared variable 'nosuch'",
       );
       // a type error is reported once the names resolve
       expect(r.err).toContain(
-        "badinit.st:5:16: error: Undeclared variable 'ALSONOT'",
+        "badinit.st:5:16: error: Undeclared variable 'alsonot'",
       );
       expect(r.err).not.toContain("C++ compilation failed");
       writeFileSync(

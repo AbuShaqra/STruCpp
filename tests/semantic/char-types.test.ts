@@ -215,8 +215,8 @@ END_PROGRAM
           "Cannot assign STRING to MYC",
           "Cannot assign INT to CHAR",
           "Cannot assign STRING to WCHAR",
-          "Cannot assign STRING to parameter 'C' of type CHAR",
-          "Cannot assign WCHAR to parameter 'C' of type CHAR",
+          "Cannot assign STRING to parameter 'c' of type CHAR",
+          "Cannot assign WCHAR to parameter 'c' of type CHAR",
         ]);
       });
 
@@ -276,8 +276,8 @@ END_PROGRAM
       expect(messages).toHaveLength(11);
       expect(new Set(messages)).toEqual(
         new Set([
-          "Cannot assign STRING to parameter 'X' of type CHAR",
-          "Cannot assign STRING to parameter 'C' of type CHAR",
+          "Cannot assign STRING to parameter 'x' of type CHAR",
+          "Cannot assign STRING to parameter 'c' of type CHAR",
         ]),
       );
     });

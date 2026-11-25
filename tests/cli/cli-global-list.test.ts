@@ -103,7 +103,7 @@ describe("--global-list", () => {
       diagnostics: Array<{ message: string; line: number }>;
     };
     expect(report.diagnostics.map((d) => `${d.line} ${d.message}`)).toEqual([
-      "3 Global variable list access 'GVL_A.RATE' needs the feature named_global_lists",
+      "3 Global variable list access 'GVL_A.rate' needs the feature named_global_lists",
     ]);
   });
 

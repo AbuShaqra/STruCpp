@@ -97,7 +97,7 @@ END_PROGRAM
       compile(src, IEC3).errors.map((e) => `${e.line}:${e.column} ${e.message}`),
     ).toEqual([
       expect.stringMatching(/^3:6 /),
-      "4:1 Undeclared variable 'UNDECLARED'",
+      "4:1 Undeclared variable 'undeclared'",
     ]);
   });
 });

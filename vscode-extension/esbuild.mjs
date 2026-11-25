@@ -59,6 +59,15 @@ const copies = [
   { src: path.resolve(__dirname, "..", "src", "runtime", "repl"),    dest: path.resolve(__dirname, "runtime", "repl") },
 ];
 
+// runtime/ is git-ignored build output: clear what earlier builds copied
+// (the runtime/test/ folder of older releases included) so a .vsix holds
+// only the folders listed above.
+for (const entry of fs.readdirSync(path.resolve(__dirname, "runtime"), { withFileTypes: true })) {
+  if (entry.isDirectory()) {
+    fs.rmSync(path.resolve(__dirname, "runtime", entry.name), { recursive: true, force: true });
+  }
+}
+
 for (const { src, dest } of copies) {
   try {
     fs.cpSync(src, dest, { recursive: true });
