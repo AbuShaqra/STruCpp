@@ -709,6 +709,58 @@ END_PROGRAM
     expect(stdout).toBe("1111");
   });
 
+  it("builds a TYPE of the sources that aliases a library enumeration, STRUCT, ARRAY or alias, with its default", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `TYPE LColor : (LRed, LGreen, LBlue); END_TYPE
+TYPE LCA : LColor; END_TYPE
+TYPE LCA2 : LCA := LGreen; END_TYPE
+TYPE LS : STRUCT a : INT := 3; b : INT; END_STRUCT END_TYPE
+TYPE LA : ARRAY[1..3] OF INT; END_TYPE
+TYPE LI : INT := 4; END_TYPE
+TYPE LI2 : LI; END_TYPE
+FUNCTION LFS : INT VAR_INPUT s : LS; END_VAR LFS := s.a * 10 + s.b; END_FUNCTION
+FUNCTION LFA : INT VAR_INPUT a : LA; END_VAR LFA := a[1] + a[2] + a[3]; END_FUNCTION`,
+          fileName: "al.st",
+        },
+      ],
+      { name: "lalias", version: "1.0.0", namespace: "lalias" },
+    );
+    expect(lib.errors).toEqual([]);
+    const { stdout } = run(
+      `TYPE LCD : LColor := LColor#LGreen; END_TYPE
+TYPE UCA : LCA; END_TYPE
+TYPE UCA2 : LCA2; END_TYPE
+TYPE US : LS; END_TYPE
+TYPE USD : LS := (b := 7); END_TYPE
+TYPE UA : LA; END_TYPE
+TYPE UAD : LA := [5, 6]; END_TYPE
+TYPE UI : LI; END_TYPE
+TYPE UI2 : LI2; END_TYPE
+TYPE UID : LI := 9; END_TYPE
+TYPE HS : STRUCT sd : USD; c : UCA2; d : ARRAY[0..1] OF LCD := [LBlue]; END_STRUCT END_TYPE
+PROGRAM Main
+VAR d : LCD; uca : UCA; uca2 : UCA2; us : US; usd : USD; ls : LS; ua : UA; uad : UAD; la : LA;
+  ui : UI; ui2 : UI2; uid : UID; hs : HS; aui : ARRAY[0..2] OF UID := [1];
+  r1 : LINT; r2 : LINT; r3 : LINT; r4 : LINT; END_VAR
+r1 := BOOL_TO_INT(d = LColor#LGreen) + BOOL_TO_INT(uca = LColor#LRed) * 10 + BOOL_TO_INT(uca2 = LGreen) * 100;
+uca := LBlue;
+IF uca = LColor#LBlue AND hs.c = LGreen AND hs.d[0] = LBlue AND hs.d[1] = LGreen THEN r1 := r1 + 1000; END_IF;
+us := usd; ls := us;
+r2 := LFS(us) + LFS(ls) * 100 + hs.sd.b * 10000;
+ua[2] := 5; la := ua;
+r3 := LFA(ua) + LFA(la) * 10 + uad[1] * 1000 + uad[2] * 100;
+r4 := ui * 1000 + ui2 * 100 + uid * 10 + aui[0] + aui[2] * 10000;
+END_PROGRAM
+`,
+      'p.R1 << " " << p.R2 << " " << p.R3 << " " << p.R4',
+      "libtypes_user_alias_of_library_types",
+      [JSON.parse(JSON.stringify(lib.archive)) as StlibArchive],
+    );
+    expect(stdout).toBe("1111 73737 5655 94491");
+  });
+
   it("still loads an archive written before enumeration values and shapes were recorded", () => {
     const old = library();
     for (const t of old.manifest.types) {

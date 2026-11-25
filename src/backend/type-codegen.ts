@@ -326,6 +326,18 @@ export class TypeCodeGenerator {
           : [],
       ),
     );
+    // An alias of a library enumeration (`TYPE A : LColor`), through aliases
+    const library = this.options.libraryEnumNames ?? new Set<string>();
+    for (const t of types) {
+      let name: string | undefined = t.name.toUpperCase();
+      for (let depth = 0; name !== undefined && depth < 32; depth++) {
+        if (!own.has(name)) {
+          if (library.has(name)) this.knownEnumNames.add(t.name.toUpperCase());
+          break;
+        }
+        name = this.aliasTargets.get(name);
+      }
+    }
   }
 
   /** The STRUCT a type name stands for, through aliases. */

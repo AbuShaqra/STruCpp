@@ -1876,6 +1876,38 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * The library enumeration a TYPE of the sources aliases (`TYPE A : LColor`),
+   * through aliases of the sources; undefined otherwise.
+   */
+  private libraryEnumBehindAlias(
+    ast: CompilationUnit,
+    typeDecl: TypeDeclaration,
+  ): EnumType | undefined {
+    let def = typeDecl.definition;
+    for (let depth = 0; depth < 32; depth++) {
+      if (
+        def.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        (def.referenceKind ?? "none") !== "none"
+      ) {
+        return undefined;
+      }
+      const upper = def.name.toUpperCase();
+      const own = ast.types.find((t) => t.name.toUpperCase() === upper);
+      if (own === undefined) {
+        const sym = this.symbolTables.globalScope.lookup(upper);
+        return sym?.kind === "type" &&
+          this.symbolTables.globalScope.definedByLibrary(upper) &&
+          sym.resolvedType?.typeKind === "enum"
+          ? (sym.resolvedType as EnumType)
+          : undefined;
+      }
+      def = own.definition;
+    }
+    return undefined;
+  }
+
+  /**
    * Build symbol tables from the AST.
    */
   private buildSymbolTables(ast: CompilationUnit): void {
@@ -1892,11 +1924,11 @@ export class SemanticAnalyzer {
                 name: aliased.name,
                 values: aliased.definition.members.map((m) => m.name),
               }
-            : {
+            : (this.libraryEnumBehindAlias(ast, typeDecl) ?? {
                 typeKind: "elementary" as const,
                 name: typeDecl.name,
                 sizeBits: 0,
-              };
+              });
         this.symbolTables.globalScope.defineOrReplace({
           name: typeDecl.name,
           kind: "type",

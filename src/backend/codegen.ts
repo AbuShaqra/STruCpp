@@ -1077,6 +1077,46 @@ export class CodeGenerator {
     reachable: Set<string>;
   }> = [];
 
+  /**
+   * `<archive>/<chunk>` of each reachable library TYPE whose dependencies,
+   * transitively, are library types only: emitted ahead of this compile's
+   * types (computed when the header is generated).
+   */
+  private earlyLibraryTypeChunks: Set<string> = new Set();
+
+  /** Fill `earlyLibraryTypeChunks` from the reachable chunks. */
+  private collectEarlyLibraryTypeChunks(): void {
+    const chunks = new Map<string, LibraryChunk>();
+    for (const { archive } of this.libraryEmissions) {
+      for (const c of archive.chunks ?? []) {
+        chunks.set(`${archive.manifest.name}/${c.name}`, c);
+      }
+    }
+    const verdict = new Map<string, boolean>();
+    const typesOnly = (key: string, depth: number): boolean => {
+      const known = verdict.get(key);
+      if (known !== undefined) return known;
+      const chunk = chunks.get(key);
+      if (chunk === undefined || chunk.kind !== "type" || depth > 64) {
+        return false;
+      }
+      verdict.set(key, false); // a cycle is not early
+      const ok = chunk.deps.every((d) =>
+        typesOnly(`${d.library}/${d.name}`, depth + 1),
+      );
+      verdict.set(key, ok);
+      return ok;
+    };
+    for (const { archive, reachable } of this.libraryEmissions) {
+      for (const c of archive.chunks ?? []) {
+        const key = `${archive.manifest.name}/${c.name}`;
+        if (reachable.has(c.name) && typesOnly(key, 0)) {
+          this.earlyLibraryTypeChunks.add(key);
+        }
+      }
+    }
+  }
+
   /** Map of UPPER(fbTypeName) → ordered VAR_INPUT parameter names (UPPER case).
    *  Used to resolve positional arguments in FB invocations. */
   private fbInputParams: Map<string, string[]> = new Map();
@@ -2236,6 +2276,31 @@ export class CodeGenerator {
     // A library's enumerations, unless this compile declares the name; their
     // values only where no name of the sources is one
     const ownTypes = new Set(ast.types.map((t) => t.name.toUpperCase()));
+    // An alias of a library enumeration (`TYPE A : LColor`), through aliases
+    const aliasOf = new Map(
+      ast.types.flatMap((t) =>
+        t.definition.kind === "TypeReference" &&
+        t.definition.arrayDimensions === undefined &&
+        (t.definition.referenceKind ?? "none") === "none"
+          ? [[t.name.toUpperCase(), t.definition.name.toUpperCase()]]
+          : [],
+      ),
+    );
+    for (const td of ast.types) {
+      let name = aliasOf.get(td.name.toUpperCase());
+      for (let depth = 0; name !== undefined && depth < 32; depth++) {
+        if (!ownTypes.has(name)) {
+          const members = this.libraryEnumTypeNames.has(name)
+            ? this.enumTypeMembers.get(name)
+            : undefined;
+          if (members !== undefined) {
+            this.enumTypeMembers.set(td.name.toUpperCase(), new Set(members));
+          }
+          break;
+        }
+        name = aliasOf.get(name);
+      }
+    }
     this.enumMemberToType = withLibraryEnumMembers(
       buildEnumMemberMap(enumDescriptors),
       this.libraryEnums.filter((e) => !ownTypes.has(e.name.toUpperCase())),
@@ -2417,6 +2482,8 @@ export class CodeGenerator {
       this.emitHeader("");
     }
 
+    this.collectEarlyLibraryTypeChunks();
+
     // Forward-declare the POU classes before the user-defined types.
     //
     // A TYPE may name a function block — `AccumGrid : ARRAY[0..1,0..1] OF Accum`
@@ -2436,6 +2503,23 @@ export class CodeGenerator {
     );
     for (const name of lateStructs) this.emitHeader(`struct ${name};`);
     if (lateStructs.length > 0) this.emitHeader("");
+
+    // A library's types that need no FB, function or global come before
+    // this compile's: a TYPE of the sources may alias one (`TYPE A : LColor`)
+    for (const { archive, reachable } of this.libraryEmissions) {
+      const early = (archive.chunks ?? []).filter(
+        (c) =>
+          reachable.has(c.name) &&
+          c.header.length > 0 &&
+          this.earlyLibraryTypeChunks.has(`${archive.manifest.name}/${c.name}`),
+      );
+      if (early.length === 0) continue;
+      this.emitHeader(`// Library types: ${archive.manifest.name}`);
+      for (const chunk of early) {
+        for (const line of chunk.header.split("\n")) this.emitHeader(line);
+      }
+      this.emitHeader("");
+    }
 
     // Generate user-defined types (Phase 2.2). Late structs wait for the FB
     // classes below; the enum lookups cover all types.
@@ -2494,6 +2578,14 @@ export class CodeGenerator {
       const reachableChunks: LibraryChunk[] = [];
       for (const chunk of archive.chunks ?? []) {
         if (chunk.header.length === 0) continue;
+        // Emitted before this compile's types
+        if (
+          this.earlyLibraryTypeChunks.has(
+            `${archive.manifest.name}/${chunk.name}`,
+          )
+        ) {
+          continue;
+        }
         if (reachable.has(chunk.name)) reachableChunks.push(chunk);
       }
       if (reachableChunks.length === 0) continue;
