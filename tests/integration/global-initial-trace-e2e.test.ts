@@ -817,6 +817,35 @@ END_PROGRAM
     features: [],
     expected: "6",
   },
+  {
+    title: "RESOURCE globals a list and a CONFIGURATION global read",
+    source: `FUNCTION F : INT
+VAR_EXTERNAL k : INT; END_VAR
+F := k * 2;
+END_FUNCTION
+FUNCTION G : INT
+VAR_EXTERNAL rg : INT; END_VAR
+G := rg + 1;
+END_FUNCTION
+VAR_GLOBAL l : INT := G(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL c : INT; l : INT; END_VAR
+VAR o1, o2 : INT; END_VAR
+o1 := c; o2 := l;
+END_PROGRAM
+CONFIGURATION Cfg
+VAR_GLOBAL c : INT := F(); END_VAR
+RESOURCE R ON PLC
+VAR_GLOBAL k : INT := 5; rg : INT := 8; END_VAR
+TASK T(INTERVAL := T#10ms, PRIORITY := 1);
+PROGRAM inst WITH T : Main;
+END_RESOURCE
+END_CONFIGURATION
+`,
+    main: `static strucpp::Configuration_CFG cfg; cfg.INST.run(); std::cout << (int)cfg.INST.O1 << " " << (int)cfg.INST.O2 << std::endl;`,
+    features: [],
+    expected: "10 9",
+  },
 ];
 
 describe.skipIf(!hasGpp)(

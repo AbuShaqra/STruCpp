@@ -243,6 +243,26 @@ END_PROGRAM
     main: `strucpp::Program_MAIN p; p.run(); std::cout << (int)p.O1 << " " << (int)p.O2 << " " << (int)p.O3 << std::endl;`,
     expected: "55 52 93",
   },
+  {
+    title: "an output bound in a global's initial value",
+    source: `FUNCTION F : INT
+VAR_OUTPUT a : ARRAY[*] OF INT; END_VAR
+a[UPPER_BOUND(a, 1)] := 9;
+F := DINT_TO_INT(UPPER_BOUND(a, 1));
+END_FUNCTION
+VAR_GLOBAL
+  x : INT := F(a => garr);
+  garr : ARRAY[1..3] OF INT := [1, 2, 3];
+END_VAR
+PROGRAM Main
+VAR_EXTERNAL x : INT; garr : ARRAY[1..3] OF INT; END_VAR
+VAR o1, o2 : INT; END_VAR
+o1 := x; o2 := garr[3];
+END_PROGRAM
+`,
+    main: `strucpp::Program_MAIN p; p.run(); std::cout << (int)p.O1 << " " << (int)p.O2 << std::endl;`,
+    expected: "3 9",
+  },
 ];
 
 /** A whole-array store of another length into an ARRAY[*] parameter. */
@@ -267,7 +287,7 @@ END_FUNCTION
 PROGRAM Main END_PROGRAM
 `);
     expect(r.errors.map((e) => `${e.line}:${e.column} ${e.message}`)).toEqual([
-      "2:16 'A' is an ARRAY[*] of 4 dimensions: an ARRAY[*] parameter has at most 3",
+      "2:16 'a' is an ARRAY[*] of 4 dimensions: an ARRAY[*] parameter has at most 3",
     ]);
   });
 

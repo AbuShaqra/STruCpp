@@ -77,7 +77,7 @@ END_FUNCTION
       expect(
         located(compile(source("  x : INT := F();", F_READS("x")), options)),
       ).toEqual([
-        "12:3 The initial value of global 'X' reads 'X' itself, through the code it calls",
+        "12:3 The initial value of global 'x' reads 'x' itself, through the code it calls",
       ]);
     },
   );
@@ -98,7 +98,7 @@ END_FUNCTION
         ),
       ),
     ).toEqual([
-      "16:3 The initial values of the globals 'X' and 'Y' depend on each other (X -> Y -> X)",
+      "16:3 The initial values of the globals 'x' and 'y' depend on each other (X -> Y -> X)",
     ]);
   });
 
@@ -143,7 +143,7 @@ ${CFG_TAIL}`,
           ),
         ),
       ).toEqual([
-        "9:12 The initial values of the globals 'X' and 'C' depend on each other (X -> C -> X)",
+        "9:12 The initial values of the globals 'x' and 'c' depend on each other (X -> C -> X)",
       ]);
     },
   );
@@ -298,7 +298,7 @@ END_FUNCTION
     );
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatch(
-      /The initial value of global 'X' reads 'X' itself, through the code it calls$/,
+      /The initial value of global 'x' reads 'x' itself, through the code it calls$/,
     );
   });
 });
