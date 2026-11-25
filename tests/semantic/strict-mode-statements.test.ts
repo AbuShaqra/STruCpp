@@ -250,17 +250,23 @@ describe("strict mode: row j, terminator after END_x", () => {
 
 describe("strict mode: row k, FB call parameters", () => {
   it("rejects an unknown input of a standard FB", () => {
-    pin(prog("x : BOOL; r : R_TRIG;", "r(IN := x);"), [
-      "5: R_TRIG has no input or output named IN",
-    ]);
+    pin(
+      prog("x : BOOL; r : R_TRIG;", "r(IN := x);"),
+      ["5: R_TRIG has no input or output named IN"],
+      ["5: R_TRIG has no input or output named IN"],
+    );
   });
   it("rejects an unknown parameter of TON and an unknown output", () => {
-    pin(prog("t : TON; y : BOOL;", "t(IN := TRUE, PT := T#1s, FOO := 1);"), [
-      "5: TON has no input or output named FOO",
-    ]);
-    pin(prog("t : TON; y : BOOL;", "t(IN := TRUE, PT := T#1s, ZZ => y);"), [
-      "5: TON has no input or output named ZZ",
-    ]);
+    pin(
+      prog("t : TON; y : BOOL;", "t(IN := TRUE, PT := T#1s, FOO := 1);"),
+      ["5: TON has no input or output named FOO"],
+      ["5: TON has no input or output named FOO"],
+    );
+    pin(
+      prog("t : TON; y : BOOL;", "t(IN := TRUE, PT := T#1s, ZZ => y);"),
+      ["5: TON has no input or output named ZZ"],
+      ["5: TON has no input or output named ZZ"],
+    );
   });
   it("rejects an unknown parameter of a user FB", () => {
     // Also an error without --strict: the C++ would assign a missing member.

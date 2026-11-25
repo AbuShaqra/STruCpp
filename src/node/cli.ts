@@ -36,6 +36,7 @@
  *   --lib-name <name>         Library name (required with --compile-lib)
  *   --lib-version <version>   Library version (default: "1.0.0")
  *   --lib-namespace <ns>      C++ namespace (default: derived from lib-name)
+ *   --lib-st-namespace <ns>   ST namespace of the library (default: from lib-name)
  *   -v, --version             Show version
  *   -h, --help                Show help
  */
@@ -118,6 +119,7 @@ interface CLIOptions {
   libName?: string;
   libVersion: string;
   libNamespace?: string;
+  libStNamespace?: string;
   noSource: boolean;
   builtin: boolean;
   decompileLib?: string;
@@ -325,6 +327,12 @@ function parseArgs(args: string[]): CLIOptions {
       const nextArg = args[i];
       if (nextArg !== undefined) {
         options.libNamespace = nextArg;
+      }
+    } else if (arg === "--lib-st-namespace") {
+      i++;
+      const nextArg = args[i];
+      if (nextArg !== undefined) {
+        options.libStNamespace = nextArg;
       }
     } else if (arg === "--no-source") {
       options.noSource = true;
@@ -575,6 +583,9 @@ Library compilation:
   --lib-name <name>         Library name (required with --compile-lib)
   --lib-version <version>   Library version (default: "1.0.0")
   --lib-namespace <ns>      C++ namespace (default: derived from lib-name)
+  --lib-st-namespace <ns>   ST namespace that qualifies the library's names
+                            (feature library_namespaces; default: lib-name
+                            with other characters than A-Z, 0-9, _ as _)
   --no-source               Omit ST source from .stlib archive (closed-source).
                             C/C++ and Python bodies are always kept: they are
                             not compiled, so their source is the deliverable.
@@ -918,6 +929,9 @@ function compileLibraryMode(options: CLIOptions): void {
     name: options.libName,
     version: options.libVersion,
     namespace: libNamespace,
+    ...(options.libStNamespace !== undefined
+      ? { stNamespace: options.libStNamespace }
+      : {}),
     noSource: options.noSource,
     builtin: options.builtin,
     strict: options.strict,
@@ -1358,6 +1372,9 @@ async function importLibMode(options: CLIOptions): Promise<void> {
     name: options.libName,
     version: options.libVersion,
     namespace: libNamespace,
+    ...(options.libStNamespace !== undefined
+      ? { stNamespace: options.libStNamespace }
+      : {}),
     noSource: options.noSource,
     strict: options.strict,
     ...dialectCompileOptions(options),

@@ -22,6 +22,10 @@ import type {
 } from "../semantic/symbol-table.js";
 import { DuplicateSymbolError } from "../semantic/symbol-table.js";
 import type {
+  ArrayDefinition,
+  EnumDefinition,
+  EnumType,
+  Expression,
   MethodDeclaration,
   ElementaryType,
   IECType,
@@ -151,7 +155,7 @@ function isReferenceKind(
 function buildLibraryTypeDefinition(
   t: LibraryTypeEntry,
   stringDefaultLength?: number,
-): StructDefinition | TypeReference {
+): StructDefinition | EnumDefinition | ArrayDefinition | TypeReference {
   if (
     (t.kind === "struct" || t.kind === "union") &&
     t.fields &&
@@ -162,15 +166,8 @@ function buildLibraryTypeDefinition(
       ...(t.kind === "union" ? { isUnion: true as const } : {}),
       sourceSpan: createDefaultSourceSpan(),
       fields: t.fields.map((f) => {
-        const type: TypeReference = {
-          kind: "TypeReference" as const,
-          sourceSpan: createDefaultSourceSpan(),
-          name: f.type,
-          isReference: false,
-          referenceKind: "none" as const,
-        };
-        applyStringLengths(type, f);
-        applyStringDefaultLength(type, stringDefaultLength);
+        // ARRAY and reference shapes too (archives that record them)
+        const type = makeTypeRef(f, stringDefaultLength);
         return {
           kind: "VarDeclaration" as const,
           sourceSpan: createDefaultSourceSpan(),
@@ -179,6 +176,50 @@ function buildLibraryTypeDefinition(
         };
       }),
     };
+  }
+  if (t.kind === "enum" && Array.isArray(t.members)) {
+    return libraryEnumDefinition(t, t.members);
+  }
+  if (
+    t.kind === "alias" &&
+    Array.isArray(t.arrayDimensions) &&
+    typeof t.elementTypeName === "string"
+  ) {
+    const elementType: TypeReference = {
+      kind: "TypeReference",
+      sourceSpan: createDefaultSourceSpan(),
+      name: t.elementTypeName,
+      isReference: false,
+      referenceKind: "none",
+    };
+    if (isStringLength(t.elementMaxLength)) {
+      elementType.maxLength = t.elementMaxLength;
+    }
+    applyStringDefaultLength(elementType, stringDefaultLength);
+    const array: ArrayDefinition = {
+      kind: "ArrayDefinition",
+      sourceSpan: createDefaultSourceSpan(),
+      dimensions: t.arrayDimensions.map((d) => ({
+        kind: "ArrayDimension" as const,
+        sourceSpan: createDefaultSourceSpan(),
+        isVariableLength: false,
+        start: integerLiteral(d.start),
+        end: integerLiteral(d.end),
+      })),
+      elementType,
+    };
+    return array;
+  }
+  if (t.kind === "alias" && typeof t.refTarget === "string") {
+    const ref: TypeReference = {
+      kind: "TypeReference",
+      sourceSpan: createDefaultSourceSpan(),
+      name: t.refTarget,
+      isReference: true,
+      referenceKind: "ref_to",
+    };
+    if (isStringLength(t.maxLength)) ref.maxLength = t.maxLength;
+    return ref;
   }
   if (t.kind === "alias" && typeof t.pointerTarget === "string") {
     const pointer: TypeReference = {
@@ -203,6 +244,55 @@ function buildLibraryTypeDefinition(
     applyStringDefaultLength(alias, stringDefaultLength);
   }
   return alias;
+}
+
+/** An integer literal expression of `value`, as the parser builds one. */
+function integerLiteral(value: number): Expression {
+  const literal: Expression = {
+    kind: "LiteralExpression",
+    sourceSpan: createDefaultSourceSpan(),
+    literalType: "INT",
+    value: Math.abs(value),
+    rawValue: String(Math.abs(value)),
+  };
+  return value < 0
+    ? {
+        kind: "UnaryExpression",
+        sourceSpan: createDefaultSourceSpan(),
+        operator: "-",
+        operand: literal,
+      }
+    : literal;
+}
+
+/** The enumeration a manifest records with its values (archives with `members`). */
+function libraryEnumDefinition(
+  t: LibraryTypeEntry,
+  members: NonNullable<LibraryTypeEntry["members"]>,
+): EnumDefinition {
+  return {
+    kind: "EnumDefinition",
+    sourceSpan: createDefaultSourceSpan(),
+    ...(typeof t.baseType === "string"
+      ? {
+          baseType: {
+            kind: "TypeReference" as const,
+            sourceSpan: createDefaultSourceSpan(),
+            name: t.baseType,
+            isReference: false,
+            referenceKind: "none" as const,
+          },
+        }
+      : {}),
+    members: members.map((m) => ({
+      kind: "EnumMember" as const,
+      sourceSpan: createDefaultSourceSpan(),
+      name: m.name,
+      ...(typeof m.value === "number"
+        ? { value: integerLiteral(m.value) }
+        : {}),
+    })),
+  };
 }
 
 function makeVarSymbol(
@@ -411,6 +501,13 @@ export function loadLibraryManifest(json: unknown): LibraryManifest {
   }
   if (obj.parameterShapes === true) result.parameterShapes = true;
   if (obj.stringLengthsRecorded === true) result.stringLengthsRecorded = true;
+  // An ST identifier; anything else falls back to the name's namespace.
+  if (
+    typeof obj.stNamespace === "string" &&
+    /^[A-Za-z_][A-Za-z0-9_]*$/.test(obj.stNamespace)
+  ) {
+    result.stNamespace = obj.stNamespace;
+  }
 
   return result;
 }
@@ -448,6 +545,25 @@ function elementaryOf(
   return undefined;
 }
 
+/** The STRUCT a chain of this library's plain aliases of `t` ends at; undefined otherwise. */
+function structAliasOf(
+  t: LibraryTypeEntry,
+  manifest: LibraryManifest,
+  structTypes: ReadonlyMap<string, StructType>,
+): StructType | undefined {
+  let entry: LibraryTypeEntry | undefined = t;
+  for (let depth = 0; entry !== undefined && depth < 32; depth++) {
+    if (entry.kind !== "alias" || typeof entry.baseType !== "string") {
+      return undefined;
+    }
+    const upper = entry.baseType.toUpperCase();
+    const struct = structTypes.get(upper);
+    if (struct !== undefined) return struct;
+    entry = manifest.types.find((x) => x.name.toUpperCase() === upper);
+  }
+  return undefined;
+}
+
 /**
  * Register a library's symbols into the compiler's symbol tables.
  * This makes library functions, FBs, and types available for semantic analysis.
@@ -479,15 +595,19 @@ export function registerLibrarySymbols(
           kind: "TypeReference",
           sourceSpan: createDefaultSourceSpan(),
           name: fn.returnType,
-          isReference: false,
-          referenceKind: "none",
-          ...(manifest.stringDefaultLength !== undefined &&
-          ["STRING", "WSTRING"].includes(fn.returnType.toUpperCase())
-            ? {
-                maxLength: manifest.stringDefaultLength,
-                defaultLength: true as const,
-              }
-            : {}),
+          isReference: isReferenceKind(fn.returnReferenceKind),
+          referenceKind: isReferenceKind(fn.returnReferenceKind)
+            ? fn.returnReferenceKind
+            : "none",
+          ...(isStringLength(fn.returnMaxLength)
+            ? { maxLength: fn.returnMaxLength }
+            : manifest.stringDefaultLength !== undefined &&
+                ["STRING", "WSTRING"].includes(fn.returnType.toUpperCase())
+              ? {
+                  maxLength: manifest.stringDefaultLength,
+                  defaultLength: true as const,
+                }
+              : {}),
         },
         varBlocks: [],
         body: [],
@@ -531,36 +651,51 @@ export function registerLibrarySymbols(
     }
   }
 
+  // For a struct with exported fields, register a real StructType carrying its
+  // member types, so member access on a dependency struct (e.g. `MATH.PI`)
+  // resolves to the field's type rather than staying untyped.
+  const structTypes = new Map<string, StructType>();
+  for (const t of manifest.types) {
+    if ((t.kind !== "struct" && t.kind !== "union") || !t.fields) continue;
+    structTypes.set(t.name.toUpperCase(), {
+      typeKind: "struct",
+      name: t.name,
+      fields: new Map<string, IECType>(
+        t.fields.map((f) => [
+          f.name,
+          ELEMENTARY_TYPES[f.type.toUpperCase()] ??
+            ({
+              typeKind: "elementary",
+              name: f.type,
+              sizeBits: 0,
+            } as ElementaryType),
+        ]),
+      ),
+    } as StructType);
+  }
+
   // Register types
   for (const t of manifest.types) {
-    // For a struct with exported fields, register a real StructType carrying its
-    // member types, so member access on a dependency struct (e.g. `MATH.PI`)
-    // resolves to the field's type rather than staying untyped.
     const resolvedType: IECType =
-      (t.kind === "struct" || t.kind === "union") && t.fields
+      structTypes.get(t.name.toUpperCase()) ??
+      // An alias of one of this library's STRUCTs is that STRUCT.
+      structAliasOf(t, manifest, structTypes) ??
+      // An enumeration that records its values (archives with `members`).
+      (t.kind === "enum" && Array.isArray(t.members)
         ? ({
-            typeKind: "struct",
+            typeKind: "enum",
             name: t.name,
-            fields: new Map<string, IECType>(
-              t.fields.map((f) => [
-                f.name,
-                ELEMENTARY_TYPES[f.type.toUpperCase()] ??
-                  ({
-                    typeKind: "elementary",
-                    name: f.type,
-                    sizeBits: 0,
-                  } as ElementaryType),
-              ]),
-            ),
-          } as StructType)
-        : (ELEMENTARY_TYPES[t.name.toUpperCase()] ??
-          // An alias of an elementary type is that type (archives with `baseType`).
-          elementaryOf(t.name, manifest) ??
-          ({
-            typeKind: "elementary",
-            name: t.name,
-            sizeBits: 0,
-          } as ElementaryType));
+            values: t.members.map((m) => m.name),
+          } as EnumType)
+        : undefined) ??
+      ELEMENTARY_TYPES[t.name.toUpperCase()] ??
+      // An alias of an elementary type is that type (archives with `baseType`).
+      elementaryOf(t.name, manifest) ??
+      ({
+        typeKind: "elementary",
+        name: t.name,
+        sizeBits: 0,
+      } as ElementaryType);
 
     try {
       symbolTables.globalScope.defineFromLibrary({
@@ -589,6 +724,22 @@ export function registerLibrarySymbols(
       });
     } catch (e) {
       if (!(e instanceof DuplicateSymbolError)) throw e;
+    }
+    // An enumeration's values are names of the global scope, as a local
+    // TYPE's are; a name already taken keeps its symbol.
+    if (t.kind === "enum" && Array.isArray(t.members)) {
+      t.members.forEach((m, index) => {
+        try {
+          symbolTables.globalScope.defineFromLibrary({
+            name: m.name,
+            kind: "enumValue",
+            enumType: t.name,
+            value: typeof m.value === "number" ? m.value : index,
+          });
+        } catch (e) {
+          if (!(e instanceof DuplicateSymbolError)) throw e;
+        }
+      });
     }
   }
 

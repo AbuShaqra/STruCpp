@@ -129,6 +129,7 @@ import {
   resolveAccessType,
   resolveArrayElementAccessType,
   resolveFieldDeclaration as resolveFieldDeclarationUtil,
+  undeclaredFbAncestor,
   type AccessLookup,
   resolveArrayElementType as resolveArrayElementTypeUtil,
   resolveArrayShapeByName,
@@ -942,6 +943,10 @@ export class CodeGenerator {
   private libraryFBFieldTypes: Map<string, string> = new Map();
   /** `TYPE.FIELD` → field type name of a library STRUCT, for member chains (`s.f.M()`). */
   private libraryStructFieldTypes: Map<string, string> = new Map();
+  /** Upper-cased names of the types library manifests declare. */
+  private libraryTypeNames: Set<string> = new Set();
+  /** Library enumerations whose manifest records their values. */
+  private libraryEnums: Array<{ name: string; members: string[] }> = [];
 
   /** Extended type metadata for library FB fields (array dims, reference kind) */
   private libraryFBFieldTypeRefs: Map<string, LibraryFieldShape> = new Map();
@@ -1795,6 +1800,7 @@ export class CodeGenerator {
       name: string;
       kind: string;
       fields?: Array<{ name: string; type: string }>;
+      members?: Array<{ name: string }>;
     }>,
   ): void {
     for (const t of types) {
@@ -1806,13 +1812,23 @@ export class CodeGenerator {
         );
       }
       if (t.kind === "enum") {
-        // Members are not available in the manifest, but we only need to
-        // know the type IS an enum for :: emission in generateVariableExpression
+        // Older archives record no members; knowing the type IS an enum is
+        // enough for :: emission in generateVariableExpression
+        const members = Array.isArray(t.members)
+          ? t.members.map((m) => m.name)
+          : [];
         if (!this.enumTypeMembers.has(nameUpper)) {
-          this.enumTypeMembers.set(nameUpper, new Set());
+          this.enumTypeMembers.set(
+            nameUpper,
+            new Set(members.map((m) => m.toUpperCase())),
+          );
+          if (members.length > 0) {
+            this.libraryEnums.push({ name: t.name, members });
+          }
         }
       }
       this.knownStructTypes.add(nameUpper);
+      this.libraryTypeNames.add(nameUpper);
     }
   }
 
@@ -2124,6 +2140,11 @@ export class CodeGenerator {
         }
       }
     }
+    // A library's enumerations, unless this compile declares the name
+    const ownTypes = new Set(ast.types.map((t) => t.name.toUpperCase()));
+    for (const e of this.libraryEnums) {
+      if (!ownTypes.has(e.name.toUpperCase())) enumDescriptors.push(e);
+    }
     this.enumMemberToType = buildEnumMemberMap(enumDescriptors);
 
     // Register program names as types (CODESYS allows instantiating PROGRAMs like FBs)
@@ -2136,8 +2157,13 @@ export class CodeGenerator {
     // sorted and emitted with the FB classes; a late ARRAY or alias is a
     // `using` that instantiates nothing and stays with the other types, where
     // method and interface signatures can name it.
-    this.lateTypeNames = typesHoldingFunctionBlocks(ast.types, (name) =>
-      this.knownFBTypes.has(name),
+    // A STRUCT holding a library type by value is late too: the library's
+    // types are emitted after this compile's.
+    this.lateTypeNames = typesHoldingFunctionBlocks(
+      ast.types,
+      (name) =>
+        this.knownFBTypes.has(name) ||
+        (this.libraryTypeNames.has(name) && !ownTypes.has(name)),
     );
 
     // Topologically sort FBs and late structs once (used in both header and
@@ -2607,10 +2633,16 @@ export class CodeGenerator {
   private atNamespaceScope = false;
 
   private emitGvlGlobalsBody(ast: CompilationUnit, late: boolean): void {
+    // A library type (emitted after this compile's types) counts as late too.
+    const ownTypes = new Set(ast.types.map((t) => t.name.toUpperCase()));
     const holdsFB = (typeRef: TypeReference): boolean =>
       typeNamesHeldByValue(typeRef).some((n) => {
         const upper = n.toUpperCase();
-        return this.knownFBTypes.has(upper) || this.lateTypeNames.has(upper);
+        return (
+          this.knownFBTypes.has(upper) ||
+          this.lateTypeNames.has(upper) ||
+          (this.libraryTypeNames.has(upper) && !ownTypes.has(upper))
+        );
       });
     // Each global after the globals its initial value names; one that names
     // a late global is late too.
@@ -6554,12 +6586,22 @@ export class CodeGenerator {
         ? resolveFieldDeclarationUtil(type, field, this.ast)
         : undefined;
       if (local) return local;
-      // A library function block: its member types come from the manifest.
-      const key = `${type.toUpperCase()}.${field.toUpperCase()}`;
-      const name = this.libraryFBFieldTypes.get(key);
-      if (name === undefined) return undefined;
-      const kind = this.libraryFBFieldTypeRefs.get(key)?.referenceKind;
-      return { type: { name, referenceKind: kind ?? "none" } };
+      // A library function block (or the one a block declared here extends)
+      // and its bases: member types come from the manifest.
+      let owner: string | undefined = (
+        (this.ast && undeclaredFbAncestor(type, this.ast)) ??
+        type
+      ).toUpperCase();
+      for (let depth = 0; owner !== undefined && depth < 32; depth++) {
+        const key = `${owner}.${field.toUpperCase()}`;
+        const name = this.libraryFBFieldTypes.get(key);
+        if (name !== undefined) {
+          const kind = this.libraryFBFieldTypeRefs.get(key)?.referenceKind;
+          return { type: { name, referenceKind: kind ?? "none" } };
+        }
+        owner = this.libraryFBExtends.get(owner);
+      }
+      return undefined;
     },
     arrayElement: (type) =>
       this.ast ? resolveArrayElementAccessType(type, this.ast) : undefined,
@@ -9450,6 +9492,18 @@ export class CodeGenerator {
             this.generateExpression(arg.value),
           );
           if (idx !== 0) return generated;
+          // `LTIME_TO_DINT(t)` of a TIME: the argument becomes the X first
+          const from = conversion.fromType.toUpperCase();
+          const actual = this.temporalBase(arg.value)?.toUpperCase();
+          const asFrom =
+            actual !== undefined &&
+            canonicalElementaryName(actual) !== canonicalElementaryName(from)
+              ? longTemporalConversion(
+                  generated,
+                  canonicalElementaryName(actual),
+                  canonicalElementaryName(from),
+                )
+              : undefined;
           // Type-aware unit scaling, in whichever direction applies — a
           // temporal source going to an integer, or an integer going into a
           // temporal target. See `TEMPORAL_CONVERSION_UNITS` for the units and
@@ -9463,8 +9517,8 @@ export class CodeGenerator {
           // `static_cast<uint16_t>(raw_ns)` and the user sees the low 16 bits of
           // a nanosecond count.
           return this.scaleConversionArg(
-            generated,
-            conversion.fromType.toUpperCase(),
+            asFrom ?? generated,
+            from,
             conversion.toType.toUpperCase(),
           );
         });

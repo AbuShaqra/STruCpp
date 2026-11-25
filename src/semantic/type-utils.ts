@@ -541,6 +541,29 @@ export function getCommonType(a: IECType, b: IECType): IECType | undefined {
 /**
  * The declaration of a struct, FB or program member, looked up in the AST.
  */
+/**
+ * The first EXTENDS ancestor of function block `typeName` (declared in `ast`)
+ * that `ast` does not declare: a library block it extends. Undefined when
+ * `typeName` is not declared here or its whole chain is.
+ */
+export function undeclaredFbAncestor(
+  typeName: string,
+  ast: CompilationUnit,
+): string | undefined {
+  const seen = new Set<string>();
+  let current: string | undefined = typeName.toUpperCase();
+  let declared = false;
+  while (current !== undefined && !seen.has(current)) {
+    seen.add(current);
+    const upper: string = current;
+    const fb = ast.functionBlocks.find((f) => f.name.toUpperCase() === upper);
+    if (!fb) return declared ? upper : undefined;
+    declared = true;
+    current = fb.extends?.toUpperCase();
+  }
+  return undefined;
+}
+
 export function resolveFieldDeclaration(
   typeName: string,
   fieldName: string,

@@ -41,6 +41,7 @@ export const KNOWN_FEATURES = [
   "dynamic_memory",
   "var_inst",
   "call_result_access",
+  "library_namespaces",
 ] as const;
 
 export type FeatureId = (typeof KNOWN_FEATURES)[number];

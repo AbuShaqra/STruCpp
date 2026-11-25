@@ -1876,7 +1876,11 @@ export class ASTBuilder {
     const children = node.children as CstChildren;
 
     const nameToken = getFirstToken(children.Identifier);
-    const name = nameToken?.image ?? "INT";
+    // `Namespace.Type` (a Dot is only ever the qualifier here): both names
+    const qualified = children.Dot !== undefined;
+    const name = qualified
+      ? `${nameToken?.image ?? ""}.${getAllTokens(children.Identifier)[1]?.image ?? ""}`
+      : (nameToken?.image ?? "INT");
 
     // The prefixes in source order: CST children are grouped by token type,
     // so their relative order comes from the offsets.
@@ -1910,8 +1914,9 @@ export class ASTBuilder {
       // Check for identifier-based length (STRING(CONSTANT_NAME))
       // Note: children.Identifier[0] is the type name itself; [1] would be the length constant
       const allIdents = getAllTokens(children.Identifier);
-      if (allIdents.length > 1) {
-        maxLength = allIdents[1]!.image;
+      const lengthAt = qualified ? 2 : 1;
+      if (allIdents.length > lengthAt) {
+        maxLength = allIdents[lengthAt]!.image;
       }
     }
 
@@ -1957,7 +1962,11 @@ export class ASTBuilder {
       const elemChildren = elementTypeNode.children as CstChildren;
       const elemNameToken = getFirstToken(elemChildren.Identifier);
       if (elemNameToken) {
-        elementTypeName = elemNameToken.image;
+        // `Namespace.Type` keeps both names (see buildTypeReference)
+        elementTypeName =
+          elemChildren.Dot !== undefined
+            ? `${elemNameToken.image}.${getAllTokens(elemChildren.Identifier)[1]?.image ?? ""}`
+            : elemNameToken.image;
       }
     }
 

@@ -1863,8 +1863,10 @@ export class SemanticAnalyzer {
     }
 
     // Build reverse lookup map: enum member name → owning enum type
-    this.enumMemberMap = buildEnumMemberMap(
-      ast.types
+    // (a library's enumerations that record their values included)
+    const ownTypes = new Set(ast.types.map((t) => t.name.toUpperCase()));
+    this.enumMemberMap = buildEnumMemberMap([
+      ...ast.types
         .filter(
           (t) =>
             t.definition.kind === "EnumDefinition" &&
@@ -1877,7 +1879,20 @@ export class SemanticAnalyzer {
               ? t.definition.members.map((m) => m.name)
               : [],
         })),
-    );
+      ...this.symbolTables.globalScope.getAllSymbols().flatMap((sym) =>
+        sym.kind === "type" &&
+        sym.resolvedType?.typeKind === "enum" &&
+        !ownTypes.has(sym.name.toUpperCase()) &&
+        this.symbolTables.globalScope.definedByLibrary(sym.name)
+          ? [
+              {
+                name: sym.name,
+                members: (sym.resolvedType as EnumType).values,
+              },
+            ]
+          : [],
+      ),
+    ]);
 
     // Register function declarations
     for (const funcDecl of ast.functions) {

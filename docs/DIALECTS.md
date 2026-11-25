@@ -116,6 +116,7 @@ the root. A profile without `extends` has only its own features.
 | `dynamic_memory`     | `__NEW(type)` and `__DELETE(p)` (default set)                |
 | `var_inst`           | `VAR_INST` blocks in a METHOD (default set)                  |
 | `call_result_access` | `.member`, `[i]`, a bit `.n` and `^` on the result of a function or method call, `F(1).nCode`, `fb.M()[2].v`, `FP()^.x` ([below](#member-access-on-a-call-result)) |
+| `library_namespaces` | a library's FUNCTIONs, FBs, types, globals and enumeration values named through its namespace, `NS.F(1)`, `t : NS.TON` ([below](#library-namespaces)) |
 
 ## Member access on a call result
 
@@ -155,6 +156,33 @@ result cannot be written: it is a temporary value; assign the result to a variab
 and `REF(F().a)` are `A call result cannot be bound to a reference: ...`. Passed to a VAR_IN_OUT, to a
 REFERENCE TO input or to `ADR` it gets those checks' errors (`must be bound to a variable, not an
 expression` and the like).
+
+## Library namespaces
+
+A library archive has a namespace, an ST name that qualifies what it declares: its FUNCTIONs and function
+blocks, its types, its global variables and, through an enumeration's name, the enumeration's values. With
+`library_namespaces` each may be written qualified: `NS.F(1)`, `fb : NS.FB_A;`, `ARRAY[1..2] OF NS.ST_A`,
+`NS.G := 1;`, `e := NS.E_C.Green;` (the enumeration form `E.M` itself needs `enum_dot_qualify`), and
+`NS.G.M()` on a global function block. A qualified name is the library's declaration of that name: it is
+checked and generated as the bare name is, which stays valid as well. The namespace is compared in any
+letter case.
+
+The namespace is the manifest's `stNamespace`, given when the library is compiled (`--lib-st-namespace`,
+`library.json`'s `stNamespace`, `compileStlib`'s `stNamespace`); without one, and for an archive written
+before the field existed, it is the library's name with every character other than a letter, a digit or `_`
+as `_` (`oscat-basic` is `oscat_basic`, `iec-standard-fb` is `iec_standard_fb`).
+
+A name that is a variable of the POU, a global, a global variable list, a POU or a type of the sources is
+never taken as a namespace (`s.f` of a STRUCT variable `s` stays a member access). Refused (each an error):
+
+| Written                                     | Message                                                                                  |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `NS.F(1)`, the feature off                  | `Qualifying 'F' by the namespace of library L needs the feature library_namespaces`      |
+| `NS.X`, X not declared by the library       | `Library L (namespace 'NS') declares no 'X'`                                              |
+| `NS.F`, F also declared by the sources      | `'NS.F' names the 'F' of library L, which a declaration of the same name hides here`     |
+| `NS.F`, F also declared by an earlier library | `'NS.F' names the 'F' of library L, but library K also declares 'F' and its one is used; a name two libraries declare cannot be qualified` |
+
+The feature is off with no dialect flag and under `iec-3`.
 
 ## Bitwise operators on integers
 

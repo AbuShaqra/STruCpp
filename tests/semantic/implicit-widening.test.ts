@@ -308,7 +308,7 @@ describe("implicit widening (Figures 11 and 12)", () => {
       expect(r.errors).toEqual([]);
     });
 
-    it(`checks duration, date and string conversion arguments under --strict only (${label})`, () => {
+    it(`checks duration, date and string conversion arguments: no C++ conversion in every mode, the rest under iec-3 and --strict (${label})`, () => {
       const r = compile(
         "PROGRAM Main\nVAR t : TIME; lt : LTIME; d : DINT; da : DATE; ws : WSTRING; s : STRING; i : INT; END_VAR\nd := TIME_TO_DINT(t);\nd := LTIME_TO_DINT(t);\nd := TIME_TO_DINT(lt);\nt := DINT_TO_TIME(t);\nd := DATE_TO_DINT(t);\ni := STRING_TO_INT(ws);\ni := STRING_TO_INT(s);\ni := STRING_TO_INT('12');\nd := TIME_TO_DINT(T#1s);\nEND_PROGRAM\n",
         options,
@@ -321,7 +321,18 @@ describe("implicit widening (Figures 11 and 12)", () => {
               "Implicit conversion from TIME to DATE is not allowed; use TIME_TO_DATE",
               "Implicit conversion from WSTRING to STRING is not allowed; use WSTRING_TO_STRING",
             ]
-          : [],
+          : label === "iec-3"
+            ? [
+                "Argument 'IN' of 'TIME_TO_DINT' expects TIME, got LTIME",
+                "Argument 'IN' of 'DINT_TO_TIME' expects DINT, got TIME",
+                "Argument 'IN' of 'DATE_TO_DINT' expects DATE, got TIME",
+                "Argument 'IN' of 'STRING_TO_INT' expects STRING, got WSTRING",
+              ]
+            : [
+                // A 32-bit TIME into DINT_TO_ or DATE_TO_ has no C++ conversion
+                "Argument 'IN' of 'DINT_TO_TIME' expects DINT, got TIME",
+                "Argument 'IN' of 'DATE_TO_DINT' expects DATE, got TIME",
+              ],
       );
     });
 
@@ -432,7 +443,7 @@ describe("implicit widening (Figures 11 and 12)", () => {
       expect(r.errors).toEqual([]);
     });
 
-    it(`takes TOD and DT as their long forms in a conversion argument (${label})`, () => {
+    it(`takes TOD and DT as their long forms in a conversion argument, the long ones into the short refused under iec-3 (${label})`, () => {
       const r = compile(
         "PROGRAM Main\nVAR tod : TOD; td : TIME_OF_DAY; dt : DT; dat : DATE_AND_TIME; ltod : LTOD; ldt : LDT; u : ULINT; END_VAR\nu := LTOD_TO_ULINT(tod);\nu := LTIME_OF_DAY_TO_ULINT(td);\nu := LDT_TO_ULINT(dt);\nu := LDATE_AND_TIME_TO_ULINT(dat);\nu := TOD_TO_ULINT(ltod);\nu := DT_TO_ULINT(ldt);\nEND_PROGRAM\n",
         options,
@@ -443,7 +454,12 @@ describe("implicit widening (Figures 11 and 12)", () => {
               "Implicit conversion from LTOD to TOD is not allowed; use LTOD_TO_TOD",
               "Implicit conversion from LDT to DT is not allowed; use LDT_TO_DT",
             ]
-          : [],
+          : label === "iec-3"
+            ? [
+                "Argument 'IN' of 'TOD_TO_ULINT' expects TOD, got LTOD",
+                "Argument 'IN' of 'DT_TO_ULINT' expects DT, got LDT",
+              ]
+            : [],
       );
     });
   }

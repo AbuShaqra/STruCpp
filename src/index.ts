@@ -68,6 +68,7 @@ import {
   markImplicitParameters,
 } from "./semantic/implicit-parameters.js";
 import { lowerPouOperators } from "./semantic/vendor-pou-operators.js";
+import { lowerLibraryNamespaces } from "./semantic/library-namespaces.js";
 import { lowerBitType } from "./semantic/bit-type.js";
 import { unionLoweringErrors } from "./semantic/union.js";
 import { fbInitLoweringErrors } from "./semantic/fb-init.js";
@@ -1145,6 +1146,17 @@ function runPipeline(
     // Actions first, so lowerInlineTypes qualifies inline enum members in
     // action bodies as it does in the owner's methods.
     const loweringErrors = [
+      // First: a qualified library name is its bare name for every pass after.
+      ...lowerLibraryNamespaces(ast, mergedOptions.libraries ?? [], {
+        enabled: dialect.features.has("library_namespaces"),
+        featureMessage: (construct) => {
+          const message = `${construct} needs the feature library_namespaces`;
+          const profiles = profilesWithFeature(dialect, "library_namespaces");
+          return profiles.length > 0
+            ? `${message} (profiles: ${profiles.join(", ")})`
+            : message;
+        },
+      }),
       ...(dialect.features.has("vendor_operators")
         ? lowerPouOperators(ast, {
             sources: sourcesByFile,

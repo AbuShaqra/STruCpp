@@ -103,7 +103,9 @@ describe.skipIf(!oscatAvailable)("library function named arguments", () => {
       errors("s := LIST_GET(SEP := 44, LIST := s, NOPE := 2);", {
         libraries,
       }),
-    ).toEqual(["Function 'LIST_GET' has no parameter named 'NOPE'"]);
+    ).toEqual([
+      "Function 'LIST_GET' has no parameter named 'NOPE' (the FUNCTION of library oscat-basic; its parameters: SEP, POS, LIST)",
+    ]);
   });
 
   it("accepts the declared names", () => {

@@ -71,6 +71,7 @@ import {
   resolveAccessType,
   resolveArrayElementAccessType,
   resolveFieldDeclaration,
+  undeclaredFbAncestor,
   resolveArrayShapeByName,
   type AccessLookup,
   type AccessType,
@@ -1108,7 +1109,8 @@ export class TypeChecker {
    * Operators in an initial value the checks above do not type (a STRUCT
    * field default, an array or structure initializer, a global's initial
    * value) are refused as in a body: a mixed STRING/WSTRING comparison, a
-   * negated TIME constant and MOD of a REAL or LREAL. Operand types come from
+   * negated TIME constant, MOD of a REAL or LREAL and the date and time
+   * operators of Tables 30 and 31. Operand types come from
    * literals, declared variables and types already resolved; nothing is
    * inferred anew.
    */
@@ -1128,6 +1130,12 @@ export class TypeChecker {
         }
         if (node.kind !== "BinaryExpression") return;
         const expr = node as BinaryExpression;
+        // Table 30/31 in a STRUCT field default or an initializer element
+        this.withLeafOperandTypes(expr, scope, () => {
+          if (!this.refuseTemporalOperands(expr, scope)) {
+            this.refuseTable30Operands(expr, scope);
+          }
+        });
         this.markInitialMixedSignBitwise(expr, scope);
         if (expr.operator === "MOD") {
           this.refuseRealMod(expr, undefined, undefined, scope);
@@ -1187,6 +1195,38 @@ export class TypeChecker {
         visit(field.initialValue, global);
       }
     }
+  }
+
+  /**
+   * Run `check` with the literal and plain-variable operands of `expr` typed,
+   * silently; types it set are removed again (initial values not typed here).
+   */
+  private withLeafOperandTypes(
+    expr: BinaryExpression,
+    scope: Scope,
+    check: () => void,
+  ): void {
+    const typed: Expression[] = [];
+    for (let operand of [expr.left, expr.right]) {
+      while (operand.kind === "ParenthesizedExpression") {
+        operand = operand.expression;
+      }
+      const leaf =
+        operand.kind === "LiteralExpression" ||
+        (operand.kind === "VariableExpression" &&
+          operand.fieldAccess.length === 0 &&
+          operand.subscripts.length === 0 &&
+          !operand.isDereference);
+      if (!leaf || operand.resolvedType !== undefined) continue;
+      const errors = this.errors.length;
+      const warnings = this.warnings.length;
+      this.inferType(operand, scope);
+      this.errors.length = errors;
+      this.warnings.length = warnings;
+      typed.push(operand);
+    }
+    check();
+    for (const operand of typed) delete operand.resolvedType;
   }
 
   /**
@@ -1321,10 +1361,13 @@ export class TypeChecker {
       const local = resolveFieldType(typeName, fieldName, this.ast);
       if (local) return local;
     }
-    // A library block's members and properties, then those of its bases.
+    // A library block's members and properties, then those of its bases
+    // (also of the library block a block declared here extends).
     const fu = fieldName.toUpperCase();
     const seen = new Set<string>();
-    let fb = this.symbolTables.lookupFunctionBlock(typeName);
+    let fb = this.symbolTables.lookupFunctionBlock(
+      (this.ast && undeclaredFbAncestor(typeName, this.ast)) ?? typeName,
+    );
     while (fb !== undefined && !seen.has(fb.name.toUpperCase())) {
       seen.add(fb.name.toUpperCase());
       for (const m of [
@@ -1852,9 +1895,10 @@ export class TypeChecker {
             ? { name: type.elementTypeName, referenceKind: "none" }
             : undefined
           : resolveArrayElementAccessType(type.name, this.ast);
-      for (const e of value.elements) {
+      value.elements.forEach((e, i) => {
         this.checkInitializerElements(element, e, context);
-      }
+        value.elements[i] = this.ltimeElementIntoTime(element, e);
+      });
       return;
     }
     if (
@@ -1880,6 +1924,7 @@ export class TypeChecker {
       this.refuseInternalMember(upper, el.name, el, context, true);
       if (field) {
         this.checkInitializerElements(field.type, el.value, context);
+        el.value = this.ltimeElementIntoTime(field.type, el.value);
         continue;
       }
       if (this.resolveFieldTypeAnywhere(upper, el.name) !== undefined) continue;
@@ -1906,6 +1951,55 @@ export class TypeChecker {
         span.file,
       );
     }
+  }
+
+  /**
+   * An LTIME element of an array or structure initializer stored in a TIME:
+   * a warning by default (converted, as LTIME_TO_TIME), an error under iec-3
+   * and --strict. Returns the element, converted where it warns.
+   */
+  private ltimeElementIntoTime(
+    type: AccessType | undefined,
+    value: Expression,
+  ): Expression {
+    if (
+      type === undefined ||
+      type.arrayDimensions !== undefined ||
+      (type.referenceKind ?? "none") !== "none" ||
+      type.referenceChain !== undefined ||
+      canonicalElementaryName(this.aliasBase(type.name)) !== "TIME"
+    ) {
+      return value;
+    }
+    let inner = value;
+    while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
+    const valueType =
+      inner.kind === "LiteralExpression"
+        ? inner.literalType
+        : inner.resolvedType?.typeKind === "elementary"
+          ? this.aliasBase((inner.resolvedType as ElementaryType).name)
+          : undefined;
+    if (
+      valueType === undefined ||
+      canonicalElementaryName(valueType) !== "LTIME"
+    ) {
+      return value;
+    }
+    const message = `Cannot assign LTIME to ${type.name.toUpperCase()} without a conversion; use LTIME_TO_TIME`;
+    const span = value.sourceSpan;
+    if (this.strict || this.inOutErrors) {
+      this.addError(message, span.startLine, span.startCol, span.file);
+      return value;
+    }
+    this.addWarning(message, span.startLine, span.startCol, span.file);
+    return {
+      kind: "FunctionCallExpression",
+      sourceSpan: span,
+      functionName: "LTIME_TO_TIME",
+      arguments: [
+        { kind: "Argument", sourceSpan: span, isOutput: false, value },
+      ],
+    };
   }
 
   /**
@@ -2725,6 +2819,18 @@ export class TypeChecker {
       if (expr.operator === "MOD") {
         this.refuseRealMod(expr, leftType, rightType, scope);
       }
+      // `b := pb^ + b`: --strict arithmetic on the BYTE a pointer reaches
+      const l = leftType ?? this.accessedElementaryType(expr.left, scope);
+      const r = rightType ?? this.accessedElementaryType(expr.right, scope);
+      if (
+        this.strict &&
+        STRICT_ARITHMETIC_OPS.has(expr.operator) &&
+        expr.addressArithmetic !== true &&
+        l !== undefined &&
+        r !== undefined
+      ) {
+        this.checkStrictArithmetic(expr, l, r);
+      }
       return undefined;
     }
 
@@ -2835,11 +2941,20 @@ export class TypeChecker {
     // of the difference). This breaks RTC-style code that captures an
     // offset between two datetimes — including the Additional Function
     // Blocks library's RTC FB and any user code doing date arithmetic.
+    // (operands of an alias type, `TYPE MyDate : DATE`, as their base)
     else if (
       ["+", "-"].includes(expr.operator) &&
-      isDateTimeArithmetic(leftType, rightType, expr.operator)
+      isDateTimeArithmetic(
+        this.elementaryAliasBase(leftType),
+        this.elementaryAliasBase(rightType),
+        expr.operator,
+      )
     ) {
-      type = resolveDateTimeArithmetic(leftType, rightType, expr.operator);
+      type = resolveDateTimeArithmetic(
+        this.elementaryAliasBase(leftType),
+        this.elementaryAliasBase(rightType),
+        expr.operator,
+      );
     }
     // TOD or DT MOD a TIME: the time within that period, of the instant's type
     else if (expr.operator === "MOD" && this.temporalPeriodMod(expr, scope)) {
@@ -4614,6 +4729,7 @@ export class TypeChecker {
         this.isStdTimerType(this.calledFbType(expr, scope)),
       );
       if (this.strict) this.checkStrictConversionArgument(expr, scope);
+      this.checkConversionArgument(expr, scope);
     }
 
     const nameUpper = expr.functionName.toUpperCase();
@@ -5494,6 +5610,7 @@ export class TypeChecker {
     if (this.ownMethod(name)) return;
     let declaredName: string;
     let params: string[];
+    let library: string | undefined;
     const userFn = this.findUserFunction(name);
     if (userFn) {
       declaredName = userFn.name;
@@ -5519,6 +5636,7 @@ export class TypeChecker {
       if (libFn === undefined) return;
       declaredName = libFn.name;
       params = libFn.parameters.map((p) => p.name);
+      library = libFn.libraryName;
     }
     const known = new Set(params.map((p) => p.toUpperCase()));
     for (const arg of stripEnEno([...expr.arguments])) {
@@ -5527,8 +5645,14 @@ export class TypeChecker {
         expr,
         this.misnamedArgumentCount(expr) + 1,
       );
+      // A library FUNCTION (one that replaces a standard function of its
+      // name, say) names its library and parameters.
+      const detail =
+        library === undefined || library === STD_FUNCTIONS_LIBRARY
+          ? ""
+          : ` (the FUNCTION of library ${library}; its parameters: ${params.join(", ") || "none"})`;
       this.addError(
-        `Function '${declaredName}' has no parameter named '${arg.name}'`,
+        `Function '${declaredName}' has no parameter named '${arg.name}'${detail}`,
         arg.sourceSpan.startLine,
         arg.sourceSpan.startCol,
         arg.sourceSpan.file,
@@ -7567,6 +7691,15 @@ export class TypeChecker {
         if (this.checkArrayScalarAssignment(stmt.target, stmt.value, scope)) {
           break;
         }
+        {
+          const declared = this.accessedType(stmt.target, scope);
+          if (
+            declared !== undefined &&
+            this.checkArrayValue(undefined, declared, stmt.value, scope)
+          ) {
+            break;
+          }
+        }
         if (this.isTimerPresetTakingLtime(stmt.target, valueType, scope)) {
           break;
         }
@@ -8300,21 +8433,31 @@ export class TypeChecker {
         targetType.typeKind === "elementary" &&
         valueType.typeKind === "elementary"
       ) {
-        const tName = (targetType as ElementaryType).name;
-        const vName = (valueType as ElementaryType).name;
+        const tDisplay = (targetType as ElementaryType).name;
+        const vDisplay = (valueType as ElementaryType).name;
+        // An alias of an elementary type is checked as its base (`TYPE MyA : STRING(10)`)
+        const tName = this.elementaryAliasName(tDisplay);
+        const vName = this.elementaryAliasName(vDisplay);
 
         // If either side is a FB or struct type, it's definitely incompatible
         // with a scalar type — fall through to the error report.
-        // Otherwise, skip validation for user-defined type aliases we can't
-        // fully resolve (e.g. MyInt := INT where MyInt is an alias for INT).
-        const tIsFbOrStruct = this.isKnownCompositeType(tName);
-        const vIsFbOrStruct = this.isKnownCompositeType(vName);
+        // Otherwise, skip validation for user-defined types we can't
+        // fully resolve.
+        const tIsFbOrStruct = this.isKnownCompositeType(tDisplay);
+        const vIsFbOrStruct = this.isKnownCompositeType(vDisplay);
         if (!tIsFbOrStruct && !vIsFbOrStruct) {
           if (
             !ELEMENTARY_TYPES[tName] ||
             !ELEMENTARY_TYPES[vName] ||
-            this.isUserTypeOfEd3Name(tName) ||
-            this.isUserTypeOfEd3Name(vName)
+            this.isUserTypeOfEd3Name(tDisplay) ||
+            this.isUserTypeOfEd3Name(vDisplay)
+          ) {
+            return;
+          }
+          if (
+            (tName !== tDisplay.toUpperCase() ||
+              vName !== vDisplay.toUpperCase()) &&
+            _isAssignable(ELEMENTARY_TYPES[tName], ELEMENTARY_TYPES[vName])
           ) {
             return;
           }
@@ -8653,16 +8796,18 @@ export class TypeChecker {
     ) {
       return;
     }
+    // `F := 0` into an interface result builds as NULL: the feature refusal
+    // warns, for a METHOD's result too
+    const zeroIntoInterface =
+      isUntypedZero(value) && this.interfaceTypeOf(targetType) !== undefined;
     if (
+      !zeroIntoInterface &&
       this.symbolTables.lookupFunction(
         target.kind === "VariableExpression" ? target.name : "",
       ) === undefined
     ) {
       return;
     }
-    // `F := 0` into an interface result builds as NULL: the feature refusal warns
-    const zeroIntoInterface =
-      isUntypedZero(value) && this.interfaceTypeOf(targetType) !== undefined;
     // A derived FB into a base-type result builds and copies the base part
     // (a derived STRUCT does not build: it stays an error)
     const derived = this.fbDerivesFrom(
@@ -10347,6 +10492,86 @@ export class TypeChecker {
   }
 
   /**
+   * An ARRAY variable stored in a fixed-size ARRAY (an assignment, or input
+   * `input` by value). Other bounds or rank do not build: an error. Another
+   * element type is an error under iec-3 and --strict; by default one that
+   * narrows (DINT into INT) warns and one with no C++ conversion is an error.
+   * True when reported.
+   */
+  private checkArrayValue(
+    input: string | undefined,
+    target: AccessType,
+    value: Expression,
+    scope: Scope,
+  ): boolean {
+    if ((target.referenceKind ?? "none") !== "none") return false;
+    const expected = this.bindingShapeOf(target);
+    if (expected?.kind !== "array" || expected.dims === undefined) return false;
+    if (value.kind !== "VariableExpression" || value.isDereference)
+      return false;
+    if (value.accessChain?.some((st) => st.kind === "dereference") === true) {
+      return false;
+    }
+    const arg = this.accessedType(value, scope);
+    if (arg === undefined) return false;
+    const levels = arg.referenceChain ?? [arg.referenceKind ?? "none"];
+    if (levels.some((k) => k !== "none")) return false;
+    const actual = this.bindingShapeOf(arg);
+    if (actual?.kind !== "array" || actual.dims === undefined) return false;
+    const describe = (shape: typeof expected): string =>
+      `ARRAY[${shape.dims!.map((d) => `${d.start}..${d.end}`).join(", ")}] OF ${describeReferenceShape({ chain: shape.chain, base: shape.base })}`;
+    const dims =
+      actual.dims.length === expected.dims.length &&
+      actual.dims.every(
+        (d, i) =>
+          d.start === expected.dims![i]!.start &&
+          d.end === expected.dims![i]!.end,
+      );
+    const same =
+      actual.chain.join(" ") === expected.chain.join(" ") &&
+      actual.base === expected.base;
+    if (dims && same) return false;
+    let error = !dims || this.strict || this.inOutErrors;
+    let narrowing = false;
+    if (!error) {
+      const t = ELEMENTARY_TYPES[expected.base];
+      const v = ELEMENTARY_TYPES[actual.base];
+      if (
+        expected.chain.length !== 0 ||
+        actual.chain.length !== 0 ||
+        t === undefined ||
+        v === undefined
+      ) {
+        // Elements of other STRUCT, FB, pointer or alias types: left as before.
+        return false;
+      }
+      if (!_isAssignable(t, v)) {
+        narrowing = isNarrowingConversion(expected.base, actual.base);
+        error = !narrowing;
+      } else if (
+        INTEGER_STORAGE[expected.base] !== undefined &&
+        INTEGER_STORAGE[expected.base] === INTEGER_STORAGE[actual.base]
+      ) {
+        return false;
+      } else {
+        // A widening of each element (INT into DINT) converts exactly.
+        return false;
+      }
+    }
+    const into =
+      input === undefined
+        ? `a variable of type ${describe(expected)}`
+        : `input '${input.toUpperCase()}' of type ${describe(expected)}`;
+    const message = `Cannot store ${describe(actual)} in ${into}${
+      dims ? "" : "; the bounds differ"
+    }`;
+    const span = value.sourceSpan;
+    if (error) this.addError(message, span.startLine, span.startCol, span.file);
+    else this.addWarning(message, span.startLine, span.startCol, span.file);
+    return true;
+  }
+
+  /**
    * The array shape of a declared type (inline, ARRAY[*], or a TYPE of an
    * ARRAY with constant bounds, through aliases), an elementary type as a
    * scalar, or undefined when it is neither or cannot be told.
@@ -10756,6 +10981,12 @@ export class TypeChecker {
       upper = def.name.toUpperCase();
     }
     return upper;
+  }
+
+  /** The elementary type an alias stands for (upper-cased), else the name upper-cased. */
+  private elementaryAliasName(name: string): string {
+    const base = canonicalElementaryName(this.aliasBase(name));
+    return ELEMENTARY_TYPES[base] !== undefined ? base : name.toUpperCase();
   }
 
   /** A library type's alias definition, when it records its base; undefined otherwise. */
@@ -11881,7 +12112,7 @@ export class TypeChecker {
     return method === undefined ? undefined : { method, recorded };
   }
 
-  /** `inputs` with only its STRING, WSTRING and library alias in-outs marked; undefined without one. */
+  /** `inputs` with only its elementary (STRING included) and library alias in-outs marked; undefined without one. */
   private onlyStringInOuts(
     inputs: CallInput[] | undefined,
   ): CallInput[] | undefined {
@@ -11891,7 +12122,9 @@ export class TypeChecker {
       if (input.type.arrayDimensions !== undefined) return false;
       const upper = input.type.name.toUpperCase();
       return (
-        isStringBase(upper) || this.libraryAliasDefinition(upper) !== undefined
+        isStringBase(upper) ||
+        ELEMENTARY_TYPES[upper] !== undefined ||
+        this.libraryAliasDefinition(upper) !== undefined
       );
     };
     if (inputs?.some(checked) !== true) return undefined;
@@ -11958,11 +12191,22 @@ export class TypeChecker {
         f.names.some((n) => n.toUpperCase() === upper),
       );
     }
-    const fb = this.symbolTables.lookupFunctionBlock(typeName);
-    if (!fb) return undefined;
-    return [...fb.inputs, ...fb.outputs, ...fb.inouts, ...fb.locals].find(
-      (m) => m.name.toUpperCase() === upper,
-    )?.declaration;
+    // A library block, or the one a block declared here extends, and its bases.
+    let name: string | undefined =
+      (this.ast && undeclaredFbAncestor(typeName, this.ast)) ?? typeName;
+    for (let depth = 0; name !== undefined && depth < 32; depth++) {
+      const fb = this.symbolTables.lookupFunctionBlock(name);
+      if (!fb) return undefined;
+      const member = [
+        ...fb.inputs,
+        ...fb.outputs,
+        ...fb.inouts,
+        ...fb.locals,
+      ].find((m) => m.name.toUpperCase() === upper)?.declaration;
+      if (member !== undefined) return member;
+      name = fb.libraryName !== undefined ? fb.declaration.extends : undefined;
+    }
+    return undefined;
   };
 
   /** `THIS.member` (or `THIS^.member`) inside a function block. */
@@ -12730,7 +12974,7 @@ export class TypeChecker {
 
   /**
    * Named arguments of a call on an instance of `type`, a function block this
-   * compile declares, that name no input, output or in/out of it. The C++
+   * compile or a library declares, that name no input, output or in/out of it. The C++
    * assigns `inst.NAME`: for an unknown name, a method, a property or a
    * VAR_EXTERNAL it does not build, and a VAR, VAR_TEMP or CONSTANT local is
    * not part of the call interface.
@@ -12742,7 +12986,13 @@ export class TypeChecker {
     if (type.referenceKind !== "none" || type.arrayDimensions !== undefined) {
       return;
     }
-    if (!this.fbMemberNames(type.name)) return;
+    // A block declared here, or a library block (its interface is recorded).
+    if (
+      !this.fbMemberNames(type.name) &&
+      !this.symbolTables.lookupFunctionBlock(type.name)
+    ) {
+      return;
+    }
     const known = this.fbParameterNames(type.name);
     if (!known) return;
     for (const arg of args) {
@@ -12812,15 +13062,15 @@ export class TypeChecker {
         continue;
       }
       const lib = this.symbolTables.lookupFunctionBlock(upper);
-      if (lib) {
-        found = true;
-        for (const m of [...lib.inputs, ...lib.outputs, ...lib.inouts]) {
-          names.add(m.name.toUpperCase());
-        }
+      if (!lib) return found && current === undefined ? names : undefined;
+      found = true;
+      for (const m of [...lib.inputs, ...lib.outputs, ...lib.inouts]) {
+        names.add(m.name.toUpperCase());
       }
-      break;
+      // A library block's base is a library block too (its manifest names it).
+      current = lib.declaration.extends?.toUpperCase();
     }
-    return found ? names : undefined;
+    return found && current === undefined ? names : undefined;
   }
 
   /** Strict diagnostics already reported, so an expression visited twice reports once. */
@@ -13021,8 +13271,9 @@ export class TypeChecker {
     if (targetType.typeKind !== "elementary") return false;
     const valueType = this.strictExprType(value);
     if (valueType?.typeKind !== "elementary") return false;
-    const t = (targetType as ElementaryType).name.toUpperCase();
-    const v = (valueType as ElementaryType).name.toUpperCase();
+    // Aliases of elementary types are checked as their bases
+    const t = this.elementaryAliasName((targetType as ElementaryType).name);
+    const v = this.elementaryAliasName((valueType as ElementaryType).name);
     if (t === v) return false;
     const tKind = strictKind(t);
     const vKind = strictKind(v);
@@ -13115,6 +13366,64 @@ export class TypeChecker {
   }
 
   /**
+   * The argument of a typed conversion `X_TO_Y` is an X. Another type the
+   * generated C++ cannot convert (a 32-bit date or time of another kind, a
+   * STRING into CHAR) is an error; one it converts as its own type is a
+   * warning by default, an error under iec-3 unless it narrows a number
+   * (--strict has its own rules).
+   */
+  private checkConversionArgument(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (
+      this.strict ||
+      expr.instance !== undefined ||
+      expr.functionName.includes(".") ||
+      this.findUserFunction(expr.functionName) ||
+      this.ownMethod(expr.functionName) !== undefined ||
+      this.calledInstance(expr.functionName, scope) ||
+      scope.lookup(expr.functionName)?.kind === "variable"
+    ) {
+      return;
+    }
+    const fn = this.symbolTables.lookupFunction(expr.functionName);
+    if (fn !== undefined && fn.libraryName !== STD_FUNCTIONS_LIBRARY) return;
+    const conv = this.stdRegistry?.resolveConversion(
+      expr.functionName.toUpperCase(),
+    );
+    const arg = stripEnEno(expr.arguments)[0];
+    if (conv === undefined || arg === undefined) return;
+    if (this.untypedConstantKind(arg.value) !== undefined) return;
+    const value = arg.value.resolvedType;
+    if (value?.typeKind !== "elementary" || isGenericGroupType(value)) return;
+    const display = (value as ElementaryType).name;
+    const a = canonicalElementaryName(this.aliasBase(display));
+    const x = canonicalElementaryName(conv.fromType);
+    const from = ELEMENTARY_TYPES[x];
+    const actual = ELEMENTARY_TYPES[a];
+    if (a === x || from === undefined || actual === undefined) return;
+    if (_isAssignable(from, actual)) return;
+    const aTemporal = TEMPORAL_ANY_NAMES.has(a);
+    const xTemporal = TEMPORAL_ANY_NAMES.has(x);
+    const fails =
+      aTemporal && xTemporal
+        ? SHORT_TEMPORAL_KIND[a] !== SHORT_TEMPORAL_KIND[x]
+        : (aTemporal && TEMPORAL32_NAMES.has(a)) ||
+          (xTemporal && TEMPORAL32_NAMES.has(x)) ||
+          (isStringBase(a) && (x === "CHAR" || x === "WCHAR"));
+    const message = `Argument 'IN' of '${expr.functionName.toUpperCase()}' expects ${x}, got ${display}`;
+    const span = arg.value.sourceSpan;
+    // A narrowing of numbers or bit strings warns under iec-3 too, as into an input
+    const narrowing = !fails && isNarrowingConversion(x, a);
+    if (fails || (this.inOutErrors && !narrowing)) {
+      this.addError(message, span.startLine, span.startCol, span.file);
+    } else {
+      this.addWarning(message, span.startLine, span.startCol, span.file);
+    }
+  }
+
+  /**
    * Each input argument of a call checked as the assignment `input := arg`
    * is: `--strict` conversions, a type the assignment refuses (STRING into
    * DWORD, TIME into BOOL) and the BOOL narrowing warning. EN is a BOOL input.
@@ -13137,6 +13446,9 @@ export class TypeChecker {
         this.refuseScalarIntoComposite(input, arg.value, scope)
       ) {
         return;
+      }
+      if (!input.inOut) {
+        this.checkArrayValue(input.name, input.type, arg.value, scope);
       }
       if (input.type.arrayDimensions !== undefined) return;
       if (input.inOut) {
@@ -13245,10 +13557,11 @@ export class TypeChecker {
     if (this.isAddressArgument(value, scope)) return;
     const valueType = value.resolvedType;
     if (valueType?.typeKind !== "elementary") return;
-    // An alias-typed value is left alone, as in an assignment.
+    // An alias-typed value is checked as its base, as in an assignment.
     const valueBase = canonicalElementaryName(
-      (valueType as ElementaryType).name,
+      this.aliasBase((valueType as ElementaryType).name),
     );
+    if (this.isUserTypeOfEd3Name(valueBase)) return;
     if (ELEMENTARY_TYPES[valueBase] === undefined) return;
     // An untyped constant adapts as in the assignment; into a BOOL input it
     // gets no narrowing warning.
@@ -13288,12 +13601,33 @@ export class TypeChecker {
         return true;
       }
     }
+    if (v.kind === "FunctionCallExpression") {
+      // `F10()` of a FUNCTION returning a POINTER TO or REF_TO is an address.
+      const kind = this.callResultReferenceKind(v, scope);
+      return kind === "pointer_to" || kind === "ref_to";
+    }
     if (v.kind !== "VariableExpression") return false;
     const declared = this.declaredVariableType(v, scope);
     if (declared === undefined) return false;
     const type = resolveAccessType(declared, v, this.accessLookup);
     const kind = type?.referenceKind;
     return kind === "pointer_to" || kind === "ref_to";
+  }
+
+  /** The reference kind a FUNCTION call's declared result has (user or library FUNCTION). */
+  private callResultReferenceKind(
+    call: FunctionCallExpression,
+    scope: Scope,
+  ): string | undefined {
+    if (call.instance !== undefined || call.functionName.includes(".")) {
+      return undefined;
+    }
+    if (scope.lookup(call.functionName)?.kind === "variable") return undefined;
+    const declared =
+      this.findUserFunction(call.functionName)?.returnType ??
+      this.symbolTables.lookupFunction(call.functionName)?.declaration
+        ?.returnType;
+    return declared?.referenceKind;
   }
 
   /** The input parameters of the method a method-call expression names. */
