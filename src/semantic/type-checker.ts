@@ -8498,21 +8498,38 @@ export class TypeChecker {
    * it has no named type.
    */
   private contextTypeNameOf(e: Expression, scope: Scope): string | undefined {
+    // Read from declarations only: typing `e` here would report its errors
+    // before the check that owns them
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    if (e.kind === "FunctionCallExpression") {
+      if (e.instance !== undefined || e.functionName.includes(".")) {
+        return undefined;
+      }
+      const declared =
+        this.findUserFunction(e.functionName)?.returnType ??
+        this.symbolTables.lookupFunction(e.functionName)?.declaration
+          ?.returnType;
+      return declared !== undefined &&
+        (declared.referenceKind ?? "none") === "none" &&
+        declared.arrayDimensions === undefined
+        ? declared.name
+        : undefined;
+    }
+    if (e.kind !== "VariableExpression") return undefined;
+    const result = this.resultTargetType(e);
+    if (result !== undefined) return result.name;
     if (this.isBareName(e)) {
       const sym = scope.lookup(e.name);
-      // The bare name of a type or enumeration value is no context by itself
-      if (sym?.kind !== "variable" && sym?.kind !== "constant") {
-        const declared = this.resultTargetType(e)?.name;
-        if (declared !== undefined) return declared;
-        if (sym?.kind !== "enumValue") return undefined;
-      }
+      if (sym?.kind === "enumValue") return sym.enumType;
+      if (sym?.kind !== "variable" && sym?.kind !== "constant")
+        return undefined;
     }
-    const errors = this.errors.length;
-    const warnings = this.warnings.length;
-    const type = this.resolveExprType(e, scope);
-    this.errors.length = errors;
-    this.warnings.length = warnings;
-    return type === undefined ? undefined : typeNameUtil(type);
+    const type = this.accessedType(e, scope);
+    return type !== undefined &&
+      (type.referenceKind ?? "none") === "none" &&
+      type.arrayDimensions === undefined
+      ? type.name
+      : undefined;
   }
 
   /**
