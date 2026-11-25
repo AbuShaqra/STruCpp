@@ -881,6 +881,22 @@ inline bool operator!=(const IEC_ITF<I>& a, const IEC_ITF<J>& b) noexcept {
     return !(a == b);
 }
 
+/** `itf = fb`: TRUE when the interface refers to that implementing instance. */
+template<typename I, typename U,
+         typename std::enable_if<std::is_base_of<I, U>::value, int>::type = 0>
+inline bool operator==(const IEC_ITF<I>& a, const U& obj) noexcept {
+    return detail::itf_identity(a.get()) == dynamic_cast<const void*>(&obj);
+}
+template<typename I, typename U,
+         typename std::enable_if<std::is_base_of<I, U>::value, int>::type = 0>
+inline bool operator==(const U& obj, const IEC_ITF<I>& a) noexcept { return a == obj; }
+template<typename I, typename U,
+         typename std::enable_if<std::is_base_of<I, U>::value, int>::type = 0>
+inline bool operator!=(const IEC_ITF<I>& a, const U& obj) noexcept { return !(a == obj); }
+template<typename I, typename U,
+         typename std::enable_if<std::is_base_of<I, U>::value, int>::type = 0>
+inline bool operator!=(const U& obj, const IEC_ITF<I>& a) noexcept { return !(a == obj); }
+
 template<typename I>
 inline bool operator==(std::nullptr_t, const IEC_ITF<I>& b) noexcept { return b.is_null(); }
 template<typename I>

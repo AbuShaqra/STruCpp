@@ -166,7 +166,8 @@ export function lowerAccessorLocals(unit: CompilationUnit): CompileError[] {
 
 /**
  * Whether a GET body writes a member of its FB (a base's included), calls a
- * method of it, or invokes a member: what a const C++ getter cannot do.
+ * method of it, invokes a member, or returns an interface: what a const C++
+ * getter cannot do.
  */
 function getterChangesInstance(
   unit: CompilationUnit,
@@ -192,6 +193,18 @@ function getterChangesInstance(
       base === undefined
         ? undefined
         : unit.functionBlocks.find((f) => f.name.toUpperCase() === base);
+  }
+  // An interface result refers to an instance: bound in a const getter, the
+  // instance would be const (`PJ := inner`).
+  const type = prop.type;
+  if (
+    (type.referenceKind === undefined || type.referenceKind === "none") &&
+    type.arrayDimensions === undefined &&
+    unit.interfaces.some(
+      (i) => i.name.toUpperCase() === type.name.toUpperCase(),
+    )
+  ) {
+    return true;
   }
   const self = prop.name.toUpperCase();
   const rootOf = (name: string): string => name.split(".")[0]!.toUpperCase();

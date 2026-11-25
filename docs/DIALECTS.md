@@ -115,7 +115,7 @@ the root. A profile without `extends` has only its own features.
 | `struct_compare`     | `=` and `<>` of two STRUCT values, compared field by field (default set) |
 | `dynamic_memory`     | `__NEW(type)` and `__DELETE(p)` (default set)                |
 | `var_inst`           | `VAR_INST` blocks in a METHOD (default set)                  |
-| `call_result_access` | `.member`, `[i]` and a bit `.n` on the result of a function or method call, `F(1).nCode`, `fb.M()[2].v` ([below](#member-access-on-a-call-result)) |
+| `call_result_access` | `.member`, `[i]`, a bit `.n` and `^` on the result of a function or method call, `F(1).nCode`, `fb.M()[2].v`, `FP()^.x` ([below](#member-access-on-a-call-result)) |
 
 ## Member access on a call result
 
@@ -138,9 +138,18 @@ member of a call result. Refused with the feature on (at the first `.` or `[`): 
 access on a call result needs a STRUCT or FUNCTION_BLOCK, not a REFERENCE TO or POINTER TO; assign the
 result to a variable first`), an index on a result that is not an ARRAY, a STRING included (`An array
 index on a call result needs an ARRAY, not STRING; ...`), a member of an enumeration and a bit of a
-non-bit-string. `^` after a call is not accepted.
+non-bit-string.
 
-A call result is a temporary value: in every mode, with the feature on or off, it cannot be written or
+`^` dereferences a POINTER TO or REF_TO result of a named type, `FP()^`, `FP()^.x`, `fb.MP()^.a.0`
+(`A dereference of a call result needs the feature call_result_access; ...` with the feature off). On any
+other result it is `A dereference of a call result needs a POINTER TO or REF_TO a named type, not ...`. What
+follows `^` is the memory the pointer refers to, not a temporary, so `FP()^ := 5;` and `FP()^.x := v;` write
+through the pointer.
+
+Selectors and method calls also follow `THIS^.M()`, `THIS.M()` and `SUPER^.M()` (`THIS^.GetS().x`,
+`THIS^.Self().Inc();`), and a statement may call a method on a call result, `F().M();`, `fb.M().a.N();`.
+
+A call result is a temporary value (unless reached through `^`): in every mode, with the feature on or off, it cannot be written or
 bound to a reference. `F().a := v;`, `F().a REF= x;` and an output binding `fb(q => F().a)` are `A call
 result cannot be written: it is a temporary value; assign the result to a variable first`; `r REF= F().a;`
 and `REF(F().a)` are `A call result cannot be bound to a reference: ...`. Passed to a VAR_IN_OUT, to a

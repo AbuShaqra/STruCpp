@@ -1119,7 +1119,9 @@ export class SemanticAnalyzer {
           "call_result_access",
           access.accessChain[0]?.kind === "subscript"
             ? "An array index on a call result"
-            : "Member access on a call result",
+            : access.accessChain[0]?.kind === "dereference"
+              ? "A dereference of a call result"
+              : "Member access on a call result",
           access.selectorSpan,
           "; assign the result to a variable first",
         );
@@ -2265,6 +2267,7 @@ export class SemanticAnalyzer {
 
     // Validate OOP property/member name collisions
     this.validatePropertyNameCollisions(ast);
+    this.validateMethodNameCollisions(ast);
 
     // Validate OOP modifier contradictions
     this.validateOOPModifiers(ast);
@@ -4158,6 +4161,58 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * A variable named like a METHOD of the same block: one C++ class member
+   * cannot be both, so refused. One named like a method of an interface the
+   * block implements is renamed in C++ (member-mangling.ts) and accepted; a
+   * VAR_EXTERNAL is no member and is left alone.
+   */
+  private validateMethodNameCollisions(ast: CompilationUnit): void {
+    const interfaceMethods = new Map(
+      ast.interfaces.map((i) => [
+        i.name.toUpperCase(),
+        new Set(i.methods.map((m) => m.name.toUpperCase())),
+      ]),
+    );
+    const owners: {
+      kind: string;
+      name: string;
+      varBlocks: VarBlock[];
+      methods: MethodDeclaration[];
+      implements?: string[];
+    }[] = [
+      ...ast.functionBlocks.map((f) => ({ ...f, kind: "FUNCTION_BLOCK" })),
+      ...ast.programs.map((p) => ({ ...p, kind: "PROGRAM" })),
+    ];
+    for (const owner of owners) {
+      const methods = new Map(
+        owner.methods.map((m) => [m.name.toUpperCase(), m.name]),
+      );
+      // Renamed by the member-mangling rule: methods of directly implemented interfaces
+      const renamed = new Set(
+        (owner.implements ?? []).flatMap((i) => [
+          ...(interfaceMethods.get(i.toUpperCase()) ?? []),
+        ]),
+      );
+      for (const block of owner.varBlocks) {
+        for (const decl of block.declarations) {
+          for (const n of decl.names) {
+            const method = methods.get(n.toUpperCase());
+            if (method === undefined) continue;
+            if (block.blockType === "VAR_EXTERNAL") continue;
+            if (renamed.has(n.toUpperCase())) continue;
+            this.addError(
+              `Variable '${n}' in ${owner.kind} '${owner.name}' has the same name as method '${method}'`,
+              decl.sourceSpan.startLine,
+              decl.sourceSpan.startCol,
+              decl.sourceSpan.file,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Validate OOP modifier contradictions on function blocks and methods.
    */
   private validateOOPModifiers(ast: CompilationUnit): void {
@@ -4762,10 +4817,19 @@ export class SemanticAnalyzer {
     for (const stmt of stmts) {
       if (stmt.kind === "AssignmentStatement") {
         const target = stmt.target;
-        // Check for x.Property := value pattern
+        // Check for x.Property := value and x.Property.3 := b; `x.P^ := v`
+        // writes where the property's pointer points, not the property
         if (
           target.kind === "VariableExpression" &&
-          target.fieldAccess.length === 1
+          !(
+            target.isDereference &&
+            (target.accessChain === undefined ||
+              target.accessChain[target.accessChain.length - 1]?.kind ===
+                "dereference")
+          ) &&
+          (target.fieldAccess.length === 1 ||
+            (target.fieldAccess.length === 2 &&
+              /^\d+$/.test(target.fieldAccess[1]!)))
         ) {
           const varType = varTypeMap.get(target.name.toUpperCase());
           if (varType) {
@@ -5171,6 +5235,11 @@ export class SemanticAnalyzer {
       }
     } else if (expr.kind === "ParenthesizedExpression") {
       this.validateExpression(expr.expression, varTypeMap, ast);
+    } else if (expr.kind === "CallResultAccessExpression") {
+      this.validateExpression(expr.call, varTypeMap, ast);
+      for (const idx of callResultIndices(expr)) {
+        this.validateExpression(idx, varTypeMap, ast);
+      }
     }
   }
 
