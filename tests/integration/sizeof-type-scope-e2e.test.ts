@@ -282,8 +282,8 @@ VAR d : ST_D; END_VAR
 END_PROGRAM
 `),
     ).toEqual([
-      `5:23 SIZEOF(FB1) in the default of STRUCT field 'N': ${ONLY}`,
-      `6:23 SIZEOF(TON) in the default of STRUCT field 'T': ${ONLY}`,
+      `5:23 SIZEOF(FB1) in the default of STRUCT field 'n': ${ONLY}`,
+      `6:23 SIZEOF(TON) in the default of STRUCT field 't': ${ONLY}`,
     ]);
   });
 
@@ -306,8 +306,8 @@ END_RESOURCE
 END_CONFIGURATION
 `),
     ).toEqual([
-      `4:33 SIZEOF(FB_A) in the initial value of global 'G3': ${ONLY}`,
-      `10:33 SIZEOF(TON) in the initial value of global 'G2': ${ONLY}`,
+      `4:33 SIZEOF(FB_A) in the initial value of global 'g3': ${ONLY}`,
+      `10:33 SIZEOF(TON) in the initial value of global 'g2': ${ONLY}`,
     ]);
   });
 
@@ -320,7 +320,7 @@ VAR s : ST_B; END_VAR
 END_PROGRAM
 `),
     ).toEqual([
-      "1:51 SIZEOF(ST_B) in the default of STRUCT field 'N': 'ST_B' needs 'ST_A' complete, so 'ST_A' cannot measure it",
+      "1:51 SIZEOF(ST_B) in the default of STRUCT field 'n': 'ST_B' needs 'ST_A' complete, so 'ST_A' cannot measure it",
     ]);
   });
 });

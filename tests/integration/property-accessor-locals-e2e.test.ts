@@ -138,10 +138,10 @@ SET
   t := Value;
 END_SET
 END_PROPERTY`;
-    expect(errorsFor(prop)).toEqual(["Undeclared variable 'T'"]);
+    expect(errorsFor(prop)).toEqual(["Undeclared variable 't'"]);
     expect(
       errorsFor(`${prop.replace("  t := Value;\n", "")}\nt := 1;`),
-    ).toEqual(["Undeclared variable 'T'"]);
+    ).toEqual(["Undeclared variable 't'"]);
   });
 
   it("checks the types of the locals", () => {
@@ -165,7 +165,7 @@ ${kind} t : INT; END_VAR
 END_GET
 END_PROPERTY`),
       ).toEqual([
-        `A property accessor declares only VAR or VAR_TEMP variables, not ${kind} (GET of 'VALUE')`,
+        `A property accessor declares only VAR or VAR_TEMP variables, not ${kind} (GET of 'Value')`,
       ]);
     }
   });

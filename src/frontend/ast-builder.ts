@@ -8,7 +8,10 @@
  */
 
 import type { CstNode, IToken } from "chevrotain";
-import { exactIntegerLiteralValue } from "../literal-utils.js";
+import {
+  decodeStringLiteral,
+  exactIntegerLiteralValue,
+} from "../literal-utils.js";
 import type {
   CompilationUnit,
   ProgramDeclaration,
@@ -3236,7 +3239,7 @@ export class ASTBuilder {
         kind: "LiteralExpression",
         sourceSpan: tokenToSourceSpan(token),
         literalType: "REAL",
-        value: parseFloat(token.image),
+        value: parseFloat(token.image.replace(/_/g, "")),
         rawValue: token.image,
       };
     }
@@ -3337,7 +3340,7 @@ export class ASTBuilder {
         kind: "LiteralExpression",
         sourceSpan: tokenToSourceSpan(token),
         literalType: "REAL",
-        value: parseFloat(token.image),
+        value: parseFloat(token.image.replace(/_/g, "")),
         rawValue: token.image,
       };
     }
@@ -4576,8 +4579,8 @@ export class ASTBuilder {
     const nameToken =
       getFirstToken(children.StringLiteral) ??
       getFirstToken(children.WideStringLiteral);
-    // Remove surrounding quotes from test name
-    const name = nameToken ? nameToken.image.slice(1, -1) : "";
+    // The name as text: quotes removed, `$` escapes decoded
+    const name = nameToken ? decodeStringLiteral(nameToken.image) : "";
     const varBlocks = getAllNodes(children.varBlock).map((vb) =>
       this.buildVarBlock(vb),
     );

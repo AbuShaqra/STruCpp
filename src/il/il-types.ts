@@ -169,8 +169,6 @@ export interface ILTranspileResult {
     severity: "error" | "warning";
     file?: string | undefined;
   }>;
-  // Note: error line numbers refer to lines in the *original* source for IL
-  // detection failures, and to generated ST for downstream parse errors.
-  // A bidirectional source map (IL ↔ ST line) would help debugging but is
-  // not yet emitted; tracked as a follow-up.
+  // Line numbers refer to the original source: the generated ST of an IL
+  // body is laid out on the lines of the IL instructions it comes from.
 }

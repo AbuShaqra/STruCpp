@@ -91,7 +91,12 @@ import {
   type DialectRequest,
   type ResolvedDialect,
 } from "./dialect.js";
-import type { ILexingResult } from "chevrotain";
+import type { ILexingResult, IToken } from "chevrotain";
+import {
+  declaredSpellings,
+  respellDiagnostics,
+  spellingsOf,
+} from "./semantic/declared-spellings.js";
 import { tokenize } from "./frontend/lexer.js";
 import {
   applyConditionalPragmas,
@@ -961,6 +966,10 @@ function runPipeline(
   const sourcesByFile = new Map<string, string>([
     [mergedOptions.fileName ?? "main.st", effectiveSource],
   ]);
+  /** File name → the parser's tokens of that text, so no check lexes it again. */
+  const tokensByFile = new Map<string, readonly IToken[]>([
+    [mergedOptions.fileName ?? "main.st", parseResult.tokens],
+  ]);
   warnings.push(
     ...pragmaWarnings(
       parseResult.pragmas,
@@ -1064,6 +1073,7 @@ function runPipeline(
           ),
         );
         sourcesByFile.set(addlSource.fileName, effectiveAddlSource);
+        tokensByFile.set(addlSource.fileName, addlParseResult.tokens);
         warnings.push(
           ...pragmaWarnings(
             addlParseResult.pragmas,
@@ -1123,6 +1133,22 @@ function runPipeline(
 
     ast = mergeCompilationUnits(units);
     markImplicitParameters(ast, implicitPragmas);
+    // Before lowering, which adds names of its own: messages name them as declared.
+    {
+      // The names a library declares (POUs, types, globals) keep the library's spelling
+      const libraryNames = new Set<string>();
+      for (const a of mergedOptions.libraries ?? []) {
+        for (const d of [
+          ...a.manifest.functions,
+          ...a.manifest.functionBlocks,
+          ...a.manifest.types,
+          ...(a.manifest.globals ?? []),
+        ]) {
+          libraryNames.add(d.name.toUpperCase());
+        }
+      }
+      declaredSpellings(ast, sourcesByFile, (upper) => libraryNames.has(upper));
+    }
     // Before lowering, which adds names of its own: only names as written.
     if (iec3Rules) {
       const spelling = iec3IdentifierErrors(
@@ -1136,7 +1162,7 @@ function runPipeline(
       for (const [file, text] of sourcesByFile) {
         const literal = literalUnderscoreErrors(
           text,
-          tokenize(text).tokens,
+          tokensByFile.get(file) ?? tokenize(text).tokens,
           file,
         );
         errors.push(...literal);
@@ -1423,6 +1449,8 @@ function runPipeline(
   if (ast) {
     annotateErrorsWithPouContext(errors, ast, blankedByFile);
     annotateErrorsWithPouContext(warnings, ast, blankedByFile);
+    respellDiagnostics(errors, spellingsOf(ast), sourcesByFile);
+    respellDiagnostics(warnings, spellingsOf(ast), sourcesByFile);
   }
 
   return {
@@ -1485,15 +1513,9 @@ export function compile(
     };
   }
 
-  // UNION, FB_init and alias-variable REFERENCE TO uses analysis accepts but code generation cannot lower yet.
-  const unionErrors = [
-    ...unionCompileErrors(pipeline.ast, pipeline.symbolTables),
-    ...aliasReferenceCompileErrors(pipeline.ast),
-    ...(pipeline.fbInit
-      ? fbInitCompileErrors(pipeline.ast, pipeline.symbolTables)
-      : []),
-  ];
-  if (unionErrors.length > 0) {
+  const generated = generateCode(pipeline, pipeline.ast);
+  if (generated.loweringErrors !== undefined) {
+    respellDiagnostics(generated.loweringErrors, spellingsOf(pipeline.ast));
     return {
       success: false,
       cppFiles: [],
@@ -1501,18 +1523,158 @@ export function compile(
       headerCode: "",
       lineMap: new Map(),
       headerLineMap: new Map(),
-      errors: unionErrors,
+      errors: generated.loweringErrors,
+      warnings: pipeline.warnings,
+    };
+  }
+  const { codeResult, pouDisplayNames } = generated;
+  if (codeResult.errors.length > 0) {
+    const errors: CompileError[] = codeResult.errors.map((err) => ({
+      message: withDeclaredNames(err.message, pouDisplayNames),
+      line: err.line ?? 0,
+      column: err.column ?? 0,
+      severity: "error",
+      ...(err.file !== undefined ? { file: err.file } : {}),
+    }));
+    respellDiagnostics(errors, spellingsOf(pipeline.ast));
+    return {
+      success: false,
+      cppFiles: [],
+      cppCode: "",
+      headerCode: "",
+      lineMap: new Map(),
+      headerLineMap: new Map(),
+      errors,
       warnings: pipeline.warnings,
     };
   }
 
+  // Collect codegen warnings
+  for (const warn of codeResult.warnings) {
+    const entry: CompileError = {
+      message: withDeclaredNames(warn.message, pouDisplayNames),
+      line: warn.line ?? 0,
+      column: warn.column ?? 0,
+      severity: "warning",
+    };
+    if (warn.file !== undefined) {
+      entry.file = warn.file;
+    }
+    pipeline.warnings.push(entry);
+  }
+
+  respellDiagnostics(pipeline.warnings, spellingsOf(pipeline.ast));
+
+  // Emit debugger pointer tables + editor manifest. This is best-effort:
+  // if projectModel or symbolTables are missing (malformed input), we still
+  // return the primary compile output; the debug artifacts are just omitted.
+  let debugTableCpp: string | undefined;
+  let debugMap: DebugMapV2 | undefined;
+  if (pipeline.projectModel && pipeline.symbolTables) {
+    const dbg = generateDebugTable(
+      pipeline.ast,
+      pipeline.projectModel,
+      pipeline.symbolTables,
+      {
+        md5: pipeline.mergedOptions.md5 ?? "",
+        stringDefaultLength: pipeline.stringDefaultLength,
+        ...(pipeline.mergedOptions.globalConstants !== undefined
+          ? { globalConstants: pipeline.mergedOptions.globalConstants }
+          : {}),
+      },
+    );
+    debugTableCpp = dbg.debugTableCpp;
+    debugMap = dbg.debugMap;
+
+    // A RETAIN the walk could not follow all the way down is a WARNING, not an
+    // error. The program still builds and its visible surface is still
+    // retained; refusing would strand anyone using a third-party .stlib they
+    // have no way to rebuild. But the retain is partial, and a partial retain
+    // nobody is told about is a fault discovered after a power cycle with
+    // nothing in the build to point at — so it is said, every build.
+    for (const item of dbg.incomplete) {
+      pipeline.warnings.push({
+        message: withDeclaredNames(
+          `${item.path} is retained in part: ${item.reason}`,
+          pouDisplayNames,
+        ),
+        line: 0,
+        column: 0,
+        severity: "warning",
+      });
+    }
+
+    // A leaf the walk could not register is not debuggable: it is absent from
+    // the debugger's watch list and from anything built on the debug table,
+    // OPC-UA included. That was silent — `skipped` was collected and dropped —
+    // so a variable simply was not there, with nothing in the build to say why
+    // or which. Same reasoning as `incomplete` above: the program still builds,
+    // but a drop nobody is told about is found later, at a debugger that shows
+    // nothing, with no thread back to the cause.
+    for (const item of dbg.skipped) {
+      pipeline.warnings.push({
+        message: withDeclaredNames(
+          `${item.path} is not debuggable: ${item.reason}`,
+          pouDisplayNames,
+        ),
+        line: 0,
+        column: 0,
+        severity: "warning",
+      });
+    }
+  }
+
+  return {
+    success: true,
+    cppFiles: codeResult.cppFiles,
+    cppCode: codeResult.cppCode,
+    headerCode: codeResult.headerCode,
+    lineMap: codeResult.lineMap,
+    headerLineMap: codeResult.headerLineMap,
+    errors: pipeline.errors,
+    warnings: pipeline.warnings,
+    ast: pipeline.ast,
+    ...(pipeline.projectModel ? { projectModel: pipeline.projectModel } : {}),
+    ...(pipeline.symbolTables ? { symbolTables: pipeline.symbolTables } : {}),
+    ...(pipeline.allArchives.length > 0
+      ? { resolvedLibraries: pipeline.allArchives }
+      : {}),
+    ...(debugTableCpp !== undefined ? { debugTableCpp } : {}),
+    ...(debugMap !== undefined ? { debugMap } : {}),
+  };
+}
+
+/**
+ * Phase 6 on an analysed pipeline: the lowering refusals of analysis-accepted
+ * forms, or the generated code with the renamed POUs' declared names.
+ * `keepNames` leaves the tree and tables unrenamed (the code is not used).
+ */
+function generateCode(
+  pipeline: PipelineResult,
+  ast: CompilationUnit,
+  keepNames = false,
+):
+  | { loweringErrors: CompileError[] }
+  | {
+      loweringErrors?: undefined;
+      codeResult: ReturnType<CodeGenerator["generate"]>;
+      pouDisplayNames: Map<string, string>;
+    } {
+  // UNION, FB_init and alias-variable REFERENCE TO uses analysis accepts but code generation cannot lower yet.
+  const unionErrors = [
+    ...unionCompileErrors(ast, pipeline.symbolTables),
+    ...aliasReferenceCompileErrors(ast),
+    ...(pipeline.fbInit ? fbInitCompileErrors(ast, pipeline.symbolTables) : []),
+  ];
+  if (unionErrors.length > 0) return { loweringErrors: unionErrors };
+
   // Phase 6: Generate C++ code
   // POUs and types named like a runtime function are emitted as NAME_.
   const pouDisplayNames =
-    pipeline.mergedOptions.cppNamesAsDeclared === true
+    pipeline.mergedOptions.cppNamesAsDeclared === true || keepNames
       ? new Map<string, string>()
       : renameRuntimeCollidingPous(
-          pipeline.ast,
+          ast,
           pipeline.symbolTables,
           pipeline.projectModel,
         );
@@ -1558,7 +1720,7 @@ export function compile(
   // harness may reference symbols not present in the source AST.
   const isTestBuild = pipeline.mergedOptions.isTestBuild ?? false;
   const reachableByArchive = collectUsedSymbols(
-    pipeline.ast,
+    ast,
     pipeline.allArchives,
     isTestBuild,
   );
@@ -1569,115 +1731,7 @@ export function compile(
     codegen.addLibraryChunks(archive, reachable);
   }
 
-  const codeResult = codegen.generate(pipeline.ast);
-  if (codeResult.errors.length > 0) {
-    const errors: CompileError[] = codeResult.errors.map((err) => ({
-      message: withDeclaredNames(err.message, pouDisplayNames),
-      line: err.line ?? 0,
-      column: err.column ?? 0,
-      severity: "error",
-      ...(err.file !== undefined ? { file: err.file } : {}),
-    }));
-    return {
-      success: false,
-      cppFiles: [],
-      cppCode: "",
-      headerCode: "",
-      lineMap: new Map(),
-      headerLineMap: new Map(),
-      errors,
-      warnings: pipeline.warnings,
-    };
-  }
-
-  // Collect codegen warnings
-  for (const warn of codeResult.warnings) {
-    const entry: CompileError = {
-      message: withDeclaredNames(warn.message, pouDisplayNames),
-      line: warn.line ?? 0,
-      column: warn.column ?? 0,
-      severity: "warning",
-    };
-    if (warn.file !== undefined) {
-      entry.file = warn.file;
-    }
-    pipeline.warnings.push(entry);
-  }
-
-  // Emit debugger pointer tables + editor manifest. This is best-effort:
-  // if projectModel or symbolTables are missing (malformed input), we still
-  // return the primary compile output; the debug artifacts are just omitted.
-  let debugTableCpp: string | undefined;
-  let debugMap: DebugMapV2 | undefined;
-  if (pipeline.projectModel && pipeline.symbolTables) {
-    const dbg = generateDebugTable(
-      pipeline.ast,
-      pipeline.projectModel,
-      pipeline.symbolTables,
-      {
-        md5: pipeline.mergedOptions.md5 ?? "",
-        stringDefaultLength: pipeline.stringDefaultLength,
-        ...(pipeline.mergedOptions.globalConstants !== undefined
-          ? { globalConstants: pipeline.mergedOptions.globalConstants }
-          : {}),
-      },
-    );
-    debugTableCpp = dbg.debugTableCpp;
-    debugMap = dbg.debugMap;
-
-    // A RETAIN the walk could not follow all the way down is a WARNING, not an
-    // error. The program still builds and its visible surface is still
-    // retained; refusing would strand anyone using a third-party .stlib they
-    // have no way to rebuild. But the retain is partial, and a partial retain
-    // nobody is told about is a fault discovered after a power cycle with
-    // nothing in the build to point at — so it is said, every build.
-    for (const item of dbg.incomplete) {
-      pipeline.warnings.push({
-        message: withDeclaredNames(item.reason, pouDisplayNames),
-        line: 0,
-        column: 0,
-        severity: "warning",
-      });
-    }
-
-    // A leaf the walk could not register is not debuggable: it is absent from
-    // the debugger's watch list and from anything built on the debug table,
-    // OPC-UA included. That was silent — `skipped` was collected and dropped —
-    // so a variable simply was not there, with nothing in the build to say why
-    // or which. Same reasoning as `incomplete` above: the program still builds,
-    // but a drop nobody is told about is found later, at a debugger that shows
-    // nothing, with no thread back to the cause.
-    for (const item of dbg.skipped) {
-      pipeline.warnings.push({
-        message: withDeclaredNames(
-          `${item.path} is not debuggable: ${item.reason}`,
-          pouDisplayNames,
-        ),
-        line: 0,
-        column: 0,
-        severity: "warning",
-      });
-    }
-  }
-
-  return {
-    success: true,
-    cppFiles: codeResult.cppFiles,
-    cppCode: codeResult.cppCode,
-    headerCode: codeResult.headerCode,
-    lineMap: codeResult.lineMap,
-    headerLineMap: codeResult.headerLineMap,
-    errors: pipeline.errors,
-    warnings: pipeline.warnings,
-    ast: pipeline.ast,
-    ...(pipeline.projectModel ? { projectModel: pipeline.projectModel } : {}),
-    ...(pipeline.symbolTables ? { symbolTables: pipeline.symbolTables } : {}),
-    ...(pipeline.allArchives.length > 0
-      ? { resolvedLibraries: pipeline.allArchives }
-      : {}),
-    ...(debugTableCpp !== undefined ? { debugTableCpp } : {}),
-    ...(debugMap !== undefined ? { debugMap } : {}),
-  };
+  return { codeResult: codegen.generate(ast), pouDisplayNames };
 }
 
 /** The UNION uses compile refuses as not supported yet (see unionLoweringErrors). */
@@ -1765,9 +1819,19 @@ export function analyze(
   ) {
     let racy: CompileError[] = [];
     try {
-      racy = compile(source, options).warnings.filter((w) =>
-        isSharedGlobalRaceWarning(w.message),
-      );
+      // On this pipeline's tree: no second parse and analysis, no renaming
+      const generated = generateCode(pipeline, pipeline.ast, true);
+      if (generated.loweringErrors === undefined) {
+        racy = generated.codeResult.warnings
+          .filter((w) => isSharedGlobalRaceWarning(w.message))
+          .map((w) => ({
+            message: w.message,
+            line: w.line ?? 0,
+            column: w.column ?? 0,
+            severity: "warning" as const,
+            ...(w.file !== undefined ? { file: w.file } : {}),
+          }));
+      }
     } catch {
       // Code generation failing adds nothing the analysis can report
     }
@@ -1776,6 +1840,7 @@ export function analyze(
       pipeline.ast,
       pipeline.blankedByFile ?? new Map(),
     );
+    respellDiagnostics(racy, spellingsOf(pipeline.ast));
     pipeline.warnings.push(...racy);
   }
 
@@ -2078,6 +2143,7 @@ export { extractIncludePaths, splitCxxFlags } from "./cxx-flags.js";
 export { parseTestFile } from "./testing/test-parser.js";
 export type { TestFileParseOptions } from "./testing/test-parser.js";
 export { analyzeTestFile } from "./semantic/analyzer.js";
+export { decodeStringLiteral } from "./literal-utils.js";
 export {
   generateTestMain,
   buildPOUInfoFromAST,

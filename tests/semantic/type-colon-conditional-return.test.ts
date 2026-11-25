@@ -167,7 +167,7 @@ describe("conditional_return", () => {
   it("takes only a parenthesised condition", () => {
     const src = CONDITIONAL.replace("RETURN (x > 5);", "RETURN x > 5;");
     expect(diag(src, { features: ["+conditional_return"] }).errors).toContain(
-      "4:8: Expected `Semicolon`, found identifier `X`.",
+      "4:8: Expected `Semicolon`, found identifier `x`.",
     );
   });
 

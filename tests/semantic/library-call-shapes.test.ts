@@ -67,6 +67,10 @@ const library = (): StlibArchive => {
   return JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
 };
 
+/** `message` with the parameter it names as the source declares it (lower case): a library keeps its manifest's spelling. */
+const declared = (message: string): string =>
+  message.replace(/'([A-Z][A-Z0-9_]*)'/, (_m, n: string) => `'${n.toLowerCase()}'`);
+
 /** The errors of `vars`/`body` declared in the program and against the library. */
 const errors = (vars: string, body: string): string[][] => [
   compile(`${LIB}\n${program(vars, body)}`).errors.map((e) => e.message),
@@ -131,7 +135,7 @@ describe("an ARRAY output or in/out bound to a variable of another shape", () =>
     ];
     for (const [vars, body, message] of cases) {
       const [local, lib] = errors(vars, body);
-      expect(local, body).toContain(message);
+      expect(local, body).toContain(declared(message));
       expect(lib, body).toContain(message);
     }
   });
@@ -159,7 +163,7 @@ describe("a POINTER TO output bound by position or of a library METHOD", () => {
     const message =
       "The output 'O' gives a 64-bit address, which INT cannot hold; use a POINTER TO or PVOID, or __XWORD, LWORD or ULINT";
     expect(errors("i : INT;", "n := F_P(x, i);")).toEqual([
-      [message],
+      [declared(message)],
       [message],
     ]);
     const viaMethod = compile(program("i : INT;", "n := fm.MP(x, i);"), {
@@ -456,7 +460,7 @@ END_FUNCTION_BLOCK
     });
     const message =
       "VAR_IN_OUT 'A' of type ARRAY[0..1] OF UINT cannot be bound to a variable of type ARRAY[0..1] OF WORD";
-    expect(local).toContain(message);
+    expect(local).toContain(declared(message));
     expect(lib).toContain(message);
     expect(
       both("arr : ARRAY[0..1] OF UDINT;", "n := FO(o => arr);", {
@@ -468,7 +472,7 @@ END_FUNCTION_BLOCK
     // Another storage is refused in every mode.
     expect(both("arr : ARRAY[0..1] OF INT;", "n := FX(arr);")).toEqual([
       [
-        "VAR_IN_OUT 'A' of type ARRAY[0..1] OF UINT cannot be bound to a variable of type ARRAY[0..1] OF INT",
+        "VAR_IN_OUT 'a' of type ARRAY[0..1] OF UINT cannot be bound to a variable of type ARRAY[0..1] OF INT",
       ],
       [
         "VAR_IN_OUT 'A' of type ARRAY[0..1] OF UINT cannot be bound to a variable of type ARRAY[0..1] OF INT",
@@ -489,7 +493,7 @@ END_FUNCTION_BLOCK
   it("checks an in/out declared with an ARRAY type against an inline array", () => {
     const [local] = both("arr : ARRAY[0..1] OF INT;", "n := FT(arr);");
     expect(local).toEqual([
-      "VAR_IN_OUT 'A' of type ARRAY[0..2] OF INT cannot be bound to a variable of type ARRAY[0..1] OF INT",
+      "VAR_IN_OUT 'a' of type ARRAY[0..2] OF INT cannot be bound to a variable of type ARRAY[0..1] OF INT",
     ]);
     expect(
       both("arr : TA; b : ARRAY[0..2] OF INT;", "n := FT(arr) + FT(b);"),
@@ -601,16 +605,18 @@ END_FUNCTION_BLOCK
       ["n := fb.M(5);", "Q"],
       ["n := fa[1].M(lw);", "Q"],
     ]) {
+      // The program declares a variable p: the library's input P is spelled so too
+      const shown = name === "P" ? "p" : name!;
       expect(both("", body!), body).toEqual([
-        [refusal(name!)],
-        [refusal(name!)],
+        [refusal(name!.toLowerCase())],
+        [refusal(shown)],
       ]);
     }
   });
 
   it("refuses an integer initial value of a POINTER TO alias", () => {
     const message =
-      "An integer cannot initialise the POINTER TO 'PZ'; use 0 or ADR(...), or assign it in the body";
+      "An integer cannot initialise the POINTER TO 'pz'; use 0 or ADR(...), or assign it in the body";
     expect(both("pz : PINT := 5;", "n := 1;")).toEqual([[message], [message]]);
   });
 
@@ -636,7 +642,7 @@ END_FUNCTION_BLOCK
       "VAR_IN_OUT 'A' of type ARRAY[0..1] OF POINTER TO INT cannot be bound to a variable of type ARRAY[0..1] OF POINTER TO DINT";
     expect(
       both("arr : ARRAY[0..1] OF POINTER TO DINT;", "n := FA(arr);"),
-    ).toEqual([[message], [message]]);
+    ).toEqual([[declared(message)], [message]]);
     // An older archive without the target: refused rather than left to g++.
     expect(
       both("arr : ARRAY[0..1] OF POINTER TO DINT;", "n := FA(arr);", true)[1],

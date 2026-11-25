@@ -113,7 +113,7 @@
       "patterns": [
         {
           "name": "constant.numeric.typed.st",
-          "match": "(?i)(?:BYTE|WORD|DWORD|LWORD|SINT|INT|DINT|LINT|USINT|UINT|UDINT|ULINT|BOOL|REAL|LREAL)#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[+-]?[0-9][0-9_]*(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)",
+          "match": "(?i)(?:BYTE|WORD|DWORD|LWORD|SINT|INT|DINT|LINT|USINT|UINT|UDINT|ULINT|BOOL|REAL|LREAL)#(?:16#[0-9A-Fa-f_]+|8#[0-7_]+|2#[01_]+|[+-]?[0-9][0-9_]*(?:\\.[0-9][0-9_]*)?(?:[eE][+-]?[0-9][0-9_]*)?)",
           "captures": {
             "0": { "name": "constant.numeric.typed.st" }
           }
@@ -136,11 +136,11 @@
         },
         {
           "name": "constant.numeric.float.st",
-          "match": "\\b[0-9]+\\.[0-9]+(?:[eE][+-]?[0-9]+)?\\b"
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*(?:[eE][+-]?[0-9][0-9_]*)?\\b"
         },
         {
           "name": "constant.numeric.float.st",
-          "match": "\\b[0-9]+[eE][+-]?[0-9]+\\b"
+          "match": "\\b[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*\\b"
         },
         {
           "name": "constant.numeric.integer.st",

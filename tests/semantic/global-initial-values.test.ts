@@ -63,7 +63,7 @@ PROGRAM Main VAR n : INT; END_VAR n := q1^; END_PROGRAM
             { ...options, features: ["+pointer_to"] },
           ),
         ),
-      ).toEqual([`2:64 ${refusal("Q1", "P")}`, `2:96 ${refusal("Q2", "PA")}`]);
+      ).toEqual([`2:64 ${refusal("q1", "p")}`, `2:96 ${refusal("q2", "pa")}`]);
     });
 
     it(`refuse a dereference of a non-CONSTANT reference inside REF (${label})`, () => {
@@ -76,12 +76,12 @@ PROGRAM Main VAR n : INT; END_VAR n := r2^; END_PROGRAM
             options,
           ),
         ),
-      ).toEqual([`1:75 ${refusal("R2", "R")}`]);
+      ).toEqual([`1:75 ${refusal("r2", "r")}`]);
     });
 
     it(`refuse a method call on a non-CONSTANT FB global (${label})`, () => {
       expect(located(compile(METHOD_CALL, options))).toEqual([
-        `8:14 ${refusal("X", "F")}`,
+        `8:14 ${refusal("x", "f")}`,
       ]);
     });
 
@@ -127,7 +127,7 @@ PROGRAM Main END_PROGRAM
             "VAR_GLOBAL CONSTANT a : INT := 1; END_VAR VAR_GLOBAL a : INT := 2; b : INT := a; END_VAR",
           ),
         ),
-      ).toEqual(["Symbol 'A' already defined in scope 'C.R'"]);
+      ).toEqual(["Symbol 'a' already defined in scope 'C.R'"]);
       expect(
         messages(
           config(
@@ -136,12 +136,12 @@ PROGRAM Main END_PROGRAM
           ),
         ),
       ).toEqual([
-        "Global 'A' of RESOURCE 'R' is also declared by CONFIGURATION 'C'; the globals of a configuration and its resources need distinct names",
+        "Global 'a' of RESOURCE 'R' is also declared by CONFIGURATION 'C'; the globals of a configuration and its resources need distinct names",
       ]);
       expect(
         messages(config("", "VAR_GLOBAL k : INT := 2; b : INT := k; END_VAR")),
       ).toEqual([
-        "Global 'K' of CONFIGURATION C is also declared in a top-level VAR_GLOBAL; rename one of them",
+        "Global 'k' of CONFIGURATION C is also declared in a top-level VAR_GLOBAL; rename one of them",
       ]);
     });
   }
@@ -207,7 +207,7 @@ PROGRAM Main END_PROGRAM
 `),
       ).filter((m) => m.includes("call result")),
     ).toEqual([
-      "9:45 The initial value of global 'X' leads to a method called on a call result (line 9), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign 'X' in a program instead",
+      "9:45 The initial value of global 'x' leads to a method called on a call result (line 9), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign 'x' in a program instead",
     ]);
   });
 
@@ -245,7 +245,7 @@ PROGRAM Main END_PROGRAM
     const messages = (text: string): string[] =>
       compile(text).errors.map((e) => e.message);
     const expected = [
-      "The initial value of global 'GK' reads 'GK' itself, through the code it calls",
+      "The initial value of global 'gk' reads 'gk' itself, through the code it calls",
     ];
     expect(messages(src(a, b))).toEqual(expected);
     expect(messages(src(b, a))).toEqual(expected);
@@ -299,7 +299,7 @@ o1 := gb;
 END_PROGRAM
 `).errors.map((e) => e.message),
     ).toEqual([
-      "The initial value of global 'GB' reads 'GB' itself, through the code it calls",
+      "The initial value of global 'gb' reads 'gb' itself, through the code it calls",
     ]);
     expect(
       compile(`FUNCTION_BLOCK FB_F
@@ -327,7 +327,7 @@ o1 := x;
 END_PROGRAM
 `).errors.map((e) => e.message),
     ).toEqual([
-      "The initial values of the globals 'X' and 'GB' depend on each other (X -> GB -> X)",
+      "The initial values of the globals 'x' and 'gb' depend on each other (X -> GB -> X)",
     ]);
   });
 
@@ -344,7 +344,7 @@ PROGRAM Main END_PROGRAM
 `),
       ),
     ).toEqual([
-      "21:12 The initial value of global 'XS' reads 'XS' itself, through the code it calls",
+      "21:12 The initial value of global 'xs' reads 'xs' itself, through the code it calls",
     ]);
   });
 });

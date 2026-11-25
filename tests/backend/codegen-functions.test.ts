@@ -401,7 +401,7 @@ END_PROGRAM`,
         w.message.includes("should be a variable"),
       );
       expect(outputWarnings.length).toBe(1);
-      expect(outputWarnings[0]!.message).toContain("REMAINDER");
+      expect(outputWarnings[0]!.message).toContain("remainder");
     });
 
     it("should warn when => is used on a VAR_INPUT parameter", () => {
@@ -623,8 +623,8 @@ END_PROGRAM`,
       // A misspelled name used to be dropped (the call ran with the defaults)
       expect(result.success).toBe(false);
       expect(result.errors.map((e) => e.message)).toEqual([
-        "Function 'CALC' has no parameter named 'XX'",
-        "Function 'CALC' has no parameter named 'YY'",
+        "Function 'Calc' has no parameter named 'XX'",
+        "Function 'Calc' has no parameter named 'YY'",
       ]);
     });
 

@@ -67,7 +67,7 @@ VAR_INPUT a : DINT; END_VAR
 M := 1;
 END_METHOD`),
         ).toEqual([
-          `${WHERE}: parameter 1 'A' is DINT, the interface's 'A' is INT`,
+          `${WHERE}: parameter 1 'a' is DINT, the interface's 'a' is INT`,
         ]);
       });
 
@@ -87,7 +87,7 @@ END_INTERFACE
 `,
           ),
         ).toEqual([
-          `${WHERE}: parameter 1 'T' is STRING(20), the interface's 'T' is STRING(10)`,
+          `${WHERE}: parameter 1 't' is STRING(20), the interface's 't' is STRING(10)`,
         ]);
       });
 
@@ -98,7 +98,7 @@ VAR_OUTPUT a : INT; END_VAR
 a := 1; M := 2;
 END_METHOD`),
         ).toEqual([
-          `${WHERE}: parameter 1 'A' is VAR_OUTPUT, the interface's 'A' is VAR_INPUT`,
+          `${WHERE}: parameter 1 'a' is VAR_OUTPUT, the interface's 'a' is VAR_INPUT`,
         ]);
       });
 
@@ -142,7 +142,7 @@ END_METHOD`,
             base,
           ).errors.map((e) => e.message),
         ).toEqual([
-          "Method 'M' of FUNCTION_BLOCK 'FB' does not match interface 'IB': parameter 1 'A' is DINT, the interface's 'A' is INT",
+          "Method 'M' of FUNCTION_BLOCK 'FB' does not match interface 'IB': parameter 1 'a' is DINT, the interface's 'a' is INT",
         ]);
         const inherited = compile(
           `${IFACE}FUNCTION_BLOCK Base
@@ -161,7 +161,7 @@ END_PROGRAM
           options,
         );
         expect(inherited.errors.map((e) => e.message)).toEqual([
-          `${WHERE}: parameter 1 'A' is DINT, the interface's 'A' is INT`,
+          `${WHERE}: parameter 1 'a' is DINT, the interface's 'a' is INT`,
         ]);
       });
 
@@ -173,7 +173,7 @@ M := b;
 END_METHOD`);
         expect(r.errors).toEqual([]);
         expect(r.warnings.map((w) => w.message)).toContain(
-          "Parameter 1 'B' of method 'M' of FUNCTION_BLOCK 'FB' is named 'A' in interface 'I': a call with named arguments through the FB differs from one through the interface",
+          "Parameter 1 'b' of method 'M' of FUNCTION_BLOCK 'FB' is named 'a' in interface 'I': a call with named arguments through the FB differs from one through the interface",
         );
       });
 

@@ -46,6 +46,21 @@ export interface ILConvertResult {
   errors: ILConvertError[];
   /** Whether extra VAR declarations are needed (for state machine) */
   extraVars?: string;
+  /** For each line of `stBody`, the IL source line it comes from (0: none). */
+  lineSources?: number[];
+}
+
+/** Generated ST lines, each with the IL source line (`at` when pushed; 0: none). */
+class SourcedLines {
+  readonly text: string[] = [];
+  readonly from: number[] = [];
+  at = 0;
+  push(...lines: string[]): void {
+    for (const line of lines) {
+      this.text.push(line);
+      this.from.push(this.at);
+    }
+  }
 }
 
 /**
@@ -71,7 +86,7 @@ export function convertILToST(
 // =============================================================================
 
 function convertStraightLine(elements: ILElement[]): ILConvertResult {
-  const lines: string[] = [];
+  const lines = new SourcedLines();
   const errors: ILConvertError[] = [];
   let expr = ""; // current accumulator expression
 
@@ -97,6 +112,7 @@ function convertStraightLine(elements: ILElement[]): ILConvertResult {
     const instr = elem as ILInstruction;
     const op = instr.operator;
     const operand = instr.operand;
+    lines.at = instr.sourceLine;
 
     switch (op) {
       case "LD":
@@ -212,7 +228,11 @@ function convertStraightLine(elements: ILElement[]): ILConvertResult {
     }
   }
 
-  return { stBody: lines.join("\n"), errors };
+  return {
+    stBody: lines.text.join("\n"),
+    errors,
+    lineSources: lines.from,
+  };
 }
 
 // =============================================================================
@@ -373,20 +393,25 @@ function convertWithStateMachine(elements: ILElement[]): ILConvertResult {
   // doesn't support stack-local declarations inside a body. We must reset it
   // to 0 at the top of each invocation; otherwise the second call sees the
   // exit state from the first call and skips the entire state machine.
-  const lines: string[] = [];
+  const lines = new SourcedLines();
   lines.push("  __IL_STATE := 0;");
   lines.push("  REPEAT");
   lines.push("    CASE __IL_STATE OF");
 
   for (const block of blocks) {
+    lines.at = 0;
     lines.push(`      ${block.id}:`);
 
     // Generate ST for non-control-flow instructions in this block
     const blockResult = convertBlockInstructions(block.instructions);
     for (const err of blockResult.errors) errors.push(err);
-    for (const line of blockResult.lines) {
+    blockResult.lines.text.forEach((line, i) => {
+      lines.at = blockResult.lines.from[i] ?? 0;
       lines.push(`        ${line}`);
-    }
+    });
+    // The transition at the block's last instruction (its jump or return)
+    lines.at =
+      block.instructions[block.instructions.length - 1]?.sourceLine ?? 0;
 
     // Generate exit transition
     switch (block.exit.kind) {
@@ -425,13 +450,19 @@ function convertWithStateMachine(elements: ILElement[]): ILConvertResult {
   }
 
   // Exit state
+  lines.at = 0;
   lines.push(`      ${exitId}: EXIT;`);
   lines.push("    END_CASE;");
   lines.push("  UNTIL FALSE END_REPEAT;");
 
   const extraVars = "    __IL_STATE : INT := 0;\n    __IL_ACC_BOOL : BOOL;";
 
-  return { stBody: lines.join("\n"), errors, extraVars };
+  return {
+    stBody: lines.text.join("\n"),
+    errors,
+    extraVars,
+    lineSources: lines.from,
+  };
 }
 
 /**
@@ -440,16 +471,17 @@ function convertWithStateMachine(elements: ILElement[]): ILConvertResult {
  * __IL_ACC_BOOL when a comparison occurs (needed for JMPC transitions).
  */
 function convertBlockInstructions(instructions: ILInstruction[]): {
-  lines: string[];
+  lines: SourcedLines;
   errors: ILConvertError[];
 } {
-  const lines: string[] = [];
+  const lines = new SourcedLines();
   const errors: ILConvertError[] = [];
   let expr = "__IL_ACC_BOOL"; // default expression is the accumulator
 
   for (const instr of instructions) {
     const op = instr.operator;
     const operand = instr.operand;
+    lines.at = instr.sourceLine;
 
     // Skip control flow instructions (handled by block exit logic)
     if (

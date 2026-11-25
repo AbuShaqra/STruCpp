@@ -405,7 +405,7 @@ describe('Error Handling Tests', () => {
       `;
       const result = compile(source);
       expect(result.success).toBe(false);
-      expect(result.errors.some(e => e.message.includes('NONEXISTENTVAR'))).toBe(true);
+      expect(result.errors.some(e => e.message.includes('nonExistentVar'))).toBe(true);
     });
 
     it('reports a located error for a FUNCTION_BLOCK VAR_EXTERNAL without a matching VAR_GLOBAL', () => {
@@ -431,10 +431,10 @@ describe('Error Handling Tests', () => {
       const result = compile(source);
       expect(result.success).toBe(false);
       const err = result.errors.find(
-        (e) => e.message.includes('BOGUSGLOBAL') && e.message.includes('no matching'),
+        (e) => e.message.includes('bogusGlobal') && e.message.includes('no matching'),
       );
       expect(err).toBeDefined();
-      expect(err!.message).toContain("function block 'WORKER'");
+      expect(err!.message).toContain("function block 'Worker'");
       // Located (not the old file-less 0,0): points at the declaration line.
       expect(err!.line).toBeGreaterThan(0);
       expect(err!.file).toBeTruthy();
@@ -634,7 +634,7 @@ describe('Error Handling Tests', () => {
       expect(result.cppCode).toContain('MV.A.bind(AX->value);');
       expect(result.cppCode).not.toContain('= MV.A;');
       expect(result.warnings.map((w) => w.message)).toContainEqual(
-        expect.stringContaining("VAR_IN_OUT 'A' refers to the shared global 'AX' during the call"),
+        expect.stringContaining("VAR_IN_OUT 'a' refers to the shared global 'ax' during the call"),
       );
     });
 

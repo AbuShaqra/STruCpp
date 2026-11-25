@@ -337,10 +337,10 @@ PROGRAM MAIN VAR x : INT := 5; rp : REFERENCE TO INT := x; END_VAR END_PROGRAM
 `).sort(),
     ).toEqual(
       [
-        "1:51: REFERENCE TO 'GR' is bound by its initial value only with REF(x); use REF(x)",
-        "3:43: REFERENCE TO 'R' is bound by its initial value only with REF(x); use REF(x)",
-        "7:38: REFERENCE TO 'R' is bound by its initial value only with REF(x); use REF(x)",
-        "9:57: REFERENCE TO 'RP' is bound by its initial value only with REF(x); use REF(x)",
+        "1:51: REFERENCE TO 'gr' is bound by its initial value only with REF(x); use REF(x)",
+        "3:43: REFERENCE TO 'r' is bound by its initial value only with REF(x); use REF(x)",
+        "7:38: REFERENCE TO 'r' is bound by its initial value only with REF(x); use REF(x)",
+        "9:57: REFERENCE TO 'rp' is bound by its initial value only with REF(x); use REF(x)",
       ].sort(),
     );
   });
@@ -353,7 +353,7 @@ r2 REF= w.4;
 END_PROGRAM
 `),
     ).toEqual([
-      "2:45: REFERENCE TO 'RB' cannot be bound to a bit of a variable: a bit has no address of its own",
+      "2:45: REFERENCE TO 'rb' cannot be bound to a bit of a variable: a bit has no address of its own",
       "3:9: REF= cannot be bound to a bit of a variable: a bit has no address of its own",
     ]);
   });
@@ -373,7 +373,7 @@ VAR_EXTERNAL x : INT; END_VAR
 END_PROGRAM
 `),
     ).toEqual([
-      "10:12: Global 'X' of CONFIGURATION CFG2 is also declared in CONFIGURATION CFG; rename one of them",
+      "10:12: Global 'x' of CONFIGURATION CFG2 is also declared in CONFIGURATION CFG; rename one of them",
     ]);
   });
 });
@@ -387,7 +387,7 @@ VAR x : INT := 1; r2 : T_R := x; END_VAR
 END_PROGRAM
 `),
     ).toEqual([
-      "3:31: REFERENCE TO 'R2' is bound by its initial value only with REF(x); use REF(x)",
+      "3:31: REFERENCE TO 'r2' is bound by its initial value only with REF(x); use REF(x)",
     ]);
   });
 
@@ -400,7 +400,7 @@ END_FUNCTION_BLOCK
 PROGRAM Main VAR fb : FB_A; v : INT; END_VAR fb(io := v); END_PROGRAM
 `),
     ).toEqual([
-      "3:35: REFERENCE TO 'RIO' cannot be bound to the VAR_IN_OUT 'IO' in its initial value: it is bound only by a call; use REF= in the body",
+      "3:35: REFERENCE TO 'rio' cannot be bound to the VAR_IN_OUT 'io' in its initial value: it is bound only by a call; use REF= in the body",
     ]);
   });
 
@@ -415,9 +415,9 @@ x := rk + rg;
 END_PROGRAM
 `),
     ).toEqual([
-      "4:34: REFERENCE TO 'RK' cannot be bound to the constant 'K'",
-      "4:67: REFERENCE TO 'RG' cannot be bound to the constant 'GK'",
-      "5:9: REF= cannot be bound to the constant 'K'",
+      "4:34: REFERENCE TO 'rk' cannot be bound to the constant 'k'",
+      "4:67: REFERENCE TO 'rg' cannot be bound to the constant 'gk'",
+      "5:9: REF= cannot be bound to the constant 'k'",
     ]);
   });
 
@@ -461,8 +461,8 @@ END_FUNCTION_BLOCK
 PROGRAM Main VAR fb : FB_A; v : INT := 3; END_VAR fb(io := v); END_PROGRAM
 `),
     ).toEqual([
-      "3:31: The initial value of 'P' cannot use the VAR_IN_OUT 'IO': it is bound only by a call; assign it in the body",
-      "3:47: The initial value of 'V' cannot use the VAR_IN_OUT 'IO': it is bound only by a call; assign it in the body",
+      "3:31: The initial value of 'p' cannot use the VAR_IN_OUT 'io': it is bound only by a call; assign it in the body",
+      "3:47: The initial value of 'v' cannot use the VAR_IN_OUT 'io': it is bound only by a call; assign it in the body",
     ]);
   });
 });

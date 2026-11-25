@@ -83,7 +83,7 @@ describe("method call named arguments", () => {
     ).toEqual([
       "Method 'N' of 'FB_D' has no parameter named 'ZZ'",
       "Method 'N' of 'FB_D' has no parameter named 'YY'",
-      "Method 'M' of 'FB_BASE' has no parameter named 'XX'",
+      "Method 'M' of 'FB_Base' has no parameter named 'XX'",
     ]);
   });
 
@@ -100,7 +100,7 @@ describe("method call named arguments", () => {
         main: "x := itf.M(b := 1); x := r.N(b := 1, io := x, c := 2);",
       }),
     ).toEqual([
-      "Method 'M' of 'I_M' has no parameter named 'B'",
+      "Method 'M' of 'I_M' has no parameter named 'b'",
       "Method 'N' of 'FB_D' has no parameter named 'C'",
     ]);
   });

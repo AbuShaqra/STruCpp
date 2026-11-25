@@ -52,7 +52,7 @@ const errors = (members: string, globalIn: "R1" | "R2", options: Options) =>
   compile(source(members, globalIn), options).errors.map((e) => e.message);
 
 const msg = (fb: string): string =>
-  `Program instance 'INST' of RESOURCE 'R1' reaches 'RG', a global of RESOURCE 'R2', through FUNCTION_BLOCK '${fb}'`;
+  `Program instance 'inst' of RESOURCE 'R1' reaches 'rg', a global of RESOURCE 'R2', through FUNCTION_BLOCK '${fb}'`;
 
 describe("RESOURCE globals reached through function blocks", () => {
   for (const [label, options] of MODES) {

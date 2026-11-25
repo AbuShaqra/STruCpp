@@ -403,22 +403,22 @@ END_FUNCTION_BLOCK
 
   it("refuses a derived argument to a VAR_INPUT and a VAR_IN_OUT of the base", () => {
     expect(run("i := F_IN(x := b); i := F_IO(x := b); i := F_IN(b);")).toEqual([
-      `14:16 Cannot assign ST_B to parameter 'X' of type ST_A: ${relation}`,
-      `14:35 Cannot assign ST_B to parameter 'X' of type ST_A: ${relation}`,
-      `14:49 Cannot assign ST_B to parameter 'X' of type ST_A: ${relation}`,
+      `14:16 Cannot assign ST_B to parameter 'x' of type ST_A: ${relation}`,
+      `14:35 Cannot assign ST_B to parameter 'x' of type ST_A: ${relation}`,
+      `14:49 Cannot assign ST_B to parameter 'x' of type ST_A: ${relation}`,
     ]);
   });
 
   it("refuses a base argument to a derived VAR_INPUT", () => {
     expect(run("i := F_B(x := a);")).toEqual([
-      `14:15 Cannot assign ST_A to parameter 'X' of type ST_B: ${relation}`,
+      `14:15 Cannot assign ST_A to parameter 'x' of type ST_B: ${relation}`,
     ]);
   });
 
   it("refuses a derived argument to an FB input and a method input", () => {
     expect(run("u(x := b); i := u.M(y := b);")).toEqual([
-      `14:8 Cannot assign ST_B to parameter 'X' of type ST_A: ${relation}`,
-      `14:26 Cannot assign ST_B to parameter 'Y' of type ST_A: ${relation}`,
+      `14:8 Cannot assign ST_B to parameter 'x' of type ST_A: ${relation}`,
+      `14:26 Cannot assign ST_B to parameter 'y' of type ST_A: ${relation}`,
     ]);
   });
 
@@ -438,8 +438,8 @@ END_PROGRAM`,
         ON,
       ),
     ).toEqual([
-      "9:10 Cannot assign ST_C to parameter 'X' of type ST_B",
-      "9:28 Cannot assign ST_B to parameter 'X' of type ST_C",
+      "9:10 Cannot assign ST_C to parameter 'x' of type ST_B",
+      "9:28 Cannot assign ST_B to parameter 'x' of type ST_C",
     ]);
   });
 
@@ -452,8 +452,8 @@ PROGRAM P VAR c : ST_C; i : INT; END_VAR i := F_A(x := c); i := F_A(c); END_PROG
         ON,
       ),
     ).toEqual([
-      "3:56 Cannot assign ST_C to parameter 'X' of type ST_A",
-      "3:69 Cannot assign ST_C to parameter 'X' of type ST_A",
+      "3:56 Cannot assign ST_C to parameter 'x' of type ST_A",
+      "3:69 Cannot assign ST_C to parameter 'x' of type ST_A",
     ]);
   });
 

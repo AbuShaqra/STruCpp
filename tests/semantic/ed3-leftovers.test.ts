@@ -54,7 +54,7 @@ describe("Ed. 3 leftovers", () => {
             options,
           ).errors.map((e) => e.message),
         ).toEqual([
-          "Member 'A' of STRUCT OVERLAP 'U' has an initial value: an overlapped structure cannot be initialized explicitly",
+          "Member 'a' of STRUCT OVERLAP 'U' has an initial value: an overlapped structure cannot be initialized explicitly",
         ]);
       });
 

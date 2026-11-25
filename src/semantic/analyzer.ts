@@ -139,6 +139,11 @@ import {
 } from "./platform-types.js";
 import { implicitParameterHint } from "./implicit-parameters.js";
 import {
+  respellDiagnostics,
+  spellingsOf,
+  testFileSpellings,
+} from "./declared-spellings.js";
+import {
   iec3VarBlockIdentifierErrors,
   iec3Warnings,
   sourceNameLocator,
@@ -8207,25 +8212,32 @@ export class SemanticAnalyzer {
     }
     // Under iec-3 or --strict: an underscore in a numeric literal stands between two digits
     if (this.iec3Rules || this.options.strict === true) {
-      for (const root of testRoots) {
-        walkAST(root, (node) => {
-          if (node.kind !== "LiteralExpression") return;
-          const lit = node as LiteralExpression;
-          if (
-            lit.literalType === "STRING" ||
-            lit.literalType === "WSTRING" ||
-            !literalUnderscoreRefused(lit.rawValue)
-          ) {
-            return;
-          }
-          const at = node.sourceSpan;
-          this.addError(
-            literalUnderscoreMessage(lit.rawValue),
-            at.startLine,
-            at.startCol,
-            at.file,
-          );
-        });
+      if (testFile.literalUnderscoreErrors !== undefined) {
+        for (const e of testFile.literalUnderscoreErrors) {
+          this.addError(e.message, e.line, e.column, e.file);
+        }
+      } else {
+        // A TestFile built without the test parser: its expressions only
+        for (const root of testRoots) {
+          walkAST(root, (node) => {
+            if (node.kind !== "LiteralExpression") return;
+            const lit = node as LiteralExpression;
+            if (
+              lit.literalType === "STRING" ||
+              lit.literalType === "WSTRING" ||
+              !literalUnderscoreRefused(lit.rawValue)
+            ) {
+              return;
+            }
+            const at = node.sourceSpan;
+            this.addError(
+              literalUnderscoreMessage(lit.rawValue),
+              at.startLine,
+              at.startCol,
+              at.file,
+            );
+          });
+        }
       }
     }
     // TIME, DATE, TOD and DT literals fit their 32-bit types
@@ -8861,12 +8873,30 @@ export function analyzeTestFile(
   sourceAst?: CompilationUnit,
   /** The run's dialect: its features apply in the test file too. Default: the one the test file was parsed under. */
   dialect?: ResolvedDialect,
+  /** The run is --strict: the test file's strict checks apply. */
+  strict?: boolean,
 ): { errors: CompileError[]; warnings: CompileError[] } {
   const effective = dialect ?? testFile.dialect;
-  const analyzer = new SemanticAnalyzer(
-    effective !== undefined ? { dialect: effective } : {},
+  const analyzer = new SemanticAnalyzer({
+    ...(effective !== undefined ? { dialect: effective } : {}),
+    ...(strict === true ? { strict: true } : {}),
+  });
+  const result = analyzer.analyzeTestFile(
+    testFile,
+    sourceSymbolTables,
+    sourceAst,
   );
-  return analyzer.analyzeTestFile(testFile, sourceSymbolTables, sourceAst);
+  const spellings = testFileSpellings(
+    testFile,
+    sourceAst !== undefined ? spellingsOf(sourceAst) : undefined,
+  );
+  const sources =
+    testFile.source !== undefined
+      ? new Map([[testFile.fileName, testFile.source]])
+      : undefined;
+  respellDiagnostics(result.errors, spellings, sources);
+  respellDiagnostics(result.warnings, spellings, sources);
+  return result;
 }
 
 /** The unit declares its own FUNCTION or global TRUNC, which a `TRUNC(x)` call then names. */

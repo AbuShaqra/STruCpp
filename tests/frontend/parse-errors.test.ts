@@ -178,7 +178,7 @@ describe("lexer error positions on every path", () => {
       ...LIB_OPTS,
     });
     expect(r.success).toBe(false);
-    const err = r.errors.find((e) => e.message.includes("ZZ"));
+    const err = r.errors.find((e) => e.message.includes("zz"));
     expect(err).toMatchObject({ line: 3, file: "lib1.st" });
     expect(err!.column).toBeGreaterThan(0);
   });

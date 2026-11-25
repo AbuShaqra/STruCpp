@@ -25,7 +25,7 @@ b_c := Hot;
 END_PROGRAM
 `),
     ).toEqual([
-      "The inline enumeration of 'A.B_C' and the inline enumeration of 'A_B.C' both use the type name '__INLINE_ENUM_A_B_C'; rename one of them.",
+      "The inline enumeration of 'A.b_c' and the inline enumeration of 'A_B.c' both use the type name '__INLINE_ENUM_A_B_C'; rename one of them.",
     ]);
   });
 
@@ -39,7 +39,7 @@ s := Running;
 END_PROGRAM
 `),
     ).toEqual([
-      "The inline enumeration of 'MAIN.S' and the declared TYPE '__INLINE_ENUM_MAIN_S' both use the type name '__INLINE_ENUM_MAIN_S'; rename one of them.",
+      "The inline enumeration of 'main.s' and the declared TYPE '__INLINE_ENUM_MAIN_S' both use the type name '__INLINE_ENUM_MAIN_S'; rename one of them.",
     ]);
   });
 
@@ -111,7 +111,7 @@ VAR k : INT; END_VAR
 k := Running;
 END_PROGRAM
 `),
-    ).toEqual(["Undeclared variable 'RUNNING'"]);
+    ).toEqual(["Undeclared variable 'Running'"]);
   });
 
   it("are ambiguous when two inline enumerations of one POU share a value", () => {
@@ -123,7 +123,7 @@ IF Idle = Idle THEN k := 1; END_IF;
 END_PROGRAM
 `),
     ).toContain(
-      "Ambiguous enum member 'IDLE': it is a value of the inline enumeration of 'MAIN.A' and of the inline enumeration of 'MAIN.B'; rename one of the values.",
+      "Ambiguous enum member 'Idle': it is a value of the inline enumeration of 'main.a' and of the inline enumeration of 'main.b'; rename one of the values.",
     );
   });
 
@@ -137,7 +137,7 @@ IF Idle = Idle THEN k := 1; END_IF;
 END_PROGRAM
 `),
     ).toContain(
-      "Ambiguous enum member 'IDLE': it is a value of 'E' and of the inline enumeration of 'MAIN.A'; rename one of the values, or write E#IDLE.",
+      "Ambiguous enum member 'Idle': it is a value of 'E' and of the inline enumeration of 'main.a'; rename one of the values, or write E#IDLE.",
     );
   });
 

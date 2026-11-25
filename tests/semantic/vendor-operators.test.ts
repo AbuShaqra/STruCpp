@@ -119,8 +119,8 @@ b := __ISVALIDREF(r := h.r);
 END_PROGRAM
 `;
     expect(diag(src).errors).toEqual([
-      "4:6: __ISVALIDREF needs a REFERENCE TO variable; 'X' is declared INT",
-      "5:6: __ISVALIDREF needs a REFERENCE TO variable; 'P' is declared REF_TO INT",
+      "4:6: __ISVALIDREF needs a REFERENCE TO variable; 'x' is declared INT",
+      "5:6: __ISVALIDREF needs a REFERENCE TO variable; 'p' is declared REF_TO INT",
       "7:6: __ISVALIDREF takes one argument, got 0",
       "8:6: __ISVALIDREF takes one argument, got 2",
       "9:6: __ISVALIDREF takes its argument without a name",

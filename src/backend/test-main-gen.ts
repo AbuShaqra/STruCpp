@@ -953,5 +953,12 @@ function escapeString(s: string): string {
     .replace(/\n/g, "\\n")
     .replace(/\r/g, "\\r")
     .replace(/\t/g, "\\t")
-    .replace(/\0/g, "\\0");
+    .replace(/\f/g, "\\f")
+    .replace(/./gsu, (c) => {
+      // Other control characters as 3-digit octal escapes, which no digit after extends
+      const code = c.charCodeAt(0);
+      return code < 0x20 || code === 0x7f
+        ? `\\${code.toString(8).padStart(3, "0")}`
+        : c;
+    });
 }
