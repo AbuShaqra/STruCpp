@@ -996,6 +996,7 @@ export class TypeChecker {
     this.refuseNarrowAddressInGlobals(ast);
     this.refuseGlobalReferenceToValues(ast);
     this.checkStructReferenceDefaults(ast);
+    this.checkStructDefaultOverflow(ast);
     this.markGlobalVendorOperators(ast);
 
     // Init arguments of global FB instances (feature fb_init)
@@ -1862,6 +1863,10 @@ export class TypeChecker {
     ) {
       this.checkCharInitialValue(type.name, value);
       this.checkEnumInitialValue(type.name, value);
+      // An array or structure initializer's element: fit and real powers
+      const elementType = this.resolveNamedType(type.name);
+      this.warnConstantOverflow(elementType, value);
+      if (this.isRealTarget(elementType)) this.markRealPowers(value);
     }
     if (
       value.kind !== "StructInitializerExpression" ||
@@ -2659,6 +2664,21 @@ export class TypeChecker {
           rightType ?? accessed!,
         );
       }
+      // `ps^ + 'x'`: a dereferenced STRING or WSTRING is refused as a variable is
+      if (
+        this.stringKindOf(accessed) !== undefined &&
+        (otherType !== undefined ||
+          this.stringKindOf(this.accessedElementaryType(other, scope)) !==
+            undefined)
+      ) {
+        const otherAccessed =
+          otherType ?? this.accessedElementaryType(other, scope)!;
+        const [l, r] =
+          leftType === undefined
+            ? [accessed!, otherAccessed]
+            : [otherAccessed, accessed!];
+        if (this.refuseStringOperands(expr, l, r, scope)) return undefined;
+      }
       // `p^ MOD i`: an operand with no expression type is judged by its reads
       if (expr.operator === "MOD") {
         this.refuseRealMod(expr, leftType, rightType, scope);
@@ -2680,6 +2700,11 @@ export class TypeChecker {
 
     if (this.refuseStringOperands(expr, leftType, rightType, scope)) {
       return undefined;
+    }
+    // `lrv < 2 ** 40 / 3`, `x + 2 ** 40 / 3`: beside a REAL, a power is real
+    if (expr.operator !== "**") {
+      if (this.isRealTarget(leftType)) this.markRealPowers(expr.right);
+      if (this.isRealTarget(rightType)) this.markRealPowers(expr.left);
     }
 
     if (
@@ -2790,6 +2815,7 @@ export class TypeChecker {
         expr.addressArithmetic === true && this.isAddressValue(expr, scope)
           ? ELEMENTARY_TYPES["__XWORD"]
           : (this.untypedWithBitString(expr, leftType, rightType) ??
+            this.untypedWithInteger(expr, leftType, rightType) ??
             getCommonType(leftType, rightType) ??
             leftType);
     } else {
@@ -3024,6 +3050,40 @@ export class TypeChecker {
     }
     if (this.untypedConstantKind(expr.right) === "INT" && bitString(leftType)) {
       return leftType;
+    }
+    return undefined;
+  }
+
+  /**
+   * `si + 3`: an untyped integer constant beside a typed integer operand
+   * takes that operand's type when its value fits it; undefined otherwise.
+   */
+  private untypedWithInteger(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): IECType | undefined {
+    if (!["+", "-", "*", "/", "MOD"].includes(expr.operator)) return undefined;
+    const integerName = (t: IECType): string | undefined => {
+      if (t.typeKind !== "elementary") return undefined;
+      const name = canonicalElementaryName((t as ElementaryType).name);
+      return integerTypeRange(name) !== undefined ? name : undefined;
+    };
+    const adapts = (constant: Expression, typed: IECType): boolean => {
+      if (this.untypedConstantKind(constant) !== "INT") return false;
+      const name = integerName(typed);
+      if (name === undefined) return false;
+      const v = this.constantIntegerValue(constant);
+      const range = integerTypeRange(name)!;
+      return v !== undefined && v >= range.min && v <= range.max;
+    };
+    const untypedLeft = this.untypedConstantKind(expr.left) !== undefined;
+    const untypedRight = this.untypedConstantKind(expr.right) !== undefined;
+    if (!untypedLeft && untypedRight && adapts(expr.right, leftType)) {
+      return leftType;
+    }
+    if (untypedLeft && !untypedRight && adapts(expr.left, rightType)) {
+      return rightType;
     }
     return undefined;
   }
@@ -3768,8 +3828,12 @@ export class TypeChecker {
   }
 
   /**
-   * `--strict`: an integer constant expression (`200 * 200`) whose value is
-   * outside the integer type it is stored in wraps at run time; warn.
+   * An integer constant expression (`200 * 200`) whose value is outside the
+   * integer type it is stored in wraps at run time: a warning under --strict,
+   * and also by default (iec-3 too) for an untyped one, unless a narrowing
+   * warning already reports it or it is a based literal whose bit pattern
+   * fits the target (`16#FFFF` into an INT). A typed subexpression that wraps
+   * in its own type warns under --strict only.
    */
   private warnConstantOverflow(
     targetType: IECType | undefined,
@@ -3785,29 +3849,62 @@ export class TypeChecker {
     // A typed DINT or LINT subexpression wraps in its own type, whatever the target
     const inner = this.typedConstantOverflow(value);
     if (inner !== undefined) {
-      this.warnOverflowAt(inner.at, inner.value, inner.type);
+      if (this.strict) this.warnOverflowAt(inner.at, inner.value, inner.type);
       return;
     }
     const name = this.aliasBase(
       (targetType as ElementaryType).name,
     ).toUpperCase();
     const v = this.constantIntegerValue(value);
-    if (v !== undefined) this.warnOverflowAt(value, v, name);
+    if (v === undefined) return;
+    if (this.strict) {
+      this.warnOverflowAt(value, v, name);
+      return;
+    }
+    if (this.untypedConstantKind(value) !== "INT") return;
+    // A negative constant into UDINT or ULINT is refused as an INT already
+    if (v < 0n && (name === "UDINT" || name === "ULINT")) return;
+    if (this.basedLiteralFitsWidth(value, v, name)) return;
+    if (this.warnOverflowAt(value, v, name)) this.wrapWarned.add(value);
+  }
+
+  /** Values given the default-mode wrap warning: no narrowing warning repeats it. */
+  private wrapWarned = new WeakSet<Expression>();
+
+  /** `16#FFFF` into an INT: a based literal whose bit pattern fits the target's width. */
+  private basedLiteralFitsWidth(
+    value: Expression,
+    v: bigint,
+    name: string,
+  ): boolean {
+    let bare = value;
+    while (bare.kind === "ParenthesizedExpression") bare = bare.expression;
+    if (
+      bare.kind !== "LiteralExpression" ||
+      !/^(16|8|2)#/.test(bare.rawValue)
+    ) {
+      return false;
+    }
+    const bits = ELEMENTARY_TYPES[name]?.sizeBits;
+    return bits !== undefined && v >= 0n && v < 1n << BigInt(bits);
   }
 
   /** Values warnConstantOverflow has checked (an argument is checked by two routes). */
   private overflowChecked = new WeakSet<Expression>();
 
-  /** The --strict wrap warning at `at` when `v` is outside the integer type `name`. */
-  private warnOverflowAt(at: Expression, v: bigint, name: string): void {
+  /** The wrap warning at `at` when `v` is outside the integer type `name`; true when given. */
+  private warnOverflowAt(at: Expression, v: bigint, name: string): boolean {
     const range = integerTypeRange(name);
-    if (range === undefined || (v >= range.min && v <= range.max)) return;
+    if (range === undefined || (v >= range.min && v <= range.max)) {
+      return false;
+    }
     this.addWarning(
       `The constant expression is ${v}, outside ${name} (${range.min}..${range.max}): it wraps`,
       at.sourceSpan.startLine,
       at.sourceSpan.startCol,
       at.sourceSpan.file,
     );
+    return true;
   }
 
   /**
@@ -4427,6 +4524,11 @@ export class TypeChecker {
     }
     this.refuseNarrowAddressArguments(expr, scope);
     this.refuseBitMemberArguments(expr, scope);
+    // `MAX(2 ** 40 / 3, 1.0)`: a REAL compared value makes the others real
+    const compared = this.realPowerOperands(expr);
+    if (compared?.some((a) => this.isRealTarget(a.resolvedType)) === true) {
+      for (const a of compared) this.markRealPowers(a);
+    }
     this.checkCharStdArguments(expr, scope);
     this.checkStringStdArguments(expr, scope);
     this.adaptCharConversionArgument(expr);
@@ -4796,7 +4898,10 @@ export class TypeChecker {
       (m) => m.name.toUpperCase() === expr.methodName.toUpperCase(),
     );
     if (method) this.calledMethods.set(expr, method);
-    const retType = method ? this.methodReturnType(method) : undefined;
+    // A library block's method (or a base's): its declared result type too
+    const resultOf =
+      method ?? this.libraryMethodOf(objTypeName, expr.methodName)?.method;
+    const retType = resultOf ? this.methodReturnType(resultOf) : undefined;
     if (retType) expr.resolvedType = retType;
     return retType;
   }
@@ -4851,9 +4956,12 @@ export class TypeChecker {
     if (parts.length !== 2) return undefined;
     const sym = scope.lookup(parts[0]!);
     if (sym?.kind !== "variable") return undefined;
-    return this.libraryMethod(
-      (sym.declaration as VarDeclaration | undefined)?.type.name,
-      parts[1]!,
+    const typeName = (sym.declaration as VarDeclaration | undefined)?.type.name;
+    return (
+      this.libraryMethod(typeName, parts[1]!) ??
+      (typeName === undefined
+        ? undefined
+        : this.libraryMethodOf(typeName, parts[1]!)?.method)
     );
   }
 
@@ -6200,6 +6308,26 @@ export class TypeChecker {
         span?.startCol ?? 0,
         span?.file,
       );
+    }
+  }
+
+  /** A STRUCT field's integer constant default outside its type wraps (see warnConstantOverflow). */
+  private checkStructDefaultOverflow(ast: CompilationUnit): void {
+    for (const type of ast.types) {
+      if (type.definition.kind !== "StructDefinition") continue;
+      for (const field of type.definition.fields) {
+        const value = field.initialValue;
+        if (
+          value === undefined ||
+          field.type.arrayDimensions !== undefined ||
+          (field.type.referenceKind ?? "none") !== "none"
+        ) {
+          continue;
+        }
+        const fieldType = this.resolveNamedType(field.type.name);
+        this.warnConstantOverflow(fieldType, value);
+        if (this.isRealTarget(fieldType)) this.markRealPowers(value);
+      }
     }
   }
 
@@ -7932,6 +8060,92 @@ export class TypeChecker {
     }
   }
 
+  /** `type` is REAL or LREAL (an alias of one too). */
+  private isRealTarget(type: IECType | undefined): boolean {
+    if (type?.typeKind !== "elementary") return false;
+    const name = this.aliasBase((type as ElementaryType).name).toUpperCase();
+    return name === "REAL" || name === "LREAL";
+  }
+
+  /**
+   * Marks each integer `**` whose result is stored in a REAL or LREAL
+   * (through parentheses, unary +/- and + - * /) as a real power: computed
+   * with `pow` and not folded as an integer (`2 ** 40 / 3` divides as reals).
+   */
+  private markRealPowers(value: Expression): void {
+    switch (value.kind) {
+      case "ParenthesizedExpression":
+        this.markRealPowers(value.expression);
+        return;
+      case "UnaryExpression":
+        if (value.operator !== "NOT") this.markRealPowers(value.operand);
+        return;
+      case "BinaryExpression":
+        if (value.operator === "**") {
+          // Untyped operands where nothing typed it (a STRUCT field default)
+          if (
+            (value.resolvedType !== undefined &&
+              this.isIntegerType(value.resolvedType)) ||
+            (this.untypedConstantKind(value.left) === "INT" &&
+              this.untypedConstantKind(value.right) === "INT")
+          ) {
+            value.realPower = true;
+          }
+          return;
+        }
+        if (["+", "-", "*", "/"].includes(value.operator)) {
+          this.markRealPowers(value.left);
+          this.markRealPowers(value.right);
+        }
+        return;
+      case "FunctionCallExpression":
+        for (const a of this.realPowerOperands(value) ?? []) {
+          this.markRealPowers(a);
+        }
+        return;
+      default:
+        return;
+    }
+  }
+
+  /**
+   * The values a standard generic function returns one of or computes from
+   * (MAX, MIN, LIMIT, SEL and MUX past the selector, ABS, ADD, SUB, MUL,
+   * DIV, MOVE): they take the result's type. Undefined for any other call.
+   */
+  private realPowerOperands(
+    call: FunctionCallExpression,
+  ): Expression[] | undefined {
+    if (
+      call.instance !== undefined ||
+      this.findUserFunction(call.functionName)
+    ) {
+      return undefined;
+    }
+    const name = call.functionName.toUpperCase();
+    const skip =
+      name === "SEL" || name === "MUX"
+        ? 1
+        : [
+              "MAX",
+              "MIN",
+              "LIMIT",
+              "ABS",
+              "ADD",
+              "SUB",
+              "MUL",
+              "DIV",
+              "MOVE",
+            ].includes(name)
+          ? 0
+          : undefined;
+    if (skip === undefined) return undefined;
+    return stripEnEno(call.arguments)
+      .filter((a) => !a.isOutput)
+      .slice(skip)
+      .map((a) => a.value);
+  }
+
   /** The wider of the integer types `target` and `own` (`target` on a tie); DINT when both are narrower. */
   private powerComputeType(target: string, own: string): string {
     const bits = (n: string): number => ELEMENTARY_TYPES[n]?.sizeBits ?? 32;
@@ -7953,13 +8167,14 @@ export class TypeChecker {
     if (this.typeNotFromExpected(value, targetType)) {
       valueType = value.resolvedType;
     }
-    if (this.strict) this.warnConstantOverflow(targetType, value);
+    this.warnConstantOverflow(targetType, value);
     if (targetType !== undefined && this.isIntegerType(targetType)) {
       this.markIntegerPowers(
         value,
         this.aliasBase((targetType as ElementaryType).name).toUpperCase(),
       );
     }
+    if (this.isRealTarget(targetType)) this.markRealPowers(value);
     const targetInterface = this.interfaceTypeOf(targetType);
     if (targetInterface !== undefined) {
       this.checkInterfaceValue(targetInterface, valueType, value);
@@ -8047,6 +8262,8 @@ export class TypeChecker {
         if (isNarrowingConversion(tName, vName)) {
           if (argument?.narrowingWarning(tName) === false) return;
           if (this.valueFitsNarrowTarget(value, tName)) return;
+          // The wrap warning already names it (`ui : UINT := -1`)
+          if (this.wrapWarned.has(value)) return;
           this.addWarning(
             `Implicit narrowing conversion from ${vName} to ${tName}`,
             value.sourceSpan.startLine,
@@ -8865,6 +9082,7 @@ export class TypeChecker {
     scope: Scope,
   ): void {
     delete arg.inOutCopy;
+    delete arg.inOutBindsTarget;
     const value = arg.value;
     const fail = (what: string): void =>
       this.addError(
@@ -8929,6 +9147,19 @@ export class TypeChecker {
     if (this.stringElementLengthsDiffer(input.type, argType)) {
       // Another C++ element type: passed by copy, as before lengths were kept.
       arg.inOutCopy = true;
+      return;
+    }
+    // A REFERENCE TO T in-out given a T: the reference refers to the variable
+    if (
+      input.type.referenceKind === "reference_to" &&
+      (input.type.referenceChain?.length ?? 1) === 1 &&
+      (argType.referenceKind ?? "none") === "none" &&
+      input.type.arrayDimensions === undefined &&
+      argType.arrayDimensions === undefined &&
+      input.type.name.toUpperCase() === argType.name.toUpperCase() &&
+      (input.type.maxLength ?? "") === (argType.maxLength ?? "")
+    ) {
+      arg.inOutBindsTarget = true;
       return;
     }
     const mismatch = this.inOutTypeMismatch(
@@ -9454,12 +9685,10 @@ export class TypeChecker {
       const refKind = input.type.referenceKind;
       if (refKind !== undefined && refKind !== "none") return;
       // An overflowing constant argument wraps as its assignment would
-      if (this.strict) {
-        this.warnConstantOverflow(
-          this.resolveNamedType(input.type.name),
-          arg.value,
-        );
-      }
+      this.warnConstantOverflow(
+        this.resolveNamedType(input.type.name),
+        arg.value,
+      );
       const charType = this.charTypeOfName(input.type.name);
       if (charType === undefined) return;
       this.adaptCharLiteral(arg.value, charType);

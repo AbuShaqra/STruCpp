@@ -839,6 +839,8 @@ export interface BinaryExpression extends TypedNode {
   computeAs?: string;
   /** Set by the type checker on an integer `**` stored as an integer: the integer type its exact power is computed in, not `pow`. */
   integerPower?: string;
+  /** Set by the type checker on an integer `**` stored in a REAL or LREAL: a real power (`pow`), not folded as an integer. */
+  realPower?: true;
 }
 
 /**
@@ -931,6 +933,11 @@ export interface Argument extends ASTNode {
    * copy-out instead of by reference.
    */
   inOutCopy?: true;
+  /**
+   * Set by the type checker on a variable of type T bound to a VAR_IN_OUT
+   * REFERENCE TO T: codegen binds a reference to the variable itself.
+   */
+  inOutBindsTarget?: true;
   /**
    * Set by the type checker on `o => v` capturing a POINTER TO or REF_TO
    * output into a 64-bit integer that is a TYPE alias or subrange, or a
