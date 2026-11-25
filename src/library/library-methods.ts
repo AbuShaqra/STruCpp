@@ -12,6 +12,7 @@ import type {
   LibraryVarType,
 } from "./library-manifest.js";
 import type {
+  Expression,
   FunctionDeclaration,
   MethodDeclaration,
   TypeReference,
@@ -153,6 +154,26 @@ export function libraryFunctionDeclaration(
       lowerDefaultStringLength(declared, stringDefaultLength);
     }
     return declared;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The default an alias TYPE of a library records (`defaultValue`, ST text),
+ * as an expression; undefined when it does not parse.
+ */
+export function libraryTypeDefault(
+  typeName: string,
+  baseType: string,
+  text: string,
+): Expression | undefined {
+  try {
+    const parsed = parse(
+      `TYPE ${typeName} : ${baseType} := ${text}; END_TYPE\n`,
+    );
+    if (parsed.errors.length > 0 || parsed.cst === null) return undefined;
+    return buildAST(parsed.cst).types[0]?.defaultValue;
   } catch {
     return undefined;
   }

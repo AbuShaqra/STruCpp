@@ -272,6 +272,53 @@ function aliasBase(
   };
 }
 
+/** The elementary type a chain of the library's aliases from `name` ends at, upper-cased. */
+function aliasElementary(name: string, ast: CompilationUnit): string {
+  let current = name.toUpperCase();
+  for (let depth = 0; depth < 32; depth++) {
+    const upper = current;
+    const t = ast.types.find((x) => x.name.toUpperCase() === upper);
+    if (t?.definition.kind !== "TypeReference") return upper;
+    current = t.definition.name.toUpperCase();
+  }
+  return current;
+}
+
+/**
+ * The default of an alias of an enumeration (`TYPE LEB : LEA := Q2`) as the
+ * typed value `LEA#Q2`, so a consumer reads it whatever its own names are;
+ * undefined for any other alias or default.
+ */
+function enumAliasDefault(
+  base: string,
+  value: Expression,
+  ast: CompilationUnit,
+): string | undefined {
+  let enumType: TypeDeclaration | undefined;
+  let current = base.toUpperCase();
+  for (let depth = 0; depth < 32 && enumType === undefined; depth++) {
+    const upper = current;
+    const t = ast.types.find((x) => x.name.toUpperCase() === upper);
+    if (t === undefined) return undefined;
+    if (t.definition.kind === "EnumDefinition") enumType = t;
+    else if (t.definition.kind === "TypeReference")
+      current = t.definition.name.toUpperCase();
+    else return undefined;
+  }
+  if (enumType === undefined || value.kind !== "VariableExpression") {
+    return undefined;
+  }
+  const member =
+    value.fieldAccess.length === 0
+      ? value.name
+      : value.fieldAccess.length === 1
+        ? value.fieldAccess[0]
+        : undefined;
+  return member !== undefined && value.subscripts.length === 0
+    ? `${enumType.name}#${member}`
+    : undefined;
+}
+
 /** The STRING length and reference kind of a FUNCTION result, for the manifest. */
 function returnShape(
   type: TypeReference,
@@ -1107,6 +1154,23 @@ export function compileLibrary(
         Object.assign(entry, arrayAliasShape(t.definition, ast));
       }
       Object.assign(entry, aliasBase(t.definition));
+      // An alias TYPE's own default, so a consumer's variables start at it
+      if (t.definition.kind === "TypeReference" && t.defaultValue) {
+        let text =
+          enumAliasDefault(t.definition.name, t.defaultValue, ast) ??
+          serializeInitialValue(t.defaultValue);
+        // An LTIME default of a TIME alias is converted, as the library's own
+        // variables are
+        if (
+          text !== undefined &&
+          t.defaultValue.kind === "LiteralExpression" &&
+          t.defaultValue.literalType === "LTIME" &&
+          aliasElementary(t.definition.name, ast) === "TIME"
+        ) {
+          text = `LTIME_TO_TIME(${text})`;
+        }
+        if (text !== undefined) entry.defaultValue = text;
+      }
       return tagDocumentation(tagCategory(entry, catByName), docByName);
     }),
     // Exported VAR_GLOBAL variables — their storage is emitted as inlineGlobal

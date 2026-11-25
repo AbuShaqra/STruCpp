@@ -296,6 +296,9 @@ export interface LibraryTypeEntry {
   /** The value an enumeration declares as its default (`:= T2`); absent
    *  without one and in older archives. */
   defaultMember?: string;
+  /** The default an alias TYPE declares (`TYPE T : INT := 5`), as ST text;
+   *  absent without one and in older archives. */
+  defaultValue?: string;
   /** Length of an alias of STRING(n) / WSTRING(n) (`baseType` STRING / WSTRING). */
   maxLength?: number | string;
   /** Struct member fields (name + declared type), so a consuming compilation

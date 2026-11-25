@@ -48,6 +48,7 @@ import type {
 } from "../frontend/ast.js";
 import type {
   AnySymbol,
+  FunctionBlockSymbol,
   FunctionSymbol,
   SymbolTables,
   Scope,
@@ -1814,7 +1815,28 @@ export class TypeChecker {
           this.typeInitializerNots(decl.type, decl.initialValue);
         }
       });
-    for (const fb of ast.functionBlocks) visit(fb, fb.name);
+    // Each POU's declarations with its scope (its constants read there)
+    const inScope = (scope: Scope | undefined, run: () => void): void => {
+      this.initializerScope = scope;
+      try {
+        run();
+      } finally {
+        this.initializerScope = undefined;
+      }
+    };
+    for (const fb of ast.functionBlocks) {
+      inScope(this.symbolTables.getFBScope(fb.name), () => visit(fb, fb.name));
+    }
+    for (const p of ast.programs) {
+      inScope(this.symbolTables.getProgramScope(p.name), () =>
+        visit(p, undefined),
+      );
+    }
+    for (const f of ast.functions) {
+      inScope(this.symbolTables.getFunctionScope(f.name), () =>
+        visit(f, undefined),
+      );
+    }
     visit(ast, undefined);
     for (const t of ast.types) {
       if (t.defaultValue && t.definition.kind === "TypeReference") {
@@ -1933,14 +1955,16 @@ export class TypeChecker {
     }
     let inner = value;
     while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
-    // A global (constant) read before the initial value is typed: its type
+    // A constant read before the initial value is typed: its type
     const named =
       inner.kind === "VariableExpression" &&
       inner.resolvedType === undefined &&
       inner.fieldAccess.length === 0 &&
       inner.subscripts.length === 0 &&
       !inner.isDereference
-        ? this.symbolTables.globalScope.lookup(inner.name)
+        ? (this.initializerScope ?? this.symbolTables.globalScope).lookup(
+            inner.name,
+          )
         : undefined;
     const resolved =
       inner.resolvedType ??
@@ -2324,7 +2348,28 @@ export class TypeChecker {
           (m) => m.name.toUpperCase() === expr.name.toUpperCase(),
         ),
     );
+    // A value a library enumeration also has: its type follows its context
+    // (the analyzer settles `c : LColor := Red`), so none here
+    if (owners.length === 1 && this.isLibraryEnumValueName(expr.name)) {
+      return undefined;
+    }
     return owners.length === 1 ? enumNamed(owners[0]!.name) : undefined;
+  }
+
+  /** `name` is a value of a library enumeration. */
+  private isLibraryEnumValueName(name: string): boolean {
+    const upper = name.toUpperCase();
+    return this.symbolTables.globalScope
+      .getAllSymbols()
+      .some(
+        (sym) =>
+          sym.kind === "type" &&
+          sym.resolvedType?.typeKind === "enum" &&
+          this.symbolTables.globalScope.definedByLibrary(sym.name) &&
+          (sym.resolvedType as EnumType).values.some(
+            (v) => v.toUpperCase() === upper,
+          ),
+      );
   }
 
   /**
@@ -7712,8 +7757,10 @@ export class TypeChecker {
           const kind = sym?.kind;
           if (kind !== "type" && kind !== "functionBlock") return;
           // Only a POU-level type, not one a POU's own scope declares (an
-          // accessor's property), nor a member of the block being checked
+          // accessor's property), nor a member of the block being checked,
+          // nor the name of an enumeration value (`k := Motor`)
           if (this.symbolTables.globalScope.lookup(e.name) !== sym) return;
+          if (this.isEnumValueName(e.name)) return;
           if (
             this.currentFBName !== undefined &&
             (this.fbMemberNames(this.currentFBName)?.has(
@@ -7738,6 +7785,30 @@ export class TypeChecker {
     };
     visit(value);
     return refused;
+  }
+
+  /** `name` is a value of an enumeration of this compile or a library. */
+  private isEnumValueName(name: string): boolean {
+    const upper = name.toUpperCase();
+    const named = (values: readonly string[]): boolean =>
+      values.some((v) => v.toUpperCase() === upper);
+    if (
+      this.ast?.types.some(
+        (t) =>
+          t.definition.kind === "EnumDefinition" &&
+          named(t.definition.members.map((m) => m.name)),
+      ) === true
+    ) {
+      return true;
+    }
+    return this.symbolTables.globalScope
+      .getAllSymbols()
+      .some(
+        (sym) =>
+          sym.kind === "type" &&
+          sym.resolvedType?.typeKind === "enum" &&
+          named((sym.resolvedType as EnumType).values),
+      );
   }
 
   /** Nesting depth of FOR/WHILE/REPEAT bodies (for CONTINUE). */
@@ -8534,8 +8605,13 @@ export class TypeChecker {
     return bits(wider) < 32 ? "DINT" : wider;
   }
 
+  /** The scope of the POU whose initial values are being checked. */
+  private initializerScope: Scope | undefined;
+
   /** Stored values (statements, initial values) an LTIME into TIME converts in. */
   private ltimeStores = new WeakSet<Expression>();
+  /** FB outputs captured with `=>`, which codegen converts from LTIME into TIME. */
+  private ltimeCaptures = new WeakSet<Expression>();
 
   private validateAssignment(
     targetType: IECType | undefined,
@@ -8690,7 +8766,7 @@ export class TypeChecker {
       // default, an error under iec-3 and --strict
       if (
         argument === undefined &&
-        this.ltimeStores.has(value) &&
+        (this.ltimeStores.has(value) || this.ltimeCaptures.has(value)) &&
         targetType.typeKind === "elementary" &&
         valueType.typeKind === "elementary" &&
         this.elementaryAliasName(tName) === "TIME" &&
@@ -8702,7 +8778,7 @@ export class TypeChecker {
           this.addError(message, span.startLine, span.startCol, span.file);
         } else {
           this.addWarning(message, span.startLine, span.startCol, span.file);
-          this.convertLtimeInPlace(value);
+          if (this.ltimeStores.has(value)) this.convertLtimeInPlace(value);
         }
         return;
       }
@@ -10837,6 +10913,17 @@ export class TypeChecker {
     const same =
       actual.chain.join(" ") === expected.chain.join(" ") && tBase === vBase;
     if (dims && same) return false;
+    // --strict: only an exact widening of each element (SINT into INT, REAL
+    // into LREAL) passes, as for a scalar
+    if (
+      dims &&
+      this.strict &&
+      actual.chain.length === 0 &&
+      expected.chain.length === 0 &&
+      strictIsExactWidening(vBase, tBase)
+    ) {
+      return false;
+    }
     let error = !dims || this.strict;
     if (!error) {
       const t = ELEMENTARY_TYPES[tBase];
@@ -10865,12 +10952,16 @@ export class TypeChecker {
       input === undefined
         ? `a variable of type ${describe(expected)}`
         : `input '${input.toUpperCase()}' of type ${describe(expected)}`;
-    const message = `Cannot store ${describe(actual)} in ${into}${
-      dims ? "" : "; the bounds differ"
-    }`;
     const span = value.sourceSpan;
-    if (error) this.addError(message, span.startLine, span.startCol, span.file);
-    else this.addWarning(message, span.startLine, span.startCol, span.file);
+    if (error) {
+      const message = `Cannot store ${describe(actual)} in ${into}${
+        dims ? "" : "; the bounds differ"
+      }`;
+      this.addError(message, span.startLine, span.startCol, span.file);
+    } else {
+      const message = `Implicit narrowing conversion of each element: ${describe(actual)} stored in ${into}`;
+      this.addWarning(message, span.startLine, span.startCol, span.file);
+    }
     return true;
   }
 
@@ -12108,7 +12199,7 @@ export class TypeChecker {
     if (!expr.arguments.some((a) => a.isOutput)) return;
     const fbType = this.calledFbType(expr, scope);
     if (fbType === undefined) return;
-    this.checkFbOutputs(fbType, expr.arguments, scope);
+    this.checkFbOutputs(fbType, expr.arguments, scope, true);
   }
 
   /**
@@ -12147,6 +12238,8 @@ export class TypeChecker {
     fbType: string,
     args: readonly Argument[],
     scope: Scope,
+    /** An LTIME output captured into a TIME is converted (codegen): it warns. */
+    convertsLtime = false,
   ): void {
     const outputs = this.fbOutputsOf(fbType);
     for (const arg of args) {
@@ -12187,7 +12280,7 @@ export class TypeChecker {
           : this.resolveNamedType(bound.name);
       if (boundType === undefined) continue;
       const outType = this.resolveNamedType(out.typeName);
-      this.validateAssignment(boundType, outType, arg.value, {
+      const output: VariableExpression = {
         kind: "VariableExpression",
         sourceSpan: arg.value.sourceSpan,
         name: out.name,
@@ -12195,7 +12288,9 @@ export class TypeChecker {
         subscripts: [],
         isDereference: false,
         resolvedType: outType,
-      });
+      };
+      if (convertsLtime) this.ltimeCaptures.add(output);
+      this.validateAssignment(boundType, outType, arg.value, output);
     }
   }
 
@@ -12320,21 +12415,42 @@ export class TypeChecker {
       chain.unshift(fb);
       current = fb.extends?.toUpperCase();
     }
-    if (chain.length > 0)
-      return chain.flatMap((fb) => fromBlocks(fb.varBlocks));
-    const libraryFb = this.symbolTables.lookupFunctionBlock(typeName);
-    if (!libraryFb) return undefined;
-    return [
-      ...libraryFb.inputs.map((m) => ({ m, inOut: false })),
-      ...libraryFb.inouts.map((m) => ({ m, inOut: true })),
-    ].map(({ m, inOut }) => ({
-      name: m.name,
-      type: m.declaration.type,
-      inOut,
-      fromLibrary:
-        libraryFb.stringLengthsRecorded !== true &&
-        libraryFb.inOutLengthsRecovered !== true,
-    }));
+    // A library block, or the library block the chain extends, with its
+    // own library bases: theirs come first
+    const library = this.libraryFbInputs(current);
+    if (chain.length > 0) {
+      return [
+        ...(current !== undefined ? (library ?? []) : []),
+        ...chain.flatMap((fb) => fromBlocks(fb.varBlocks)),
+      ];
+    }
+    return library;
+  }
+
+  /** The inputs and in/outs of library block `name` and its library bases, bases first. */
+  private libraryFbInputs(name: string | undefined): CallInput[] | undefined {
+    const blocks: FunctionBlockSymbol[] = [];
+    let current = name;
+    for (let depth = 0; current !== undefined && depth < 32; depth++) {
+      const fb = this.symbolTables.lookupFunctionBlock(current);
+      if (!fb || fb.libraryName === undefined) break;
+      blocks.unshift(fb);
+      current = fb.declaration.extends?.toUpperCase();
+    }
+    if (blocks.length === 0) return undefined;
+    return blocks.flatMap((libraryFb) =>
+      [
+        ...libraryFb.inputs.map((m) => ({ m, inOut: false })),
+        ...libraryFb.inouts.map((m) => ({ m, inOut: true })),
+      ].map(({ m, inOut }) => ({
+        name: m.name,
+        type: m.declaration.type,
+        inOut,
+        fromLibrary:
+          libraryFb.stringLengthsRecorded !== true &&
+          libraryFb.inOutLengthsRecovered !== true,
+      })),
+    );
   }
 
   /**

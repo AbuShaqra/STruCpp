@@ -393,6 +393,111 @@ END_PROGRAM
     expect(stdout).toBe(String(103 * 1000 + 107 + 101));
   });
 
+  it("starts a variable of a library alias TYPE at its default", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `TYPE LTA : TIME := LTIME#2s; END_TYPE
+TYPE LTB : TIME := T#3s; END_TYPE
+TYPE LIA : INT := 5; END_TYPE
+TYPE LEA : (Q1, Q2, Q3) := Q3; END_TYPE
+TYPE LEB : LEA := Q2; END_TYPE
+`,
+          fileName: "a.st",
+        },
+      ],
+      { name: "lalias", version: "1.0.0", namespace: "lalias" },
+    );
+    expect(lib.errors).toEqual([]);
+    const archive = JSON.parse(JSON.stringify(lib.archive)) as StlibArchive;
+    const type = (n: string) =>
+      archive.manifest.types.find((t) => t.name === n);
+    expect(type("LIA")?.defaultValue).toBe("5");
+    expect(type("LEB")?.defaultValue).toBe("LEA#Q2");
+    expect(type("LTA")?.defaultValue).toBe("LTIME_TO_TIME(LTIME#2S)");
+    const { stdout, warnings } = run(
+      `TYPE S_U : STRUCT b : LTB; i : LIA; f : LEB; END_STRUCT END_TYPE
+PROGRAM Main
+VAR x : LTA; y : LTB; z : LIA; e : LEA; f : LEB; s : S_U; a : ARRAY[0..1] OF LIA; r : DINT; END_VAR
+r := TIME_TO_DINT(x) + TIME_TO_DINT(y) + z * 100000;
+IF e = LEA#Q3 THEN r := r + 1000000; END_IF
+IF f = LEA#Q2 THEN r := r + 10000000; END_IF
+IF s.f = LEA#Q2 AND s.i = 5 AND TIME_TO_DINT(s.b) = 3000 AND a[1] = 5 THEN r := r + 100000000; END_IF
+END_PROGRAM
+`,
+      "p.R",
+      "libtypes_alias_defaults",
+      [archive],
+    );
+    expect(stdout).toBe("111505000");
+    expect(warnings).toEqual([]);
+  });
+
+  it("picks a library enumeration's value by its typed context when the sources have one of the name", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: "TYPE LColor : (Red, Green, Blue); END_TYPE",
+          fileName: "c.st",
+        },
+      ],
+      { name: "lcolor", version: "1.0.0", namespace: "lcolor" },
+    );
+    expect(lib.errors).toEqual([]);
+    const { stdout } = run(
+      `TYPE U1 : (Red := 20, Pink); END_TYPE
+PROGRAM Main
+VAR c : LColor := Red; u : U1; r : INT; END_VAR
+u := Red;
+IF c = LColor#Red THEN r := 1; END_IF
+IF u = U1#Red THEN r := r + 10; END_IF
+c := Blue;
+c := Red;
+IF c = LColor#Red THEN r := r + 100; END_IF
+END_PROGRAM
+`,
+      "p.R",
+      "libtypes_enum_context",
+      [JSON.parse(JSON.stringify(lib.archive)) as StlibArchive],
+    );
+    expect(stdout).toBe("111");
+  });
+
+  it("reports a VAR_IN_OUT inherited from a library block that a call leaves unassigned", () => {
+    const lib = compileStlib(
+      [
+        {
+          source: `FUNCTION_BLOCK LBase
+VAR_IN_OUT io : INT; END_VAR
+VAR_INPUT k : INT; END_VAR
+io := io + k;
+END_FUNCTION_BLOCK
+`,
+          fileName: "b.st",
+        },
+      ],
+      { name: "lbase", version: "1.0.0", namespace: "lbase" },
+    );
+    expect(lib.errors).toEqual([]);
+    const src = `FUNCTION_BLOCK D EXTENDS LBase END_FUNCTION_BLOCK
+PROGRAM Main VAR d : D; END_VAR
+d(k := 2);
+END_PROGRAM
+`;
+    const libraries = [
+      ...LIBS,
+      loadStlibArchive(JSON.parse(JSON.stringify(lib.archive))),
+    ];
+    expect(compile(src, { libraries }).warnings.map((w) => w.message)).toEqual([
+      "VAR_IN_OUT 'IO' is not assigned in this call; the call keeps the binding of the previous call",
+    ]);
+    expect(
+      compile(src, { libraries, dialect: "iec-3" }).errors.map(
+        (e) => e.message,
+      ),
+    ).toEqual(["VAR_IN_OUT 'IO' is not assigned in this call"]);
+  });
+
   it("still loads an archive written before enumeration values and shapes were recorded", () => {
     const old = library();
     for (const t of old.manifest.types) {

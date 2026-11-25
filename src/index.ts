@@ -69,6 +69,8 @@ import {
 } from "./semantic/implicit-parameters.js";
 import { lowerPouOperators } from "./semantic/vendor-pou-operators.js";
 import { lowerLibraryNamespaces } from "./semantic/library-namespaces.js";
+import { applyTypeDefaults } from "./frontend/type-defaults.js";
+import { libraryTypeDefault } from "./library/library-methods.js";
 import { lowerBitType } from "./semantic/bit-type.js";
 import { unionLoweringErrors } from "./semantic/union.js";
 import { fbInitLoweringErrors } from "./semantic/fb-init.js";
@@ -1227,6 +1229,8 @@ function runPipeline(
         profilesWithFeature(dialect, "bit_type"),
       ),
     );
+    // A library alias TYPE's default, onto this compile's declarations of it
+    applyTypeDefaults(ast, libraryTypeDefaults(mergedOptions.libraries ?? []));
     errors.push(...loweringErrors);
     echoed.push(...loweringErrors);
   } catch (e) {
@@ -1478,6 +1482,28 @@ function runPipeline(
  * console.log(result.lineMap);
  * ```
  */
+/** The defaults and alias targets the library archives record for their alias TYPEs. */
+function libraryTypeDefaults(archives: readonly StlibArchive[]): {
+  defaults: Map<string, Expression>;
+  aliasTargets: Map<string, string>;
+} {
+  const defaults = new Map<string, Expression>();
+  const aliasTargets = new Map<string, string>();
+  for (const archive of archives) {
+    for (const t of archive.manifest.types) {
+      const key = t.name.toUpperCase();
+      if (t.kind !== "alias" || typeof t.baseType !== "string") continue;
+      if (!aliasTargets.has(key)) {
+        aliasTargets.set(key, t.baseType.toUpperCase());
+      }
+      if (typeof t.defaultValue !== "string" || defaults.has(key)) continue;
+      const value = libraryTypeDefault(t.name, t.baseType, t.defaultValue);
+      if (value !== undefined) defaults.set(key, value);
+    }
+  }
+  return { defaults, aliasTargets };
+}
+
 export function compile(
   source: string,
   options: Partial<CompileOptions> = {},

@@ -958,8 +958,10 @@ export class CodeGenerator {
   private libraryStructFieldTypes: Map<string, string> = new Map();
   /** Upper-cased names of the types library manifests declare. */
   private libraryTypeNames: Set<string> = new Set();
-  /** Upper-cased names of library enumerations. */
+  /** Upper-cased names of library enumerations (aliases of one included). */
   private libraryEnumTypeNames: Set<string> = new Set();
+  /** Each library alias TYPE's base, upper-cased. */
+  private libraryAliasBases: Map<string, string> = new Map();
   /** Library enumerations whose manifest records their values. */
   private libraryEnums: Array<{ name: string; members: string[] }> = [];
 
@@ -1816,6 +1818,7 @@ export class CodeGenerator {
       kind: string;
       fields?: Array<{ name: string; type: string }>;
       members?: Array<{ name: string }>;
+      baseType?: string;
     }>,
   ): void {
     for (const t of types) {
@@ -1825,6 +1828,9 @@ export class CodeGenerator {
           `${nameUpper}.${f.name.toUpperCase()}`,
           f.type,
         );
+      }
+      if (t.kind === "alias" && typeof t.baseType === "string") {
+        this.libraryAliasBases.set(nameUpper, t.baseType.toUpperCase());
       }
       if (t.kind === "enum") {
         this.libraryEnumTypeNames.add(nameUpper);
@@ -1914,6 +1920,25 @@ export class CodeGenerator {
       }
     }
     this.inheritLibraryInOuts();
+    this.aliasLibraryEnums();
+  }
+
+  /** A library alias of a library enumeration is an enumeration of its members. */
+  private aliasLibraryEnums(): void {
+    for (const alias of this.libraryAliasBases.keys()) {
+      let current: string | undefined = alias;
+      for (let depth = 0; current !== undefined && depth < 32; depth++) {
+        if (this.libraryEnumTypeNames.has(current) && current !== alias) {
+          this.libraryEnumTypeNames.add(alias);
+          this.enumTypeMembers.set(
+            alias,
+            new Set(this.enumTypeMembers.get(current) ?? []),
+          );
+          break;
+        }
+        current = this.libraryAliasBases.get(current);
+      }
+    }
   }
 
   /**
@@ -11569,7 +11594,20 @@ export class CodeGenerator {
       for (const arg of filteredArgs) {
         if (arg.name && arg.isOutput) {
           const member = `${instanceName}.${this.fbParamMemberName(arg.name, fbTypeName)}`;
-          const source = kindOf(arg.name) === "ref" ? `(*${member})` : member;
+          let source = kindOf(arg.name) === "ref" ? `(*${member})` : member;
+          // An LTIME output captured into a TIME: converted, as by LTIME_TO_TIME
+          const out =
+            fbTypeName === undefined
+              ? undefined
+              : this.accessLookup.field(fbTypeName, arg.name)?.type;
+          if (
+            out !== undefined &&
+            (out.referenceKind ?? "none") === "none" &&
+            this.elementaryThroughAliases(out.name) === "LTIME" &&
+            this.temporalBase(arg.value) === "TIME"
+          ) {
+            source = `LTIME_TO_TIME_VALUE(static_cast<int64_t>(${source}))`;
+          }
           this.emitCaptureToLvalue(
             arg.value,
             arg.addressInto === undefined

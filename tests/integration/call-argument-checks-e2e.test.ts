@@ -160,7 +160,7 @@ END_PROGRAM
     );
     expect(stdout).toBe("301");
     expect(warnings).toEqual([
-      "Cannot store ARRAY[1..3] OF DINT in input 'A' of type ARRAY[1..3] OF INT",
+      "Implicit narrowing conversion of each element: ARRAY[1..3] OF DINT stored in input 'A' of type ARRAY[1..3] OF INT",
     ]);
   });
 
@@ -197,5 +197,61 @@ END_PROGRAM
       "argchecks_mod_defaults",
     );
     expect(stdout).toBe(String((30 + 30 + 10 + 20) * 60000));
+  });
+
+  it("converts a local LTIME constant in ARRAY and STRUCT initializers of TIME", () => {
+    const { stdout, warnings } = run(
+      `TYPE S : STRUCT t : TIME; END_STRUCT END_TYPE
+PROGRAM Main
+VAR CONSTANT c : LTIME := LTIME#2s; END_VAR
+VAR a : ARRAY[0..1] OF TIME := [c, c]; s : S := (t := c); r : DINT; END_VAR
+r := TIME_TO_DINT(a[1]) + TIME_TO_DINT(s.t);
+END_PROGRAM
+`,
+      "p.R",
+      "argchecks_ltime_local_const",
+    );
+    expect(stdout).toBe("4000");
+    expect(warnings).toHaveLength(3);
+  });
+
+  it("converts an LTIME output captured into a TIME with =>", () => {
+    const { stdout, warnings } = run(
+      `FUNCTION_BLOCK FB VAR_OUTPUT lo : LTIME; END_VAR lo := LTIME#2500ms; END_FUNCTION_BLOCK
+PROGRAM Main
+VAR f : FB; t : TIME; r : DINT; END_VAR
+f(lo => t);
+r := TIME_TO_DINT(t);
+END_PROGRAM
+`,
+      "p.R",
+      "argchecks_ltime_capture",
+    );
+    expect(stdout).toBe("2500");
+    expect(warnings).toEqual([
+      "Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+    ]);
+  });
+
+  it("starts an ARRAY OF an alias with a default at that default", () => {
+    const { stdout } = run(
+      `TYPE E1 : (A1, B1, C1) := B1; END_TYPE
+TYPE AL2 : E1 := C1; END_TYPE
+TYPE Eb : (Q2 := 4, P2 := 6) := Eb#P2; END_TYPE
+TYPE S2 : STRUCT a : ARRAY[0..1] OF AL2; b : AL2; END_STRUCT END_TYPE
+PROGRAM Main
+VAR x : ARRAY[0..1] OF AL2; y : Eb; z : ARRAY[0..2] OF Eb; s : S2; w : AL2; r : DINT; END_VAR
+IF x[1] = E1#C1 THEN r := 1; END_IF
+IF y = Eb#P2 THEN r := r + 10; END_IF
+IF z[2] = Eb#P2 THEN r := r + 100; END_IF
+IF s.a[1] = E1#C1 THEN r := r + 1000; END_IF
+IF s.b = E1#C1 THEN r := r + 10000; END_IF
+IF w = E1#C1 THEN r := r + 100000; END_IF
+END_PROGRAM
+`,
+      "p.R",
+      "argchecks_array_alias_default",
+    );
+    expect(stdout).toBe("111111");
   });
 });

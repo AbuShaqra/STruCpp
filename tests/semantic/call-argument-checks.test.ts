@@ -244,20 +244,19 @@ END_PROGRAM
       "11: Cannot store ARRAY[1..4] OF INT in a variable of type ARRAY[1..3] OF INT; the bounds differ",
     ]);
     expect(r.warnings).toEqual([
-      "7: Cannot store ARRAY[1..3] OF DINT in input 'A' of type ARRAY[1..3] OF INT",
-      "12: Cannot store ARRAY[1..3] OF DINT in a variable of type ARRAY[1..3] OF INT",
+      "7: Implicit narrowing conversion of each element: ARRAY[1..3] OF DINT stored in input 'A' of type ARRAY[1..3] OF INT",
+      "12: Implicit narrowing conversion of each element: ARRAY[1..3] OF DINT stored in a variable of type ARRAY[1..3] OF INT",
     ]);
   });
 
-  it("refuses every other element type under --strict; iec-3 checks each element as a scalar", () => {
+  it("refuses every element type but an exact widening under --strict; iec-3 checks each element as a scalar", () => {
     const r = diagnostics(src, STRICT);
-    expect(r.errors).toHaveLength(8);
+    expect(r.errors).toHaveLength(7);
     expect(r.errors).toContain(
       "8: Cannot store ARRAY[1..3] OF WORD in input 'A' of type ARRAY[1..3] OF INT",
     );
-    expect(r.errors).toContain(
-      "13: Cannot store ARRAY[1..3] OF INT in a variable of type ARRAY[1..3] OF DINT",
-    );
+    // INT into DINT widens each element exactly, as a scalar does
+    expect(r.errors.some((e) => e.startsWith("13:"))).toBe(false);
     // A narrowing into an input warns under iec-3, as a scalar's does
     expect(diagnostics(src, IEC)).toEqual(diagnostics(src));
   });
@@ -500,5 +499,53 @@ END_PROGRAM
     for (const options of [{}, IEC, STRICT]) {
       expect(diagnostics(src, options).errors).toEqual([]);
     }
+  });
+});
+
+describe("--strict ARRAY widening", () => {
+  it("accepts SINT into INT and REAL into LREAL elements, as scalars", () => {
+    const src = `FUNCTION F : INT VAR_INPUT a : ARRAY[1..2] OF INT; END_VAR F := a[1]; END_FUNCTION
+PROGRAM Main
+VAR ai : ARRAY[1..2] OF INT; as : ARRAY[1..2] OF SINT; ar : ARRAY[1..2] OF REAL;
+  alr : ARRAY[1..2] OF LREAL; r : INT; END_VAR
+ai := as;
+alr := ar;
+r := F(as);
+ar := alr;
+END_PROGRAM
+`;
+    expect(diagnostics(src, STRICT).errors).toEqual([
+      "8: Cannot store ARRAY[1..2] OF LREAL in a variable of type ARRAY[1..2] OF REAL",
+    ]);
+  });
+});
+
+describe("names of enumeration values beside library names", () => {
+  it("lets a user enumeration value name a library FB or FUNCTION without hiding it", () => {
+    const src = `TYPE Mode : (Off, TON, DEG); END_TYPE
+PROGRAM Main
+VAR t : TON; m : Mode; r : REAL; END_VAR
+t(IN := TRUE, PT := T#1s);
+m := Mode#TON;
+r := DEG(1.0);
+END_PROGRAM
+`;
+    for (const options of [{}, IEC, STRICT]) {
+      expect(diagnostics(src, options).errors).toEqual([]);
+    }
+  });
+
+  it("takes an enumeration value named like a TYPE or FB as the value", () => {
+    const src = `TYPE Motor : STRUCT a : INT; END_STRUCT END_TYPE
+TYPE Kind : (Motor, Pump, Other := 9); END_TYPE
+FUNCTION_BLOCK Pump END_FUNCTION_BLOCK
+PROGRAM Main
+VAR k : Kind; b : BOOL; END_VAR
+k := Motor;
+k := Pump;
+b := k = Pump;
+END_PROGRAM
+`;
+    expect(diagnostics(src).errors).toEqual([]);
   });
 });

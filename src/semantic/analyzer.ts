@@ -1840,10 +1840,14 @@ export class SemanticAnalyzer {
           typeDecl.inline?.owner === undefined
         ) {
           typeDecl.definition.members.forEach((member, index) => {
-            // A library enumeration's value of the name gives way
+            // Only a library enumeration's value of the name gives way
+            const existing = this.symbolTables.globalScope.lookup(member.name);
             if (
               this.symbolTables.globalScope.hasLocal(member.name) &&
-              !this.symbolTables.globalScope.definedByLibrary(member.name)
+              !(
+                existing?.kind === "enumValue" &&
+                this.symbolTables.globalScope.definedByLibrary(member.name)
+              )
             ) {
               return;
             }
@@ -7196,6 +7200,36 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * The library enumeration `typeName` is (through aliases) when it has a
+   * value `member` (upper-cased); undefined otherwise.
+   */
+  private libraryEnumOf(typeName: string, member: string): string | undefined {
+    let current = typeName.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const sym = this.symbolTables.lookupType(current);
+      if (!sym) return undefined;
+      if (sym.resolvedType?.typeKind === "enum") {
+        const type = sym.resolvedType as EnumType;
+        return this.symbolTables.globalScope.definedByLibrary(type.name) &&
+          type.values.some((v) => v.toUpperCase() === member)
+          ? type.name
+          : undefined;
+      }
+      const def = sym.declaration?.definition;
+      if (
+        def?.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        def.referenceKind !== "none" ||
+        def.name.toUpperCase() === current
+      ) {
+        return undefined;
+      }
+      current = def.name.toUpperCase();
+    }
+    return undefined;
+  }
+
+  /**
    * Mark a bare member of several enumerations (`B` in `e : E1 := B`) with the
    * one `typeName` is (through aliases), so it is not ambiguous there.
    */
@@ -7215,9 +7249,16 @@ export class SemanticAnalyzer {
     }
     const upper = expr.name.toUpperCase();
     const entry = this.enumMemberMap.get(upper);
-    if (entry?.typeName !== null || entry === undefined) return;
     const hit = scope.lookup(upper);
     if (hit && hit.kind !== "enumValue") return;
+    // A library enumeration's value the sources' own enumeration hides
+    // (`c : LColor := Red` beside a user `Red`): the target's type names it
+    const library = this.libraryEnumOf(typeName, upper);
+    if (library !== undefined && entry?.typeName !== library) {
+      expr.enumType = library;
+      return;
+    }
+    if (entry?.typeName !== null || entry === undefined) return;
     let current = typeName.toUpperCase();
     for (let i = 0; i < 32; i++) {
       const sym = this.symbolTables.lookupType(current);

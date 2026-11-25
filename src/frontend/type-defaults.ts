@@ -39,10 +39,22 @@ const MAX_ALIAS_DEPTH = 32;
  * Idempotent: a declaration that already has an initialiser is never touched,
  * so running the pass again (for instance on a merged multi-file unit) is safe.
  */
-export function applyTypeDefaults(unit: CompilationUnit): void {
-  const defaults = new Map<string, Expression>();
+export function applyTypeDefaults(
+  unit: CompilationUnit,
+  /** The defaults and alias targets of library types, under the unit's own. */
+  library?: {
+    defaults: ReadonlyMap<string, Expression>;
+    aliasTargets: ReadonlyMap<string, string>;
+  },
+): void {
+  const defaults = new Map<string, Expression>(library?.defaults ?? []);
   /** Alias target of each type, for chains like `Celsius : Setpoint;`. */
-  const aliasTargets = new Map<string, string>();
+  const aliasTargets = new Map<string, string>(library?.aliasTargets ?? []);
+  for (const td of unit.types) {
+    const key = td.name.toUpperCase();
+    defaults.delete(key);
+    aliasTargets.delete(key);
+  }
 
   for (const td of unit.types) {
     const key = td.name.toUpperCase();
@@ -70,15 +82,47 @@ export function applyTypeDefaults(unit: CompilationUnit): void {
       decl.initialValue === undefined &&
       (!decl.type.referenceKind || decl.type.referenceKind === "none")
     ) {
-      const defaultValue = resolveDefault(
-        decl.type.name,
-        defaults,
-        aliasTargets,
-      );
+      const defaultValue =
+        decl.type.arrayDimensions === undefined
+          ? resolveDefault(decl.type.name, defaults, aliasTargets)
+          : arrayOfDefaults(decl, defaults, aliasTargets);
       if (defaultValue) decl.initialValue = defaultValue;
     }
     return true;
   });
+}
+
+/** Most elements an ARRAY gets its element type's default for, one by one. */
+const MAX_DEFAULTED_ELEMENTS = 4096;
+
+/**
+ * An inline ARRAY of a type with a default (`ARRAY[0..1] OF AL2`): every
+ * element starts at that default. Undefined for other arrays.
+ */
+function arrayOfDefaults(
+  decl: VarDeclaration,
+  defaults: Map<string, Expression>,
+  aliasTargets: Map<string, string>,
+): Expression | undefined {
+  const t = decl.type;
+  if (
+    t.elementTypeName === undefined ||
+    t.elementReferenceChain !== undefined
+  ) {
+    return undefined;
+  }
+  const element = resolveDefault(t.elementTypeName, defaults, aliasTargets);
+  if (element === undefined) return undefined;
+  let count = 1;
+  for (const d of t.arrayDimensions ?? []) {
+    count *= d.end - d.start + 1;
+    if (!(count > 0) || count > MAX_DEFAULTED_ELEMENTS) return undefined;
+  }
+  return {
+    kind: "ArrayLiteralExpression",
+    sourceSpan: decl.sourceSpan,
+    elements: Array.from({ length: count }, () => element),
+  };
 }
 
 /**
