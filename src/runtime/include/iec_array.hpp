@@ -25,6 +25,59 @@
 
 namespace strucpp {
 
+/**
+ * One value for every element of an array (`iec_fill(v)` as the only item of
+ * an initializer list): an ARRAY of a type with a default starts with each
+ * element at that default, however many elements it has.
+ */
+template<typename V>
+struct iec_fill_value {
+    V value;
+};
+
+template<typename V>
+constexpr iec_fill_value<V> iec_fill(V value) noexcept {
+    return iec_fill_value<V>{value};
+}
+
+/**
+ * The first values of an array and the one every later element takes
+ * (`iec_head_value<E, N>{fill, {{e0, e1}}}` as the only item of an
+ * initializer list): a partial initializer of an ARRAY of a type with a
+ * default. Codegen converts each value to the element type `E`.
+ */
+template<typename E, size_t N>
+struct iec_head_value {
+    E fill;
+    std::array<E, N> head;
+};
+
+namespace detail {
+/** `{iec_head_value{fill, head}}`: the given values, then `fill` for every other element. */
+template<typename Data, typename E, size_t N>
+inline void iec_array_init(Data& data, size_t size, std::initializer_list<iec_head_value<E, N>> init) noexcept {
+    if (init.size() == 0) return;
+    const auto& h = *init.begin();
+    for (size_t i = 0; i < size; ++i) data[i] = i < N ? h.head[i] : h.fill;
+}
+/** Copy an initializer list into `data` (of `size` elements), dropping any overflow. */
+template<typename Data, typename U>
+inline void iec_array_init(Data& data, size_t size, std::initializer_list<U> init) noexcept {
+    size_t i = 0;
+    for (const auto& val : init) {
+        if (i >= size) break;
+        data[i] = val;
+        ++i;
+    }
+}
+/** `{iec_fill(v)}`: every element is `v`. */
+template<typename Data, typename V>
+inline void iec_array_init(Data& data, size_t size, std::initializer_list<iec_fill_value<V>> init) noexcept {
+    if (init.size() == 0) return;
+    for (size_t i = 0; i < size; ++i) data[i] = init.begin()->value;
+}
+}  // namespace detail
+
 // Array bounds specification
 template<int64_t Lower, int64_t Upper>
 struct ArrayBounds {
@@ -80,12 +133,7 @@ public:
     // Initializer list constructor
     template<typename U>
     IEC_ARRAY_1D(std::initializer_list<U> init) noexcept : data_{} {
-        size_t i = 0;
-        for (const auto& val : init) {
-            if (i >= size) break;
-            data_[i] = val;
-            ++i;
-        }
+        detail::iec_array_init(data_, size, init);
     }
 
     // Element-typed initializer list, for an array whose element is itself a
@@ -98,12 +146,7 @@ public:
     // `U = int` exactly, whereas this overload would need a user-defined
     // conversion per element, so the template wins.
     IEC_ARRAY_1D(std::initializer_list<T> init) noexcept : data_{} {
-        size_t i = 0;
-        for (const auto& val : init) {
-            if (i >= size) break;
-            data_[i] = val;
-            ++i;
-        }
+        detail::iec_array_init(data_, size, init);
     }
     
     // Element access (1-based IEC indexing) - no bounds checking.
@@ -210,12 +253,7 @@ public:
     // codegen to a flat brace list; fill row-major, ignoring any overflow.
     template<typename U>
     IEC_ARRAY_2D(std::initializer_list<U> init) noexcept : data_{} {
-        size_t i = 0;
-        for (const auto& val : init) {
-            if (i >= total_size) break;
-            data_[i] = val;
-            ++i;
-        }
+        detail::iec_array_init(data_, total_size, init);
     }
 
     // Row-nested initializer list — IEC 61131-3 Annex B.1.4.3 allows an
@@ -352,12 +390,7 @@ public:
     // row-major, ignoring any overflow.
     template<typename U>
     IEC_ARRAY_3D(std::initializer_list<U> init) noexcept : data_{} {
-        size_t i = 0;
-        for (const auto& val : init) {
-            if (i >= total_size) break;
-            data_[i] = val;
-            ++i;
-        }
+        detail::iec_array_init(data_, total_size, init);
     }
 
     // Plane/row-nested initializer list — the 3D form of the nested

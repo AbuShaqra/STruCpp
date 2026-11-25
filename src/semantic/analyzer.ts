@@ -94,6 +94,8 @@ import {
   resolveArrayElementType,
   resolveFieldDeclaration,
   buildEnumMemberMap,
+  sourceNamesOverLibraryEnums,
+  withLibraryEnumMembers,
   describeType,
   resolveArrayShape,
   resolveArrayShapeByName,
@@ -1874,6 +1876,38 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * The library enumeration a TYPE of the sources aliases (`TYPE A : LColor`),
+   * through aliases of the sources; undefined otherwise.
+   */
+  private libraryEnumBehindAlias(
+    ast: CompilationUnit,
+    typeDecl: TypeDeclaration,
+  ): EnumType | undefined {
+    let def = typeDecl.definition;
+    for (let depth = 0; depth < 32; depth++) {
+      if (
+        def.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        (def.referenceKind ?? "none") !== "none"
+      ) {
+        return undefined;
+      }
+      const upper = def.name.toUpperCase();
+      const own = ast.types.find((t) => t.name.toUpperCase() === upper);
+      if (own === undefined) {
+        const sym = this.symbolTables.globalScope.lookup(upper);
+        return sym?.kind === "type" &&
+          this.symbolTables.globalScope.definedByLibrary(upper) &&
+          sym.resolvedType?.typeKind === "enum"
+          ? (sym.resolvedType as EnumType)
+          : undefined;
+      }
+      def = own.definition;
+    }
+    return undefined;
+  }
+
+  /**
    * Build symbol tables from the AST.
    */
   private buildSymbolTables(ast: CompilationUnit): void {
@@ -1890,11 +1924,11 @@ export class SemanticAnalyzer {
                 name: aliased.name,
                 values: aliased.definition.members.map((m) => m.name),
               }
-            : {
+            : (this.libraryEnumBehindAlias(ast, typeDecl) ?? {
                 typeKind: "elementary" as const,
                 name: typeDecl.name,
                 sizeBits: 0,
-              };
+              });
         this.symbolTables.globalScope.defineOrReplace({
           name: typeDecl.name,
           kind: "type",
@@ -1917,7 +1951,17 @@ export class SemanticAnalyzer {
           typeDecl.inline?.owner === undefined
         ) {
           typeDecl.definition.members.forEach((member, index) => {
-            if (this.symbolTables.globalScope.hasLocal(member.name)) return;
+            // Only a library enumeration's value of the name gives way
+            const existing = this.symbolTables.globalScope.lookup(member.name);
+            if (
+              this.symbolTables.globalScope.hasLocal(member.name) &&
+              !(
+                existing?.kind === "enumValue" &&
+                this.symbolTables.globalScope.definedByLibrary(member.name)
+              )
+            ) {
+              return;
+            }
             this.symbolTables.globalScope.defineOrReplace({
               name: member.name,
               kind: "enumValue",
@@ -1941,21 +1985,42 @@ export class SemanticAnalyzer {
       }
     }
 
-    // Build reverse lookup map: enum member name → owning enum type
-    this.enumMemberMap = buildEnumMemberMap(
-      ast.types
-        .filter(
-          (t) =>
-            t.definition.kind === "EnumDefinition" &&
-            t.inline?.owner === undefined,
-        )
-        .map((t) => ({
-          name: t.name,
-          members:
-            t.definition.kind === "EnumDefinition"
-              ? t.definition.members.map((m) => m.name)
-              : [],
-        })),
+    // Build reverse lookup map: enum member name → owning enum type; a
+    // library enumeration's values only where no name of the sources is one
+    const ownTypes = new Set(ast.types.map((t) => t.name.toUpperCase()));
+    this.enumMemberMap = withLibraryEnumMembers(
+      buildEnumMemberMap(
+        ast.types
+          .filter(
+            (t) =>
+              t.definition.kind === "EnumDefinition" &&
+              t.inline?.owner === undefined,
+          )
+          .map((t) => ({
+            name: t.name,
+            members:
+              t.definition.kind === "EnumDefinition"
+                ? t.definition.members.map((m) => m.name)
+                : [],
+          })),
+      ),
+      this.symbolTables.globalScope.getAllSymbols().flatMap((sym) =>
+        sym.kind === "type" &&
+        sym.resolvedType?.typeKind === "enum" &&
+        // the enumeration itself, not an alias of it
+        (sym.resolvedType as EnumType).name.toUpperCase() ===
+          sym.name.toUpperCase() &&
+        !ownTypes.has(sym.name.toUpperCase()) &&
+        this.symbolTables.globalScope.definedByLibrary(sym.name)
+          ? [
+              {
+                name: sym.name,
+                members: (sym.resolvedType as EnumType).values,
+              },
+            ]
+          : [],
+      ),
+      sourceNamesOverLibraryEnums(ast),
     );
 
     // Register function declarations
@@ -7249,6 +7314,36 @@ export class SemanticAnalyzer {
   }
 
   /**
+   * The library enumeration `typeName` is (through aliases) when it has a
+   * value `member` (upper-cased); undefined otherwise.
+   */
+  private libraryEnumOf(typeName: string, member: string): string | undefined {
+    let current = typeName.toUpperCase();
+    for (let i = 0; i < 32; i++) {
+      const sym = this.symbolTables.lookupType(current);
+      if (!sym) return undefined;
+      if (sym.resolvedType?.typeKind === "enum") {
+        const type = sym.resolvedType as EnumType;
+        return this.symbolTables.globalScope.definedByLibrary(type.name) &&
+          type.values.some((v) => v.toUpperCase() === member)
+          ? type.name
+          : undefined;
+      }
+      const def = sym.declaration?.definition;
+      if (
+        def?.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        def.referenceKind !== "none" ||
+        def.name.toUpperCase() === current
+      ) {
+        return undefined;
+      }
+      current = def.name.toUpperCase();
+    }
+    return undefined;
+  }
+
+  /**
    * Mark a bare member of several enumerations (`B` in `e : E1 := B`) with the
    * one `typeName` is (through aliases), so it is not ambiguous there.
    */
@@ -7268,9 +7363,16 @@ export class SemanticAnalyzer {
     }
     const upper = expr.name.toUpperCase();
     const entry = this.enumMemberMap.get(upper);
-    if (entry?.typeName !== null || entry === undefined) return;
     const hit = scope.lookup(upper);
     if (hit && hit.kind !== "enumValue") return;
+    // A library enumeration's value the sources' own enumeration hides
+    // (`c : LColor := Red` beside a user `Red`): the target's type names it
+    const library = this.libraryEnumOf(typeName, upper);
+    if (library !== undefined && entry?.typeName !== library) {
+      expr.enumType = library;
+      return;
+    }
+    if (entry?.typeName !== null || entry === undefined) return;
     let current = typeName.toUpperCase();
     for (let i = 0; i < 32; i++) {
       const sym = this.symbolTables.lookupType(current);
@@ -8173,6 +8275,8 @@ export class SemanticAnalyzer {
           undefined
       ) {
         const enumType = sym.resolvedType as EnumType;
+        // An alias of an enumeration adds no values of its own
+        if (enumType.name.toUpperCase() !== sym.name.toUpperCase()) continue;
         enumDescriptors.push({ name: enumType.name, members: enumType.values });
       }
     }

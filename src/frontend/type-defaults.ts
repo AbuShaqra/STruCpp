@@ -39,10 +39,22 @@ const MAX_ALIAS_DEPTH = 32;
  * Idempotent: a declaration that already has an initialiser is never touched,
  * so running the pass again (for instance on a merged multi-file unit) is safe.
  */
-export function applyTypeDefaults(unit: CompilationUnit): void {
-  const defaults = new Map<string, Expression>();
+export function applyTypeDefaults(
+  unit: CompilationUnit,
+  /** The defaults and alias targets of library types, under the unit's own. */
+  library?: {
+    defaults: ReadonlyMap<string, Expression>;
+    aliasTargets: ReadonlyMap<string, string>;
+  },
+): void {
+  const defaults = new Map<string, Expression>(library?.defaults ?? []);
   /** Alias target of each type, for chains like `Celsius : Setpoint;`. */
-  const aliasTargets = new Map<string, string>();
+  const aliasTargets = new Map<string, string>(library?.aliasTargets ?? []);
+  for (const td of unit.types) {
+    const key = td.name.toUpperCase();
+    defaults.delete(key);
+    aliasTargets.delete(key);
+  }
 
   for (const td of unit.types) {
     const key = td.name.toUpperCase();
@@ -65,20 +77,67 @@ export function applyTypeDefaults(unit: CompilationUnit): void {
     if (node.kind !== "VarDeclaration") return true;
 
     const decl = node as VarDeclaration;
+    // `[1]` for an ARRAY of a type with a default: the other elements take it
+    if (
+      decl.initialValue?.kind === "ArrayLiteralExpression" &&
+      decl.initialValue.fill !== true &&
+      decl.initialValue.fillRest === undefined &&
+      decl.initialValue.elements.length > 0 &&
+      decl.initialValue.elements.every(
+        (e) => e.kind !== "ArrayLiteralExpression",
+      )
+    ) {
+      const rest = arrayOfDefaults(decl, defaults, aliasTargets);
+      if (rest?.kind === "ArrayLiteralExpression" && rest.elements[0]) {
+        decl.initialValue.fillRest = rest.elements[0];
+      }
+    }
     // A reference binds to existing storage — it has no value of its own.
     if (
       decl.initialValue === undefined &&
       (!decl.type.referenceKind || decl.type.referenceKind === "none")
     ) {
-      const defaultValue = resolveDefault(
-        decl.type.name,
-        defaults,
-        aliasTargets,
-      );
+      const defaultValue =
+        decl.type.arrayDimensions === undefined
+          ? resolveDefault(decl.type.name, defaults, aliasTargets)
+          : arrayOfDefaults(decl, defaults, aliasTargets);
       if (defaultValue) decl.initialValue = defaultValue;
     }
     return true;
   });
+}
+
+/**
+ * An inline ARRAY of a type with a default (`ARRAY[0..1] OF AL2`): every
+ * element starts at that default, given once (`fill`). Undefined for other
+ * arrays.
+ */
+function arrayOfDefaults(
+  decl: VarDeclaration,
+  defaults: Map<string, Expression>,
+  aliasTargets: Map<string, string>,
+): Expression | undefined {
+  const t = decl.type;
+  if (
+    t.elementTypeName === undefined ||
+    t.elementReferenceChain !== undefined
+  ) {
+    return undefined;
+  }
+  // Up to three dimensions: a deeper array nests arrays of arrays
+  if ((t.arrayDimensions?.length ?? 0) > 3) return undefined;
+  const element = resolveDefault(t.elementTypeName, defaults, aliasTargets);
+  // An element that is itself an ARRAY (its default an array literal) keeps
+  // the element type's own initialisation
+  if (element === undefined || element.kind === "ArrayLiteralExpression") {
+    return undefined;
+  }
+  return {
+    kind: "ArrayLiteralExpression",
+    sourceSpan: decl.sourceSpan,
+    elements: [element],
+    fill: true,
+  };
 }
 
 /**

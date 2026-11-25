@@ -1072,6 +1072,18 @@ export class STParser extends CstParser {
       this.RECORDING_PHASE || !referenceArray
         ? this.CONSUME(tokens.Identifier)
         : undefined;
+    // `Namespace.Type`: a type of a library qualified by its namespace (the
+    // feature library_namespaces; refused without it)
+    this.OPTION({
+      GATE: () =>
+        !referenceArray &&
+        this.LA(1).tokenType === tokens.Dot &&
+        this.LA(2).tokenType === tokens.Identifier,
+      DEF: () => {
+        this.CONSUME(tokens.Dot);
+        this.CONSUME6(tokens.Identifier);
+      },
+    });
     // Optional parameterized length for STRING(n) / WSTRING(n) / STRING(CONSTANT_NAME)
     // GATE: only when the type name is STRING or WSTRING, consume ( IntegerLiteral ) or ( Identifier )
     // Avoid ( Identifier ) for typed enums and ( IntegerLiteral .. ) for subrange types

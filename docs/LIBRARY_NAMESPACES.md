@@ -1,10 +1,17 @@
 # Library Namespace Support — Design Document
 
-## Status: Not Implemented
+## Status: Partly Implemented
 
-Library namespaces are declared in manifests (`LibraryManifest.namespace`) but not
-functionally used. This document describes the current gaps, the target CODESYS
-behavior, and the architectural changes required.
+Qualified access is implemented as the dialect feature `library_namespaces`
+(see [DIALECTS.md](DIALECTS.md#library-namespaces)): `NS.F()`, `t : NS.TON`,
+`NS.G` and `NS.E.M` resolve to the library's bare name, with the ST namespace
+in `LibraryManifest.stNamespace`. A name two libraries declare still resolves
+to the first one, and qualifying it is refused: the disambiguation below
+(per-library C++ namespaces) is not implemented.
+
+`LibraryManifest.namespace` is the C++ namespace and is still not used. This
+document describes the remaining gaps, the target CODESYS behavior, and the
+architectural changes required.
 
 ## Current Behavior
 

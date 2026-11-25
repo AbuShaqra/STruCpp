@@ -156,7 +156,7 @@ END_PROGRAM
       ]);
     });
 
-    it("refuses an LTIME as the default of a TIME STRUCT field or TIME alias", () => {
+    it("converts an LTIME default of a TIME STRUCT field or TIME alias, refused under iec-3 and --strict", () => {
       expect(
         unitErrors(
           `TYPE MyT : TIME; END_TYPE
@@ -167,12 +167,17 @@ END_PROGRAM
 `,
           opts,
         ),
-      ).toEqual([
-        "2:29: Cannot assign LTIME to TIME",
-        "2:51: Cannot assign LTIME to MYT",
-        "4:17: Cannot assign LTIME to TIME",
-        "4:39: Cannot assign LTIME to MYT",
-      ]);
+      ).toEqual(
+        // Converted as LTIME_TO_TIME: a warning by default
+        opts.dialect === "iec-3" || opts.strict === true
+          ? [
+              "2:29: Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+              "2:51: Cannot assign LTIME to MYT without a conversion; use LTIME_TO_TIME",
+              "4:17: Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+              "4:39: Cannot assign LTIME to MYT without a conversion; use LTIME_TO_TIME",
+            ]
+          : [],
+      );
     });
 
     it("accepts a negated TIME variable, -T#0s and LTIME products", () => {

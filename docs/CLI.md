@@ -206,6 +206,7 @@ C++ diagnostic in code after a body points at the generated line, not at the bod
 | `--lib-name <name>`    | Library name (required for `--compile-lib` and `--import-lib`) |
 | `--lib-version <ver>`  | Library version (default: `1.0.0`)                             |
 | `--lib-namespace <ns>` | C++ namespace (default: sanitized lib name)                    |
+| `--lib-st-namespace <ns>` | ST namespace that qualifies the library's names with the feature `library_namespaces` (default: the lib name, each character other than a letter, digit or `_` as `_`) |
 | `--no-source`          | Omit ST source from `.stlib` archive                           |
 
 ### Compilation

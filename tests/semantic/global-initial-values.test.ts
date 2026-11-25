@@ -383,36 +383,41 @@ END_PROGRAM
     ];
   };
 
+  // An LTIME into a TIME is converted: a warning by default (in any order)
   it("is checked as a POU variable's is, with no dialect flag", () => {
-    expect(diagnostics({})).toEqual([
-      "E 3 Cannot assign LTIME to TIME",
-      "E 4 Cannot assign LTIME to TIME",
-      "E 5 Cannot assign LDATE to DATE",
-      "E 10 Cannot assign LTIME to TIME",
-      "E 18 Cannot assign LTIME to TIME",
-      "E 19 Cannot assign LTIME to TIME",
-      "E 20 Cannot assign LDATE to DATE",
-      "W 6 Implicit narrowing conversion from LREAL to REAL",
-      "W 7 Implicit narrowing conversion from DINT to INT",
-      "W 21 Implicit narrowing conversion from LREAL to REAL",
-      "W 22 Implicit narrowing conversion from DINT to INT",
-    ]);
+    expect(diagnostics({}).sort()).toEqual(
+      [
+        "E 5 Cannot assign LDATE to DATE",
+        "E 20 Cannot assign LDATE to DATE",
+        "W 3 Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+        "W 4 Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+        "W 10 Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+        "W 18 Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+        "W 19 Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+        "W 6 Implicit narrowing conversion from LREAL to REAL",
+        "W 7 Implicit narrowing conversion from DINT to INT",
+        "W 21 Implicit narrowing conversion from LREAL to REAL",
+        "W 22 Implicit narrowing conversion from DINT to INT",
+      ].sort(),
+    );
   });
 
   it("is checked as a POU variable's is, under --strict", () => {
-    expect(diagnostics({ strict: true })).toEqual([
-      "E 3 Cannot assign LTIME to TIME",
-      "E 4 Cannot assign LTIME to TIME",
-      "E 5 Cannot assign LDATE to DATE",
-      "E 6 Implicit conversion from LREAL to REAL is not allowed; use LREAL_TO_REAL",
-      "E 7 Implicit conversion from DINT to INT is not allowed; use DINT_TO_INT",
-      "E 10 Cannot assign LTIME to TIME",
-      "E 18 Cannot assign LTIME to TIME",
-      "E 19 Cannot assign LTIME to TIME",
-      "E 20 Cannot assign LDATE to DATE",
-      "E 21 Implicit conversion from LREAL to REAL is not allowed; use LREAL_TO_REAL",
-      "E 22 Implicit conversion from DINT to INT is not allowed; use DINT_TO_INT",
-    ]);
+    expect(diagnostics({ strict: true }).sort()).toEqual(
+      [
+        "E 3 Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+        "E 4 Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+        "E 5 Cannot assign LDATE to DATE",
+        "E 6 Implicit conversion from LREAL to REAL is not allowed; use LREAL_TO_REAL",
+        "E 7 Implicit conversion from DINT to INT is not allowed; use DINT_TO_INT",
+        "E 10 Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+        "E 18 Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+        "E 19 Cannot assign LTIME to TIME without a conversion; use LTIME_TO_TIME",
+        "E 20 Cannot assign LDATE to DATE",
+        "E 21 Implicit conversion from LREAL to REAL is not allowed; use LREAL_TO_REAL",
+        "E 22 Implicit conversion from DINT to INT is not allowed; use DINT_TO_INT",
+      ].sort(),
+    );
   });
 
   it("leaves an address stored in an integer to its own check", () => {

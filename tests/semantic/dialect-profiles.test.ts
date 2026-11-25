@@ -106,6 +106,16 @@ describe("resolveDialect", () => {
       resolveDialect({ features: ["+call_result_access"] }).features,
     ).toContain("call_result_access");
   });
+  it("library_namespaces is known but in neither the default set nor iec-3", () => {
+    expect(KNOWN_FEATURES).toContain("library_namespaces");
+    expect(DEFAULT_FEATURES.has("library_namespaces")).toBe(false);
+    expect(resolveDialect({ dialect: "iec-3" }).features).not.toContain(
+      "library_namespaces",
+    );
+    expect(
+      resolveDialect({ features: ["+library_namespaces"] }).features,
+    ).toContain("library_namespaces");
+  });
 
   it("property is known but in neither the default set nor iec-3", () => {
     expect(KNOWN_FEATURES).toContain("property");
@@ -340,7 +350,7 @@ describe("resolveDialect", () => {
 
   it("an unknown --feature is an error", () => {
     expect(errorOf(() => resolveDialect({ features: ["+goto"] })).message).toBe(
-      "unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators, type_colon_optional, conditional_return, platform_types, bit_type, string_default_80, fb_property, st_actions, bare_self_caret, enum_dot_qualify, struct_compare, dynamic_memory, var_inst, call_result_access)",
+      "unknown feature 'goto' in --feature (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators, type_colon_optional, conditional_return, platform_types, bit_type, string_default_80, fb_property, st_actions, bare_self_caret, enum_dot_qualify, struct_compare, dynamic_memory, var_inst, call_result_access, library_namespaces)",
     );
   });
 
@@ -352,7 +362,7 @@ describe("resolveDialect", () => {
       ),
     );
     expect(e.message).toBe(
-      "unknown feature 'goto' in dialect file p/x.json (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators, type_colon_optional, conditional_return, platform_types, bit_type, string_default_80, fb_property, st_actions, bare_self_caret, enum_dot_qualify, struct_compare, dynamic_memory, var_inst, call_result_access)",
+      "unknown feature 'goto' in dialect file p/x.json (known: program_methods, pointer_to, reference_to, ref_assign, self_caret, property, postfix_enum_base, named_global_lists, struct_extends, union, fb_init, trunc_dint, interface_zero, end_semicolon_optional, conditional_pragmas, vendor_operators, type_colon_optional, conditional_return, platform_types, bit_type, string_default_80, fb_property, st_actions, bare_self_caret, enum_dot_qualify, struct_compare, dynamic_memory, var_inst, call_result_access, library_namespaces)",
     );
   });
 

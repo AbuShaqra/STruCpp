@@ -54,6 +54,9 @@ export interface LibraryConfig {
   version: string;
   /** C++ namespace the compiled archive lives in. */
   namespace: string;
+  /** ST namespace that qualifies the library's names (feature
+   *  library_namespaces); default: from `name`. */
+  stNamespace?: string;
   /** Human-readable summary surfaced in tooling. */
   description?: string;
   /** Marks the library as a built-in runtime library (vs. user-installed). */
@@ -117,6 +120,9 @@ function validateLibraryConfig(raw: unknown, path: string): LibraryConfig {
     namespace: obj.namespace as string,
   };
   if (typeof obj.displayName === "string") config.displayName = obj.displayName;
+  if (typeof obj.stNamespace === "string" && obj.stNamespace !== "") {
+    config.stNamespace = obj.stNamespace;
+  }
   if (typeof obj.description === "string") config.description = obj.description;
   if (typeof obj.isBuiltin === "boolean") config.isBuiltin = obj.isBuiltin;
   if (typeof obj.codesysSource === "string")

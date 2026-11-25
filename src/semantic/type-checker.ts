@@ -10,6 +10,7 @@
  * Sub-Phase C: Validates type rules (assignment compatibility, conditions, FOR vars, function args).
  */
 
+import { spellingsOf } from "./declared-spellings.js";
 import { IEC_DEFAULT_STRING_LENGTH } from "./string-default-length.js";
 import { exactTimeLiteralNanoseconds } from "../project-model.js";
 import type {
@@ -50,6 +51,7 @@ import type {
 } from "../frontend/ast.js";
 import type {
   AnySymbol,
+  FunctionBlockSymbol,
   FunctionSymbol,
   SymbolTables,
   Scope,
@@ -73,6 +75,7 @@ import {
   resolveAccessType,
   resolveArrayElementAccessType,
   resolveFieldDeclaration,
+  undeclaredFbAncestor,
   resolveArrayShape,
   resolveArrayShapeByName,
   type AccessLookup,
@@ -327,6 +330,46 @@ function stringText(shape: ReferenceShape): string {
   return shape.length === undefined
     ? shape.base
     : `${shape.base}(${String(shape.length)})`;
+}
+
+/**
+ * A constant expression of LTIME literals the checker may not have typed yet:
+ * a literal, signed or in parentheses, a sum or difference of such, or one
+ * times or divided by a number literal (`-LTIME#3s`, `LTIME#1s * 2`).
+ */
+export function isLtimeConstantExpression(expr: Expression): boolean {
+  switch (expr.kind) {
+    case "LiteralExpression":
+      return expr.literalType === "LTIME";
+    case "ParenthesizedExpression":
+      return isLtimeConstantExpression(expr.expression);
+    case "UnaryExpression":
+      return (
+        (expr.operator === "-" || expr.operator === "+") &&
+        isLtimeConstantExpression(expr.operand)
+      );
+    case "BinaryExpression":
+      if (expr.operator === "+" || expr.operator === "-") {
+        return (
+          isLtimeConstantExpression(expr.left) &&
+          isLtimeConstantExpression(expr.right)
+        );
+      }
+      if (expr.operator === "*" || expr.operator === "/") {
+        const number = (e: Expression): boolean =>
+          e.kind === "LiteralExpression" &&
+          (e.literalType === "INT" || e.literalType === "REAL");
+        return (
+          (isLtimeConstantExpression(expr.left) && number(expr.right)) ||
+          (expr.operator === "*" &&
+            number(expr.left) &&
+            isLtimeConstantExpression(expr.right))
+        );
+      }
+      return false;
+    default:
+      return false;
+  }
 }
 
 /**
@@ -1315,6 +1358,7 @@ export class TypeChecker {
     }
 
     this.checkInitialValueOperators(ast);
+    this.reportEnumGlobalNames(ast);
 
     return {
       errors: this.errors,
@@ -1328,7 +1372,8 @@ export class TypeChecker {
    * Operators in an initial value the checks above do not type (a STRUCT
    * field default, an array or structure initializer, a global's initial
    * value) are refused as in a body: a mixed STRING/WSTRING comparison, a
-   * negated TIME constant and MOD of a REAL or LREAL. Operand types come from
+   * negated TIME constant, MOD of a REAL or LREAL and the date and time
+   * operators of Tables 30 and 31. Operand types come from
    * literals, declared variables and types already resolved; nothing is
    * inferred anew.
    */
@@ -1348,6 +1393,12 @@ export class TypeChecker {
         }
         if (node.kind !== "BinaryExpression") return;
         const expr = node as BinaryExpression;
+        // Table 30/31 in a STRUCT field default or an initializer element
+        this.withLeafOperandTypes(expr, scope, () => {
+          if (!this.refuseTemporalOperands(expr, scope)) {
+            this.refuseTable30Operands(expr, scope);
+          }
+        });
         this.markInitialMixedSignBitwise(expr, scope);
         if (expr.operator === "MOD") {
           this.refuseRealMod(expr, undefined, undefined, scope);
@@ -1407,6 +1458,38 @@ export class TypeChecker {
         visit(field.initialValue, global);
       }
     }
+  }
+
+  /**
+   * Run `check` with the literal and plain-variable operands of `expr` typed,
+   * silently; types it set are removed again (initial values not typed here).
+   */
+  private withLeafOperandTypes(
+    expr: BinaryExpression,
+    scope: Scope,
+    check: () => void,
+  ): void {
+    const typed: Expression[] = [];
+    for (let operand of [expr.left, expr.right]) {
+      while (operand.kind === "ParenthesizedExpression") {
+        operand = operand.expression;
+      }
+      const leaf =
+        operand.kind === "LiteralExpression" ||
+        (operand.kind === "VariableExpression" &&
+          operand.fieldAccess.length === 0 &&
+          operand.subscripts.length === 0 &&
+          !operand.isDereference);
+      if (!leaf || operand.resolvedType !== undefined) continue;
+      const errors = this.errors.length;
+      const warnings = this.warnings.length;
+      this.inferType(operand, scope);
+      this.errors.length = errors;
+      this.warnings.length = warnings;
+      typed.push(operand);
+    }
+    check();
+    for (const operand of typed) delete operand.resolvedType;
   }
 
   /**
@@ -1541,10 +1624,13 @@ export class TypeChecker {
       const local = resolveFieldType(typeName, fieldName, this.ast);
       if (local) return local;
     }
-    // A library block's members and properties, then those of its bases.
+    // A library block's members and properties, then those of its bases
+    // (also of the library block a block declared here extends).
     const fu = fieldName.toUpperCase();
     const seen = new Set<string>();
-    let fb = this.symbolTables.lookupFunctionBlock(typeName);
+    let fb = this.symbolTables.lookupFunctionBlock(
+      (this.ast && undeclaredFbAncestor(typeName, this.ast)) ?? typeName,
+    );
     while (fb !== undefined && !seen.has(fb.name.toUpperCase())) {
       seen.add(fb.name.toUpperCase());
       for (const m of [
@@ -1969,11 +2055,6 @@ export class TypeChecker {
     // Declarations of a function block, with the block as the context of
     // its initializers, then every other declaration.
     const seen = new Set<VarDeclaration>();
-    const fields = new Set<VarDeclaration>(
-      ast.types.flatMap((t) =>
-        t.definition.kind === "StructDefinition" ? t.definition.fields : [],
-      ),
-    );
     const visit = (root: ASTNode, context: string | undefined): void =>
       walkAST(root, (node) => {
         if (node.kind !== "VarDeclaration") return;
@@ -1982,13 +2063,46 @@ export class TypeChecker {
         seen.add(decl);
         if (decl.initialValue) {
           this.checkInitializerElements(decl.type, decl.initialValue, context);
-          this.refuseLtimeTimeDefault(decl, fields.has(decl));
+          // An LTIME initial value of a TIME: converted, a warning by default
+          decl.initialValue = this.ltimeElementIntoTime(
+            decl.type,
+            decl.initialValue,
+          );
           this.typeInitializerNots(decl.type, decl.initialValue);
         }
       });
-    for (const fb of ast.functionBlocks) visit(fb, fb.name);
+    // Each POU's declarations with its scope (its constants read there)
+    const inScope = (scope: Scope | undefined, run: () => void): void => {
+      this.initializerScope = scope;
+      try {
+        run();
+      } finally {
+        this.initializerScope = undefined;
+      }
+    };
+    for (const fb of ast.functionBlocks) {
+      inScope(this.symbolTables.getFBScope(fb.name), () => visit(fb, fb.name));
+    }
+    for (const p of ast.programs) {
+      inScope(this.symbolTables.getProgramScope(p.name), () =>
+        visit(p, undefined),
+      );
+    }
+    for (const f of ast.functions) {
+      inScope(this.symbolTables.getFunctionScope(f.name), () =>
+        visit(f, undefined),
+      );
+    }
     visit(ast, undefined);
     for (const t of ast.types) {
+      // `TYPE AU : UE := LK`: a value of the type itself
+      if (t.defaultValue) {
+        this.settleBareValue(
+          t.defaultValue,
+          t.name,
+          this.symbolTables.globalScope,
+        );
+      }
       if (t.defaultValue && t.definition.kind === "TypeReference") {
         this.checkCharInitialValue(t.name, t.defaultValue);
       }
@@ -1999,51 +2113,6 @@ export class TypeChecker {
         );
       }
     }
-  }
-
-  /**
-   * An LTIME as the initial value of a TIME declared through an alias, or of
-   * a TIME STRUCT field, is refused as `x : TIME := LTIME#3ms` is (a plain
-   * TIME variable is refused by the elementary initial value check).
-   */
-  private refuseLtimeTimeDefault(
-    decl: VarDeclaration,
-    structField: boolean,
-  ): void {
-    const value = decl.initialValue;
-    const type = decl.type;
-    if (
-      value === undefined ||
-      (type.referenceKind ?? "none") !== "none" ||
-      type.referenceChain !== undefined ||
-      type.arrayDimensions !== undefined ||
-      this.reportedCharValues.has(value) ||
-      canonicalElementaryName(this.aliasBase(type.name)) !== "TIME" ||
-      (!structField && ELEMENTARY_TYPES[type.name.toUpperCase()] !== undefined)
-    ) {
-      return;
-    }
-    let inner = value;
-    while (inner.kind === "ParenthesizedExpression") inner = inner.expression;
-    const valueType =
-      inner.kind === "LiteralExpression"
-        ? inner.literalType
-        : inner.resolvedType?.typeKind === "elementary"
-          ? this.aliasBase((inner.resolvedType as ElementaryType).name)
-          : undefined;
-    if (
-      valueType === undefined ||
-      canonicalElementaryName(valueType) !== "LTIME"
-    ) {
-      return;
-    }
-    this.reportedCharValues.add(value);
-    this.addError(
-      `Cannot assign LTIME to ${type.name.toUpperCase()}`,
-      value.sourceSpan.startLine,
-      value.sourceSpan.startCol,
-      value.sourceSpan.file,
-    );
   }
 
   /**
@@ -2072,9 +2141,10 @@ export class TypeChecker {
             ? { name: type.elementTypeName, referenceKind: "none" }
             : undefined
           : resolveArrayElementAccessType(type.name, this.ast);
-      for (const e of value.elements) {
+      value.elements.forEach((e, i) => {
         this.checkInitializerElements(element, e, context);
-      }
+        value.elements[i] = this.ltimeElementIntoTime(element, e);
+      });
       return;
     }
     if (
@@ -2100,6 +2170,7 @@ export class TypeChecker {
       this.refuseInternalMember(upper, el.name, el, context, true);
       if (field) {
         this.checkInitializerElements(field.type, el.value, context);
+        el.value = this.ltimeElementIntoTime(field.type, el.value);
         continue;
       }
       if (this.resolveFieldTypeAnywhere(upper, el.name) !== undefined) continue;
@@ -2129,12 +2200,115 @@ export class TypeChecker {
   }
 
   /**
+   * An LTIME element of an array or structure initializer stored in a TIME:
+   * a warning by default (converted, as LTIME_TO_TIME), an error under iec-3
+   * and --strict. Returns the element, converted where it warns.
+   */
+  private ltimeElementIntoTime(
+    type: AccessType | undefined,
+    value: Expression,
+  ): Expression {
+    if (
+      type === undefined ||
+      type.arrayDimensions !== undefined ||
+      (type.referenceKind ?? "none") !== "none" ||
+      type.referenceChain !== undefined ||
+      canonicalElementaryName(this.aliasBase(type.name)) !== "TIME"
+    ) {
+      return value;
+    }
+    let inner = value;
+    // `(…)` and a sign keep the operand's type (`-LTIME#3s`)
+    while (
+      inner.kind === "ParenthesizedExpression" ||
+      (inner.kind === "UnaryExpression" &&
+        (inner.operator === "-" || inner.operator === "+"))
+    ) {
+      inner =
+        inner.kind === "ParenthesizedExpression"
+          ? inner.expression
+          : inner.operand;
+    }
+    // A constant read before the initial value is typed: its type
+    const named =
+      inner.kind === "VariableExpression" &&
+      inner.resolvedType === undefined &&
+      inner.fieldAccess.length === 0 &&
+      inner.subscripts.length === 0 &&
+      !inner.isDereference
+        ? (this.initializerScope ?? this.symbolTables.globalScope).lookup(
+            inner.name,
+          )
+        : undefined;
+    const resolved =
+      inner.resolvedType ??
+      (named?.kind === "variable" || named?.kind === "constant"
+        ? named.type
+        : undefined);
+    const valueType =
+      inner.kind === "LiteralExpression"
+        ? inner.literalType
+        : resolved?.typeKind === "elementary"
+          ? this.aliasBase((resolved as ElementaryType).name)
+          : undefined;
+    if (
+      (valueType === undefined ||
+        canonicalElementaryName(valueType) !== "LTIME") &&
+      !isLtimeConstantExpression(value)
+    ) {
+      return value;
+    }
+    const message = `Cannot assign LTIME to ${type.name.toUpperCase()} without a conversion; use LTIME_TO_TIME`;
+    const span = value.sourceSpan;
+    if (this.strict || this.inOutErrors) {
+      this.addError(message, span.startLine, span.startCol, span.file);
+      return value;
+    }
+    this.addWarning(message, span.startLine, span.startCol, span.file);
+    this.convertLtimeInPlace(value);
+    return value;
+  }
+
+  /**
+   * `value` (an LTIME) becomes `LTIME_TO_TIME(value)`. The node itself
+   * becomes the call, so every holder of it (the project model's copy of a
+   * declaration included) sees the conversion.
+   */
+  private convertLtimeInPlace(value: Expression): void {
+    const span = value.sourceSpan;
+    const original = { ...value } as Expression;
+    const node = value as unknown as Record<string, unknown>;
+    for (const key of Object.keys(node)) delete node[key];
+    const call: FunctionCallExpression = {
+      kind: "FunctionCallExpression",
+      sourceSpan: span,
+      functionName: "LTIME_TO_TIME",
+      arguments: [
+        {
+          kind: "Argument",
+          sourceSpan: span,
+          isOutput: false,
+          value: original,
+        },
+      ],
+    };
+    const time = ELEMENTARY_TYPES["TIME"];
+    if (time !== undefined) call.resolvedType = time;
+    Object.assign(node, call);
+  }
+
+  /**
    * The initial value of a variable, field or element declared with an
    * enumeration type (not an alias of one) is a value of that enumeration.
    * A value whose type is not known here is left alone.
    */
   private checkEnumInitialValue(typeName: string, value: Expression): void {
     if (this.typeDefaults.has(value)) return;
+    this.settleBareValue(
+      value,
+      typeName,
+      this.initializerScope ?? this.symbolTables.globalScope,
+    );
     const target = this.symbolTables.lookupType(typeName)?.resolvedType;
     if (target?.typeKind !== "enum") return;
     const fail = (message: string): void =>
@@ -2454,6 +2628,12 @@ export class TypeChecker {
           (m) => m.name.toUpperCase() === expr.name.toUpperCase(),
         ),
     );
+    // A library enumeration's value (none of the sources has it)
+    if (owners.length === 0 && symbol.kind === "enumValue") {
+      return this.symbolTables.globalScope.definedByLibrary(expr.name)
+        ? enumNamed(symbol.enumType)
+        : undefined;
+    }
     return owners.length === 1 ? enumNamed(owners[0]!.name) : undefined;
   }
 
@@ -2484,6 +2664,28 @@ export class TypeChecker {
       return this.selfMemberType(expr);
     }
 
+    // A value its context settled as an enumeration's (`u : UE := LK` beside
+    // a library global `LK`)
+    if (
+      expr.enumType !== undefined &&
+      symbol.kind !== "enumValue" &&
+      !this.hasMemberAccess(expr)
+    ) {
+      const settled = this.symbolTables.lookupType(expr.enumType)?.resolvedType;
+      if (settled?.typeKind === "enum") {
+        expr.resolvedType = settled;
+        return settled;
+      }
+    }
+    // Both a value of an enumeration of the sources and a library's global,
+    // not settled as either: refused by reportEnumGlobalNames, untyped here
+    if (
+      expr.enumType === undefined &&
+      expr.libraryGlobal !== true &&
+      this.isEnumGlobalName(expr, scope)
+    ) {
+      return undefined;
+    }
     const enumValueType = this.enumValueType(expr, symbol);
     if (enumValueType) return enumValueType;
 
@@ -2893,6 +3095,18 @@ export class TypeChecker {
     expr: BinaryExpression,
     scope: Scope,
   ): IECType | undefined {
+    // An operand needs an elementary value: not a STRUCT or FB global
+    this.settleValueBesideNonElementaryGlobal(expr.left, scope);
+    this.settleValueBesideNonElementaryGlobal(expr.right, scope);
+    // `u = LK`: a bare value compared with an enumeration is that enumeration's
+    if (expr.operator === "=" || expr.operator === "<>") {
+      for (const [one, other] of [
+        [expr.left, expr.right],
+        [expr.right, expr.left],
+      ] as const) {
+        this.settleBareValue(one, this.contextTypeNameOf(other, scope), scope);
+      }
+    }
     if (expr.operator === "+" || expr.operator === "-") {
       // The operands of a + / - chain are checked with it, as one chain
       for (let side of [expr.left, expr.right]) {
@@ -2994,6 +3208,18 @@ export class TypeChecker {
       // `p^ MOD i`: an operand with no expression type is judged by its reads
       if (expr.operator === "MOD") {
         this.refuseRealMod(expr, leftType, rightType, scope);
+      }
+      // `b := pb^ + b`: --strict arithmetic on the BYTE a pointer reaches
+      const l = leftType ?? this.accessedElementaryType(expr.left, scope);
+      const r = rightType ?? this.accessedElementaryType(expr.right, scope);
+      if (
+        this.strict &&
+        STRICT_ARITHMETIC_OPS.has(expr.operator) &&
+        expr.addressArithmetic !== true &&
+        l !== undefined &&
+        r !== undefined
+      ) {
+        this.checkStrictArithmetic(expr, l, r);
       }
       return undefined;
     }
@@ -3134,11 +3360,20 @@ export class TypeChecker {
     // of the difference). This breaks RTC-style code that captures an
     // offset between two datetimes — including the Additional Function
     // Blocks library's RTC FB and any user code doing date arithmetic.
+    // (operands of an alias type, `TYPE MyDate : DATE`, as their base)
     else if (
       ["+", "-"].includes(expr.operator) &&
-      isDateTimeArithmetic(leftType, rightType, expr.operator)
+      isDateTimeArithmetic(
+        this.elementaryAliasBase(leftType),
+        this.elementaryAliasBase(rightType),
+        expr.operator,
+      )
     ) {
-      type = resolveDateTimeArithmetic(leftType, rightType, expr.operator);
+      type = resolveDateTimeArithmetic(
+        this.elementaryAliasBase(leftType),
+        this.elementaryAliasBase(rightType),
+        expr.operator,
+      );
     }
     // TOD or DT MOD a TIME: the time within that period, of the instant's type
     else if (expr.operator === "MOD" && this.temporalPeriodMod(expr, scope)) {
@@ -5031,6 +5266,7 @@ export class TypeChecker {
     expr: UnaryExpression,
     scope: Scope,
   ): IECType | undefined {
+    this.settleValueBesideNonElementaryGlobal(expr.operand, scope);
     const operandType = this.resolveExprType(expr.operand, scope);
 
     if (operandType === undefined) {
@@ -5100,6 +5336,19 @@ export class TypeChecker {
     scope: Scope,
   ): IECType | undefined {
     this.bindStdFunctionCallArguments(expr, scope);
+    // A bare value of a library enumeration an input's type is: its value
+    // there, before the argument is typed (`LF(Blue)` beside a user `Blue`)
+    if (expr.arguments.some((a) => a.value.kind === "VariableExpression")) {
+      const inputs = this.argumentInputs(expr, scope);
+      if (inputs !== undefined) {
+        stripEnEno([...expr.arguments]).forEach((arg, i) => {
+          if (arg.isOutput) return;
+          const input = boundInput(inputs, arg, i);
+          if (input === undefined) return;
+          this.settleBareValue(arg.value, input.type.name, scope);
+        });
+      }
+    }
     // Resolve argument expressions
     for (const arg of expr.arguments) {
       this.resolveExprType(arg.value, scope);
@@ -5153,6 +5402,7 @@ export class TypeChecker {
         this.isStdTimerType(this.calledFbType(expr, scope)),
       );
       if (this.strict) this.checkStrictConversionArgument(expr, scope);
+      this.checkConversionArgument(expr, scope);
     }
 
     const nameUpper = expr.functionName.toUpperCase();
@@ -6032,6 +6282,24 @@ export class TypeChecker {
     }
     if (binding.ordered) expr.arguments = binding.ordered;
     if (binding.failed) this.unboundStdFunctionCalls.add(expr);
+    // A conversion's or ANY_* input's argument needs an elementary value
+    const conversion =
+      desc === undefined ||
+      desc.name.toUpperCase().startsWith("TO_") ||
+      this.stdRegistry.resolveConversion(upper) !== undefined;
+    const inputs = stripEnEno([...expr.arguments]).filter((a) => !a.isOutput);
+    inputs.forEach((arg, i) => {
+      const param =
+        arg.name !== undefined
+          ? params.find((p) => p.name.toUpperCase() === arg.name!.toUpperCase())
+          : params[Math.min(i, params.length - 1)];
+      if (
+        conversion ||
+        (param !== undefined && !param.isByRef && param.constraint !== "ANY")
+      ) {
+        this.settleValueBesideNonElementaryGlobal(arg.value, scope);
+      }
+    });
   }
 
   /** Function calls whose argument names were already checked. */
@@ -6064,6 +6332,7 @@ export class TypeChecker {
     if (this.ownMethod(name)) return;
     let declaredName: string;
     let params: string[];
+    let library: string | undefined;
     const userFn = this.findUserFunction(name);
     if (userFn) {
       declaredName = userFn.name;
@@ -6089,6 +6358,7 @@ export class TypeChecker {
       if (libFn === undefined) return;
       declaredName = libFn.name;
       params = libFn.parameters.map((p) => p.name);
+      library = libFn.libraryName;
     }
     const known = new Set(params.map((p) => p.toUpperCase()));
     for (const arg of stripEnEno([...expr.arguments])) {
@@ -6097,8 +6367,14 @@ export class TypeChecker {
         expr,
         this.misnamedArgumentCount(expr) + 1,
       );
+      // A library FUNCTION (one that replaces a standard function of its
+      // name, say) names its library and parameters.
+      const detail =
+        library === undefined || library === STD_FUNCTIONS_LIBRARY
+          ? ""
+          : ` (the FUNCTION of library ${library}; its parameters: ${params.join(", ") || "none"})`;
       this.addError(
-        `Function '${declaredName}' has no parameter named '${arg.name}'`,
+        `Function '${declaredName}' has no parameter named '${arg.name}'${detail}`,
         arg.sourceSpan.startLine,
         arg.sourceSpan.startCol,
         arg.sourceSpan.file,
@@ -6387,6 +6663,7 @@ export class TypeChecker {
               ? this.resolveExprType(value, scope)
               : undefined;
           if (targetType !== undefined && valueType !== undefined) {
+            this.ltimeStores.add(value);
             this.validateAssignment(
               targetType,
               valueType,
@@ -7137,6 +7414,7 @@ export class TypeChecker {
         if (this.reportedCharValues.has(decl.initialValue)) continue;
         const valueType = this.resolveExprType(decl.initialValue, scope);
         if (!valueType) continue;
+        this.ltimeStores.add(decl.initialValue);
         this.validateAssignment(
           targetType,
           valueType,
@@ -8071,6 +8349,492 @@ export class TypeChecker {
     }
   }
 
+  /**
+   * `r := ST;`: a type or function block name (of the sources or a library)
+   * stored as a value, alone or as an operand, has no C++ value. True when
+   * refused.
+   */
+  private refuseTypeAsValue(
+    value: Expression,
+    scope: Scope,
+    /** The declared type of the variable stored in, when known. */
+    targetTypeName?: string,
+  ): boolean {
+    let refused = false;
+    const visit = (e: Expression, context: string | undefined): void => {
+      switch (e.kind) {
+        case "ParenthesizedExpression":
+          visit(e.expression, context);
+          return;
+        case "UnaryExpression":
+          visit(e.operand, context);
+          return;
+        case "BinaryExpression":
+          // `k = Pump`: each side of a comparison has the other's type as context
+          if (e.operator === "=" || e.operator === "<>") {
+            visit(e.left, this.contextTypeNameOf(e.right, scope));
+            visit(e.right, this.contextTypeNameOf(e.left, scope));
+            return;
+          }
+          visit(e.left, context);
+          visit(e.right, context);
+          return;
+        case "VariableExpression": {
+          if (
+            e.fieldAccess.length > 0 ||
+            e.subscripts.length > 0 ||
+            e.isDereference ||
+            (e.accessChain?.length ?? 0) > 0
+          ) {
+            return;
+          }
+          const sym = scope.lookup(e.name);
+          const kind = sym?.kind;
+          if (kind !== "type" && kind !== "functionBlock") return;
+          // Only a POU-level type, not one a POU's own scope declares (an
+          // accessor's property), nor a member of the block being checked,
+          // nor the name of an enumeration value (`k := Motor`)
+          if (this.symbolTables.globalScope.lookup(e.name) !== sym) return;
+          // An enumeration value of the name: the one the target's type is,
+          // or one no TYPE or FB of the sources shares its name with
+          if (
+            this.enumValueOfTarget(e.name, context) ||
+            (this.isEnumValueName(e.name) && !this.isSourceTypeName(e.name))
+          ) {
+            return;
+          }
+          if (
+            this.currentFBName !== undefined &&
+            (this.fbMemberNames(this.currentFBName)?.has(
+              e.name.toUpperCase(),
+            ) ??
+              true)
+          ) {
+            return;
+          }
+          refused = true;
+          this.addError(
+            `'${e.name}' names a ${kind === "type" ? "type" : "function block"}, not a value`,
+            e.sourceSpan.startLine,
+            e.sourceSpan.startCol,
+            e.sourceSpan.file,
+          );
+          return;
+        }
+        default:
+          return;
+      }
+    };
+    visit(value, targetTypeName);
+    return refused;
+  }
+
+  /**
+   * A bare value of a library enumeration `typeName` is (through aliases),
+   * stored there, that an enumeration of the sources also has (`c : LColor
+   * := Red` beside a user `Red`): it is the library enumeration's.
+   */
+  private settleLibraryEnumValue(
+    value: Expression,
+    typeName: string | undefined,
+    scope: Scope,
+  ): void {
+    if (
+      typeName === undefined ||
+      value.kind !== "VariableExpression" ||
+      // A variable of the sources always wins over a value of its name
+      this.isSourceVariable(value.name, scope) ||
+      value.enumType !== undefined ||
+      value.fieldAccess.length > 0 ||
+      value.subscripts.length > 0 ||
+      value.isDereference ||
+      (value.accessChain?.length ?? 0) > 0
+    ) {
+      return;
+    }
+    const upper = value.name.toUpperCase();
+    let current = typeName.toUpperCase();
+    for (let depth = 0; depth < 32; depth++) {
+      const sym = this.symbolTables.lookupType(current);
+      if (sym === undefined) return;
+      if (sym.resolvedType?.typeKind === "enum") {
+        const type = sym.resolvedType as EnumType;
+        if (
+          (this.symbolTables.globalScope.definedByLibrary(type.name) ||
+            this.isLibraryValueName(upper)) &&
+          type.values.some((v) => v.toUpperCase() === upper)
+        ) {
+          value.enumType = type.name;
+        }
+        return;
+      }
+      const def = sym.declaration?.definition;
+      if (
+        def?.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        def.referenceKind !== "none" ||
+        def.name.toUpperCase() === current
+      ) {
+        return;
+      }
+      current = def.name.toUpperCase();
+    }
+  }
+
+  /** `upper` names a global or constant of a library (`LK` of `VAR_GLOBAL CONSTANT`). */
+  private isLibraryValueName(upper: string): boolean {
+    const sym = this.symbolTables.globalScope.lookup(upper);
+    return (
+      (sym?.kind === "variable" || sym?.kind === "constant") &&
+      this.symbolTables.globalScope.definedByLibrary(upper)
+    );
+  }
+
+  /** A bare name: no member, index or dereference. */
+  private isBareName(e: Expression): e is VariableExpression {
+    return e.kind === "VariableExpression" && !this.hasMemberAccess(e);
+  }
+
+  /** `name` is a variable or constant this compile declares (not a library's). */
+  private isSourceVariable(name: string, scope: Scope): boolean {
+    const sym = scope.lookup(name);
+    if (sym?.kind !== "variable" && sym?.kind !== "constant") return false;
+    // A local, or a global the library did not register
+    return (
+      this.symbolTables.globalScope.lookup(name) !== sym ||
+      !this.symbolTables.globalScope.definedByLibrary(name)
+    );
+  }
+
+  /**
+   * The type name of `e` as a context for a value stored in or compared with
+   * it (a variable, member, element or call), typed silently; undefined when
+   * it has no named type.
+   */
+  private contextTypeNameOf(e: Expression, scope: Scope): string | undefined {
+    // Read from declarations only: typing `e` here would report its errors
+    // before the check that owns them
+    while (e.kind === "ParenthesizedExpression") e = e.expression;
+    if (e.kind === "FunctionCallExpression") {
+      if (e.instance !== undefined || e.functionName.includes(".")) {
+        return undefined;
+      }
+      const declared =
+        this.findUserFunction(e.functionName)?.returnType ??
+        this.symbolTables.lookupFunction(e.functionName)?.declaration
+          ?.returnType;
+      return declared !== undefined &&
+        (declared.referenceKind ?? "none") === "none" &&
+        declared.arrayDimensions === undefined
+        ? declared.name
+        : undefined;
+    }
+    if (e.kind !== "VariableExpression") return undefined;
+    const result = this.resultTargetType(e);
+    if (result !== undefined) return result.name;
+    if (this.isBareName(e)) {
+      if (e.enumType !== undefined) return e.enumType;
+      if (e.libraryGlobal !== true && this.isEnumGlobalName(e, scope)) {
+        return undefined;
+      }
+      const sym = scope.lookup(e.name);
+      if (sym?.kind === "enumValue") return sym.enumType;
+      if (sym?.kind !== "variable" && sym?.kind !== "constant")
+        return undefined;
+    }
+    const type =
+      this.accessedType(e, scope) ?? this.propertyTargetType(e, scope);
+    // A REFERENCE TO stands for its target
+    return type !== undefined &&
+      ["none", "reference_to"].includes(type.referenceKind ?? "none") &&
+      type.referenceChain === undefined &&
+      type.arrayDimensions === undefined
+      ? type.name
+      : undefined;
+  }
+
+  /**
+   * A bare value stored in, compared with or passed as `typeName`: a value of
+   * a library enumeration hidden by one of the sources (`c : LColor := Red`),
+   * or a name that is both a value of an enumeration of the sources and a
+   * library's global (`LK`). The latter is the value where `typeName` is that
+   * enumeration, the global where it is the global's own enumeration, STRUCT,
+   * FB or ARRAY type, the value where an elementary value is needed and the
+   * global is not elementary; anywhere else `reportEnumGlobalNames` refuses it.
+   */
+  private settleBareValue(
+    value: Expression,
+    typeName: string | undefined,
+    scope: Scope,
+  ): void {
+    while (value.kind === "ParenthesizedExpression") value = value.expression;
+    this.settleLibraryEnumValue(value, typeName, scope);
+    if (
+      typeName === undefined ||
+      !this.isEnumGlobalName(value, scope) ||
+      value.enumType !== undefined
+    ) {
+      return;
+    }
+    const global = this.libraryGlobalShape(value.name);
+    if (global === undefined) return;
+    if (
+      (global.kind === "enum" ||
+        global.kind === "struct" ||
+        global.kind === "functionBlock" ||
+        global.kind === "array") &&
+      this.aliasBase(typeName) === global.name
+    ) {
+      value.libraryGlobal = true;
+      return;
+    }
+    // An elementary context: not a STRUCT, FB or ARRAY global
+    if (
+      ELEMENTARY_TYPES[canonicalElementaryName(this.aliasBase(typeName))] !==
+      undefined
+    ) {
+      this.settleValueBesideNonElementaryGlobal(value, scope);
+    }
+  }
+
+  /**
+   * A name that is both a value of an enumeration of the sources and a
+   * library global of no elementary or enumeration type (`MATH` of
+   * CONSTANTS_MATH), where an elementary value is needed (`TO_INT(MATH)`): the
+   * global cannot be it, so it is the enumeration's value.
+   */
+  private settleValueBesideNonElementaryGlobal(
+    value: Expression,
+    scope: Scope,
+  ): void {
+    while (value.kind === "ParenthesizedExpression") value = value.expression;
+    if (
+      !this.isEnumGlobalName(value, scope) ||
+      value.enumType !== undefined ||
+      value.libraryGlobal === true
+    ) {
+      return;
+    }
+    const kind = this.libraryGlobalShape(value.name)?.kind;
+    if (kind === undefined || kind === "elementary" || kind === "enum") return;
+    const owner = this.sourceEnumOwning(value.name);
+    if (owner !== undefined) value.enumType = owner;
+  }
+
+  /**
+   * The declared type of library global `name` (through aliases) and its
+   * kind: elementary, enum, struct, functionBlock or array (an inline or a
+   * named ARRAY); undefined for a reference or a type not known here.
+   */
+  private libraryGlobalShape(
+    name: string,
+  ): { name: string; kind: string } | undefined {
+    const global = this.symbolTables.globalScope.lookup(name);
+    if (global?.kind !== "variable" && global?.kind !== "constant") {
+      return undefined;
+    }
+    const declared = (global.declaration as VarDeclaration | undefined)?.type;
+    if (declared === undefined) return undefined;
+    // A library manifest names an inline array `__INLINE_ARRAY_<element>`
+    if (
+      declared.arrayDimensions !== undefined ||
+      /^__(INLINE_ARRAY|VLA_\d+D)_/i.test(declared.name)
+    ) {
+      return { name: declared.name.toUpperCase(), kind: "array" };
+    }
+    if ((declared.referenceKind ?? "none") !== "none") return undefined;
+    const base = this.aliasBase(declared.name);
+    if (ELEMENTARY_TYPES[canonicalElementaryName(base)] !== undefined) {
+      return { name: base, kind: "elementary" };
+    }
+    if (this.symbolTables.globalScope.lookup(base)?.kind === "functionBlock") {
+      return { name: base, kind: "functionBlock" };
+    }
+    const sym = this.symbolTables.lookupType(base);
+    // A named ARRAY type (`TYPE LA : ARRAY[0..2] OF INT`), also of a library
+    const def = sym?.declaration?.definition;
+    if (
+      def?.kind === "ArrayDefinition" ||
+      (def?.kind === "TypeReference" && def.arrayDimensions !== undefined)
+    ) {
+      return { name: base, kind: "array" };
+    }
+    const resolved = sym?.resolvedType;
+    if (resolved === undefined) return undefined;
+    return { name: base, kind: resolved.typeKind };
+  }
+
+  /**
+   * A bare name that is both a value of an enumeration of the sources and a
+   * library's global (`LK`), where no variable of the sources hides it.
+   */
+  private isEnumGlobalName(
+    e: Expression,
+    scope: Scope,
+  ): e is VariableExpression {
+    return (
+      this.isBareName(e) &&
+      e.typedLiteral !== true &&
+      this.isLibraryValueName(e.name.toUpperCase()) &&
+      !this.isSourceVariable(e.name, scope) &&
+      this.sourceEnumOwning(e.name) !== undefined
+    );
+  }
+
+  /**
+   * Refuse each bare name that is both a value of an enumeration of the
+   * sources and a library's global where no context settled which one it is
+   * (`settleBareValue`), once at the name, in every dialect.
+   */
+  private reportEnumGlobalNames(ast: CompilationUnit): void {
+    const global = this.symbolTables.globalScope;
+    const reported = new Set<string>();
+    const walk = (
+      root: ASTNode | undefined,
+      scope: Scope | undefined,
+    ): void => {
+      if (root === undefined) return;
+      const within = scope ?? global;
+      walkAST(root, (node): boolean | void => {
+        // A method, property or action is walked with its own scope
+        if (
+          node !== root &&
+          (node.kind === "MethodDeclaration" ||
+            node.kind === "PropertyDeclaration" ||
+            node.kind === "ActionDeclaration")
+        ) {
+          return false;
+        }
+        if (node.kind !== "VariableExpression") return;
+        const e = node as VariableExpression;
+        if (
+          e.enumType !== undefined ||
+          e.libraryGlobal === true ||
+          !this.isEnumGlobalName(e, within)
+        ) {
+          return;
+        }
+        const span = e.sourceSpan;
+        const key = `${span.file ?? ""}:${span.startLine}:${span.startCol}`;
+        if (reported.has(key)) return;
+        reported.add(key);
+        // As declared: the enumeration's name is not quoted, so not re-spelled later
+        const spelled = (n: string): string =>
+          (this.ast === undefined
+            ? undefined
+            : spellingsOf(this.ast)?.spellings().get(n.toUpperCase())) ?? n;
+        const owner = spelled(this.sourceEnumOwning(e.name) ?? "");
+        const value = spelled(e.name);
+        this.addError(
+          `'${value}' is both a value of enumeration ${owner} and a library global; write ${owner}#${value} for the value`,
+          span.startLine,
+          span.startCol,
+          span.file,
+        );
+      });
+    };
+    for (const block of ast.globalVarBlocks) walk(block, global);
+    for (const c of ast.configurations) walk(c, global);
+    for (const t of ast.types) walk(t, global);
+    for (const prog of ast.programs) {
+      const scope = this.symbolTables.getProgramScope(prog.name);
+      walk(prog, scope);
+      for (const m of prog.methods) {
+        walk(m, this.symbolTables.getMethodScope(prog.name, m.name) ?? scope);
+      }
+    }
+    for (const f of ast.functions) {
+      walk(f, this.symbolTables.getFunctionScope(f.name));
+    }
+    for (const fb of ast.functionBlocks) {
+      const scope = this.symbolTables.getFBScope(fb.name);
+      walk(fb, scope);
+      for (const m of fb.methods) {
+        walk(m, this.symbolTables.getMethodScope(fb.name, m.name) ?? scope);
+      }
+      for (const p of fb.properties) walk(p, scope);
+      for (const a of fb.actions) walk(a, scope);
+    }
+  }
+
+  /** The enumeration of the sources that has the value `name`; undefined otherwise. */
+  private sourceEnumOwning(name: string): string | undefined {
+    const upper = name.toUpperCase();
+    return (this.ast?.types ?? []).find(
+      (t) =>
+        t.definition.kind === "EnumDefinition" &&
+        t.definition.members.some((m) => m.name.toUpperCase() === upper),
+    )?.name;
+  }
+
+  /** A TYPE, FB, FUNCTION or PROGRAM of the sources has the name `name`. */
+  private isSourceTypeName(name: string): boolean {
+    const upper = name.toUpperCase();
+    const ast = this.ast;
+    if (ast === undefined) return false;
+    return [
+      ...ast.types,
+      ...ast.functionBlocks,
+      ...ast.functions,
+      ...ast.programs,
+      ...ast.interfaces,
+    ].some((d) => d.name.toUpperCase() === upper);
+  }
+
+  /** `typeName` (through aliases) is an enumeration that has the value `name`. */
+  private enumValueOfTarget(
+    name: string,
+    typeName: string | undefined,
+  ): boolean {
+    if (typeName === undefined) return false;
+    const upper = name.toUpperCase();
+    let current = typeName.toUpperCase();
+    for (let depth = 0; depth < 32; depth++) {
+      const sym = this.symbolTables.lookupType(current);
+      if (sym === undefined) return false;
+      if (sym.resolvedType?.typeKind === "enum") {
+        return (sym.resolvedType as EnumType).values.some(
+          (v) => v.toUpperCase() === upper,
+        );
+      }
+      const def = sym.declaration?.definition;
+      if (
+        def?.kind !== "TypeReference" ||
+        def.arrayDimensions !== undefined ||
+        def.referenceKind !== "none" ||
+        def.name.toUpperCase() === current
+      ) {
+        return false;
+      }
+      current = def.name.toUpperCase();
+    }
+    return false;
+  }
+
+  /** `name` is a value of an enumeration of this compile or a library. */
+  private isEnumValueName(name: string): boolean {
+    const upper = name.toUpperCase();
+    const named = (values: readonly string[]): boolean =>
+      values.some((v) => v.toUpperCase() === upper);
+    if (
+      this.ast?.types.some(
+        (t) =>
+          t.definition.kind === "EnumDefinition" &&
+          named(t.definition.members.map((m) => m.name)),
+      ) === true
+    ) {
+      return true;
+    }
+    return this.symbolTables.globalScope
+      .getAllSymbols()
+      .some(
+        (sym) =>
+          sym.kind === "type" &&
+          sym.resolvedType?.typeKind === "enum" &&
+          named((sym.resolvedType as EnumType).values),
+      );
+  }
+
   /** Nesting depth of FOR/WHILE/REPEAT bodies (for CONTINUE). */
   private loopDepth = 0;
 
@@ -8086,6 +8850,10 @@ export class TypeChecker {
   private checkStatement(stmt: Statement, scope: Scope): void {
     switch (stmt.kind) {
       case "AssignmentStatement": {
+        // The stored value's context is the target's type, whatever it is
+        const targetContext = this.contextTypeNameOf(stmt.target, scope);
+        if (this.refuseTypeAsValue(stmt.value, scope, targetContext)) break;
+        this.settleBareValue(stmt.value, targetContext, scope);
         let targetType = this.resolveExprType(stmt.target, scope);
         const valueType = this.resolveExprType(stmt.value, scope);
         this.refuseMisalignedPointerStore(
@@ -8182,10 +8950,20 @@ export class TypeChecker {
         if (this.checkArrayScalarAssignment(stmt.target, stmt.value, scope)) {
           break;
         }
+        {
+          const declared = this.accessedType(stmt.target, scope);
+          if (
+            declared !== undefined &&
+            this.checkArrayValue(undefined, declared, stmt.value, scope)
+          ) {
+            break;
+          }
+        }
         if (this.isTimerPresetTakingLtime(stmt.target, valueType, scope)) {
           break;
         }
         const errorsBefore = this.errors.length;
+        this.ltimeStores.add(stmt.value);
         this.validateAssignment(targetType, valueType, stmt.target, stmt.value);
         this.softenResultStore(
           errorsBefore,
@@ -8328,8 +9106,14 @@ export class TypeChecker {
         const selectorChar = this.charTypeOf(
           selectorType ?? this.accessedElementaryType(stmt.selector, scope),
         );
+        const selectorTypeName =
+          selectorType?.typeKind === "enum"
+            ? typeNameUtil(selectorType)
+            : undefined;
         for (const c of stmt.cases) {
           for (const label of c.labels) {
+            // A label of an enumeration selector is that enumeration's value
+            this.settleBareValue(label.start, selectorTypeName, scope);
             this.resolveExprType(label.start, scope);
             if (label.end) this.resolveExprType(label.end, scope);
             this.typeNotFromExpected(label.start, selectorType);
@@ -8857,6 +9641,14 @@ export class TypeChecker {
     return bits(wider) < 32 ? "DINT" : wider;
   }
 
+  /** The scope of the POU whose initial values are being checked. */
+  private initializerScope: Scope | undefined;
+
+  /** Stored values (statements, initial values) an LTIME into TIME converts in. */
+  private ltimeStores = new WeakSet<Expression>();
+  /** FB outputs captured with `=>`, which codegen converts from LTIME into TIME. */
+  private ltimeCaptures = new WeakSet<Expression>();
+
   private validateAssignment(
     targetType: IECType | undefined,
     valueType: IECType | undefined,
@@ -8948,21 +9740,31 @@ export class TypeChecker {
         targetType.typeKind === "elementary" &&
         valueType.typeKind === "elementary"
       ) {
-        const tName = (targetType as ElementaryType).name;
-        const vName = (valueType as ElementaryType).name;
+        const tDisplay = (targetType as ElementaryType).name;
+        const vDisplay = (valueType as ElementaryType).name;
+        // An alias of an elementary type is checked as its base (`TYPE MyA : STRING(10)`)
+        const tName = this.elementaryAliasName(tDisplay);
+        const vName = this.elementaryAliasName(vDisplay);
 
         // If either side is a FB or struct type, it's definitely incompatible
         // with a scalar type — fall through to the error report.
-        // Otherwise, skip validation for user-defined type aliases we can't
-        // fully resolve (e.g. MyInt := INT where MyInt is an alias for INT).
-        const tIsFbOrStruct = this.isKnownCompositeType(tName);
-        const vIsFbOrStruct = this.isKnownCompositeType(vName);
+        // Otherwise, skip validation for user-defined types we can't
+        // fully resolve.
+        const tIsFbOrStruct = this.isKnownCompositeType(tDisplay);
+        const vIsFbOrStruct = this.isKnownCompositeType(vDisplay);
         if (!tIsFbOrStruct && !vIsFbOrStruct) {
           if (
             !ELEMENTARY_TYPES[tName] ||
             !ELEMENTARY_TYPES[vName] ||
-            this.isUserTypeOfEd3Name(tName) ||
-            this.isUserTypeOfEd3Name(vName)
+            this.isUserTypeOfEd3Name(tDisplay) ||
+            this.isUserTypeOfEd3Name(vDisplay)
+          ) {
+            return;
+          }
+          if (
+            (tName !== tDisplay.toUpperCase() ||
+              vName !== vDisplay.toUpperCase()) &&
+            _isAssignable(ELEMENTARY_TYPES[tName], ELEMENTARY_TYPES[vName])
           ) {
             return;
           }
@@ -8999,6 +9801,26 @@ export class TypeChecker {
 
       const tName = typeNameUtil(targetType);
       const vName = typeNameUtil(valueType);
+      // An LTIME stored in a TIME is converted (LTIME_TO_TIME): a warning by
+      // default, an error under iec-3 and --strict
+      if (
+        argument === undefined &&
+        (this.ltimeStores.has(value) || this.ltimeCaptures.has(value)) &&
+        targetType.typeKind === "elementary" &&
+        valueType.typeKind === "elementary" &&
+        this.elementaryAliasName(tName) === "TIME" &&
+        this.elementaryAliasName(vName) === "LTIME"
+      ) {
+        const message = `Cannot assign LTIME to ${tName} without a conversion; use LTIME_TO_TIME`;
+        const span = value.sourceSpan;
+        if (this.strict || this.inOutErrors) {
+          this.addError(message, span.startLine, span.startCol, span.file);
+        } else {
+          this.addWarning(message, span.startLine, span.startCol, span.file);
+          if (this.ltimeStores.has(value)) this.convertLtimeInPlace(value);
+        }
+        return;
+      }
       if (argument?.warnOnly(tName, vName) === true) {
         this.addWarning(
           `Cannot pass ${vName} to an input of type ${tName} without a conversion; use ${vName}_TO_${tName}`,
@@ -9340,16 +10162,18 @@ export class TypeChecker {
     ) {
       return;
     }
+    // `F := 0` into an interface result builds as NULL: the feature refusal
+    // warns, for a METHOD's result too
+    const zeroIntoInterface =
+      isUntypedZero(value) && this.interfaceTypeOf(targetType) !== undefined;
     if (
+      !zeroIntoInterface &&
       this.symbolTables.lookupFunction(
         target.kind === "VariableExpression" ? target.name : "",
       ) === undefined
     ) {
       return;
     }
-    // `F := 0` into an interface result builds as NULL: the feature refusal warns
-    const zeroIntoInterface =
-      isUntypedZero(value) && this.interfaceTypeOf(targetType) !== undefined;
     // A derived FB into a base-type result builds and copies the base part
     // (a derived STRUCT does not build: it stays an error)
     const derived = this.fbDerivesFrom(
@@ -9502,7 +10326,11 @@ export class TypeChecker {
       target.toUpperCase() !== this.aliasTarget(typeNameUtil(b)).toUpperCase()
     )
       return false;
-    return this.isStructType(target);
+    // Also a library's STRUCT (`cm := MATH` of a CONSTANTS_MATH global)
+    return (
+      this.isStructType(target) ||
+      this.symbolTables.lookupType(target)?.resolvedType?.typeKind === "struct"
+    );
   }
 
   /** {@link isSameStructuredType} for two declared types without reference levels. */
@@ -11126,6 +11954,117 @@ export class TypeChecker {
   }
 
   /**
+   * An ARRAY variable stored in a fixed-size ARRAY (an assignment, or input
+   * `input` by value). Other bounds or rank do not build: an error. Another
+   * element type is an error under --strict; else checked as an element
+   * stored on its own: one that narrows (DINT into INT) warns, one with no
+   * C++ conversion is an error. True when reported.
+   */
+  private checkArrayValue(
+    input: string | undefined,
+    target: AccessType,
+    value: Expression,
+    scope: Scope,
+  ): boolean {
+    if ((target.referenceKind ?? "none") !== "none") return false;
+    const expected = this.bindingShapeOf(target);
+    if (expected?.kind !== "array" || expected.dims === undefined) return false;
+    if (value.kind !== "VariableExpression" || value.isDereference)
+      return false;
+    if (value.accessChain?.some((st) => st.kind === "dereference") === true) {
+      return false;
+    }
+    const arg = this.accessedType(value, scope);
+    if (arg === undefined) return false;
+    const levels = arg.referenceChain ?? [arg.referenceKind ?? "none"];
+    if (levels.some((k) => k !== "none")) return false;
+    const actual = this.bindingShapeOf(arg);
+    if (actual?.kind !== "array" || actual.dims === undefined) return false;
+    const describe = (shape: typeof expected): string =>
+      `ARRAY[${shape.dims!.map((d) => `${d.start}..${d.end}`).join(", ")}] OF ${describeReferenceShape({ chain: shape.chain, base: shape.base })}`;
+    const dims =
+      actual.dims.length === expected.dims.length &&
+      actual.dims.every(
+        (d, i) =>
+          d.start === expected.dims![i]!.start &&
+          d.end === expected.dims![i]!.end,
+      );
+    // A subrange element counts as its base type, as a scalar does
+    const tBase = this.subrangeBase(expected.base);
+    const vBase = this.subrangeBase(actual.base);
+    const same =
+      actual.chain.join(" ") === expected.chain.join(" ") && tBase === vBase;
+    if (dims && same) return false;
+    // --strict: only an exact widening of each element (SINT into INT, REAL
+    // into LREAL) passes, as for a scalar
+    if (
+      dims &&
+      this.strict &&
+      actual.chain.length === 0 &&
+      expected.chain.length === 0 &&
+      strictIsExactWidening(vBase, tBase)
+    ) {
+      return false;
+    }
+    let error = !dims || this.strict;
+    if (!error) {
+      const t = ELEMENTARY_TYPES[tBase];
+      const v = ELEMENTARY_TYPES[vBase];
+      if (
+        expected.chain.length !== 0 ||
+        actual.chain.length !== 0 ||
+        t === undefined ||
+        v === undefined
+      ) {
+        // Elements of other STRUCT, FB, pointer or alias types: left as before.
+        return false;
+      }
+      // As an element stored on its own: a widening (INT into DINT) and one
+      // C++ storage (WORD, UINT) pass, a narrowing warns
+      if (_isAssignable(t, v)) return false;
+      if (
+        INTEGER_STORAGE[tBase] !== undefined &&
+        INTEGER_STORAGE[tBase] === INTEGER_STORAGE[vBase]
+      ) {
+        return false;
+      }
+      error = !isNarrowingConversion(tBase, vBase);
+    }
+    const into =
+      input === undefined
+        ? `a variable of type ${describe(expected)}`
+        : `input '${input.toUpperCase()}' of type ${describe(expected)}`;
+    const span = value.sourceSpan;
+    if (error) {
+      const message = `Cannot store ${describe(actual)} in ${into}${
+        dims ? "" : "; the bounds differ"
+      }`;
+      this.addError(message, span.startLine, span.startCol, span.file);
+    } else {
+      const message = `Implicit narrowing conversion of each element: ${describe(actual)} stored in ${into}`;
+      this.addWarning(message, span.startLine, span.startCol, span.file);
+    }
+    return true;
+  }
+
+  /** The elementary type a subrange TYPE (through aliases) restricts; `name` otherwise. */
+  private subrangeBase(name: string): string {
+    let upper = name.toUpperCase();
+    for (let depth = 0; depth < 32; depth++) {
+      const current = upper;
+      const def = this.ast?.types.find(
+        (t) => t.name.toUpperCase() === current,
+      )?.definition;
+      if (def?.kind === "SubrangeDefinition") {
+        upper = canonicalElementaryName(this.aliasBase(def.baseType.name));
+        continue;
+      }
+      return upper;
+    }
+    return upper;
+  }
+
+  /**
    * The array shape of a declared type (inline, ARRAY[*], or a TYPE of an
    * ARRAY with constant bounds, through aliases), an elementary type as a
    * scalar, or undefined when it is neither or cannot be told.
@@ -11535,6 +12474,12 @@ export class TypeChecker {
       upper = def.name.toUpperCase();
     }
     return upper;
+  }
+
+  /** The elementary type an alias stands for (upper-cased), else the name upper-cased. */
+  private elementaryAliasName(name: string): string {
+    const base = canonicalElementaryName(this.aliasBase(name));
+    return ELEMENTARY_TYPES[base] !== undefined ? base : name.toUpperCase();
   }
 
   /** A library type's alias definition, when it records its base; undefined otherwise. */
@@ -12336,7 +13281,7 @@ export class TypeChecker {
     if (!expr.arguments.some((a) => a.isOutput)) return;
     const fbType = this.calledFbType(expr, scope);
     if (fbType === undefined) return;
-    this.checkFbOutputs(fbType, expr.arguments, scope);
+    this.checkFbOutputs(fbType, expr.arguments, scope, true);
   }
 
   /**
@@ -12375,6 +13320,8 @@ export class TypeChecker {
     fbType: string,
     args: readonly Argument[],
     scope: Scope,
+    /** An LTIME output captured into a TIME is converted (codegen): it warns. */
+    convertsLtime = false,
   ): void {
     const outputs = this.fbOutputsOf(fbType);
     for (const arg of args) {
@@ -12415,7 +13362,7 @@ export class TypeChecker {
           : this.resolveNamedType(bound.name);
       if (boundType === undefined) continue;
       const outType = this.resolveNamedType(out.typeName);
-      this.validateAssignment(boundType, outType, arg.value, {
+      const output: VariableExpression = {
         kind: "VariableExpression",
         sourceSpan: arg.value.sourceSpan,
         name: out.name,
@@ -12423,7 +13370,9 @@ export class TypeChecker {
         subscripts: [],
         isDereference: false,
         resolvedType: outType,
-      });
+      };
+      if (convertsLtime) this.ltimeCaptures.add(output);
+      this.validateAssignment(boundType, outType, arg.value, output);
     }
   }
 
@@ -12548,21 +13497,42 @@ export class TypeChecker {
       chain.unshift(fb);
       current = fb.extends?.toUpperCase();
     }
-    if (chain.length > 0)
-      return chain.flatMap((fb) => fromBlocks(fb.varBlocks));
-    const libraryFb = this.symbolTables.lookupFunctionBlock(typeName);
-    if (!libraryFb) return undefined;
-    return [
-      ...libraryFb.inputs.map((m) => ({ m, inOut: false })),
-      ...libraryFb.inouts.map((m) => ({ m, inOut: true })),
-    ].map(({ m, inOut }) => ({
-      name: m.name,
-      type: m.declaration.type,
-      inOut,
-      fromLibrary:
-        libraryFb.stringLengthsRecorded !== true &&
-        libraryFb.inOutLengthsRecovered !== true,
-    }));
+    // A library block, or the library block the chain extends, with its
+    // own library bases: theirs come first
+    const library = this.libraryFbInputs(current);
+    if (chain.length > 0) {
+      return [
+        ...(current !== undefined ? (library ?? []) : []),
+        ...chain.flatMap((fb) => fromBlocks(fb.varBlocks)),
+      ];
+    }
+    return library;
+  }
+
+  /** The inputs and in/outs of library block `name` and its library bases, bases first. */
+  private libraryFbInputs(name: string | undefined): CallInput[] | undefined {
+    const blocks: FunctionBlockSymbol[] = [];
+    let current = name;
+    for (let depth = 0; current !== undefined && depth < 32; depth++) {
+      const fb = this.symbolTables.lookupFunctionBlock(current);
+      if (!fb || fb.libraryName === undefined) break;
+      blocks.unshift(fb);
+      current = fb.declaration.extends?.toUpperCase();
+    }
+    if (blocks.length === 0) return undefined;
+    return blocks.flatMap((libraryFb) =>
+      [
+        ...libraryFb.inputs.map((m) => ({ m, inOut: false })),
+        ...libraryFb.inouts.map((m) => ({ m, inOut: true })),
+      ].map(({ m, inOut }) => ({
+        name: m.name,
+        type: m.declaration.type,
+        inOut,
+        fromLibrary:
+          libraryFb.stringLengthsRecorded !== true &&
+          libraryFb.inOutLengthsRecovered !== true,
+      })),
+    );
   }
 
   /**
@@ -12789,7 +13759,7 @@ export class TypeChecker {
     return method === undefined ? undefined : { method, recorded };
   }
 
-  /** `inputs` with only its STRING, WSTRING and library alias in-outs marked; undefined without one. */
+  /** `inputs` with only its elementary (STRING included) and library alias in-outs marked; undefined without one. */
   private onlyStringInOuts(
     inputs: CallInput[] | undefined,
   ): CallInput[] | undefined {
@@ -12799,7 +13769,9 @@ export class TypeChecker {
       if (input.type.arrayDimensions !== undefined) return false;
       const upper = input.type.name.toUpperCase();
       return (
-        isStringBase(upper) || this.libraryAliasDefinition(upper) !== undefined
+        isStringBase(upper) ||
+        ELEMENTARY_TYPES[upper] !== undefined ||
+        this.libraryAliasDefinition(upper) !== undefined
       );
     };
     if (inputs?.some(checked) !== true) return undefined;
@@ -12866,11 +13838,22 @@ export class TypeChecker {
         f.names.some((n) => n.toUpperCase() === upper),
       );
     }
-    const fb = this.symbolTables.lookupFunctionBlock(typeName);
-    if (!fb) return undefined;
-    return [...fb.inputs, ...fb.outputs, ...fb.inouts, ...fb.locals].find(
-      (m) => m.name.toUpperCase() === upper,
-    )?.declaration;
+    // A library block, or the one a block declared here extends, and its bases.
+    let name: string | undefined =
+      (this.ast && undeclaredFbAncestor(typeName, this.ast)) ?? typeName;
+    for (let depth = 0; name !== undefined && depth < 32; depth++) {
+      const fb = this.symbolTables.lookupFunctionBlock(name);
+      if (!fb) return undefined;
+      const member = [
+        ...fb.inputs,
+        ...fb.outputs,
+        ...fb.inouts,
+        ...fb.locals,
+      ].find((m) => m.name.toUpperCase() === upper)?.declaration;
+      if (member !== undefined) return member;
+      name = fb.libraryName !== undefined ? fb.declaration.extends : undefined;
+    }
+    return undefined;
   };
 
   /** `THIS.member` (or `THIS^.member`) inside a function block. */
@@ -13795,7 +14778,7 @@ export class TypeChecker {
 
   /**
    * Named arguments of a call on an instance of `type`, a function block this
-   * compile declares, that name no input, output or in/out of it. The C++
+   * compile or a library declares, that name no input, output or in/out of it. The C++
    * assigns `inst.NAME`: for an unknown name, a method, a property or a
    * VAR_EXTERNAL it does not build, and a VAR, VAR_TEMP or CONSTANT local is
    * not part of the call interface.
@@ -13807,7 +14790,13 @@ export class TypeChecker {
     if (type.referenceKind !== "none" || type.arrayDimensions !== undefined) {
       return;
     }
-    if (!this.fbMemberNames(type.name)) return;
+    // A block declared here, or a library block (its interface is recorded).
+    if (
+      !this.fbMemberNames(type.name) &&
+      !this.symbolTables.lookupFunctionBlock(type.name)
+    ) {
+      return;
+    }
     const known = this.fbParameterNames(type.name);
     if (!known) return;
     for (const arg of args) {
@@ -13877,15 +14866,15 @@ export class TypeChecker {
         continue;
       }
       const lib = this.symbolTables.lookupFunctionBlock(upper);
-      if (lib) {
-        found = true;
-        for (const m of [...lib.inputs, ...lib.outputs, ...lib.inouts]) {
-          names.add(m.name.toUpperCase());
-        }
+      if (!lib) return found && current === undefined ? names : undefined;
+      found = true;
+      for (const m of [...lib.inputs, ...lib.outputs, ...lib.inouts]) {
+        names.add(m.name.toUpperCase());
       }
-      break;
+      // A library block's base is a library block too (its manifest names it).
+      current = lib.declaration.extends?.toUpperCase();
     }
-    return found ? names : undefined;
+    return found && current === undefined ? names : undefined;
   }
 
   /** Strict diagnostics already reported, so an expression visited twice reports once. */
@@ -14097,8 +15086,9 @@ export class TypeChecker {
     if (targetType.typeKind !== "elementary") return false;
     const valueType = this.strictExprType(value);
     if (valueType?.typeKind !== "elementary") return false;
-    const t = (targetType as ElementaryType).name.toUpperCase();
-    const v = (valueType as ElementaryType).name.toUpperCase();
+    // Aliases of elementary types are checked as their bases
+    const t = this.elementaryAliasName((targetType as ElementaryType).name);
+    const v = this.elementaryAliasName((valueType as ElementaryType).name);
     if (t === v) return false;
     const tKind = strictKind(t);
     const vKind = strictKind(v);
@@ -14191,6 +15181,67 @@ export class TypeChecker {
   }
 
   /**
+   * The argument of a typed conversion `X_TO_Y` is an X. Another type the
+   * generated C++ cannot convert (a 32-bit date or time of another kind, a
+   * STRING into CHAR_TO_INT) is an error; one it converts as its own type is a
+   * warning by default, an error under iec-3 unless it narrows a number
+   * (--strict has its own rules).
+   */
+  private checkConversionArgument(
+    expr: FunctionCallExpression,
+    scope: Scope,
+  ): void {
+    if (
+      this.strict ||
+      expr.instance !== undefined ||
+      expr.functionName.includes(".") ||
+      this.findUserFunction(expr.functionName) ||
+      this.ownMethod(expr.functionName) !== undefined ||
+      this.calledInstance(expr.functionName, scope) ||
+      scope.lookup(expr.functionName)?.kind === "variable"
+    ) {
+      return;
+    }
+    const fn = this.symbolTables.lookupFunction(expr.functionName);
+    if (fn !== undefined && fn.libraryName !== STD_FUNCTIONS_LIBRARY) return;
+    const conv = this.stdRegistry?.resolveConversion(
+      expr.functionName.toUpperCase(),
+    );
+    const arg = stripEnEno(expr.arguments)[0];
+    if (conv === undefined || arg === undefined) return;
+    if (this.untypedConstantKind(arg.value) !== undefined) return;
+    const value = arg.value.resolvedType;
+    if (value?.typeKind !== "elementary" || isGenericGroupType(value)) return;
+    const display = (value as ElementaryType).name;
+    const a = canonicalElementaryName(this.aliasBase(display));
+    const x = canonicalElementaryName(conv.fromType);
+    const from = ELEMENTARY_TYPES[x];
+    const actual = ELEMENTARY_TYPES[a];
+    if (a === x || from === undefined || actual === undefined) return;
+    if (_isAssignable(from, actual)) return;
+    const aTemporal = TEMPORAL_ANY_NAMES.has(a);
+    const xTemporal = TEMPORAL_ANY_NAMES.has(x);
+    const fails =
+      aTemporal && xTemporal
+        ? SHORT_TEMPORAL_KIND[a] !== SHORT_TEMPORAL_KIND[x]
+        : (aTemporal && TEMPORAL32_NAMES.has(a)) ||
+          (xTemporal && TEMPORAL32_NAMES.has(x)) ||
+          // A string into CHAR/WCHAR converts (its first character) only into a character
+          (isStringBase(a) &&
+            (x === "CHAR" || x === "WCHAR") &&
+            !["CHAR", "WCHAR"].includes(canonicalElementaryName(conv.toType)));
+    const message = `Argument 'IN' of '${expr.functionName.toUpperCase()}' expects ${x}, got ${display}`;
+    const span = arg.value.sourceSpan;
+    // A narrowing of numbers or bit strings warns under iec-3 too, as into an input
+    const narrowing = !fails && isNarrowingConversion(x, a);
+    if (fails || (this.inOutErrors && !narrowing)) {
+      this.addError(message, span.startLine, span.startCol, span.file);
+    } else {
+      this.addWarning(message, span.startLine, span.startCol, span.file);
+    }
+  }
+
+  /**
    * Each input argument of a call checked as the assignment `input := arg`
    * is: `--strict` conversions, a type the assignment refuses (STRING into
    * DWORD, TIME into BOOL) and the BOOL narrowing warning. EN is a BOOL input.
@@ -14213,6 +15264,9 @@ export class TypeChecker {
         this.refuseScalarIntoComposite(input, arg.value, scope)
       ) {
         return;
+      }
+      if (!input.inOut) {
+        this.checkArrayValue(input.name, input.type, arg.value, scope);
       }
       if (input.type.arrayDimensions !== undefined) return;
       if (input.inOut) {
@@ -14321,10 +15375,11 @@ export class TypeChecker {
     if (this.isAddressArgument(value, scope)) return;
     const valueType = value.resolvedType;
     if (valueType?.typeKind !== "elementary") return;
-    // An alias-typed value is left alone, as in an assignment.
+    // An alias-typed value is checked as its base, as in an assignment.
     const valueBase = canonicalElementaryName(
-      (valueType as ElementaryType).name,
+      this.aliasBase((valueType as ElementaryType).name),
     );
+    if (this.isUserTypeOfEd3Name(valueBase)) return;
     if (ELEMENTARY_TYPES[valueBase] === undefined) return;
     // An untyped constant adapts as in the assignment; into a BOOL input it
     // gets no narrowing warning.
@@ -14364,10 +15419,9 @@ export class TypeChecker {
         return true;
       }
     }
-    // A user FUNCTION returning a POINTER TO or REF_TO (`F(GP(1))`)
+    // A user or library FUNCTION returning a POINTER TO or REF_TO (`F(GP(1))`)
     if (v.kind === "FunctionCallExpression") {
-      const kind = this.findUserFunction(v.functionName)?.returnType
-        .referenceKind;
+      const kind = this.callResultReferenceKind(v, scope);
       return kind === "pointer_to" || kind === "ref_to";
     }
     if (v.kind !== "VariableExpression") return false;
@@ -14378,6 +15432,22 @@ export class TypeChecker {
     const chain = type?.referenceChain ?? [type?.referenceKind];
     const kind = chain[0] === "reference_to" ? chain[1] : chain[0];
     return kind === "pointer_to" || kind === "ref_to";
+  }
+
+  /** The reference kind a FUNCTION call's declared result has (user or library FUNCTION). */
+  private callResultReferenceKind(
+    call: FunctionCallExpression,
+    scope: Scope,
+  ): string | undefined {
+    if (call.instance !== undefined || call.functionName.includes(".")) {
+      return undefined;
+    }
+    if (scope.lookup(call.functionName)?.kind === "variable") return undefined;
+    const declared =
+      this.findUserFunction(call.functionName)?.returnType ??
+      this.symbolTables.lookupFunction(call.functionName)?.declaration
+        ?.returnType;
+    return declared?.referenceKind;
   }
 
   /** The input parameters of the method a method-call expression names. */
