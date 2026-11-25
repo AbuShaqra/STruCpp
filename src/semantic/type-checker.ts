@@ -2024,6 +2024,18 @@ export class TypeChecker {
   }
 
   /**
+   * A library FUNCTION's STRUCT result, recorded by name only (`CADD : COMPLEX`):
+   * the STRUCT type a variable of that name has, so the two are the same type.
+   */
+  private libraryStructResult(type: IECType): IECType {
+    if (type.typeKind !== "elementary") return type;
+    const name = (type as ElementaryType).name;
+    if (ELEMENTARY_TYPES[name.toUpperCase()] !== undefined) return type;
+    const named = this.symbolTables.lookupType(name)?.resolvedType;
+    return named?.typeKind === "struct" ? named : type;
+  }
+
+  /**
    * Resolve a type *name* to its IECType: an elementary type, else a registered
    * type (struct/FB/enum from the local AST or a dependency library), else a
    * minimal elementary placeholder. Using the registered type (rather than always
@@ -2434,7 +2446,11 @@ export class TypeChecker {
       }
     }
     const written = this.writeTargets.has(expr);
-    if (written || this.referenceSources.has(expr)) {
+    // After `^` the selectors name the memory the result points to, not the temporary.
+    const throughPointer = expr.accessChain.some(
+      (s) => s.kind === "dereference",
+    );
+    if ((written || this.referenceSources.has(expr)) && !throughPointer) {
       const span = expr.selectorSpan;
       this.addError(
         `A call result cannot ${written ? "be written" : "be bound to a reference"}: it is a temporary value; assign the result to a variable first`,
@@ -2458,6 +2474,8 @@ export class TypeChecker {
       subscript: "An array index on a call result needs an ARRAY",
       field: "Member access on a call result needs a STRUCT or FUNCTION_BLOCK",
       bit: "A bit access on a call result needs a bit string",
+      dereference:
+        "A dereference of a call result needs a POINTER TO or REF_TO a named type",
     };
     const refuse = (what: keyof typeof needs, typeName: string): undefined => {
       const span = expr.selectorSpan;
@@ -2469,15 +2487,38 @@ export class TypeChecker {
       );
       return undefined;
     };
+    let start = 0;
     if (this.callReturnsAddress(expr.call, scope)) {
       const first = expr.accessChain[0];
-      return refuse(
-        first?.kind === "subscript" ? "subscript" : "field",
-        "a REFERENCE TO or POINTER TO",
-      );
+      const result = this.callResultType(expr.call, scope);
+      // `FP()^`: the POINTER TO / REF_TO result's target, one level, no array
+      if (
+        first?.kind === "dereference" &&
+        result !== undefined &&
+        (result.referenceKind === "pointer_to" ||
+          result.referenceKind === "ref_to") &&
+        (result.referenceChain?.length ?? 1) === 1 &&
+        result.arrayDimensions === undefined
+      ) {
+        currentTypeName = result.name;
+        currentType = this.resolveNamedType(result.name);
+        start = 1;
+      } else {
+        return refuse(
+          first?.kind === "subscript"
+            ? "subscript"
+            : first?.kind === "dereference"
+              ? "dereference"
+              : "field",
+          first?.kind === "dereference" &&
+            result?.referenceKind === "reference_to"
+            ? "a REFERENCE TO (dereferenced implicitly)"
+            : "a REFERENCE TO or POINTER TO",
+        );
+      }
     }
     const steps = expr.accessChain;
-    for (let i = 0; i < steps.length; i++) {
+    for (let i = start; i < steps.length; i++) {
       const step = steps[i]!;
       if (currentTypeName === undefined) {
         return currentType === undefined
@@ -2496,7 +2537,8 @@ export class TypeChecker {
         currentType = this.resolveNamedType(elemType);
         continue;
       }
-      if (step.kind !== "field") return undefined;
+      if (step.kind === "dereference")
+        return refuse("dereference", currentTypeName);
       if (/^\d+$/.test(step.name)) {
         const bits = getBitAccessWidth(
           canonicalElementaryName(this.aliasBase(currentTypeName)),
@@ -2732,6 +2774,7 @@ export class TypeChecker {
     // Comparison operators always return BOOL
     if (["=", "<>", "<", ">", "<=", ">="].includes(expr.operator)) {
       this.refuseMixedStringComparison(expr, leftType, rightType);
+      this.checkInterfaceComparison(expr, leftType, rightType);
       type = ELEMENTARY_TYPES["BOOL"];
     }
     // Logical operators return BOOL
@@ -4634,7 +4677,7 @@ export class TypeChecker {
       if (funcSymbol.libraryName === STD_FUNCTIONS_LIBRARY) {
         this.validateFunctionCallArgs(expr, scope);
       }
-      let returnType = funcSymbol.returnType;
+      let returnType = this.libraryStructResult(funcSymbol.returnType);
       // Overloaded standard functions are published in the builtin stdlib
       // manifest with their generic return *constraint* (e.g. NOT -> ANY_BIT,
       // ADD -> ANY_NUM). When the IEC signature says the result type matches
@@ -7446,18 +7489,27 @@ export class TypeChecker {
           scope,
         );
         if (
-          this.strict &&
           targetType === undefined &&
           this.currentReturn !== undefined &&
           stmt.target.kind === "VariableExpression" &&
           stmt.target.fieldAccess.length === 0 &&
           stmt.target.subscripts.length === 0 &&
+          !stmt.target.isDereference &&
           stmt.target.name.toUpperCase() ===
             this.currentReturn.name.toUpperCase()
         ) {
-          // Assigning the return value: `Fn := x;` is checked against the declared type.
+          // Assigning the return value: `Fn := x;` is checked against the declared type
+          // (a plain named one; a POINTER TO, REFERENCE TO or ARRAY result as before).
+          const ret = this.currentReturn.type;
           targetType =
-            ELEMENTARY_TYPES[this.currentReturn.type.name.toUpperCase()];
+            (this.strict
+              ? ELEMENTARY_TYPES[ret.name.toUpperCase()]
+              : undefined) ??
+            ((ret.referenceKind === undefined ||
+              ret.referenceKind === "none") &&
+            ret.arrayDimensions === undefined
+              ? this.resolveNamedType(ret.name)
+              : undefined);
         }
         // `F := 'A'` in a FUNCTION returning CHAR: the literal is a CHAR.
         if (
@@ -7520,6 +7572,13 @@ export class TypeChecker {
         }
         const errorsBefore = this.errors.length;
         this.validateAssignment(targetType, valueType, stmt.target, stmt.value);
+        this.softenResultStore(
+          errorsBefore,
+          stmt.target,
+          stmt.value,
+          targetType,
+          valueType,
+        );
         // One error per mistake: the REF_TO check only adds what the general one missed.
         if (this.errors.length === errorsBefore) {
           this.validateReferenceAssignment(stmt.target, stmt.value, scope);
@@ -8219,10 +8278,13 @@ export class TypeChecker {
 
     // Check assignment compatibility
     if (!_isAssignable(targetType, valueType)) {
-      // Check if it's a function name assignment (return value)
-      if (target.kind === "VariableExpression") {
+      // A function's name other than the result being assigned here
+      if (
+        target.kind === "VariableExpression" &&
+        this.resultTargetType(target) === undefined
+      ) {
         const funcSym = this.symbolTables.lookupFunction(target.name);
-        if (funcSym) return; // Function return assignment
+        if (funcSym) return;
       }
 
       // Allow reference/pointer assignments to non-reference types (CODESYS pattern)
@@ -8484,26 +8546,175 @@ export class TypeChecker {
         value.sourceSpan.file,
       );
     };
+    const mismatch = this.interfaceMismatch(target, source);
+    if (mismatch !== undefined) {
+      fail(mismatch);
+      return;
+    }
+    // A CONSTANT instance is const in C++; a call through the interface could change it
+    if (
+      this.isFbTypeName(source) &&
+      value.kind === "VariableExpression" &&
+      !value.isDereference &&
+      this.lastResolvedScope?.lookup(value.name)?.kind === "constant"
+    ) {
+      this.addError(
+        `The CONSTANT instance '${value.name}' cannot be bound to interface ${target}: a method called through it could change it`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+    }
+  }
+
+  /** FB `source` EXTENDS FB `target`, directly or through bases of this compile. */
+  private fbDerivesFrom(source: string, target: string): boolean {
+    if (!this.ast || source.toUpperCase() === target.toUpperCase()) {
+      return false;
+    }
+    const seen = new Set<string>();
+    let current: string | undefined = source.toUpperCase();
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      const upper: string = current;
+      const fb = this.ast.functionBlocks.find(
+        (f) => f.name.toUpperCase() === upper,
+      );
+      current = fb?.extends?.toUpperCase();
+      if (current === target.toUpperCase()) return true;
+    }
+    return false;
+  }
+
+  /** A function block type, of this compile or a library. */
+  private isFbTypeName(name: string): boolean {
+    const upper = name.toUpperCase();
+    return (
+      this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper) ===
+        true || this.symbolTables.lookupFunctionBlock(name) !== undefined
+    );
+  }
+
+  /**
+   * Why a value of type `source` cannot refer to (or be compared with) an
+   * instance of interface `target`: a detail to append (possibly ""), or
+   * undefined when it can or this compile cannot tell.
+   */
+  private interfaceMismatch(
+    target: string,
+    source: string,
+  ): string | undefined {
     const upper = source.toUpperCase();
     if (this.interfaceNamed(source)) {
-      if (this.interfaceExtends(source, target) === false) {
-        fail(`: ${source} does not extend ${target}`);
-      }
-      return;
+      return this.interfaceExtends(source, target) === false
+        ? `: ${source} does not extend ${target}`
+        : undefined;
     }
     if (this.ast?.functionBlocks.some((f) => f.name.toUpperCase() === upper)) {
-      if (this.fbImplements(source, target) === false) {
-        fail(`: ${source} does not implement ${target}`);
-      }
-      return;
+      return this.fbImplements(source, target) === false
+        ? `: ${source} does not implement ${target}`
+        : undefined;
+    }
+    // A library block cannot implement an interface this compile declares
+    if (
+      this.interfaceNamed(target) &&
+      this.symbolTables.lookupFunctionBlock(source) !== undefined
+    ) {
+      return `: ${source} does not implement ${target}`;
     }
     const isStruct =
-      this.ast?.types.some(
+      (this.ast?.types.some(
         (t) =>
           t.name.toUpperCase() === upper &&
           t.definition.kind === "StructDefinition",
-      ) ?? false;
-    if (ELEMENTARY_TYPES[upper] !== undefined || isStruct) fail("");
+      ) ??
+        false) ||
+      this.symbolTables.lookupType(source)?.resolvedType?.typeKind === "struct";
+    return ELEMENTARY_TYPES[upper] !== undefined || isStruct ? "" : undefined;
+  }
+
+  /**
+   * `F := v` into a FUNCTION's result, refused as for a variable of its type:
+   * by default an error only where the C++ store fails or converts the value
+   * wrongly (resultStoreFailsCpp); else a warning. Strict and iec-3 keep errors.
+   */
+  private softenResultStore(
+    errorsBefore: number,
+    target: Expression,
+    value: Expression,
+    targetType: IECType | undefined,
+    valueType: IECType | undefined,
+  ): void {
+    if (this.strict || this.inOutErrors) return;
+    if (this.errors.length === errorsBefore || targetType === undefined) return;
+    if (
+      valueType === undefined ||
+      this.resultTargetType(target) === undefined
+    ) {
+      return;
+    }
+    if (
+      this.symbolTables.lookupFunction(
+        target.kind === "VariableExpression" ? target.name : "",
+      ) === undefined
+    ) {
+      return;
+    }
+    // `F := 0` into an interface result builds as NULL: the feature refusal warns
+    const zeroIntoInterface =
+      isUntypedZero(value) && this.interfaceTypeOf(targetType) !== undefined;
+    // A derived FB into a base-type result builds and copies the base part
+    // (a derived STRUCT does not build: it stays an error)
+    const derived = this.fbDerivesFrom(
+      typeNameUtil(valueType),
+      typeNameUtil(targetType),
+    );
+    if (
+      !zeroIntoInterface &&
+      !derived &&
+      resultStoreFailsCpp(targetType, valueType, (n) => this.aliasBase(n))
+    ) {
+      return;
+    }
+    const added = this.errors.splice(errorsBefore);
+    for (const e of added) {
+      if (!zeroIntoInterface && !e.message.startsWith("Cannot assign")) {
+        this.errors.push(e);
+        continue;
+      }
+      this.warnings.push({ ...e, severity: "warning" });
+    }
+  }
+
+  /**
+   * `itf = x` / `itf <> x` compares the instance the interface refers to: `x`
+   * must be an instance of an implementing FB or an interface; a value of
+   * another kind, or an FB that does not implement it, is refused.
+   */
+  private checkInterfaceComparison(
+    expr: BinaryExpression,
+    leftType: IECType,
+    rightType: IECType,
+  ): void {
+    if (expr.operator !== "=" && expr.operator !== "<>") return;
+    const leftItf = this.interfaceTypeOf(leftType);
+    const rightItf = this.interfaceTypeOf(rightType);
+    if ((leftItf === undefined) === (rightItf === undefined)) return;
+    const [target, other, otherType] =
+      leftItf !== undefined
+        ? [leftItf, expr.right, rightType]
+        : [rightItf!, expr.left, leftType];
+    if (isUntypedZero(other) || otherType.typeKind === "reference") return;
+    const source = typeNameUtil(otherType);
+    const mismatch = this.interfaceMismatch(target, source);
+    if (mismatch !== undefined) {
+      this.addError(
+        `Cannot compare ${target} with ${source}${mismatch}`,
+        expr.sourceSpan.startLine,
+        expr.sourceSpan.startCol,
+        expr.sourceSpan.file,
+      );
+    }
   }
 
   /**
@@ -11081,6 +11292,11 @@ export class TypeChecker {
       return fn ? referenceShapeOf(fn.returnType) : undefined;
     }
     if (expr.kind !== "VariableExpression") return undefined;
+    // The METHOD / FUNCTION result or PROPERTY value itself, by its declared type
+    if (!this.hasMemberAccess(expr) && !expr.isDereference) {
+      const result = this.resultVariableType(expr.name);
+      if (result !== undefined) return referenceShapeOf(result);
+    }
     const sym = scope.lookup(expr.name);
     if (!sym || (sym.kind !== "variable" && sym.kind !== "constant")) {
       return undefined;
@@ -13235,7 +13451,13 @@ export class TypeChecker {
         const prog = this.ast.programs.find(
           (p) => p.name.toUpperCase() === name,
         );
-        const own = prog?.methods.find(
+        if (prog === undefined) {
+          // An interface's (`GetI().M(...)`, `arr[1].M(...)`), or an extended one's
+          return depth === 0
+            ? this.interfaceMethodInputs(name, methodName)
+            : undefined;
+        }
+        const own = prog.methods.find(
           (m) => m.name.toUpperCase() === methodName.toUpperCase(),
         );
         return own ? inputsOf(own) : undefined;
@@ -13390,6 +13612,34 @@ export class TypeChecker {
       ...(file ? { file } : {}),
     });
   }
+}
+
+/**
+ * A store of `value` into `target` that fails the C++ build or gets another
+ * value than the named conversion, by the measured argument rules: an enum,
+ * STRUCT or other composite against another type, else
+ * {@link failsAsCppArgument} or {@link temporalValueDiffers}.
+ */
+function resultStoreFailsCpp(
+  target: IECType,
+  value: IECType,
+  aliasBase: (name: string) => string,
+): boolean {
+  // A STRUCT, FB or UNION may arrive as a named elementary placeholder
+  const real = (t: IECType): string | undefined => {
+    if (t.typeKind !== "elementary") return undefined;
+    const name = canonicalElementaryName(aliasBase((t as ElementaryType).name));
+    return ELEMENTARY_TYPES[name] !== undefined ? name : undefined;
+  };
+  const t = real(target);
+  const v = real(value);
+  if (t === undefined || v === undefined) {
+    return (
+      typeNameUtil(target).toUpperCase() !== typeNameUtil(value).toUpperCase()
+    );
+  }
+  if (t === v) return false;
+  return failsAsCppArgument(v, t) || temporalValueDiffers(v, t);
 }
 
 /** The access as written, upper-case: `GVL_A.O.ARR[2].A`, `P^.A`. */
