@@ -7124,6 +7124,90 @@ export class TypeChecker {
   }
 
   /**
+   * A call in an FB_init that stores into no member: a type conversion
+   * (`INT_TO_DINT`, `TO_INT`), or a project FUNCTION with no VAR_EXTERNAL,
+   * VAR_IN_OUT or VAR_OUTPUT, no pointer, reference or interface parameter,
+   * naming nothing but its own variables and calling only such functions;
+   * its arguments take no address and capture no output.
+   */
+  private storesNothing(
+    call: FunctionCallExpression,
+    locals: ReadonlySet<string>,
+    members: ReadonlyMap<string, string>,
+    seen = new Set<string>(),
+  ): boolean {
+    const upper = call.functionName.toUpperCase();
+    if (call.instance !== undefined || upper.includes(".")) return false;
+    // An FB instance called by name (a local or member) runs its body
+    if (locals.has(upper) || members.has(upper)) return false;
+    if (call.arguments.some((a) => a.isOutput)) return false;
+    let addressed = false;
+    for (const a of call.arguments) {
+      walkAST(a.value, (node) => {
+        if (node.kind === "RefExpression") addressed = true;
+        if (node.kind === "FunctionCallExpression") {
+          const n = (node as FunctionCallExpression).functionName.toUpperCase();
+          if (n === "ADR" || n === "REF") addressed = true;
+        }
+      });
+    }
+    if (addressed) return false;
+    const fn = this.ast?.functions.find((f) => f.name.toUpperCase() === upper);
+    if (fn === undefined) {
+      return /^[A-Z0-9]+_TO_[A-Z0-9]+$|^TO_[A-Z0-9]+$/.test(upper);
+    }
+    if (seen.has(upper)) return true;
+    seen.add(upper);
+    const own = new Set([upper]);
+    for (const block of fn.varBlocks) {
+      if (
+        block.blockType === "VAR_EXTERNAL" ||
+        block.blockType === "VAR_IN_OUT" ||
+        block.blockType === "VAR_OUTPUT"
+      ) {
+        return false;
+      }
+      for (const d of block.declarations) {
+        if (
+          (d.type.referenceKind ?? "none") !== "none" ||
+          d.type.referenceChain !== undefined ||
+          this.ast?.interfaces.some(
+            (i) => i.name.toUpperCase() === d.type.name.toUpperCase(),
+          ) === true
+        ) {
+          return false;
+        }
+        for (const n of d.names) own.add(n.toUpperCase());
+      }
+    }
+    let pure = true;
+    for (const statement of fn.body) {
+      walkAST(statement, (node): boolean | void => {
+        if (!pure) return false;
+        if (node.kind === "VariableExpression") {
+          if (!own.has((node as VariableExpression).name.toUpperCase())) {
+            pure = false;
+          }
+        } else if (node.kind === "FunctionCallExpression") {
+          if (
+            !this.storesNothing(
+              node as FunctionCallExpression,
+              new Set(),
+              new Map(),
+              seen,
+            )
+          ) {
+            pure = false;
+          }
+        } else if (node.kind === "MethodCallExpression") {
+          pure = false;
+        }
+      });
+    }
+    return pure;
+  }
+
+  /**
    * Whether the FB_init work of an instance of `upper` (its chain's FB_init,
    * and that of its FB members) may change what is read of it: a member the
    * FB_init stores into (all, when it calls anything) that the block's own
@@ -7175,7 +7259,12 @@ export class TypeChecker {
       for (const statement of method.body) {
         walkAST(statement, (node) => {
           if (
-            node.kind === "FunctionCallExpression" ||
+            (node.kind === "FunctionCallExpression" &&
+              !this.storesNothing(
+                node as FunctionCallExpression,
+                locals,
+                members,
+              )) ||
             node.kind === "MethodCallExpression"
           ) {
             everything = true;

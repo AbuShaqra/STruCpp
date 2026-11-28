@@ -1204,6 +1204,56 @@ END_PROGRAM
     features: ["+program_methods"],
     expected: "1211",
   },
+  {
+    title: "a pure FUNCTION called in FB_init",
+    source: `FUNCTION Sq : INT
+VAR_INPUT a : INT; END_VAR
+Sq := a * a;
+END_FUNCTION
+FUNCTION_BLOCK FBK
+VAR n : INT := 6; scratch : INT; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+scratch := Sq(3);
+END_METHOD
+METHOD Get : INT
+Get := n;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL inst : FBK; g : INT := inst.Get(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL g : INT; END_VAR
+VAR O1 : INT; END_VAR
+O1 := g;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+fb_init"],
+    expected: "6",
+  },
+  {
+    title: "a conversion called in FB_init",
+    source: `FUNCTION_BLOCK FBK
+VAR n : INT := 6; scratch : DINT; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+scratch := INT_TO_DINT(4);
+END_METHOD
+METHOD Get : INT
+Get := n;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL inst : FBK; g : INT := inst.Get(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL g : INT; END_VAR
+VAR O1 : INT; END_VAR
+O1 := g;
+END_PROGRAM
+`,
+    main: undefined,
+    features: ["+fb_init"],
+    expected: "6",
+  },
 ];
 
 describe.skipIf(!hasGpp)(

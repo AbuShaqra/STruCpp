@@ -682,3 +682,91 @@ END_PROGRAM
     },
   );
 });
+
+describe("calls inside FB_init (feature fb_init)", () => {
+  it("a conversion or a FUNCTION touching only its own variables stores no member", () => {
+    expect(
+      located(
+        compile(
+          `FUNCTION Sq : INT
+VAR_INPUT a : INT; END_VAR
+Sq := a * a;
+END_FUNCTION
+FUNCTION_BLOCK FBK
+VAR n : INT := 6; scratch : INT; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+scratch := Sq(3);
+END_METHOD
+METHOD Get : INT
+Get := n;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL inst : FBK; g : INT := inst.Get(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL g : INT; END_VAR
+VAR O1 : INT; END_VAR
+O1 := g;
+END_PROGRAM
+`,
+          { features: ["+fb_init"] },
+        ),
+      ),
+    ).toEqual([]);
+    expect(
+      located(
+        compile(
+          `FUNCTION_BLOCK FBK
+VAR n : INT := 6; scratch : DINT; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+scratch := INT_TO_DINT(4);
+END_METHOD
+METHOD Get : INT
+Get := n;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL inst : FBK; g : INT := inst.Get(); END_VAR
+PROGRAM Main
+VAR_EXTERNAL g : INT; END_VAR
+VAR O1 : INT; END_VAR
+O1 := g;
+END_PROGRAM
+`,
+          { features: ["+fb_init"] },
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it("any other call still counts as storing every member", () => {
+    const fn = (decl: string): string => `FUNCTION Sq : INT
+VAR_INPUT a : INT; END_VAR
+${decl}
+Sq := a * a;
+END_FUNCTION
+FUNCTION_BLOCK FBK
+VAR n : INT := 6; scratch : INT; END_VAR
+METHOD FB_init : BOOL
+VAR_INPUT bInitRetains : BOOL; bInCopyCode : BOOL; END_VAR
+scratch := Sq(3);
+END_METHOD
+METHOD Get : INT
+Get := n;
+END_METHOD
+END_FUNCTION_BLOCK
+VAR_GLOBAL inst : FBK; g : INT := inst.Get(); gx : INT; END_VAR
+PROGRAM Main END_PROGRAM
+`;
+    for (const decl of [
+      "VAR_EXTERNAL gx : INT; END_VAR",
+      "VAR_IN_OUT io : INT; END_VAR",
+      "VAR p : POINTER TO INT; END_VAR",
+    ]) {
+      const errors = located(compile(fn(decl), { features: ["+fb_init"] }));
+      expect(
+        errors.some((e) => e.includes("reads 'inst' before its FB_init runs")),
+      ).toBe(true);
+    }
+  });
+});
