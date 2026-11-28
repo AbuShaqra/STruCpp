@@ -456,11 +456,12 @@ export function lowerProgramSelfMembers(ast: CompilationUnit): void {
 export function programsReachedByName(ast: CompilationUnit): Set<string> {
   const reached = new Set(findProgramReaches(ast).map((r) => r.program));
   const programs = new Set(ast.programs.map((p) => p.name.toUpperCase()));
+  // A unit built by hand (a test harness's) may lack some lists
   const roots: ASTNode[] = [
-    ...ast.globalVarBlocks,
-    ...ast.configurations.flatMap((c) => c.varBlocks),
-    ...ast.functionBlocks.flatMap((fb) => fb.varBlocks),
-    ...ast.types,
+    ...(ast.globalVarBlocks ?? []),
+    ...(ast.configurations ?? []).flatMap((c) => c.varBlocks),
+    ...(ast.functionBlocks ?? []).flatMap((fb) => fb.varBlocks),
+    ...(ast.types ?? []),
   ];
   for (const root of roots) {
     walkAST(root, (node) => {
