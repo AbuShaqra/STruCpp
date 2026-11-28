@@ -85,8 +85,9 @@ import {
   storedInstance,
 } from "../semantic/fb-init.js";
 import {
-  orderConfigurationGlobals,
-  orderGlobals,
+  type AllGlobalsOrder,
+  type GlobalItem,
+  orderAllGlobals,
 } from "../semantic/global-order.js";
 import { wrapReferenceChain } from "./reference-types.js";
 import {
@@ -1043,9 +1044,6 @@ export class CodeGenerator {
 
   /** FB_init start-up work of this unit (feature fb_init), or undefined when off. */
   private fbInitPlan: FbInitPlan | undefined;
-
-  /** True once the header defines `__fb_init_globals()`. */
-  private fbInitGlobalsEmitted = false;
 
   /** Upper-case PROGRAMs reached by name from another POU: one shared instance each. */
   protected reachedPrograms: ReadonlySet<string> = new Set();
@@ -2203,7 +2201,6 @@ export class CodeGenerator {
     this.ast = ast; // Store AST for looking up program bodies
     this.fbInitPlan =
       this.options.fbInit === true ? new FbInitPlan(ast) : undefined;
-    this.fbInitGlobalsEmitted = false;
     this.reachedPrograms = programsReachedByName(ast);
 
     // Build set of known FB types from AST (library FB types already registered
@@ -2603,7 +2600,7 @@ export class CodeGenerator {
 
     // Generate top-level global variables (GVL files). One that holds a
     // function block waits for the FB classes and late types below.
-    this.emitGvlGlobals(ast, false);
+    this.emitGlobalSegment(ast, 0);
 
     // Inject reachable library chunks (header side).
     //
@@ -2662,7 +2659,7 @@ export class CodeGenerator {
     // Configuration VAR_GLOBALs as file-scope singletons — emitted before the
     // FB/program classes so their bodies (and FB constructors that bind a
     // VAR_EXTERNAL pointer to a global) can name them.
-    this.emitFileScopeGlobals();
+    this.emitGlobalSegment(ast, 1);
 
     // Generate function block class declarations and late structs
     // (topologically sorted by dependency)
@@ -2680,9 +2677,10 @@ export class CodeGenerator {
       this.emitHeaderChunkMarker("end", "functionBlock", fb.name);
     }
 
-    // GVL globals that hold a function block, now that its class is complete
-    this.emitGvlGlobals(ast, true);
-    this.emitFbInitGlobals(ast);
+    // GVL globals that hold a function block, now that its class is complete,
+    // then their FB_init
+    this.emitGlobalSegment(ast, 2);
+    this.emitFbInitSegment(ast, 2);
 
     // Generate program class declarations
     if (this.projectModel) {
@@ -2718,6 +2716,11 @@ export class CodeGenerator {
         );
       }
     }
+
+    // Globals whose creation uses a PROGRAM instance, now that it exists,
+    // then the FB_init of those of them that are instances
+    this.emitGlobalSegment(ast, 3);
+    this.emitFbInitSegment(ast, 3);
 
     // Generate function declarations
     for (const func of ast.functions) {
@@ -2850,27 +2853,28 @@ export class CodeGenerator {
     }
   }
 
-  /**
-   * Emit the file-level VAR_GLOBALs (GVL files) as `inline` header objects:
-   * those holding a function block by value (`late`: an FB or a late type, or
-   * an inline array of one) or the others. A late one needs the FB class
-   * complete, so it is emitted after the FB classes and late types.
-   */
-  private emitGvlGlobals(ast: CompilationUnit, late: boolean): void {
-    this.atNamespaceScope = true;
-    try {
-      this.withFaultPou("VAR_GLOBAL", undefined, () =>
-        this.emitGvlGlobalsBody(ast, late),
-      );
-    } finally {
-      this.atNamespaceScope = false;
-    }
-  }
-
   /** Initial values emitted at namespace scope, where a lambda captures nothing. */
   private atNamespaceScope = false;
 
-  private emitGvlGlobalsBody(ast: CompilationUnit, late: boolean): void {
+  /**
+   * Where each global is created: 0 before the CONFIGURATION storage, 1 with
+   * it (before the FB classes), 2 after the FB classes and late types, 3
+   * after the PROGRAM classes and their shared instances. A global holding a
+   * function block is at least 2, a CONFIGURATION global at least 1, one
+   * whose creation uses a PROGRAM instance 3, and every global comes no
+   * earlier than the globals it depends on.
+   */
+  private globalPlan?: {
+    ast: CompilationUnit;
+    order: AllGlobalsOrder["order"];
+    configurationOf: AllGlobalsOrder["configurationOf"];
+    segment: Map<string, number>;
+  };
+
+  private planGlobals(
+    ast: CompilationUnit,
+  ): NonNullable<typeof this.globalPlan> {
+    if (this.globalPlan?.ast === ast) return this.globalPlan;
     // A library type (emitted after this compile's types) counts as late too.
     const ownTypes = new Set(ast.types.map((t) => t.name.toUpperCase()));
     const holdsFB = (typeRef: TypeReference): boolean =>
@@ -2882,54 +2886,124 @@ export class CodeGenerator {
           (this.libraryTypeNames.has(upper) && !ownTypes.has(upper))
         );
       });
-    // Each global after the globals its initial value names; one that names
-    // a late global is late too.
-    const { order, dependencies } = orderGlobals(ast);
-    const lateNames = new Set<string>();
+    const { order, dependencies, configurationOf } = orderAllGlobals(ast);
+    const segment = new Map<string, number>();
     for (const item of order) {
       const upper = item.name.toUpperCase();
-      if (
-        holdsFB(item.decl.type) ||
-        (dependencies.get(upper) ?? []).some((d) => lateNames.has(d))
-      ) {
-        lateNames.add(upper);
+      let at = configurationOf.has(upper) ? 1 : holdsFB(item.decl.type) ? 2 : 0;
+      for (const d of dependencies.get(upper) ?? []) {
+        // A PROGRAM instance it uses is created after the PROGRAM classes
+        at = Math.max(at, d.startsWith("PROGRAM ") ? 3 : (segment.get(d) ?? 0));
+      }
+      segment.set(upper, at);
+    }
+    this.globalPlan = { ast, order, configurationOf, segment };
+    return this.globalPlan;
+  }
+
+  /**
+   * Emit the globals created at `at` (see planGlobals), file-level and
+   * CONFIGURATION ones in one dependency order. At 1, a CONFIGURATION global
+   * the plan does not hold is emitted after, as before.
+   */
+  private emitGlobalSegment(ast: CompilationUnit, at: number): void {
+    this.atNamespaceScope = true;
+    try {
+      this.withFaultPou("VAR_GLOBAL", undefined, () =>
+        this.emitGlobalSegmentBody(ast, at),
+      );
+    } finally {
+      this.atNamespaceScope = false;
+    }
+  }
+
+  private emitGlobalSegmentBody(ast: CompilationUnit, at: number): void {
+    const { order, configurationOf, segment } = this.planGlobals(ast);
+    let listed = false;
+    let configured = false;
+    const emitted = new Set<string>();
+    const configGlobal = (
+      config: ConfigurationDecl,
+      gvar: ProjectVarDeclaration,
+    ): void => {
+      emitted.add(gvar.name.toUpperCase());
+      this.faultPou = config.name;
+      this.configGlobalInitNames = new Set(
+        config.globalVars.map((g) => g.name.toUpperCase()),
+      );
+      if (!configured) {
+        this.emitHeader(
+          "// Configuration VAR_GLOBAL storage — file-scope so every POU " +
+            "(program or nested function block) reaches the one canonical " +
+            "GlobalVar<V> (value + mutex).",
+        );
+        configured = true;
+      }
+      this.emitConfigurationGlobal(gvar);
+      this.configGlobalInitNames = new Set();
+      this.faultPou = "VAR_GLOBAL";
+    };
+    for (const item of order) {
+      const upper = item.name.toUpperCase();
+      if (segment.get(upper) !== at) continue;
+      const decl = configurationOf.get(upper);
+      if (decl === undefined) {
+        if (!listed) {
+          this.emitHeader("// Global variables");
+          listed = true;
+        }
+        this.emitListGlobal(item);
+        continue;
+      }
+      const config = this.projectModel?.configurations.find(
+        (c) => c.name.toUpperCase() === decl.name.toUpperCase(),
+      );
+      const gvar = config?.globalVars.find(
+        (g) => g.name.toUpperCase() === upper,
+      );
+      if (config && gvar) configGlobal(config, gvar);
+    }
+    if (at === 1) {
+      // Storage the plan leaves out (a name shared with a file-level global)
+      for (const config of this.projectModel?.configurations ?? []) {
+        for (const gvar of config.globalVars) {
+          const key = gvar.name.toUpperCase();
+          if (configurationOf.has(key) || emitted.has(key)) continue;
+          configGlobal(config, gvar);
+        }
       }
     }
-    let emittedAny = false;
-    for (const { block, decl, name } of order) {
-      if (lateNames.has(name.toUpperCase()) !== late) continue;
-      const constQualifier = block.isConstant ? "const " : "";
-      if (!emittedAny) {
-        this.emitHeader("// Global variables");
-        emittedAny = true;
-      }
-      const cppType = this.mapTypeRefToCpp(decl.type);
-      // `inline`, not a static-local behind a reference: the debug table takes
-      // their address into PROGMEM, which needs a constant.
-      this.emitHeaderChunkMarker("begin", "inlineGlobal", name);
-      const cppName = globalCppName(name);
-      if (decl.initialValue) {
-        const initExpr = this.generateInitializer(
-          decl.initialValue,
-          cppType,
-          decl.type.name,
-        );
-        this.emitHeader(
-          `${constQualifier}inline ${cppType} ${cppName} = ${initExpr};`,
-        );
-      } else {
-        this.emitHeader(`inline ${cppType} ${cppName}{};`);
-      }
-      // List-qualified names of this global (named_global_lists), as references.
-      for (const a of decl.listAliases ?? []) {
-        if (a.name !== name) continue;
-        this.emitHeader(
-          `${constQualifier}inline ${cppType}& ${a.alias} = ${cppName};`,
-        );
-      }
-      this.emitHeaderChunkMarker("end", "inlineGlobal", name);
+    if (listed || configured) this.emitHeader("");
+  }
+
+  /** One file-level global, as an `inline` header object. */
+  private emitListGlobal({ block, decl, name }: GlobalItem): void {
+    const constQualifier = block.isConstant ? "const " : "";
+    const cppType = this.mapTypeRefToCpp(decl.type);
+    // `inline`, not a static-local behind a reference: the debug table takes
+    // their address into PROGMEM, which needs a constant.
+    this.emitHeaderChunkMarker("begin", "inlineGlobal", name);
+    const cppName = globalCppName(name);
+    if (decl.initialValue) {
+      const initExpr = this.generateInitializer(
+        decl.initialValue,
+        cppType,
+        decl.type.name,
+      );
+      this.emitHeader(
+        `${constQualifier}inline ${cppType} ${cppName} = ${initExpr};`,
+      );
+    } else {
+      this.emitHeader(`inline ${cppType} ${cppName}{};`);
     }
-    if (emittedAny) this.emitHeader("");
+    // List-qualified names of this global (named_global_lists), as references.
+    for (const a of decl.listAliases ?? []) {
+      if (a.name !== name) continue;
+      this.emitHeader(
+        `${constQualifier}inline ${cppType}& ${a.alias} = ${cppName};`,
+      );
+    }
+    this.emitHeaderChunkMarker("end", "inlineGlobal", name);
   }
 
   /**
@@ -3450,8 +3524,11 @@ export class CodeGenerator {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
             // Same metadata-aware lookup as VAR_IN_OUT — see the comment above.
+            // An ARRAY[*] is a view of the bound array, passed by value.
             params.push(
-              `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${this.paramCppName(name, decl.type.name)}`,
+              VLA_TYPE_NAME.test(decl.type.name)
+                ? `${this.mapTypeRefToCpp(decl.type)} ${this.paramCppName(name, decl.type.name)}`
+                : `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${this.paramCppName(name, decl.type.name)}`,
             );
           }
         }
@@ -3839,8 +3916,11 @@ export class CodeGenerator {
       } else if (block.blockType === "VAR_OUTPUT") {
         for (const decl of block.declarations) {
           for (const name of decl.names) {
+            // An ARRAY[*] is a view of the bound array, passed by value
             params.push(
-              `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${this.paramCppName(name, decl.type.name)}`,
+              VLA_TYPE_NAME.test(decl.type.name)
+                ? `${this.mapTypeRefToCpp(decl.type)} ${this.paramCppName(name, decl.type.name)}`
+                : `${this.mapTypeRefToCpp(this.byRefParamTypeRef(decl.type))}& ${this.paramCppName(name, decl.type.name)}`,
             );
           }
         }
@@ -5004,32 +5084,34 @@ export class CodeGenerator {
   }
 
   /**
-   * Header: the once-only start-up work of the global instances, in
-   * declaration order, which every PROGRAM constructor runs first.
+   * Header: the start-up work (FB_init) of the global instances created in
+   * segment `at` (see planGlobals), in declaration order, run once right
+   * after them: each runs once the instance exists, before any later global.
    */
-  private emitFbInitGlobals(ast: CompilationUnit): void {
+  private emitFbInitSegment(ast: CompilationUnit, at: number): void {
     if (!this.fbInitPlan) return;
+    const { segment } = this.planGlobals(ast);
     const lines: string[] = [];
     for (const block of ast.globalVarBlocks) {
       for (const decl of block.declarations) {
         for (const name of decl.names) {
+          if (segment.get(name.toUpperCase()) !== at) continue;
           lines.push(...this.fbInitInstanceLines(decl, name));
         }
       }
     }
     if (lines.length === 0) return;
-    this.fbInitGlobalsEmitted = true;
-    this.emitHeader("// Start-up FB_init of the global instances, run once");
-    this.emitHeader("inline void __fb_init_globals() {");
-    this.emitHeader("    static bool done = false;");
-    this.emitHeader("    if (done) return;");
-    this.emitHeader("    done = true;");
+    this.emitHeader(
+      "// Start-up FB_init of the global instances above, run once after them",
+    );
+    this.emitHeader(`inline const bool __fb_init_segment${at} = [] {`);
     for (const line of lines) this.emitHeader(`    ${line}`);
-    this.emitHeader("}");
+    this.emitHeader("    return true;");
+    this.emitHeader("}();");
     this.emitHeader("");
   }
 
-  /** Program constructor body: the global start-up work, then the program's instances. */
+  /** Program constructor body: the FB_init of the program's instances. */
   private emitProgramFbInit(
     prog: ProgramDecl,
     astProg: CompilationUnit["programs"][0] | undefined,
@@ -5044,7 +5126,6 @@ export class CodeGenerator {
     astProg: CompilationUnit["programs"][0] | undefined,
   ): void {
     if (!this.fbInitPlan) return;
-    if (this.fbInitGlobalsEmitted) this.emit("    __fb_init_globals();");
     if (!astProg) return;
     this.currentProgramName = prog.name;
     this.enterScope(astProg.varBlocks);
@@ -5166,97 +5247,36 @@ export class CodeGenerator {
     }
   }
 
-  /** `config`'s globals, each after the globals its initial value names. */
-  private orderedConfigurationGlobals(
-    config: ConfigurationDecl,
-  ): ProjectVarDeclaration[] {
-    const decl = this.ast?.configurations.find(
-      (c) => c.name.toUpperCase() === config.name.toUpperCase(),
+  /** One CONFIGURATION global's file-scope storage. */
+  private emitConfigurationGlobal(gvar: ProjectVarDeclaration): void {
+    const cppType = this.mapTypeRefToCpp(this.projectVarToTypeRef(gvar));
+    // GlobalVar's initialising constructor is a template
+    // (`template<typename T> explicit GlobalVar(T)`), so a bare braced list
+    // has nothing to deduce from — name the type for aggregate initialisers
+    // (array literals) and pass everything else straight through.
+    const rawInit = this.projectVarInitializer(gvar) ?? "";
+    const initVal = rawInit.startsWith("{") ? `${cppType}${rawInit}` : rawInit;
+    // Must stay a real object — generated_debug.cpp takes `&name` into PROGMEM.
+    this.emitHeader(
+      `inline GlobalVar<${cppType}> ${globalCppName(gvar.name)}{${initVal}};`,
     );
-    if (decl === undefined) return config.globalVars;
-    const rank = new Map(
-      orderConfigurationGlobals(decl).order.map((item, i) => [
-        item.name.toUpperCase(),
-        i,
-      ]),
-    );
-    return [...config.globalVars].sort(
-      (a, b) =>
-        (rank.get(a.name.toUpperCase()) ?? 0) -
-        (rank.get(b.name.toUpperCase()) ?? 0),
-    );
-  }
 
-  private emitFileScopeGlobals(): void {
-    this.atNamespaceScope = true;
-    try {
-      this.withFaultPou("VAR_GLOBAL", undefined, () =>
-        this.emitFileScopeGlobalsBody(),
+    // A located VAR_GLOBAL (`AT %IX/%QX/%MW ...`) enters the located-vars
+    // descriptor so the runtime binds it to the I/O image. Owner "@config"
+    // (not a real program) keeps it out of every program's located_range.
+    if (gvar.address) {
+      this.collectLocatedVarFromModel(
+        {
+          name: gvar.name,
+          typeName: gvar.typeName,
+          address: gvar.address,
+          // Carried through so a located ARRAY global expands to one
+          // descriptor per element rather than binding only its first.
+          arrayDimensions: gvar.arrayDimensions,
+        },
+        "@config",
       );
-    } finally {
-      this.atNamespaceScope = false;
     }
-  }
-
-  private emitFileScopeGlobalsBody(): void {
-    if (!this.projectModel) return;
-    const seen = new Set<string>();
-    let emittedAny = false;
-    for (const config of this.projectModel.configurations) {
-      this.faultPou = config.name;
-      this.configGlobalInitNames = new Set(
-        config.globalVars.map((g) => g.name.toUpperCase()),
-      );
-      for (const gvar of this.orderedConfigurationGlobals(config)) {
-        const key = gvar.name.toUpperCase();
-        // Same name across configurations = one canonical global (strucpp
-        // already treats them as such); emit its storage once.
-        if (seen.has(key)) continue;
-        seen.add(key);
-
-        const cppType = this.mapTypeRefToCpp(this.projectVarToTypeRef(gvar));
-        // GlobalVar's initialising constructor is a template
-        // (`template<typename T> explicit GlobalVar(T)`), so a bare braced list
-        // has nothing to deduce from — name the type for aggregate initialisers
-        // (array literals) and pass everything else straight through.
-        const rawInit = this.projectVarInitializer(gvar) ?? "";
-        const initVal = rawInit.startsWith("{")
-          ? `${cppType}${rawInit}`
-          : rawInit;
-
-        if (!emittedAny) {
-          this.emitHeader(
-            "// Configuration VAR_GLOBAL storage — file-scope so every POU " +
-              "(program or nested function block) reaches the one canonical " +
-              "GlobalVar<V> (value + mutex).",
-          );
-          emittedAny = true;
-        }
-        // Must stay a real object — generated_debug.cpp takes `&name` into PROGMEM.
-        this.emitHeader(
-          `inline GlobalVar<${cppType}> ${globalCppName(gvar.name)}{${initVal}};`,
-        );
-
-        // A located VAR_GLOBAL (`AT %IX/%QX/%MW ...`) enters the located-vars
-        // descriptor so the runtime binds it to the I/O image. Owner "@config"
-        // (not a real program) keeps it out of every program's located_range.
-        if (gvar.address) {
-          this.collectLocatedVarFromModel(
-            {
-              name: gvar.name,
-              typeName: gvar.typeName,
-              address: gvar.address,
-              // Carried through so a located ARRAY global expands to one
-              // descriptor per element rather than binding only its first.
-              arrayDimensions: gvar.arrayDimensions,
-            },
-            "@config",
-          );
-        }
-      }
-    }
-    this.configGlobalInitNames = new Set();
-    if (emittedAny) this.emitHeader("");
   }
 
   /**
@@ -5778,6 +5798,19 @@ export class CodeGenerator {
       stmt.value,
       this.generateExpression(stmt.value),
     );
+
+    // An ARRAY[*] parameter stored whole: its elements, not the view
+    if (
+      stmt.target.kind === "VariableExpression" &&
+      !this.hasAccessSteps(stmt.target) &&
+      VLA_TYPE_NAME.test(
+        this.currentScopeVarTypeRefs.get(stmt.target.name.toUpperCase())
+          ?.name ?? "",
+      )
+    ) {
+      this.emit(`${indent}${target}.assign(${value});`);
+      return;
+    }
 
     const checked = this.subrangeStore(stmt.target, value, stmt.value);
     this.emit(`${indent}${target} = ${checked ?? value};`);
@@ -6390,7 +6423,10 @@ export class CodeGenerator {
         !isUnionMember(value) &&
         !rendersBound(value) &&
         this.stringLengthOf(value) !== undefined;
-      if (param.blockType === "VAR_IN_OUT" && !arg.isOutput) {
+      // A VAR_OUTPUT ARRAY[*] is a view of its argument, as an in-out's is
+      const viewOutput =
+        param.blockType === "VAR_OUTPUT" && VLA_TYPE_NAME.test(param.type.name);
+      if ((param.blockType === "VAR_IN_OUT" && !arg.isOutput) || viewOutput) {
         const sized = this.sizedStringLength(param.type);
         if (
           param.type.referenceKind === "reference_to" &&
@@ -6587,6 +6623,16 @@ export class CodeGenerator {
     if (this.sizedStringLength(type) !== undefined) return true;
     const element = this.arrayStringElementLength(type);
     return element !== undefined && !element.endsWith("(254)");
+  }
+
+  /** `value` has a subscript, a field or a dereference. */
+  private hasAccessSteps(value: VariableExpression): boolean {
+    return (
+      value.subscripts.length > 0 ||
+      value.fieldAccess.length > 0 ||
+      value.isDereference ||
+      (value.accessChain !== undefined && value.accessChain.length > 0)
+    );
   }
 
   /** The declared type of `value` after its subscripts and fields; undefined when unknown. */
@@ -10842,9 +10888,15 @@ export class CodeGenerator {
    */
   private emitOutputTempVar(type: TypeReference): string {
     const name = `__output_tmp_${this.tempVarCounter++}`;
-    const cppType = VLA_TYPE_NAME.test(type.name)
-      ? this.mapVarTypeToCpp(type.name)
-      : this.inOutParamType(type);
+    if (VLA_TYPE_NAME.test(type.name)) {
+      // An unbound ARRAY[*] output: an empty view whose faults name it
+      const view = this.mapVarTypeToCpp(type.name);
+      this.emit(
+        `${this.currentStatementIndent}${view} ${name}{strucpp::unbound_output};`,
+      );
+      return name;
+    }
+    const cppType = this.inOutParamType(type);
     this.emit(`${this.currentStatementIndent}${cppType} ${name};`);
     return name;
   }

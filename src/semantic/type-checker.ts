@@ -84,6 +84,7 @@ import {
 import {
   type GlobalItem,
   type GlobalOrder,
+  orderAllGlobals,
   orderConfigurationGlobals,
   orderGlobals,
 } from "./global-order.js";
@@ -110,6 +111,8 @@ import {
   vendorOperatorResultType,
 } from "./vendor-operators.js";
 import {
+  FbInitPlan,
+  fbChain,
   fbIndex,
   fbInitArgumentScope,
   fbInitChain,
@@ -1294,6 +1297,7 @@ export class TypeChecker {
             };
           }
           this.checkStatements(method.body, methodScope ?? scope);
+          this.refuseInputViewStores(method.varBlocks, method.body);
           this.currentReturn = undefined;
         }
         this.currentProgram = undefined;
@@ -1308,6 +1312,7 @@ export class TypeChecker {
         this.checkAddressInitialOrder(func.varBlocks);
         this.currentReturn = { name: func.name, type: func.returnType };
         this.checkStatements(func.body, scope);
+        this.refuseInputViewStores(func.varBlocks, func.body);
         this.currentReturn = undefined;
       }
     }
@@ -1342,6 +1347,7 @@ export class TypeChecker {
             };
           }
           this.checkStatements(method.body, methodScope ?? scope);
+          this.refuseInputViewStores(method.varBlocks, method.body);
           this.currentReturn = undefined;
         }
 
@@ -6975,6 +6981,12 @@ export class TypeChecker {
    * initial values that depend on each other cannot be created.
    */
   private checkGlobalInitialCycles(ast: CompilationUnit): void {
+    // File-level and CONFIGURATION globals are created as one graph
+    const all = orderAllGlobals(ast);
+    this.reportGlobalInitialCycles(all);
+    this.refuseUnorderedGlobalCalls(all);
+    if (this.features.has("fb_init")) this.refuseReadsBeforeFbInit(ast, all);
+    if (!(this.strict || this.inOutErrors)) return;
     const topLevel = orderGlobals(ast);
     for (const [ordered, outer] of [
       [topLevel, []] as const,
@@ -6983,12 +6995,361 @@ export class TypeChecker {
         (c) => [orderConfigurationGlobals(c), topLevel.order] as const,
       ),
     ]) {
-      this.reportGlobalInitialCycles(ordered);
-      if (this.strict || this.inOutErrors) {
-        this.refuseDependentGlobalInitials(ordered, outer);
-      }
-      this.refuseUnorderedGlobalCalls(ordered);
+      this.refuseDependentGlobalInitials(ordered, outer);
     }
+  }
+
+  /**
+   * A VAR_INPUT ARRAY[*] is a view of the caller's array (Ed. 3 6.5.3 gives
+   * ARRAY[*] for in/out use): storing into it (whole, an element, a field of
+   * one, an output capture) would change the caller's array, which an input
+   * never does. Refused in every mode; reading it stays allowed.
+   */
+  private refuseInputViewStores(
+    varBlocks: readonly VarBlock[],
+    body: readonly Statement[],
+  ): void {
+    const inputs = new Map<string, string>();
+    for (const block of varBlocks) {
+      if (block.blockType !== "VAR_INPUT") continue;
+      for (const decl of block.declarations) {
+        if (!this.isVariableLengthType(decl.type)) continue;
+        for (const n of decl.names) inputs.set(n.toUpperCase(), n);
+      }
+    }
+    if (inputs.size === 0) return;
+    const check = (target: Expression): void => {
+      if (target.kind !== "VariableExpression") return;
+      const name = inputs.get(target.name.toUpperCase());
+      if (
+        name === undefined ||
+        target.isDereference ||
+        target.accessChain?.some((st) => st.kind === "dereference") === true
+      ) {
+        return;
+      }
+      this.addError(
+        `'${name}' is a VAR_INPUT ARRAY[*]: it refers to the caller's array, which an input cannot change; declare it VAR_IN_OUT to write it`,
+        target.sourceSpan.startLine,
+        target.sourceSpan.startCol,
+        target.sourceSpan.file,
+      );
+    };
+    for (const statement of body) {
+      walkAST(statement, (node) => {
+        if (node.kind === "AssignmentStatement") {
+          check((node as AssignmentStatement).target);
+        } else if (node.kind === "RefAssignStatement") {
+          check((node as RefAssignStatement).target);
+        } else if (node.kind === "Argument" && (node as Argument).isOutput) {
+          check((node as Argument).value);
+        } else if (node.kind === "RefExpression") {
+          check((node as RefExpression).operand);
+        } else if (node.kind === "FunctionCallExpression") {
+          // ADR(a) / REF(a): writes through the address reach the caller's array
+          const call = node as FunctionCallExpression;
+          const upper = call.functionName.toUpperCase();
+          if (
+            (upper === "ADR" || upper === "REF") &&
+            call.arguments.length === 1
+          ) {
+            check(call.arguments[0]!.value);
+          }
+        }
+        if (node.kind === "RefAssignStatement") {
+          check((node as RefAssignStatement).source);
+        }
+      });
+    }
+  }
+
+  /** An inline `ARRAY[*]` or a TYPE of one. */
+  private isVariableLengthType(type: TypeReference): boolean {
+    if (type.name.toUpperCase().startsWith("__VLA_")) return true;
+    const def = this.ast?.types.find(
+      (t) => t.name.toUpperCase() === type.name.toUpperCase(),
+    )?.definition;
+    return (
+      def?.kind === "ArrayDefinition" &&
+      def.dimensions.some((d) => d.isVariableLength)
+    );
+  }
+
+  /**
+   * Feature fb_init: the FB_init of the global instances runs right after
+   * the globals of their storage segment are created (codegen.ts
+   * emitFbInitSegment), so a global's creation reading an instance of its
+   * own segment whose FB_init changes what may be read (a member its code
+   * reads, or one read from outside) would see it before. That is refused.
+   */
+  private refuseReadsBeforeFbInit(
+    ast: CompilationUnit,
+    all: GlobalOrder,
+  ): void {
+    const plan = new FbInitPlan(ast);
+    const fbs = fbIndex(ast);
+    const decls = new Map(all.order.map((i) => [i.name.toUpperCase(), i]));
+    const memo = new Map<string, boolean>();
+    const visible = (upper: string): boolean => {
+      const item = decls.get(upper);
+      const stored = item && storedInstance(ast, item.decl.type);
+      if (stored === undefined || !plan.needs(stored.name)) return false;
+      const key = stored.name.toUpperCase();
+      let result = memo.get(key);
+      if (result === undefined) {
+        result = this.fbInitChangesReadable(fbs, plan, key);
+        memo.set(key, result);
+      }
+      return result;
+    };
+    for (const item of all.order) {
+      const value = item.decl.initialValue;
+      if (item.decl.names[0] !== item.name) continue;
+      const span = (value ?? item.decl).sourceSpan;
+      const reads = all.reads.get(item.name.toUpperCase()) ?? [];
+      // A global created after a PROGRAM instance it uses comes after the
+      // FB_init of the instances created before that PROGRAM instance
+      const after = all.programUsers.has(item.name.toUpperCase());
+      const read = reads.find(
+        (r) => visible(r) && (!after || all.programUsers.has(r)),
+      );
+      let message: string | undefined;
+      if (read !== undefined) {
+        message = `The initial value of global '${item.name}' reads '${decls.get(read)!.name}' before its FB_init runs (right after the globals created with it); assign '${item.name}' in a program instead`;
+      }
+      if (message !== undefined) {
+        this.addError(message, span.startLine, span.startCol, span.file);
+      }
+    }
+  }
+
+  /**
+   * A call in an FB_init that stores into no member: a type conversion
+   * (`INT_TO_DINT`, `TO_INT`), or a project FUNCTION with no VAR_EXTERNAL,
+   * VAR_IN_OUT or VAR_OUTPUT, no pointer, reference or interface parameter,
+   * naming nothing but its own variables and calling only such functions;
+   * its arguments take no address and capture no output.
+   */
+  private storesNothing(
+    call: FunctionCallExpression,
+    locals: ReadonlySet<string>,
+    members: ReadonlyMap<string, string>,
+    seen = new Set<string>(),
+  ): boolean {
+    const upper = call.functionName.toUpperCase();
+    if (call.instance !== undefined || upper.includes(".")) return false;
+    // An FB instance called by name (a local or member) runs its body
+    if (locals.has(upper) || members.has(upper)) return false;
+    if (call.arguments.some((a) => a.isOutput)) return false;
+    let addressed = false;
+    for (const a of call.arguments) {
+      walkAST(a.value, (node) => {
+        if (node.kind === "RefExpression") addressed = true;
+        if (node.kind === "FunctionCallExpression") {
+          const n = (node as FunctionCallExpression).functionName.toUpperCase();
+          if (n === "ADR" || n === "REF") addressed = true;
+        }
+      });
+    }
+    if (addressed) return false;
+    const fn = this.ast?.functions.find((f) => f.name.toUpperCase() === upper);
+    if (fn === undefined) {
+      return /^[A-Z0-9]+_TO_[A-Z0-9]+$|^TO_[A-Z0-9]+$/.test(upper);
+    }
+    if (seen.has(upper)) return true;
+    seen.add(upper);
+    const own = new Set([upper]);
+    for (const block of fn.varBlocks) {
+      if (
+        block.blockType === "VAR_EXTERNAL" ||
+        block.blockType === "VAR_IN_OUT" ||
+        block.blockType === "VAR_OUTPUT"
+      ) {
+        return false;
+      }
+      for (const d of block.declarations) {
+        if (
+          (d.type.referenceKind ?? "none") !== "none" ||
+          d.type.referenceChain !== undefined ||
+          this.ast?.interfaces.some(
+            (i) => i.name.toUpperCase() === d.type.name.toUpperCase(),
+          ) === true
+        ) {
+          return false;
+        }
+        for (const n of d.names) own.add(n.toUpperCase());
+      }
+    }
+    let pure = true;
+    for (const statement of fn.body) {
+      walkAST(statement, (node): boolean | void => {
+        if (!pure) return false;
+        if (node.kind === "VariableExpression") {
+          if (!own.has((node as VariableExpression).name.toUpperCase())) {
+            pure = false;
+          }
+        } else if (node.kind === "FunctionCallExpression") {
+          if (
+            !this.storesNothing(
+              node as FunctionCallExpression,
+              new Set(),
+              new Map(),
+              seen,
+            )
+          ) {
+            pure = false;
+          }
+        } else if (node.kind === "MethodCallExpression") {
+          pure = false;
+        }
+      });
+    }
+    return pure;
+  }
+
+  /**
+   * Whether the FB_init work of an instance of `upper` (its chain's FB_init,
+   * and that of its FB members) may change what is read of it: a member the
+   * FB_init stores into (all, when it calls anything) that the block's own
+   * code names or that is read from outside (an input, output or in/out).
+   */
+  private fbInitChangesReadable(
+    fbs: Map<string, FunctionBlockDeclaration>,
+    plan: FbInitPlan,
+    upper: string,
+  ): boolean {
+    const chain = fbChain(fbs, upper);
+    const members = new Map<string, string>();
+    const readable = new Set<string>();
+    for (const fb of chain) {
+      for (const block of fb.varBlocks) {
+        for (const decl of block.declarations) {
+          for (const n of decl.names) {
+            members.set(n.toUpperCase(), block.blockType);
+            if (
+              block.blockType === "VAR_INPUT" ||
+              block.blockType === "VAR_OUTPUT" ||
+              block.blockType === "VAR_IN_OUT"
+            ) {
+              readable.add(n.toUpperCase());
+            }
+          }
+        }
+      }
+    }
+    const written = new Set<string>();
+    let everything = false;
+    for (const { method } of fbInitChain(fbs, upper)) {
+      const locals = new Set(
+        method.varBlocks.flatMap((b) =>
+          b.declarations.flatMap((d) => d.names.map((n) => n.toUpperCase())),
+        ),
+      );
+      const referenceLocals = new Set(
+        method.varBlocks.flatMap((b) =>
+          b.declarations
+            .filter(
+              (d) =>
+                (d.type.referenceKind ?? "none") !== "none" ||
+                d.type.referenceChain !== undefined,
+            )
+            .flatMap((d) => d.names.map((n) => n.toUpperCase())),
+        ),
+      );
+      for (const statement of method.body) {
+        walkAST(statement, (node) => {
+          if (
+            (node.kind === "FunctionCallExpression" &&
+              !this.storesNothing(
+                node as FunctionCallExpression,
+                locals,
+                members,
+              )) ||
+            node.kind === "MethodCallExpression"
+          ) {
+            everything = true;
+          }
+          const target =
+            node.kind === "AssignmentStatement"
+              ? (node as AssignmentStatement).target
+              : node.kind === "RefAssignStatement"
+                ? (node as RefAssignStatement).target
+                : undefined;
+          // A member bound to a reference (`r REF= n`, REF(n)) may be written through it
+          const bound =
+            node.kind === "RefAssignStatement"
+              ? (node as RefAssignStatement).source
+              : node.kind === "RefExpression"
+                ? (node as RefExpression).operand
+                : undefined;
+          if (bound?.kind === "VariableExpression") {
+            const b = bound.name.toUpperCase();
+            if (b === "THIS" || b === "SUPER") everything = true;
+            else if (!locals.has(b) && members.has(b)) written.add(b);
+          }
+          if (target?.kind !== "VariableExpression") return;
+          const name = target.name.toUpperCase();
+          // A store through a pointer or reference may reach any member
+          if (
+            target.isDereference ||
+            target.accessChain?.some((st) => st.kind === "dereference") ===
+              true ||
+            (node.kind === "AssignmentStatement" && referenceLocals.has(name))
+          ) {
+            everything = true;
+            return;
+          }
+          if (name === "THIS" || name === "SUPER") {
+            const first =
+              target.accessChain?.find((st) => st.kind === "field") ??
+              (target.fieldAccess[0] !== undefined
+                ? { kind: "field" as const, name: target.fieldAccess[0] }
+                : undefined);
+            if (first?.kind === "field") written.add(first.name.toUpperCase());
+            else everything = true;
+          } else if (!locals.has(name) && members.has(name)) {
+            written.add(name);
+          }
+        });
+      }
+    }
+    // FB members with FB_init work of their own change as a whole
+    for (const fb of chain) {
+      for (const decl of plan.memberDeclarations(fb)) {
+        const stored = storedInstance(this.ast!, decl.type);
+        if (stored !== undefined && plan.needs(stored.name)) {
+          for (const n of decl.names) written.add(n.toUpperCase());
+        }
+      }
+    }
+    if (everything) return true;
+    if (written.size === 0) return false;
+    if ([...written].some((w) => readable.has(w))) return true;
+    // The block's own code (bodies, methods, accessors) naming the member
+    let named = false;
+    for (const fb of chain) {
+      const roots: ASTNode[] = [
+        ...fb.body,
+        ...fb.methods
+          .filter((m) => m.name.toUpperCase() !== "FB_INIT")
+          .flatMap((m) => m.body),
+        ...fb.properties.flatMap((p) => [
+          ...(p.getter ?? []),
+          ...(p.setter ?? []),
+        ]),
+      ];
+      for (const root of roots) {
+        walkAST(root, (node) => {
+          if (
+            node.kind === "VariableExpression" &&
+            written.has((node as VariableExpression).name.toUpperCase())
+          ) {
+            named = true;
+          }
+        });
+      }
+    }
+    return named;
   }
 
   /**
@@ -7020,7 +7381,9 @@ export class TypeChecker {
         continue;
       }
       this.addError(
-        `The initial value of global '${item.name}' leads to ${found.reason} (line ${at.startLine}), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign '${item.name}' in a program instead`,
+        found.reason.startsWith("PROGRAM ")
+          ? `The initial value of global '${item.name}' runs ${found.reason}, whose instance needs a global that is created after it: the globals cannot be created in a known order; assign '${item.name}' in a program instead`
+          : `The initial value of global '${item.name}' leads to ${found.reason} (line ${at.startLine}), whose reads of other globals cannot be followed: the globals cannot be created in a known order; assign '${item.name}' in a program instead`,
         span.startLine,
         span.startCol,
         span.file,
@@ -8854,6 +9217,7 @@ export class TypeChecker {
         const targetContext = this.contextTypeNameOf(stmt.target, scope);
         if (this.refuseTypeAsValue(stmt.value, scope, targetContext)) break;
         this.settleBareValue(stmt.value, targetContext, scope);
+        if (this.checkWholeViewStore(stmt.target, stmt.value, scope)) break;
         let targetType = this.resolveExprType(stmt.target, scope);
         const valueType = this.resolveExprType(stmt.value, scope);
         this.refuseMisalignedPointerStore(
@@ -10943,11 +11307,22 @@ export class TypeChecker {
       (sym.declaration as VarDeclaration | undefined)?.type.referenceKind !==
         "reference_to"
     ) {
-      this.inOutDiagnostic(
-        `VAR_IN_OUT '${input.name}' is bound to the input '${value.name}', which this POU may not modify`,
-        "the callee writes the input",
-        value,
-      );
+      const inputType = (sym.declaration as VarDeclaration | undefined)?.type;
+      if (inputType !== undefined && this.isVariableLengthType(inputType)) {
+        // An ARRAY[*] input is the caller's array: the callee would write it
+        this.addError(
+          `'${value.name}' is a VAR_INPUT ARRAY[*]: it refers to the caller's array, which an input cannot change; declare it VAR_IN_OUT to pass it to VAR_IN_OUT '${input.name}'`,
+          value.sourceSpan.startLine,
+          value.sourceSpan.startCol,
+          value.sourceSpan.file,
+        );
+      } else {
+        this.inOutDiagnostic(
+          `VAR_IN_OUT '${input.name}' is bound to the input '${value.name}', which this POU may not modify`,
+          "the callee writes the input",
+          value,
+        );
+      }
     }
     const declared = sym.declaration as VarDeclaration | undefined;
     if (!declared) return;
@@ -11954,6 +12329,93 @@ export class TypeChecker {
   }
 
   /**
+   * `a := b` with `a` an ARRAY[*] parameter: the elements of `b` are copied
+   * into the array `a` refers to. `b` must be an array of the same rank; its
+   * elements are checked as scalar stores (a narrowing warns, an error under
+   * --strict). An array literal or anything else is refused. True when the
+   * store was checked here.
+   */
+  private checkWholeViewStore(
+    target: Expression,
+    value: Expression,
+    scope: Scope,
+  ): boolean {
+    if (target.kind !== "VariableExpression" || this.hasMemberAccess(target)) {
+      return false;
+    }
+    if (target.isDereference) return false;
+    const sym = scope.lookup(target.name);
+    const declared =
+      sym?.kind === "variable"
+        ? (sym.declaration as VarDeclaration | undefined)
+        : undefined;
+    if (declared === undefined || !this.isVariableLengthType(declared.type)) {
+      return false;
+    }
+    const expected = this.bindingShapeOf(declared.type);
+    if (expected === undefined || expected.kind === "scalar") return false;
+    const refuse = (what: string): true => {
+      this.addError(
+        `Cannot store ${what} into '${target.name}', a variable-length ARRAY[*] of rank ${expected.rank}: only an array of that rank, element by element`,
+        value.sourceSpan.startLine,
+        value.sourceSpan.startCol,
+        value.sourceSpan.file,
+      );
+      return true;
+    };
+    if (value.kind === "ArrayLiteralExpression")
+      return refuse("an array literal");
+    this.resolveExprType(value, scope);
+    if (
+      value.kind !== "VariableExpression" ||
+      value.isDereference ||
+      value.accessChain?.some((st) => st.kind === "dereference") === true
+    ) {
+      return false;
+    }
+    const valueSym = scope.lookup(value.name);
+    const valueDecl =
+      valueSym?.kind === "variable"
+        ? (valueSym.declaration as VarDeclaration | undefined)
+        : undefined;
+    if (valueDecl === undefined) return false;
+    const source = this.hasMemberAccess(value)
+      ? resolveAccessType(valueDecl.type, value, this.accessLookup)
+      : valueDecl.type;
+    const actual =
+      source === undefined ? undefined : this.bindingShapeOf(source);
+    if (actual === undefined) return false;
+    // A single value is the ordinary assignment check's to report
+    if (actual.kind === "scalar") return false;
+    if (actual.rank !== expected.rank) {
+      return refuse(`an array of rank ${actual.rank}`);
+    }
+    if (actual.chain.join(" ") !== expected.chain.join(" ")) {
+      return refuse("an array of another element type");
+    }
+    if (actual.base !== expected.base) {
+      const to = this.resolveNamedType(expected.base);
+      const from = this.resolveNamedType(actual.base);
+      if (
+        this.strict &&
+        to?.typeKind === "elementary" &&
+        from?.typeKind === "elementary" &&
+        strictKind((to as ElementaryType).name.toUpperCase()) !== undefined &&
+        strictKind((from as ElementaryType).name.toUpperCase()) !== undefined
+      ) {
+        const t = (to as ElementaryType).name.toUpperCase();
+        const v = (from as ElementaryType).name.toUpperCase();
+        if (!strictIsExactWidening(v, t)) {
+          this.addStrictError(strictConversionMessage(v, t), value);
+        }
+      } else {
+        this.validateAssignment(to, from, target, value);
+      }
+    }
+    return true;
+  }
+
+  /**
    * An ARRAY variable stored in a fixed-size ARRAY (an assignment, or input
    * `input` by value). Other bounds or rank do not build: an error. Another
    * element type is an error under --strict; else checked as an element
@@ -12256,7 +12718,8 @@ export class TypeChecker {
       boundName === undefined
         ? value.resolvedType
         : this.resolveNamedType(boundName);
-    if (indirect) arg.inOutCopy = true;
+    // An ARRAY[*] output is a view: it binds whatever array the access reaches
+    if (indirect && !param.name.startsWith("__VLA_")) arg.inOutCopy = true;
     if (boundType === undefined) return;
     this.validateAssignment(boundType, paramType, value, {
       kind: "VariableExpression",
